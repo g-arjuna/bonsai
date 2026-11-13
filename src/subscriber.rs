@@ -434,6 +434,13 @@ pub async fn spawn_subscriber_with_creds(
         info!(address = %address, "subscriber start skipped because target is disabled");
         return Ok(());
     }
+    if target.inventory_only {
+        info!(
+            address = %address,
+            "subscriber start skipped: inventory-only asset has no collection plan"
+        );
+        return Ok(());
+    }
     if subscribers.contains_key(&address) {
         info!(address = %address, "subscriber already running");
         return Ok(());

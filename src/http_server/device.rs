@@ -1414,7 +1414,11 @@ pub(super) struct NetboxImportCandidate {
     /// provide one — such candidates cannot be imported as stable
     /// external identities.
     pub netbox_id: u64,
-    /// Stable external identity derived from the NetBox object ID.
+    /// Stable external identity derived from the NetBox instance
+    /// identity (scheme + host + port, never credentials) and the
+    /// immutable NetBox object ID, e.g.
+    /// `netbox:https:netbox.example.com:443:device:123`. Unique across
+    /// NetBox deployments — two instances can both have device id 123.
     pub external_id: String,
     pub name: String,
     pub address: String,
@@ -1422,7 +1426,9 @@ pub(super) struct NetboxImportCandidate {
     pub role: String,
     pub vendor: String,
     pub platform: String,
-    pub status: String,
+    /// Inventory-declared lifecycle status; `None` when NetBox did not
+    /// report one — stays unknown, never fabricated as "active".
+    pub status: Option<String>,
     pub tenant: String,
     /// False when the candidate cannot be imported as-is (e.g. no primary
     /// IP, no stable NetBox object ID). Surfaced explicitly, never
@@ -1493,6 +1499,18 @@ pub(super) async fn netbox_import_handler(
     if !req.site_slug.trim().is_empty() {
         devices_url.push_str(&format!("&site={}", req.site_slug.trim()));
     }
+
+    // BN-015-U1/N1: external identities are scoped to THIS NetBox
+    // instance. The instance identity is derived from the connection
+    // URL's scheme + normalized authority — never from credentials or
+    // tokens — so `netbox:device:123` on two different deployments
+    // cannot collide.
+    let instance_identity = netbox_instance_identity(&base).map_err(|e| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("cannot derive NetBox instance identity: {e}"),
+        )
+    })?;
 
     let mut warnings: Vec<String> = Vec::new();
     let mut candidates: Vec<NetboxImportCandidate> = Vec::new();
@@ -1605,11 +1623,7 @@ pub(super) async fn netbox_import_handler(
                 .as_ref()
                 .map(|p| p.slug.clone())
                 .unwrap_or_default();
-            let status = dev
-                .status
-                .as_ref()
-                .map(|s| s.value.clone())
-                .unwrap_or_else(|| "active".to_string());
+            let status = dev.status.as_ref().map(|s| s.value.clone());
 
             let tenant = dev
                 .tenant
@@ -1620,7 +1634,7 @@ pub(super) async fn netbox_import_handler(
             candidates.push(NetboxImportCandidate {
                 netbox_id,
                 external_id: if netbox_id > 0 {
-                    format!("netbox:device:{netbox_id}")
+                    format!("netbox:{instance_identity}:device:{netbox_id}")
                 } else {
                     String::new()
                 },
@@ -1648,6 +1662,97 @@ pub(super) async fn netbox_import_handler(
         netbox_version: nb_version,
         warnings,
     }))
+}
+
+/// Derive the stable NetBox instance identity from a base URL.
+///
+/// Format: `{scheme}:{host}:{port}` — e.g. `https:netbox.example.com:443`.
+/// Only the scheme and normalized authority participate: credentials,
+/// userinfo, path, query and fragment are never part of the identity.
+/// The host is lowercased (DNS is case-insensitive), IPv6 literals are
+/// bracketed, and the port is always explicit (defaulting to 80/443 for
+/// http/https). Two NetBox deployments therefore always produce
+/// distinct external identities even when they share device IDs.
+fn netbox_instance_identity(base_url: &str) -> Result<String, String> {
+    let url = base_url.trim();
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| "URL must include a scheme (http:// or https://)".to_string())?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!(
+            "unsupported scheme '{scheme}' (expected http or https)"
+        ));
+    }
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("");
+    if authority.is_empty() {
+        return Err("missing host in NetBox URL".to_string());
+    }
+
+    let (host_raw, explicit_port) = if let Some(inner) = authority.strip_prefix('[') {
+        let end = inner
+            .find(']')
+            .ok_or_else(|| "malformed bracketed IPv6 host".to_string())?;
+        let host = &inner[..end];
+        let remainder = &inner[end + 1..];
+        let port = if remainder.is_empty() {
+            None
+        } else {
+            let p = remainder
+                .strip_prefix(':')
+                .ok_or_else(|| "malformed authority after IPv6 host".to_string())?;
+            if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(format!("invalid port '{p}'"));
+            }
+            Some(p.to_string())
+        };
+        (host.to_string(), port)
+    } else if authority.contains(':') {
+        let (host, port) = authority
+            .rsplit_once(':')
+            .ok_or_else(|| "malformed authority".to_string())?;
+        if host.contains(':') {
+            return Err("bare IPv6 literals must be bracketed in the NetBox URL".to_string());
+        }
+        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!("invalid port '{port}'"));
+        }
+        (host.to_string(), Some(port.to_string()))
+    } else {
+        (authority.to_string(), None)
+    };
+
+    let host = host_raw.to_ascii_lowercase();
+    if host.is_empty() {
+        return Err("missing host in NetBox URL".to_string());
+    }
+    let port: u16 = match explicit_port {
+        Some(p) => p
+            .parse::<u16>()
+            .map_err(|_| format!("invalid port '{p}'"))?,
+        None => {
+            if scheme == "https" {
+                443
+            } else {
+                80
+            }
+        }
+    };
+    if port == 0 {
+        return Err("port must be non-zero".to_string());
+    }
+    let display_host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host
+    };
+    Ok(format!("{scheme}:{display_host}:{port}"))
 }
 
 pub(super) fn read_recent_enrichment_audit(
@@ -1898,4 +2003,62 @@ pub(super) async fn device_optics_handler(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::netbox_instance_identity;
+
+    #[test]
+    fn instance_identity_distinguishes_deployments() {
+        // Two NetBox instances that both contain device id 123 must
+        // produce different external identities.
+        let a = netbox_instance_identity("https://netbox-a.example.com").unwrap();
+        let b = netbox_instance_identity("https://netbox-b.example.com").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(a, "https:netbox-a.example.com:443");
+        assert_eq!(b, "https:netbox-b.example.com:443");
+    }
+
+    #[test]
+    fn instance_identity_never_contains_credentials() {
+        // Userinfo, tokens in path/query — none may leak into identity.
+        let id = netbox_instance_identity(
+            "https://admin:s3cr3t@netbox.example.com:8443/api?token=abc#frag",
+        )
+        .unwrap();
+        assert_eq!(id, "https:netbox.example.com:8443");
+        assert!(!id.contains("s3cr3t"));
+        assert!(!id.contains("abc"));
+    }
+
+    #[test]
+    fn instance_identity_normalizes_case_scheme_and_default_port() {
+        assert_eq!(
+            netbox_instance_identity("HTTPS://NetBox.Example.COM").unwrap(),
+            "https:netbox.example.com:443"
+        );
+        assert_eq!(
+            netbox_instance_identity("http://NetBox.Example.COM:80").unwrap(),
+            "http:netbox.example.com:80"
+        );
+        // Explicit default port equals implicit default port.
+        assert_eq!(
+            netbox_instance_identity("https://netbox.example.com:443").unwrap(),
+            netbox_instance_identity("https://netbox.example.com").unwrap()
+        );
+    }
+
+    #[test]
+    fn instance_identity_handles_ipv6_and_rejects_malformed() {
+        assert_eq!(
+            netbox_instance_identity("https://[2001:db8::1]:8443").unwrap(),
+            "https:[2001:db8::1]:8443"
+        );
+        assert!(netbox_instance_identity("netbox.example.com").is_err());
+        assert!(netbox_instance_identity("ftp://netbox.example.com").is_err());
+        assert!(netbox_instance_identity("https://").is_err());
+        assert!(netbox_instance_identity("https://netbox.example.com:0").is_err());
+        assert!(netbox_instance_identity("https://netbox.example.com:notaport").is_err());
+    }
 }

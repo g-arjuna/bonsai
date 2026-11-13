@@ -60,7 +60,7 @@ pub struct PathOverride {
     pub created_by: String,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct RegistryState {
     #[serde(default)]
     pub targets: BTreeMap<String, TargetConfig>,
@@ -133,9 +133,16 @@ impl ApiRegistry {
     pub fn open(path: impl Into<PathBuf>, seed_targets: Vec<TargetConfig>) -> Result<Self> {
         let path = path.into();
         let runtime_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let sqlite_store = crate::sqlite_store::SqliteStore::open(runtime_dir)
-            .ok()
-            .map(std::sync::Arc::new);
+        let sqlite_store = match crate::sqlite_store::SqliteStore::open(runtime_dir) {
+            Ok(store) => Some(std::sync::Arc::new(store)),
+            Err(error) => {
+                warn!(
+                    %error,
+                    "SQLite config store unavailable; falling back to JSON registry persistence"
+                );
+                None
+            }
+        };
 
         // Try to migrate from JSON if SQLite is new
         if let Some(ref store) = sqlite_store {
@@ -173,20 +180,56 @@ impl ApiRegistry {
     }
 
     /// Find a registered device by its stable external identity
-    /// (e.g. `netbox:device:123`). Returns `None` when no device carries
-    /// the id; multiple matches are impossible in practice but the first
-    /// is returned deterministically by address ordering.
+    /// (e.g. `netbox:https:netbox.example.com:443:device:123`). Returns
+    /// `None` when no device carries the id. Fails closed when the id is
+    /// ambiguous — multiple matches mean the identity contract was
+    /// violated and no deterministic winner may be chosen.
     pub fn find_by_external_id(&self, external_id: &str) -> Result<Option<TargetConfig>> {
         let state = self
             .state
             .lock()
             .map_err(|_| anyhow!("registry lock poisoned"))?;
-        Ok(state
+        let matches: Vec<TargetConfig> = state
             .targets
             .values()
             .filter(|t| t.external_id.as_deref() == Some(external_id))
-            .min_by(|a, b| a.address.cmp(&b.address))
-            .cloned())
+            .cloned()
+            .collect();
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.into_iter().next()),
+            n => Err(anyhow!(
+                "external id '{external_id}' is ambiguous: bound to {n} devices; \
+                 refusing to pick an arbitrary match"
+            )),
+        }
+    }
+
+    /// Find the registered device occupying a canonical device address
+    /// (the bare host/IP used as the graph `Device.address` key). Matches
+    /// registry entries stored with or without a gNMI port, so an import
+    /// of `10.0.0.1` cannot slip past an existing `10.0.0.1:57400` entry.
+    /// Fails closed when the canonical address is ambiguous.
+    pub fn find_by_canonical_address(&self, address: &str) -> Result<Option<TargetConfig>> {
+        let canonical = canonical_device_key(address);
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        let matches: Vec<TargetConfig> = state
+            .targets
+            .values()
+            .filter(|t| canonical_device_key(&t.address) == canonical)
+            .cloned()
+            .collect();
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.into_iter().next()),
+            n => Err(anyhow!(
+                "canonical address '{canonical}' is ambiguous: claimed by {n} devices; \
+                 refusing to pick an arbitrary match"
+            )),
+        }
     }
 
     pub fn add_device(&self, target: TargetConfig) -> Result<TargetConfig> {
@@ -202,24 +245,32 @@ impl ApiRegistry {
         let address = normalize_address(&target.address)?;
         let mut target = target;
         target.address = address.clone();
+        target.external_id = normalize_external_id(target.external_id)?;
         stamp_new_target_audit(&mut target, actor, action);
 
-        {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| anyhow!("registry lock poisoned"))?;
-            if state.targets.contains_key(&address) {
-                bail!("device '{address}' already exists");
-            }
-            state.targets.insert(address.clone(), target.clone());
-            Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        if state.targets.contains_key(&address) {
+            bail!("device '{address}' already exists");
         }
+        reject_canonical_conflict(&state, &address)?;
+        reject_external_id_conflict(&state, &target)?;
+        reject_inventory_enabled(&target)?;
 
-        // Also write directly to SQLite for better audit trail
-        if let Some(ref store) = self.sqlite_store {
-            let _ = store.upsert_device(&target, "registry", "add_device");
-        }
+        // Persist BEFORE committing to memory: a durable-write failure
+        // must leave both stores untouched and emit no change event.
+        let mut new_state = state.clone();
+        new_state.targets.insert(address.clone(), target.clone());
+        self.persist_committed(
+            &self.path,
+            &new_state,
+            self.sqlite_store.as_deref(),
+            |store| store.upsert_device(&target, actor, action),
+        )?;
+        *state = new_state;
+        drop(state);
 
         let _ = self.change_tx.send(RegistryChange::Added(target.clone()));
         Ok(target)
@@ -238,22 +289,56 @@ impl ApiRegistry {
         let address = normalize_address(&target.address)?;
         let mut target = target;
         target.address = address.clone();
+        target.external_id = normalize_external_id(target.external_id)?;
 
-        {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| anyhow!("registry lock poisoned"))?;
-            let existing = state.targets.get(&address).cloned();
-            if existing.is_none() {
-                bail!("device '{address}' does not exist");
-            }
-            if let Some(existing) = existing {
-                stamp_existing_target_audit(&mut target, &existing, actor, action);
-            }
-            state.targets.insert(address.clone(), target.clone());
-            Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        let Some(existing) = state.targets.get(&address).cloned() else {
+            bail!("device '{address}' does not exist");
+        };
+        // External identity is owned by the import that created it;
+        // updates that don't carry one must not clear it.
+        if target.external_id.is_none() {
+            target.external_id = existing.external_id.clone();
         }
+        stamp_existing_target_audit(&mut target, &existing, actor, action);
+
+        // BN-015-U1 lifecycle boundary: an inventory-only asset can only
+        // leave inventory-only through an explicit collection plan —
+        // `enabled = true` together with a non-empty `selected_paths`
+        // plan. Enabling without a plan is rejected; a disabled update
+        // keeps the asset inventory-only. This also blocks bulk "start",
+        // CLI enable and gRPC updates that carry no plan.
+        if existing.inventory_only {
+            if target.enabled && target.selected_paths.is_empty() {
+                bail!(
+                    "device '{address}' is inventory-only; enabling collection requires \
+                     an explicit collection plan (selected_paths)"
+                );
+            }
+            target.inventory_only = !(target.enabled && !target.selected_paths.is_empty());
+        } else {
+            // Configured devices keep their lifecycle marker cleared; an
+            // explicit inventory_only=true on a configured device is a
+            // no-op downgrade attempt and is ignored.
+            target.inventory_only = false;
+        }
+
+        reject_canonical_conflict(&state, &address)?;
+        reject_external_id_conflict(&state, &target)?;
+
+        let mut new_state = state.clone();
+        new_state.targets.insert(address.clone(), target.clone());
+        self.persist_committed(
+            &self.path,
+            &new_state,
+            self.sqlite_store.as_deref(),
+            |store| store.upsert_device(&target, actor, action),
+        )?;
+        *state = new_state;
+        drop(state);
 
         let _ = self.change_tx.send(RegistryChange::Updated(target.clone()));
         Ok(target)
@@ -261,27 +346,28 @@ impl ApiRegistry {
 
     pub fn remove_device(&self, address: &str) -> Result<Option<TargetConfig>> {
         let address = normalize_address(address)?;
-        let removed = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| anyhow!("registry lock poisoned"))?;
-            let removed = state.targets.remove(&address);
-            if removed.is_some() {
-                Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?
-            }
-            removed
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        let Some(removed) = state.targets.get(&address).cloned() else {
+            return Ok(None);
         };
 
-        if removed.is_some() {
-            // Also delete directly from SQLite for better audit trail
-            if let Some(ref store) = self.sqlite_store {
-                let _ = store.delete_device(&address, "registry_remove_device");
-            }
-            let _ = self.change_tx.send(RegistryChange::Removed(address));
+        let mut new_state = state.clone();
+        new_state.targets.remove(&address);
+        if let Some(store) = self.sqlite_store.as_deref() {
+            store
+                .delete_device(&address, "registry")
+                .context("failed to persist device removal")?;
+        } else {
+            Self::write_json_state(&self.path, &new_state)?;
         }
+        *state = new_state;
+        drop(state);
 
-        Ok(removed)
+        let _ = self.change_tx.send(RegistryChange::Removed(address));
+        Ok(Some(removed))
     }
 
     pub fn list_overrides(&self) -> Result<Vec<PathOverride>> {
@@ -297,8 +383,10 @@ impl ApiRegistry {
             .state
             .lock()
             .map_err(|_| anyhow!("registry lock poisoned"))?;
-        state.overrides.push(ovr);
-        Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?;
+        let mut new_state = state.clone();
+        new_state.overrides.push(ovr);
+        Self::persist_state(&self.path, &new_state, self.sqlite_store.as_deref())?;
+        *state = new_state;
         Ok(())
     }
 
@@ -308,12 +396,14 @@ impl ApiRegistry {
             .lock()
             .map_err(|_| anyhow!("registry lock poisoned"))?;
         let len_before = state.overrides.len();
-        state
+        let mut new_state = state.clone();
+        new_state
             .overrides
             .retain(|o| !(o.scope == *scope && o.path == path));
-        let changed = state.overrides.len() != len_before;
+        let changed = new_state.overrides.len() != len_before;
         if changed {
-            Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?
+            Self::persist_state(&self.path, &new_state, self.sqlite_store.as_deref())?;
+            *state = new_state;
         }
         Ok(changed)
     }
@@ -365,16 +455,24 @@ impl ApiRegistry {
                 .state
                 .lock()
                 .map_err(|_| anyhow!("registry lock poisoned"))?;
-            let target = state
-                .targets
-                .get_mut(&address)
-                .ok_or_else(|| anyhow!("device '{address}' does not exist"))?;
-            target.collector_id = collector_id;
-            target.updated_at_ns = now_ns();
-            target.updated_by = actor.to_string();
-            target.last_operator_action = action.to_string();
-            let updated = target.clone();
-            Self::persist_state(&self.path, &state, self.sqlite_store.as_deref())?;
+            let Some(existing) = state.targets.get(&address).cloned() else {
+                bail!("device '{address}' does not exist");
+            };
+            let mut updated = existing;
+            updated.collector_id = collector_id;
+            updated.updated_at_ns = now_ns();
+            updated.updated_by = actor.to_string();
+            updated.last_operator_action = action.to_string();
+
+            let mut new_state = state.clone();
+            new_state.targets.insert(address.clone(), updated.clone());
+            self.persist_committed(
+                &self.path,
+                &new_state,
+                self.sqlite_store.as_deref(),
+                |store| store.upsert_device(&updated, actor, action),
+            )?;
+            *state = new_state;
             updated
         };
 
@@ -388,7 +486,9 @@ impl ApiRegistry {
         sqlite_store: Option<&crate::sqlite_store::SqliteStore>,
     ) -> Result<RegistryState> {
         let mut targets = if let Some(store) = sqlite_store {
-            store.list_devices().unwrap_or_default()
+            store
+                .list_devices()
+                .context("failed to load managed devices from SQLite config store")?
         } else if path.exists() {
             let raw = std::fs::read_to_string(path)
                 .with_context(|| format!("failed to read registry '{}'", path.display()))?;
@@ -420,6 +520,30 @@ impl ApiRegistry {
         Ok(state)
     }
 
+    /// Persist a committed mutation. With a SQLite store, only the
+    /// changed device row is written (with its real actor/action for the
+    /// audit trail); without one, the whole registry state is written to
+    /// the JSON fallback file. Errors propagate — callers commit the
+    /// in-memory state only after this succeeds.
+    fn persist_committed(
+        &self,
+        path: &Path,
+        new_state: &RegistryState,
+        sqlite_store: Option<&crate::sqlite_store::SqliteStore>,
+        upsert: impl FnOnce(&crate::sqlite_store::SqliteStore) -> Result<()>,
+    ) -> Result<()> {
+        if let Some(store) = sqlite_store {
+            upsert(store).context("failed to persist device mutation to SQLite")?;
+        } else {
+            Self::write_json_state(path, new_state)?;
+        }
+        Ok(())
+    }
+
+    /// Persist the full registry state. Used at load time (seed merge)
+    /// and for override changes, which have no per-device SQLite row.
+    /// SQLite write failures propagate — startup must not report a
+    /// durable registry it failed to write.
     fn persist_state(
         path: &Path,
         state: &RegistryState,
@@ -427,29 +551,44 @@ impl ApiRegistry {
     ) -> Result<()> {
         if let Some(store) = sqlite_store {
             for target in state.targets.values() {
-                if let Err(e) = store.upsert_device(target, "registry", "persist") {
-                    warn!(
-                        "failed to persist device '{}' to SQLite: {e}",
-                        target.address
-                    );
-                }
+                store
+                    .upsert_device(target, "registry", "persist")
+                    .with_context(|| {
+                        format!(
+                            "failed to persist device '{}' to SQLite config store",
+                            target.address
+                        )
+                    })?;
             }
         } else {
-            let parent = path.parent().unwrap_or_else(|| Path::new("."));
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create registry directory '{}'", parent.display())
-            })?;
-
-            let serialized = serde_json::to_string_pretty(&state)
-                .context("failed to serialize registry state")?;
-            std::fs::write(path, serialized)
-                .with_context(|| format!("failed to write registry '{}'", path.display()))?;
+            Self::write_json_state(path, state)?;
         }
+        Ok(())
+    }
+
+    fn write_json_state(path: &Path, state: &RegistryState) -> Result<()> {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create registry directory '{}'", parent.display())
+        })?;
+
+        let serialized =
+            serde_json::to_string_pretty(&state).context("failed to serialize registry state")?;
+        std::fs::write(path, serialized)
+            .with_context(|| format!("failed to write registry '{}'", path.display()))?;
         Ok(())
     }
 }
 
 fn merge_seed_target(existing: &mut TargetConfig, seed: &TargetConfig) {
+    // BN-015-U1: an inventory-only asset is authoritative for its own
+    // lifecycle. Seed config (`bonsai.toml`) must not accidentally
+    // activate it or graft acquisition fields onto it — the explicit
+    // inventory→configured transition only happens through a validated
+    // collection plan on the mutation API.
+    if existing.inventory_only {
+        return;
+    }
     existing.enabled = seed.enabled;
     if existing
         .tls_domain
@@ -629,6 +768,93 @@ fn normalize_address(address: &str) -> Result<String> {
     }
 }
 
+/// Canonical identity key for the globally address-keyed graph: the
+/// port-stripped host with IP literals normalized and hostnames
+/// lowercased (DNS is case-insensitive). Used ONLY for uniqueness
+/// comparisons — stored addresses keep their original spelling so graph
+/// keys (`primary_ip()`) are unchanged.
+pub fn canonical_device_key(address: &str) -> String {
+    let host = strip_port(address).trim();
+    if let Ok(ip) = host.parse::<Ipv4Addr>() {
+        return ip.to_string();
+    }
+    if let Ok(ip) = host.parse::<Ipv6Addr>() {
+        return ip.to_string();
+    }
+    host.to_lowercase()
+}
+
+/// Normalize and validate an external source identity (e.g.
+/// `netbox:https:netbox.example.com:443:device:123`). Identities are
+/// namespaced `<source>:<scope>:<kind>:<id>`-style strings; they must be
+/// non-empty, reasonably sized and free of whitespace/control characters.
+/// Never contains credentials or tokens.
+pub fn normalize_external_id(external_id: Option<String>) -> Result<Option<String>> {
+    let Some(raw) = external_id else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.len() > 512
+        || !trimmed.contains(':')
+        || trimmed.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        bail!("external id must be a non-empty namespaced identifier (<=512 bytes, no whitespace)");
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// The graph keys `Device` nodes by canonical (port-stripped) address,
+/// so two registry entries that differ only by gNMI port are
+/// indistinguishable downstream. Reject the second one explicitly.
+fn reject_canonical_conflict(state: &RegistryState, address: &str) -> Result<()> {
+    let canonical = canonical_device_key(address);
+    if let Some(existing) = state
+        .targets
+        .values()
+        .find(|t| t.address != address && canonical_device_key(&t.address) == canonical)
+    {
+        bail!(
+            "device address '{address}' conflicts with existing device '{}' \
+             (same canonical address; the graph cannot distinguish them)",
+            existing.address
+        );
+    }
+    Ok(())
+}
+
+fn reject_external_id_conflict(state: &RegistryState, target: &TargetConfig) -> Result<()> {
+    let Some(external_id) = target.external_id.as_deref() else {
+        return Ok(());
+    };
+    let conflicts: Vec<String> = state
+        .targets
+        .values()
+        .filter(|t| t.address != target.address && t.external_id.as_deref() == Some(external_id))
+        .map(|t| t.address.clone())
+        .collect();
+    if !conflicts.is_empty() {
+        bail!(
+            "external id '{external_id}' is already bound to {}",
+            conflicts.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn reject_inventory_enabled(target: &TargetConfig) -> Result<()> {
+    if target.inventory_only && target.enabled {
+        bail!(
+            "device '{}' cannot be created inventory-only and enabled; \
+             activation requires an explicit collection plan",
+            target.address
+        );
+    }
+    Ok(())
+}
+
 fn is_valid_host_port(address: &str) -> bool {
     if address.is_empty() {
         return false;
@@ -699,16 +925,13 @@ fn is_valid_hostname_label(label: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use super::*;
 
-    fn test_registry_path(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time went backwards")
-            .as_nanos();
-        std::env::temp_dir().join(format!("bonsai-{name}-{nanos}.json"))
+    fn test_registry_dir(name: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("bonsai-{name}-"))
+            .tempdir()
+            .expect("tempdir")
     }
 
     fn target(address: &str, vendor: &str) -> TargetConfig {
@@ -738,6 +961,9 @@ mod tests {
             last_operator_action: String::new(),
             external_id: None,
             inventory_only: false,
+            inventory_platform: None,
+            inventory_status: None,
+            inventory_tenant: None,
         }
     }
 
@@ -787,7 +1013,8 @@ mod tests {
 
     #[tokio::test]
     async fn api_registry_persists_and_emits_changes() {
-        let path = test_registry_path("registry");
+        let dir = test_registry_dir("registry");
+        let path = dir.path().join("registry.json");
         let registry = ApiRegistry::open(&path, vec![target("10.0.0.1:57400", "seed")])
             .expect("open registry");
 
@@ -835,7 +1062,249 @@ mod tests {
         let active = reopened.list_active().expect("list reopened");
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].address, "10.0.0.1:57400");
+    }
 
-        let _ = std::fs::remove_file(path);
+    fn inventory_target(address: &str, external_id: &str) -> TargetConfig {
+        let mut t = target(address, "inventory");
+        t.enabled = false;
+        t.inventory_only = true;
+        t.external_id = Some(external_id.to_string());
+        t.credential_alias = None;
+        t.username_env = None;
+        t.password_env = None;
+        t.username = None;
+        t.password = None;
+        t.selected_paths = Vec::new();
+        t
+    }
+
+    #[test]
+    fn external_id_is_unique_per_device() {
+        let dir = test_registry_dir("extid");
+        let registry = ApiRegistry::open(dir.path().join("registry.json"), vec![])
+            .expect("open registry");
+
+        registry
+            .add_device(inventory_target("10.30.0.1", "netbox:https:nb1.example.com:443:device:123"))
+            .expect("first instance import");
+        // A second NetBox instance may legitimately have device id 123 —
+        // its instance-scoped identity is distinct and must not collide.
+        registry
+            .add_device(inventory_target("10.30.0.2", "netbox:https:nb2.example.com:443:device:123"))
+            .expect("second instance import");
+        // The SAME instance-scoped identity cannot bind twice.
+        let dup = registry.add_device(inventory_target(
+            "10.30.0.3",
+            "netbox:https:nb1.example.com:443:device:123",
+        ));
+        assert!(dup.is_err(), "duplicate external id must be rejected");
+
+        assert!(registry
+            .find_by_external_id("netbox:https:nb1.example.com:443:device:123")
+            .expect("lookup")
+            .is_some());
+        assert!(registry
+            .find_by_external_id("netbox:https:nb2.example.com:443:device:123")
+            .expect("lookup")
+            .is_some());
+    }
+
+    #[test]
+    fn ambiguous_external_id_fails_closed() {
+        let dir = test_registry_dir("ambiguous");
+        let registry = ApiRegistry::open(dir.path().join("registry.json"), vec![])
+            .expect("open registry");
+        registry
+            .add_device(inventory_target("10.30.1.1", "src:a:device:1"))
+            .expect("add first");
+        // Simulate pre-existing ambiguity that predates the uniqueness
+        // enforcement (e.g. hand-edited state): the lookup must error
+        // rather than pick an arbitrary winner.
+        {
+            let mut state = registry.state.lock().expect("lock");
+            let mut impostor = inventory_target("10.30.1.2", "src:a:device:1");
+            impostor.address = "10.30.1.2".to_string();
+            state.targets.insert("10.30.1.2".to_string(), impostor);
+        }
+        let err = registry
+            .find_by_external_id("src:a:device:1")
+            .expect_err("ambiguous external id must fail closed");
+        assert!(err.to_string().contains("ambiguous"), "{err}");
+    }
+
+    #[test]
+    fn canonical_address_rejects_port_variants() {
+        let dir = test_registry_dir("canonical");
+        let registry = ApiRegistry::open(dir.path().join("registry.json"), vec![])
+            .expect("open registry");
+        registry
+            .add_device(target("10.30.2.1:57400", "gnmi"))
+            .expect("add host:port device");
+        // The graph keys Device nodes by port-stripped address — a bare
+        // import of the same host must not create a second entry.
+        let bare = registry.add_device(inventory_target("10.30.2.1", "src:a:device:9"));
+        assert!(bare.is_err(), "bare address must conflict with host:port entry");
+        // ...and the canonical lookup finds the port-qualified entry.
+        let found = registry
+            .find_by_canonical_address("10.30.2.1")
+            .expect("lookup")
+            .expect("canonical match");
+        assert_eq!(found.address, "10.30.2.1:57400");
+    }
+
+    #[test]
+    fn ipv6_canonical_key_normalizes() {
+        assert_eq!(canonical_device_key("[2001:db8::1]:57400"), "2001:db8::1");
+        assert_eq!(canonical_device_key("2001:db8::1"), "2001:db8::1");
+        assert_eq!(canonical_device_key("2001:0DB8::1"), "2001:db8::1");
+        assert_eq!(canonical_device_key("Router-1"), "router-1");
+        assert_eq!(canonical_device_key("10.0.0.1:57400"), "10.0.0.1");
+    }
+
+    #[test]
+    fn normalize_external_id_validates_shape() {
+        assert_eq!(
+            normalize_external_id(Some(" netbox:https:nb:443:device:1 ".to_string()))
+                .expect("normalize")
+                .as_deref(),
+            Some("netbox:https:nb:443:device:1")
+        );
+        assert_eq!(normalize_external_id(None).expect("none"), None);
+        assert_eq!(
+            normalize_external_id(Some("   ".to_string())).expect("blank"),
+            None
+        );
+        for bad in ["no-colon", "has space:x", "tab\there:x"] {
+            assert!(
+                normalize_external_id(Some(bad.to_string())).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn inventory_only_requires_plan_for_activation() {
+        let dir = test_registry_dir("lifecycle");
+        let registry = ApiRegistry::open(dir.path().join("registry.json"), vec![])
+            .expect("open registry");
+        registry
+            .add_device(inventory_target("10.30.3.1", "src:a:device:1"))
+            .expect("import inventory asset");
+
+        // Metadata-only update stays inventory-only.
+        let mut meta = inventory_target("10.30.3.1", "src:a:device:1");
+        meta.hostname = Some("renamed".to_string());
+        let updated = registry
+            .update_device_with_audit(meta, "api", "api_update")
+            .expect("metadata update");
+        assert!(updated.inventory_only);
+        assert!(!updated.enabled);
+
+        // Enable WITHOUT a collection plan → rejected.
+        let mut enable = registry.get_device("10.30.3.1").expect("get").expect("exists");
+        enable.enabled = true;
+        let err = registry
+            .update_device_with_audit(enable, "api", "api_enable")
+            .expect_err("enable without plan must fail");
+        assert!(err.to_string().contains("collection plan"), "{err}");
+        assert!(registry
+            .get_device("10.30.3.1")
+            .expect("get")
+            .expect("exists")
+            .inventory_only);
+
+        // Enable WITH an explicit collection plan → explicit activation,
+        // external identity preserved.
+        let mut activate = registry.get_device("10.30.3.1").expect("get").expect("exists");
+        activate.enabled = true;
+        activate.selected_paths = vec![crate::config::SelectedSubscriptionPath {
+            path: "/interfaces/interface/state/counters".to_string(),
+            origin: "test".to_string(),
+            mode: "poll".to_string(),
+            sample_interval_ns: 0,
+            rationale: String::new(),
+            optional: false,
+        }];
+        let activated = registry
+            .update_device_with_audit(activate, "api", "api_activate")
+            .expect("activation with plan");
+        assert!(!activated.inventory_only);
+        assert!(activated.enabled);
+        assert_eq!(
+            activated.external_id.as_deref(),
+            Some("src:a:device:1")
+        );
+
+        // Identity survives a later gRPC-style update that carries no
+        // external_id (callers pass None → inherited, never cleared).
+        let mut plain = activated.clone();
+        plain.external_id = None;
+        plain.hostname = Some("post-activation".to_string());
+        let kept = registry
+            .update_device_with_audit(plain, "grpc", "grpc_update")
+            .expect("update");
+        assert_eq!(kept.external_id.as_deref(), Some("src:a:device:1"));
+    }
+
+    #[tokio::test]
+    async fn failed_persistence_leaves_memory_untouched() {
+        // Force the JSON fallback (sqlite unavailable because
+        // bonsai_config.db is a directory), then make the registry file
+        // read-only after open so the durable write fails.
+        let dir = test_registry_dir("blocked");
+        let runtime = dir.path().join("runtime");
+        std::fs::create_dir_all(runtime.join("bonsai_config.db")).expect("db blocker dir");
+        let path = runtime.join("registry.json");
+        let registry = ApiRegistry::open(&path, vec![]).expect("open registry");
+        assert!(registry.sqlite_store().is_none(), "json fallback expected");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444))
+                .expect("chmod registry read-only");
+        }
+
+        let err = registry
+            .add_device(target("10.30.4.1", "x"))
+            .expect_err("unwritable registry path must fail");
+        assert!(format!("{err:#}").contains("registry"), "{err:#}");
+        assert!(registry
+            .get_device("10.30.4.1")
+            .expect("get")
+            .is_none());
+        assert!(registry.list_active().expect("list").is_empty());
+    }
+
+    #[tokio::test]
+    async fn sqlite_write_failure_propagates() {
+        let dir = test_registry_dir("sqlitefail");
+        // Pre-create the config DB with triggers that reject device writes.
+        {
+            let _store = crate::sqlite_store::SqliteStore::open(dir.path())
+                .expect("open store");
+            let conn = rusqlite::Connection::open(dir.path().join("bonsai_config.db"))
+                .expect("second connection");
+            conn.execute_batch(
+                "CREATE TRIGGER fail_device_insert BEFORE INSERT ON devices \
+                 BEGIN SELECT RAISE(FAIL, 'injected insert failure'); END;\
+                 CREATE TRIGGER fail_device_update BEFORE UPDATE ON devices \
+                 BEGIN SELECT RAISE(FAIL, 'injected update failure'); END;",
+            )
+            .expect("install triggers");
+        }
+        let registry = ApiRegistry::open(dir.path().join("registry.json"), vec![])
+            .expect("open registry");
+        assert!(registry.sqlite_store().is_some(), "sqlite store expected");
+
+        let mut changes = registry.subscribe_changes();
+        let err = registry
+            .add_device(target("10.30.5.1", "x"))
+            .expect_err("sqlite write failure must propagate");
+        assert!(format!("{err:#}").contains("persist"), "{err:#}");
+        assert!(registry
+            .get_device("10.30.5.1")
+            .expect("get")
+            .is_none());
+        assert!(changes.try_recv().is_err(), "no change event for failed write");
     }
 }

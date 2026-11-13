@@ -169,6 +169,13 @@ impl CollectorManager {
             if target.collector_id.is_some() {
                 continue;
             }
+            // BN-015-U1: inventory-only assets are declared, not
+            // configured — routing rules must never auto-assign them to
+            // a collector. Activation requires an explicit collection
+            // plan first.
+            if target.inventory_only {
+                continue;
+            }
             if let Some(collector_id) = self.assign_by_rules(&target) {
                 info!(
                     address = %target.address,

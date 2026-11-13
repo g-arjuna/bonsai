@@ -299,12 +299,15 @@ pub(super) async fn save_managed_device(
         if target.vendor.is_none() {
             target.vendor = existing.vendor;
         }
-        // BN-015-U1: an inventory-only asset stays inventory-only while it
-        // remains disabled; explicitly enabling collection clears the
-        // marker. Never resurrect it for an already-configured device.
-        target.inventory_only = existing.inventory_only && !target.enabled;
+        // BN-015-U1: pass the inventory-only marker through unchanged —
+        // the registry owns the lifecycle transition. An inventory-only
+        // asset stays inventory-only unless this update carries an
+        // explicit collection plan (enabled + selected_paths); enabling
+        // without a plan is rejected there. Never resurrect it for an
+        // already-configured device.
+        target.inventory_only = existing.inventory_only;
         if target.external_id.is_none() {
-            target.external_id = existing.external_id;
+            target.external_id = existing.external_id.clone();
         }
     }
     let address = target.address.clone();
@@ -738,7 +741,10 @@ pub(super) struct InventoryImportRequest {
 
 #[derive(Debug, serde::Deserialize)]
 pub(super) struct InventoryImportDevice {
-    /// Stable external identity, e.g. "netbox:device:123".
+    /// Stable external identity, e.g.
+    /// `netbox:https:netbox.example.com:443:device:123`. Must be
+    /// namespaced and unique across ALL source instances — a bare
+    /// `netbox:device:123` is only unique within one NetBox deployment.
     pub external_id: String,
     #[serde(default)]
     pub name: String,
@@ -751,16 +757,15 @@ pub(super) struct InventoryImportDevice {
     pub role: Option<String>,
     #[serde(default)]
     pub vendor: Option<String>,
-    /// Accepted for forward compatibility; not yet persisted on the
-    /// device record (deferred to BN-015-U3 metadata work).
+    /// Inventory-declared platform label. Persisted as declared metadata
+    /// (`inventory_platform`); never treated as an operational capability.
     #[serde(default)]
-    #[allow(dead_code)]
     pub platform: Option<String>,
+    /// Inventory-declared lifecycle status. `None` stays unknown — it is
+    /// NOT Bonsai-observed health.
     #[serde(default)]
-    #[allow(dead_code)]
     pub status: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub tenant: Option<String>,
 }
 
@@ -784,6 +789,12 @@ pub(super) struct InventoryImportResponse {
     pub conflicts: usize,
     pub invalid: usize,
     pub failed: usize,
+    /// "synced" when the graph site/device projection completed for all
+    /// successfully registered rows, "pending" when registry persistence
+    /// succeeded but the graph projection failed — retries reconcile it.
+    pub graph_sync: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub graph_sync_error: String,
 }
 
 fn inventory_row(
@@ -815,16 +826,24 @@ pub(super) async fn inventory_import_handler(
 
     for dev in &req.devices {
         let address = crate::registry::strip_port(dev.address.trim()).to_string();
-        let external_id = dev.external_id.trim().to_string();
+        let external_id =
+            match crate::registry::normalize_external_id(Some(dev.external_id.clone())) {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    invalid += 1;
+                    results.push(inventory_row(dev, "invalid", "missing external id"));
+                    continue;
+                }
+                Err(e) => {
+                    invalid += 1;
+                    results.push(inventory_row(dev, "invalid", format!("{e:#}")));
+                    continue;
+                }
+            };
 
         if address.is_empty() {
             invalid += 1;
             results.push(inventory_row(dev, "invalid", "missing primary IP address"));
-            continue;
-        }
-        if external_id.is_empty() {
-            invalid += 1;
-            results.push(inventory_row(dev, "invalid", "missing external id"));
             continue;
         }
 
@@ -832,7 +851,9 @@ pub(super) async fn inventory_import_handler(
         match state.registry.find_by_external_id(&external_id) {
             Ok(Some(existing)) => {
                 let existing_addr = crate::registry::strip_port(&existing.address).to_string();
-                if existing_addr != address {
+                if crate::registry::canonical_device_key(&existing_addr)
+                    != crate::registry::canonical_device_key(&address)
+                {
                     conflicts += 1;
                     results.push(inventory_row(
                         dev,
@@ -844,58 +865,158 @@ pub(super) async fn inventory_import_handler(
                     ));
                     continue;
                 }
-                // Same object, same address: refresh declared metadata only.
-                // Credentials, enabled flag, selected paths, collector
-                // assignment and operational state are NEVER touched.
-                let mut target = existing.clone();
-                let mut changed = false;
-                let mut set_if = |slot: &mut Option<String>, new: Option<&str>| {
-                    let trimmed = new.map(str::trim).filter(|s| !s.is_empty());
-                    if trimmed.map(str::to_string) != *slot {
-                        *slot = trimmed.map(str::to_string);
-                        changed = true;
-                    }
-                };
-                set_if(&mut target.hostname, Some(dev.name.as_str()));
-                set_if(&mut target.site, dev.site.as_deref());
-                set_if(&mut target.role, dev.role.as_deref());
-                set_if(&mut target.vendor, dev.vendor.as_deref());
-                if changed {
-                    let action = format!(
-                        "api_inventory_import_update:{}",
-                        req.source.trim()
-                    );
-                    match state.registry.update_device_with_audit(
-                        target.clone(),
-                        "api",
-                        &action,
-                    ) {
-                        Ok(_) => {
-                            updated += 1;
-                            touched.push(target);
-                            results.push(inventory_row(dev, "updated", "metadata refreshed"));
+                // Same object, same canonical address.
+                if existing.inventory_only {
+                    // Inventory asset: refresh importer-owned declared
+                    // metadata. A missing incoming field never erases a
+                    // stored value; credentials, enabled flag, selected
+                    // paths, collector assignment and lifecycle state
+                    // are NEVER touched.
+                    let mut target = existing.clone();
+                    let mut changed = false;
+                    let mut set_if = |slot: &mut Option<String>, new: Option<&str>| {
+                        let trimmed = new.map(str::trim).filter(|s| !s.is_empty());
+                        if let Some(value) = trimmed {
+                            if *slot != Some(value.to_string()) {
+                                *slot = Some(value.to_string());
+                                changed = true;
+                            }
                         }
-                        Err(e) => {
-                            failed += 1;
-                            results.push(inventory_row(dev, "failed", format!("{e:#}")));
+                    };
+                    set_if(&mut target.hostname, Some(dev.name.as_str()));
+                    set_if(&mut target.site, dev.site.as_deref());
+                    set_if(&mut target.role, dev.role.as_deref());
+                    set_if(&mut target.vendor, dev.vendor.as_deref());
+                    set_if(&mut target.inventory_platform, dev.platform.as_deref());
+                    set_if(&mut target.inventory_status, dev.status.as_deref());
+                    set_if(&mut target.inventory_tenant, dev.tenant.as_deref());
+                    if changed {
+                        let action = format!("api_inventory_import_update:{}", req.source.trim());
+                        match state.registry.update_device_with_audit(
+                            target.clone(),
+                            "api",
+                            &action,
+                        ) {
+                            Ok(_) => {
+                                updated += 1;
+                                touched.push(target);
+                                results.push(inventory_row(dev, "updated", "metadata refreshed"));
+                            }
+                            Err(e) => {
+                                failed += 1;
+                                results.push(inventory_row(dev, "failed", format!("{e:#}")));
+                            }
                         }
+                    } else {
+                        already += 1;
+                        touched.push(existing);
+                        results.push(inventory_row(dev, "already_imported", "unchanged"));
                     }
                 } else {
-                    already += 1;
-                    results.push(inventory_row(dev, "already_imported", "unchanged"));
+                    // Already-configured operational device: declared
+                    // inventory metadata must not silently rewrite
+                    // operator-managed fields. Drift is surfaced as a
+                    // conflict; matching metadata refreshes only the
+                    // inventory_* declared fields.
+                    let drift: Vec<&str> = [
+                        (
+                            "hostname",
+                            existing.hostname.as_deref(),
+                            Some(dev.name.trim()),
+                        ),
+                        (
+                            "site",
+                            existing.site.as_deref(),
+                            dev.site.as_deref().map(str::trim),
+                        ),
+                        (
+                            "role",
+                            existing.role.as_deref(),
+                            dev.role.as_deref().map(str::trim),
+                        ),
+                        (
+                            "vendor",
+                            existing.vendor.as_deref(),
+                            dev.vendor.as_deref().map(str::trim),
+                        ),
+                    ]
+                    .into_iter()
+                    .filter(|(_field, stored, incoming)| {
+                        let stored = stored.unwrap_or_default();
+                        let incoming = incoming.unwrap_or_default();
+                        !incoming.is_empty() && stored != incoming
+                    })
+                    .map(|(field, _, _)| field)
+                    .collect();
+                    if !drift.is_empty() {
+                        conflicts += 1;
+                        results.push(inventory_row(
+                            dev,
+                            "conflict",
+                            format!(
+                                "inventory metadata differs for configured device \
+                                 ({}); operational configuration preserved",
+                                drift.join(", ")
+                            ),
+                        ));
+                        continue;
+                    }
+                    let mut target = existing.clone();
+                    let mut changed = false;
+                    let mut set_if = |slot: &mut Option<String>, new: Option<&str>| {
+                        let trimmed = new.map(str::trim).filter(|s| !s.is_empty());
+                        if let Some(value) = trimmed {
+                            if *slot != Some(value.to_string()) {
+                                *slot = Some(value.to_string());
+                                changed = true;
+                            }
+                        }
+                    };
+                    set_if(&mut target.inventory_platform, dev.platform.as_deref());
+                    set_if(&mut target.inventory_status, dev.status.as_deref());
+                    set_if(&mut target.inventory_tenant, dev.tenant.as_deref());
+                    if changed {
+                        let action = format!("api_inventory_import_update:{}", req.source.trim());
+                        match state.registry.update_device_with_audit(
+                            target.clone(),
+                            "api",
+                            &action,
+                        ) {
+                            Ok(_) => {
+                                updated += 1;
+                                touched.push(target);
+                                results.push(inventory_row(dev, "updated", "metadata refreshed"));
+                            }
+                            Err(e) => {
+                                failed += 1;
+                                results.push(inventory_row(dev, "failed", format!("{e:#}")));
+                            }
+                        }
+                    } else {
+                        already += 1;
+                        touched.push(existing);
+                        results.push(inventory_row(dev, "already_imported", "unchanged"));
+                    }
                 }
                 continue;
             }
             Ok(None) => {}
             Err(e) => {
                 failed += 1;
-                results.push(inventory_row(dev, "failed", format!("registry lookup: {e:#}")));
+                results.push(inventory_row(
+                    dev,
+                    "failed",
+                    format!("registry lookup: {e:#}"),
+                ));
                 continue;
             }
         }
 
-        // 2. Address claimed by a different identity?
-        match state.registry.get_device(&address) {
+        // 2. Canonical address claimed by a different identity? The
+        //    graph keys Device nodes by port-stripped address, so an
+        //    existing `host:port` entry conflicts with a bare `host`
+        //    import — the schema cannot safely distinguish them.
+        match state.registry.find_by_canonical_address(&address) {
             Ok(Some(existing)) => {
                 conflicts += 1;
                 let holder = existing
@@ -905,14 +1026,22 @@ pub(super) async fn inventory_import_handler(
                 results.push(inventory_row(
                     dev,
                     "conflict",
-                    format!("address {address} is already registered to {holder}"),
+                    format!(
+                        "address {address} is already registered to {holder} \
+                         (as '{}')",
+                        existing.address
+                    ),
                 ));
                 continue;
             }
             Ok(None) => {}
             Err(e) => {
                 failed += 1;
-                results.push(inventory_row(dev, "failed", format!("registry lookup: {e:#}")));
+                results.push(inventory_row(
+                    dev,
+                    "failed",
+                    format!("registry lookup: {e:#}"),
+                ));
                 continue;
             }
         }
@@ -943,16 +1072,31 @@ pub(super) async fn inventory_import_handler(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            inventory_platform: dev
+                .platform
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            inventory_status: dev
+                .status
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            inventory_tenant: dev
+                .tenant
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             ..Default::default()
         };
-        match state
-            .registry
-            .add_device_with_audit(
-                target.clone(),
-                "api",
-                &format!("api_inventory_import:{}", req.source.trim()),
-            )
-        {
+        match state.registry.add_device_with_audit(
+            target.clone(),
+            "api",
+            &format!("api_inventory_import:{}", req.source.trim()),
+        ) {
             Ok(_) => {
                 imported += 1;
                 touched.push(target);
@@ -965,10 +1109,19 @@ pub(super) async fn inventory_import_handler(
         }
     }
 
-    // Site association for graph visibility (LOCATED_AT edges only).
+    // Graph projection (Device nodes + LOCATED_AT site edges) for every
+    // successfully registered or refreshed row — including unchanged
+    // re-imports, which is what lets a retry reconcile a projection that
+    // failed earlier. Registry persistence is already durable at this
+    // point; a sync failure is reported explicitly as pending rather
+    // than silently swallowed, and the next import retries it.
+    let mut graph_sync = "synced".to_string();
+    let mut graph_sync_error = String::new();
     if !touched.is_empty() {
         if let Err(e) = state.store.sync_sites_from_targets(touched).await {
-            tracing::warn!(error = %e, "inventory import site sync failed");
+            graph_sync = "pending".to_string();
+            graph_sync_error = format!("{e:#}");
+            tracing::warn!(error = %e, "inventory import graph projection pending");
         }
     }
 
@@ -980,6 +1133,8 @@ pub(super) async fn inventory_import_handler(
         conflicts,
         invalid,
         failed,
+        graph_sync,
+        graph_sync_error,
     }))
 }
 
@@ -1036,6 +1191,9 @@ pub(super) fn managed_device_json(
         resolution_audit: audit,
         external_id: target.external_id.clone().unwrap_or_default(),
         inventory_only: target.inventory_only,
+        inventory_platform: target.inventory_platform.unwrap_or_default(),
+        inventory_status: target.inventory_status.unwrap_or_default(),
+        inventory_tenant: target.inventory_tenant.unwrap_or_default(),
     }
 }
 pub(super) fn target_from_request(
@@ -1090,6 +1248,9 @@ pub(super) fn target_from_request(
         last_operator_action: String::new(),
         external_id: None,
         inventory_only: false,
+        inventory_platform: None,
+        inventory_status: None,
+        inventory_tenant: None,
         paths: vec![],
         optional: false,
     })
@@ -2494,6 +2655,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inventory_import_requires_operator_via_authenticated_router() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        // The REAL production router path: auth_middleware enforces
+        // JWT/API-key RBAC on every /api/* route (fail-closed by default).
+        let router = crate::http_server::router_from_state(state);
+
+        let payload = serde_json::json!({
+            "source": "netbox",
+            "devices": [nb_device("netbox:https:nb:443:device:5", "10.40.0.1", "r-authz")],
+        })
+        .to_string();
+        let post = |token: Option<&str>| {
+            let mut req = Request::post("/api/onboarding/inventory/import")
+                .header("content-type", "application/json");
+            if let Some(t) = token {
+                req = req.header("authorization", format!("Bearer {t}"));
+            }
+            req.body(Body::from(payload.clone())).expect("request")
+        };
+        let status_of = |req: Request<Body>| {
+            let router = router.clone();
+            async move {
+                router
+                    .oneshot(req)
+                    .await
+                    .expect("oneshot")
+                    .status()
+            }
+        };
+
+        // Unauthenticated → 401; viewer → 403 (import is an Operator write).
+        assert_eq!(status_of(post(None)).await, StatusCode::UNAUTHORIZED);
+        let viewer = crate::http_server::mint_jwt("inv-viewer", "viewer", &store)
+            .await
+            .expect("viewer jwt");
+        assert_eq!(
+            status_of(post(Some(&viewer))).await,
+            StatusCode::FORBIDDEN
+        );
+
+        // Operator → 200 and the row lands inventory-only.
+        let operator = crate::http_server::mint_jwt("inv-operator", "operator", &store)
+            .await
+            .expect("operator jwt");
+        let response = router
+            .clone()
+            .oneshot(post(Some(&operator)))
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(body["imported"], 1, "{body}");
+
+        // The NetBox preview route is equally protected: a viewer token
+        // must not reach the handler (which would contact NetBox).
+        let preview_req = Request::post("/api/enrichment/netbox/import")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {viewer}"))
+            .body(Body::from(
+                serde_json::json!({"url": "http://127.0.0.1:1", "token": "sekrit"})
+                    .to_string(),
+            ))
+            .expect("request");
+        assert_eq!(
+            router.clone().oneshot(preview_req).await.expect("oneshot").status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
     async fn inventory_import_creates_declared_only_assets() {
         let dir = tempfile::tempdir().expect("tempdir");
         let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
@@ -2588,7 +2828,11 @@ mod tests {
         assert_eq!(r1["external_id"], "netbox:device:1", "{r1}");
         assert_eq!(r1["credential_alias"], "", "{r1}");
         assert_eq!(r1["selected_paths"].as_array().unwrap().len(), 0, "{r1}");
-        assert_eq!(r1["subscription_statuses"].as_array().unwrap().len(), 0, "{r1}");
+        assert_eq!(
+            r1["subscription_statuses"].as_array().unwrap().len(),
+            0,
+            "{r1}"
+        );
     }
 
     #[tokio::test]
@@ -2600,10 +2844,7 @@ mod tests {
 
         // Existing ACTIVELY configured device at the same address.
         {
-            let state = AppState::new_minimal_with_runtime_dir(
-                Arc::clone(&store),
-                &runtime,
-            );
+            let state = AppState::new_minimal_with_runtime_dir(Arc::clone(&store), &runtime);
             let router = crate::http_server::managed_device_routes().with_state(state);
             let (_, body) = post_device(
                 &router,
@@ -2670,5 +2911,533 @@ mod tests {
             .expect("active device listed");
         assert_eq!(active["enabled"], true, "{active}");
         assert!(active.get("inventory_only").is_none() || active["inventory_only"] == false);
+    }
+
+    // ── BN-015-U1 N1/N2/N3/N4 hardening ──────────────────────────────────
+
+    #[tokio::test]
+    async fn inventory_import_instance_scoped_identities() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        let router = crate::http_server::managed_device_routes().with_state(state);
+
+        // Two NetBox instances each contain device id 123 — their
+        // instance-scoped external identities are distinct.
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [
+                    nb_device("netbox:https:nb-a.example.com:443:device:123", "10.30.0.1", "nb-a-r1"),
+                    nb_device("netbox:https:nb-b.example.com:443:device:123", "10.30.0.2", "nb-b-r1"),
+                ],
+            }),
+        )
+        .await;
+        assert_eq!(body["imported"], 2, "{body}");
+        assert_eq!(body["graph_sync"], "synced", "{body}");
+
+        // The bare legacy form is still a valid namespaced id but is a
+        // DIFFERENT identity — it must not collide with either instance.
+        let (_, body2) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:device:123", "10.30.0.3", "legacy-r1")],
+            }),
+        )
+        .await;
+        assert_eq!(body2["imported"], 1, "{body2}");
+    }
+
+    #[tokio::test]
+    async fn inventory_import_concurrent_same_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        let router = crate::http_server::managed_device_routes().with_state(state.clone());
+
+        let payload = serde_json::json!({
+            "source": "netbox",
+            "devices": [nb_device("netbox:https:nb:443:device:77", "10.30.1.1", "r1")],
+        });
+        let (a, b) = tokio::join!(
+            post_inventory(&router, payload.clone()),
+            post_inventory(&router, payload),
+        );
+        let outcomes: Vec<&str> = a
+            .1["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(b.1["results"].as_array().unwrap().iter())
+            .map(|r| r["outcome"].as_str().unwrap())
+            .collect();
+        // Exactly one import wins; the other sees already_imported or
+        // fails closed — never a second device for the same identity.
+        assert!(
+            outcomes.iter().all(|o| matches!(*o, "imported" | "already_imported" | "failed")),
+            "unexpected outcomes: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes.iter().filter(|o| **o == "imported").count(),
+            1,
+            "exactly one concurrent import may win: {outcomes:?}"
+        );
+
+        let devices = state.registry.list_all_targets().expect("list");
+        let matches: Vec<_> = devices
+            .iter()
+            .filter(|t| t.external_id.as_deref() == Some("netbox:https:nb:443:device:77"))
+            .collect();
+        assert_eq!(matches.len(), 1, "external identity must be unique");
+    }
+
+    #[tokio::test]
+    async fn inventory_import_host_port_conflict_and_ipv6() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        let router = crate::http_server::managed_device_routes().with_state(state);
+
+        // Existing device registered WITH a gNMI port.
+        let (_, body) = post_device(
+            &router,
+            serde_json::json!({
+                "address": "10.30.2.1:57400",
+                "hostname": "port-dev",
+                "enabled": false,
+                "vendor": "Cisco",
+            }),
+        )
+        .await;
+        assert_eq!(body["success"], true, "{body}");
+
+        // Bare-address import of the same canonical host must conflict —
+        // the graph cannot distinguish 10.30.2.1 from 10.30.2.1:57400.
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:https:nb:443:device:5", "10.30.2.1", "bare")],
+            }),
+        )
+        .await;
+        assert_eq!(body["conflicts"], 1, "{body}");
+        assert_eq!(body["results"][0]["outcome"], "conflict");
+
+        // IPv6 identity: canonical normalization treats expanded and
+        // compressed forms as the same device.
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:https:nb:443:device:6", "2001:db8::1", "v6")],
+            }),
+        )
+        .await;
+        assert_eq!(body["imported"], 1, "{body}");
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:https:nb:443:device:6", "2001:0db8:0000:0000:0000:0000:0000:0001", "v6")],
+            }),
+        )
+        .await;
+        assert_eq!(body["already_present"], 1, "{body}");
+    }
+
+    #[tokio::test]
+    async fn inventory_import_ambiguous_external_id_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Seed the config DB with two devices sharing one external id —
+        // simulating ambiguity that predates uniqueness enforcement.
+        {
+            let store = crate::sqlite_store::SqliteStore::open(dir.path())
+                .expect("open store");
+            drop(store);
+            let conn = rusqlite::Connection::open(dir.path().join("bonsai_config.db"))
+                .expect("raw conn");
+            conn.execute_batch("DROP INDEX IF EXISTS idx_devices_external_id")
+                .expect("drop unique index");
+            for addr in ["10.30.3.1", "10.30.3.2"] {
+                conn.execute(
+                    "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, \
+                     credential_alias, username_env, role, site, collector_id, username, \
+                     password, password_env, ca_cert, paths, optional, created_at_ns, \
+                     updated_at_ns, created_by, updated_by, last_operator_action, external_id, \
+                     inventory_only, selected_paths, extra_ips, inventory_platform, \
+                     inventory_status, inventory_tenant) VALUES (?1, 0, NULL, NULL, NULL, \
+                     NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '[]', 0, 0, 0, \
+                     '', '', '', 'netbox:https:nb:443:device:42', 1, NULL, NULL, NULL, NULL, NULL)",
+                    rusqlite::params![addr],
+                )
+                .expect("seed ambiguous row");
+            }
+        }
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        let router = crate::http_server::managed_device_routes().with_state(state);
+
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:https:nb:443:device:42", "10.30.3.9", "amb")],
+            }),
+        )
+        .await;
+        assert_eq!(body["failed"], 1, "{body}");
+        assert!(
+            body["results"][0]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("ambiguous"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn inventory_import_persistence_failure_is_truthful() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Pre-create the config DB and install triggers that reject all
+        // device writes — simulates a failing persistence layer.
+        {
+            let store = crate::sqlite_store::SqliteStore::open(dir.path())
+                .expect("open store");
+            drop(store);
+            let conn = rusqlite::Connection::open(dir.path().join("bonsai_config.db"))
+                .expect("raw conn");
+            conn.execute_batch(
+                "CREATE TRIGGER fail_device_write BEFORE INSERT ON devices \
+                 WHEN NEW.address LIKE '10.30.%' \
+                 BEGIN SELECT RAISE(FAIL, 'injected write failure'); END;\
+                 CREATE TRIGGER fail_device_update BEFORE UPDATE ON devices \
+                 WHEN NEW.address LIKE '10.30.%' \
+                 BEGIN SELECT RAISE(FAIL, 'injected write failure'); END;",
+            )
+            .expect("install triggers");
+        }
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        let router = crate::http_server::managed_device_routes().with_state(state.clone());
+
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [
+                    nb_device("netbox:https:nb:443:device:1", "10.30.4.1", "r1"),
+                    nb_device("netbox:https:nb:443:device:2", "10.30.4.2", "r2"),
+                ],
+            }),
+        )
+        .await;
+        assert_eq!(body["failed"], 2, "{body}");
+        assert_eq!(body["imported"], 0, "{body}");
+        // No successful response may claim unpersisted records.
+        for row in body["results"].as_array().unwrap() {
+            assert_eq!(row["outcome"], "failed", "{row}");
+        }
+        let devices = state.registry.list_all_targets().expect("list");
+        assert!(
+            devices
+                .iter()
+                .all(|t| t.external_id.is_none() || !t.external_id.as_deref().unwrap().contains("device:")),
+            "unpersisted imports must not appear in the registry"
+        );
+    }
+
+    #[tokio::test]
+    async fn inventory_import_graph_pending_reported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        // Poison the graph write lock: sync_sites_from_targets takes it
+        // inside spawn_blocking and panics on poison, so the projection
+        // fails while registry persistence (SQLite) still succeeds.
+        {
+            let lock = store.write_lock();
+            std::thread::spawn(move || {
+                let _guard = lock.lock().expect("lock");
+                panic!("intentional write-lock poison for test");
+            })
+            .join()
+            .ok();
+        }
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        let router = crate::http_server::managed_device_routes().with_state(state.clone());
+
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:https:nb:443:device:8", "10.30.5.1", "r1")],
+            }),
+        )
+        .await;
+        assert_eq!(body["imported"], 1, "{body}");
+        assert_eq!(body["graph_sync"], "pending", "{body}");
+        assert!(!body["graph_sync_error"].as_str().unwrap_or("").is_empty());
+
+        // Registry record IS durable despite the pending projection —
+        // the row outcome is truthful about persistence, and the
+        // response distinguishes it from graph synchronization.
+        let devices = state.registry.list_all_targets().expect("list");
+        assert!(devices
+            .iter()
+            .any(|t| t.external_id.as_deref() == Some("netbox:https:nb:443:device:8")));
+    }
+
+    #[tokio::test]
+    async fn inventory_import_retry_reconciles_projection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        let router = crate::http_server::managed_device_routes().with_state(state);
+
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:https:nb:443:device:8", "10.30.5.1", "r1")],
+            }),
+        )
+        .await;
+        assert_eq!(body["graph_sync"], "synced", "{body}");
+        assert!(!located_at(&store, "10.30.5.1").is_empty());
+
+        // Simulate a lost projection: delete the Device node's site edge
+        // directly, then re-import the unchanged object. The retry must
+        // reconcile the missing graph association.
+        {
+            let db = store.db();
+            let conn = Connection::new(&db).expect("graph connection");
+            let mut stmt = conn
+                .prepare("MATCH (d:Device {address: $addr})-[r:LOCATED_AT]->(s:Site) DELETE r")
+                .expect("prepare delete edge");
+            conn.execute(
+                &mut stmt,
+                vec![("addr", Value::String("10.30.5.1".to_string()))],
+            )
+            .expect("delete edge");
+        }
+        assert!(located_at(&store, "10.30.5.1").is_empty());
+
+        let (_, body2) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:https:nb:443:device:8", "10.30.5.1", "r1")],
+            }),
+        )
+        .await;
+        assert_eq!(body2["already_present"], 1, "{body2}");
+        assert_eq!(body2["graph_sync"], "synced", "{body2}");
+        assert!(
+            !located_at(&store, "10.30.5.1").is_empty(),
+            "retry must restore the site projection"
+        );
+    }
+
+    #[tokio::test]
+    async fn inventory_lifecycle_requires_explicit_activation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        let router = crate::http_server::managed_device_routes().with_state(state);
+
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:https:nb:443:device:11", "10.30.6.1", "r1")],
+            }),
+        )
+        .await;
+        assert_eq!(body["imported"], 1, "{body}");
+
+        // Enable request WITHOUT a collection plan → rejected.
+        let (_, body) = post_device(
+            &router,
+            serde_json::json!({
+                "address": "10.30.6.1",
+                "hostname": "r1",
+                "enabled": true,
+                "vendor": "Nokia",
+            }),
+        )
+        .await;
+        assert_eq!(body["success"], false, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("collection plan"), "{body}");
+
+        // Metadata-only update (enabled omitted→default true is rejected;
+        // explicit enabled=false preserves inventory state).
+        let (_, body) = post_device(
+            &router,
+            serde_json::json!({
+                "address": "10.30.6.1",
+                "hostname": "r1-renamed",
+                "enabled": false,
+                "vendor": "Nokia",
+                "site": "Site B",
+            }),
+        )
+        .await;
+        assert_eq!(body["success"], true, "{body}");
+        assert_eq!(body["device"]["inventory_only"], true, "{body}");
+        assert_eq!(body["device"]["enabled"], false, "{body}");
+
+        // Explicit activation: enabled + validated collection plan.
+        let (_, body) = post_device(
+            &router,
+            serde_json::json!({
+                "address": "10.30.6.1",
+                "hostname": "r1-renamed",
+                "enabled": true,
+                "vendor": "Nokia",
+                "site": "Site B",
+                "selected_paths": [{
+                    "path": "/interfaces/interface/state/counters",
+                    "origin": "test",
+                    "mode": "poll",
+                    "sample_interval_ns": 0,
+                    "rationale": "",
+                    "optional": false
+                }],
+            }),
+        )
+        .await;
+        assert_eq!(body["success"], true, "{body}");
+        assert_eq!(body["device"]["inventory_only"], false, "{body}");
+        assert_eq!(body["device"]["enabled"], true, "{body}");
+        // External identity preserved through activation.
+        assert!(body["device"]["external_id"]
+            .as_str()
+            .unwrap()
+            .contains("device:11"), "{body}");
+
+        // Bulk "start" on an inventory-only device must not bypass the
+        // plan requirement. Re-import a fresh inventory asset for this.
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:https:nb:443:device:12", "10.30.6.2", "r2")],
+            }),
+        )
+        .await;
+        assert_eq!(body["imported"], 1, "{body}");
+        let request = Request::post("/api/onboarding/devices/bulk")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"addresses": ["10.30.6.2"], "action": "start"}).to_string(),
+            ))
+            .expect("build request");
+        let response = router.clone().oneshot(request).await.expect("oneshot");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let bulk: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(bulk["success"], false, "{bulk}");
+        assert!(bulk["error"].as_str().unwrap().contains("collection plan"), "{bulk}");
+    }
+
+    #[tokio::test]
+    async fn inventory_reimport_preserves_operational_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        let router = crate::http_server::managed_device_routes().with_state(state.clone());
+
+        // Import as inventory, then explicitly activate it.
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:https:nb:443:device:20", "10.30.7.1", "r1")],
+            }),
+        )
+        .await;
+        assert_eq!(body["imported"], 1, "{body}");
+        let (_, body) = post_device(
+            &router,
+            serde_json::json!({
+                "address": "10.30.7.1",
+                "hostname": "r1",
+                "enabled": true,
+                "vendor": "Cisco",
+                "role": "spine",
+                "credential_alias": "",
+                "selected_paths": [{
+                    "path": "/interfaces/interface/state/counters",
+                    "origin": "test", "mode": "poll",
+                    "sample_interval_ns": 0, "rationale": "", "optional": false
+                }],
+            }),
+        )
+        .await;
+        assert_eq!(body["success"], true, "{body}");
+
+        // Re-import with DIFFERENT declared metadata: the configured
+        // device's operational fields must be preserved and the drift
+        // surfaced as a conflict — never silently rewritten.
+        let mut drifted = nb_device("netbox:https:nb:443:device:20", "10.30.7.1", "r1-renamed");
+        drifted["vendor"] = serde_json::json!("Arista");
+        let (_, body) = post_inventory(
+            &router,
+            serde_json::json!({"source": "netbox", "devices": [drifted]}),
+        )
+        .await;
+        assert_eq!(body["conflicts"], 1, "{body}");
+        assert_eq!(body["results"][0]["outcome"], "conflict");
+
+        let devices = state.registry.list_all_targets().expect("list");
+        let dev = devices
+            .iter()
+            .find(|t| t.address == "10.30.7.1")
+            .expect("device");
+        assert_eq!(dev.hostname.as_deref(), Some("r1"), "hostname preserved");
+        assert_eq!(dev.vendor.as_deref(), Some("Cisco"), "vendor preserved");
+        assert_eq!(dev.role.as_deref(), Some("spine"), "role preserved");
+        assert!(dev.enabled, "lifecycle preserved");
+        assert!(!dev.selected_paths.is_empty(), "acquisition plan preserved");
     }
 }

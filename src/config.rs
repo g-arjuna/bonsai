@@ -1988,6 +1988,17 @@ pub struct TargetConfig {
     /// an already-configured collector target.
     #[serde(default)]
     pub inventory_only: bool,
+    /// Inventory-declared platform label (e.g. NetBox platform slug).
+    /// Declared metadata only — NOT an operational/vendor capability claim.
+    #[serde(default)]
+    pub inventory_platform: Option<String>,
+    /// Inventory-declared lifecycle status (e.g. NetBox device status).
+    /// `None` means unknown — never confused with Bonsai-observed health.
+    #[serde(default)]
+    pub inventory_status: Option<String>,
+    /// Inventory-declared tenant label. `None` when the source has none.
+    #[serde(default)]
+    pub inventory_tenant: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]

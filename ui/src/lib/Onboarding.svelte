@@ -383,6 +383,13 @@
   let nbWarnings    = $state([]);
   let nbImporting   = $state(false);
   let nbImportDone  = $state([]);
+  let nbGraphPending = $state('');
+
+  // Stable per-candidate selection key: the external object identity,
+  // never the IP address — two NetBox devices may share an address.
+  function nbKey(c) {
+    return c.external_id || `addr:${c.address}`;
+  }
 
   async function nbFetchDevices() {
     nbFetching = true;
@@ -390,6 +397,7 @@
     nbSelected = [];
     nbWarnings = [];
     nbVersion = '';
+    nbGraphPending = '';
     error = '';
     try {
       const r = await fetch('/api/enrichment/netbox/import', {
@@ -400,7 +408,7 @@
       if (!r.ok) throw new Error(await r.text());
       const data = await r.json();
       nbCandidates = data.candidates || [];
-      nbSelected = (data.candidates || []).filter(c => c.eligible).map(c => c.address);
+      nbSelected = (data.candidates || []).filter(c => c.eligible).map(nbKey);
       nbVersion = data.netbox_version || '';
       nbWarnings = data.warnings || [];
     } catch (e) {
@@ -410,19 +418,20 @@
     }
   }
 
-  function nbToggle(address) {
-    if (nbSelected.includes(address)) {
-      nbSelected = nbSelected.filter(a => a !== address);
+  function nbToggle(key) {
+    if (nbSelected.includes(key)) {
+      nbSelected = nbSelected.filter(a => a !== key);
     } else {
-      nbSelected = [...nbSelected, address];
+      nbSelected = [...nbSelected, key];
     }
   }
 
   async function nbImportSelected() {
-    const toImport = nbCandidates.filter(c => c.eligible && nbSelected.includes(c.address));
+    const toImport = nbCandidates.filter(c => c.eligible && nbSelected.includes(nbKey(c)));
     if (!toImport.length) return;
     nbImporting = true;
     nbImportDone = [];
+    nbGraphPending = '';
     error = '';
     try {
       const r = await fetch('/api/onboarding/inventory/import', {
@@ -447,6 +456,7 @@
       if (!r.ok) throw new Error(body.error || body.message || `HTTP ${r.status}`);
       const okOutcomes = new Set(['imported', 'already_imported', 'updated']);
       nbImportDone = (body.results || []).map(row => ({
+        external_id: row.external_id || '',
         address: row.address,
         ok: okOutcomes.has(row.outcome),
         msg: row.outcome === 'imported' ? 'inventory only'
@@ -454,6 +464,9 @@
           : row.outcome === 'updated' ? 'updated'
           : `${row.outcome}${row.reason ? ': ' + row.reason : ''}`,
       }));
+      if (body.graph_sync === 'pending') {
+        nbGraphPending = body.graph_sync_error || 'graph projection pending';
+      }
     } catch (e) {
       error = e.message;
     } finally {
@@ -1784,8 +1797,8 @@
               <input type="checkbox"
                 checked={nbCandidates.filter(c => c.eligible).length > 0 && nbSelected.length === nbCandidates.filter(c => c.eligible).length}
                 onchange={() => {
-                  const eligible = nbCandidates.filter(c => c.eligible).map(c => c.address);
-                  nbSelected = nbSelected.length === eligible.length ? [] : eligible;
+                  const eligibleKeys = nbCandidates.filter(c => c.eligible).map(nbKey);
+                  nbSelected = nbSelected.length === eligibleKeys.length ? [] : eligibleKeys;
                 }}
               />
               <span>{nbSelected.length} of {nbCandidates.filter(c => c.eligible).length} eligible selected</span>
@@ -1795,11 +1808,15 @@
             </button>
           </div>
 
+          {#if nbGraphPending}
+            <p class="badge critical" style="margin: 4px 0;">graph projection pending: {nbGraphPending} — re-import to retry</p>
+          {/if}
+
           {#each nbCandidates as cand}
-            {@const done = nbImportDone.find(d => d.address === cand.address)}
+            {@const done = nbImportDone.find(d => cand.external_id ? d.external_id === cand.external_id : d.address === cand.address)}
             <div class="nb-candidate-row" class:nb-done={done?.ok} class:nb-fail={done && !done.ok} class:nb-ineligible={!cand.eligible}>
               <label class="nb-check">
-                <input type="checkbox" checked={nbSelected.includes(cand.address)} disabled={!cand.eligible} onchange={() => nbToggle(cand.address)} />
+                <input type="checkbox" checked={nbSelected.includes(nbKey(cand))} disabled={!cand.eligible} onchange={() => nbToggle(nbKey(cand))} />
               </label>
               <div class="nb-meta">
                 <strong>{cand.name}</strong>

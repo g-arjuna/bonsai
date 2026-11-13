@@ -107,10 +107,9 @@ use managed_devices::{
     bootstrap_device_handler, bulk_bootstrap_handler, bulk_import_handler,
     bulk_managed_device_action_handler, credentials_handler, device_seed_handler, discover_handler,
     inventory_import_handler, managed_devices_handler, remove_credential_handler,
-    remove_impact_handler,
-    remove_managed_device_handler, remove_site_handler, resolve_credential_handler,
-    site_summary_handler, sites_handler, test_credential_handler, update_credential_handler,
-    upsert_site_handler,
+    remove_impact_handler, remove_managed_device_handler, remove_site_handler,
+    resolve_credential_handler, site_summary_handler, sites_handler, test_credential_handler,
+    update_credential_handler, upsert_site_handler,
 };
 use mcp_routes::{openapi_json_handler, resolve_handler, schema_handler, swagger_ui_handler};
 use ml_jobs::{
@@ -487,6 +486,14 @@ pub(super) struct ManagedDeviceJson {
     /// True when this is a declared inventory asset whose telemetry
     /// collection has not been configured — NOT an observed device.
     inventory_only: bool,
+    /// Inventory-declared metadata (platform / lifecycle status / tenant).
+    /// Declared source data only — never Bonsai-observed health.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    inventory_platform: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    inventory_status: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    inventory_tenant: String,
 }
 
 #[derive(Serialize, Clone)]
