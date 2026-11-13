@@ -116,6 +116,67 @@ to the literals; `cargo check -p bonsai --tests` now passes for **all**
 test targets. This is the fail-closed gate working as designed: a target
 that cannot compile cannot report green.
 
+## 3c. L3 gate run caught two more masked baseline defects
+
+7. **`a10_a11_a12_operator_and_scenario_pack::a10_operator_adjudication_...`**
+   — stale test vs deliberate hardening: internal routing endpoints now
+   fail closed via `check_internal_token` (401 without
+   `internal_service_token` or the explicit insecure-dev env escape). The
+   test used `RoutingServiceConfig::default()` and sent no token. Fixed by
+   configuring a test token and sending `x-bonsai-routing-token`, matching
+   the pattern sibling tests (bn021c/bn021f/r05_r06) already use.
+
+8. **`b16_b17_b18_b19_m3_release_gates` b17/b19 digest tests** — stale
+   oracle serialization: bn021c exporter-isolation changed
+   `compute_rib_digest`'s canonical row format (added
+   `exporter_instance`, `distinguisher`, `rib_type`, `path_id` fields) but
+   the test-side `OracleRib::digest()` kept emitting the pre-change row
+   format, so actual-vs-oracle SHA-256 digests could never match. Route
+   *counts* still matched — product behavior was correct; only the
+   comparison serialization drifted. Fixed by extracting
+   `compute_rib_canonical_rows()` (pub) and aligning the oracle row format
+   to the canonical contract.
+
+9. **Python SDK suite — 17 masked failures** (`python -m pytest tests/`
+   under `cd python`), all previously hidden by Makefile `|| true`:
+   - `test_catalog_and_executor` — **real product defect**: two library
+     files share `detection_rule_id: bgp_session_down`
+     (`bgp_session_down.yaml` multi-vendor, `frr_bgp_session_down.yaml`),
+     and `PlaybookCatalog._by_rule` kept only the last doc — nokia_srl
+     playbooks were unreachable. Fixed: catalog merges playbook lists per
+     rule_id. `python/bonsai_sdk/playbooks/catalog.py`.
+   - `test_f11_rule_fixes` (6), `test_t0_fixes` (1) — stale test doubles:
+     detection rules now resolve vendor state mappings conservatively
+     (unknown vendor ⇒ no detection, deliberate F11 hardening); fakes
+     returned `""`/MagicMock vendors. Fixed fakes to return `nokia_srl`;
+     t0 test now asserts shared-extractor equality with the rule's vendor
+     enrichment excluded (and verified separately).
+   - `test_coverage_gap_fill` — environment-dependent: `_use_docker_transport()`
+     returns true whenever a docker binary exists; patched to the SSH path
+     for determinism.
+   - `test_gnn_scaffolding` (2) — stale constants: feature list grew 23→36
+     and `DEFAULT_NUM_HEADS` is 8 (set at scaffolding commit); updated.
+   - `test_validate_playbooks` (2) — catalog legitimately grew 9→12 docs;
+     `OspfNeighbor` is now a real schema label so the negative test needed
+     a genuinely unknown label.
+
+Result: `208 passed, 1 skipped, 1 deselected`.
+
+## 3d. Final gate results (ci profile, CARGO_TARGET_DIR=/tmp/ci-target-probe)
+
+| Gate | Result | Wall time |
+|------|--------|-----------|
+| `gates.sh l0` | PASS | ~3 s |
+| `gates.sh l2` | PASS — lib 363/363 + rbmp suites + 21 integration targets, 0 failures | ~22 min incl. bonsai lib recompile |
+| `gates.sh l3` | PASS — 13 integration targets incl. bn015/bn016 Playwright/Chromium browser acceptance + root pytest 16 + SDK pytest 208 | ~8 min (binaries warm) |
+| `gates.sh l4` | not executed (lab infra required) | — |
+
+Compile-once evidence: one `cargo test` invocation per tier builds all
+selected `--test` binaries once, then runs them; L3 reused L2's artifacts.
+ci-profile test binaries are ~34–90 MB vs ~850 MB dev-profile — the
+`ci` profile (debug=0, incremental=false) is the right CI choice and is
+the default in `gates.sh`.
+
 ## 4. CI workflow
 
 `.github/workflows/ci.yml` — four jobs on `pull_request` + `push: main`:

@@ -169,11 +169,18 @@ impl ExpectedRouteOracle {
     }
 
     fn digest(&self) -> (usize, String) {
+        // Must match `compute_rib_canonical_rows` field-for-field:
+        // speaker|exporter_instance|peer|distinguisher|rib_type|prefix|
+        // path_id|next_hop|local_pref|as_path. These scenarios all ingest
+        // unscoped BMP (exporter_instance "default"), pre-policy Adj-RIB-In
+        // only, no path identifier, and a single-AS path equal to peer_as.
         let mut rows: Vec<String> = self
             .routes
             .iter()
             .map(|((spk, peer, rd, view, pfx), (asn, nh, lp))| {
-                format!("{spk}|{peer}|{rd}|{view}|{pfx}|None|Some({nh})|Some({lp})|Some(\"{asn}\")")
+                format!(
+                    "{spk}|default|{peer}|{rd}|{view}|{pfx}|None|Some({nh})|Some({lp})|Some(\"{asn}\")"
+                )
             })
             .collect();
         rows.sort();

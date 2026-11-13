@@ -198,7 +198,7 @@ gate_l3() {
   cargo test -p bonsai --profile "$PROFILE" --offline "${args[@]}"
 
   # Python suites. Root tests/ = bonsai unit tests; python/tests = SDK suite.
-  local PY=.venv/bin/python; [ -x "$PY" ] || PY=python3
+  local PY="$(pwd)/.venv/bin/python"; [ -x "$PY" ] || PY=python3
   PYTHONPATH=.:python "$PY" -m pytest tests/ -q
   (cd python && PYTHONPATH=. "$PY" -m pytest tests/ -q)
   echo "L3: OK"

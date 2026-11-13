@@ -137,6 +137,9 @@ def test_rule_detector_matches_ml_detector_features_for_bgp_down():
         MagicMock(session_state="established"),
         MagicMock(session_state="idle"),
     ]
+    # Rules resolve vendor state mappings conservatively; an unknown vendor
+    # yields no detection, so the shared extractor needs a real vendor.
+    client.device_vendor.return_value = "nokia_srl"
 
     with patch("bonsai_sdk.ml_detector.load_model", return_value=MagicMock()):
         ml_detector = MLDetector("ml_test", "fake_path.joblib", threshold=0.5)
@@ -144,7 +147,13 @@ def test_rule_detector_matches_ml_detector_features_for_bgp_down():
     rule_features = BgpSessionDown().extract_features(_make_bgp_event(), client)
     ml_features = ml_detector.extract_features(_make_bgp_event(), client)
 
-    assert rule_features == ml_features
+    # The rule layer enriches Features.vendor via vendor state mappings on
+    # top of the shared extractor output; everything else must be identical.
+    import dataclasses
+
+    assert rule_features is not None
+    assert rule_features.vendor == "nokia_srl"
+    assert dataclasses.replace(rule_features, vendor="") == ml_features
 
 
 def test_shared_extractor_interface_event():
