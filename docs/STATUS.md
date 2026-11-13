@@ -1086,3 +1086,20 @@ reconcile removed; topology resolution cached per peer per request.
 Verified: `graph::tests::bgp_session` 18/18, `graph::` 98 pass / 1
 documented BN-019-B6 baseline failure, `bn016_u1_topology_browser`
 1/1 (real Chromium, canonical router), ui build clean.
+
+BN-015-U1 NetBox inventory-only onboarding (13 November,
+`fix/bn015-u1-netbox-inventory-onboarding`): the NetBox import UI posted
+`selected_paths: []` to the subscription-oriented
+`/api/onboarding/devices/with_paths` (always rejected) while silently
+binding `credentials[0]` and defaulting unknown roles to `leaf`.
+New `POST /api/onboarding/inventory/import` registers declared assets
+only (`enabled=false`, `inventory_only=true`, stable
+`external_id=netbox:device:<id>`, no credentials, no paths) — the
+subscriber manager never activates collection. Per-row outcomes cover
+imported/already-imported/updated/conflict/invalid/failed; identity
+conflicts never overwrite existing devices or re-address imported
+objects. Preview returns NetBox object IDs and explicit eligibility;
+no-IP candidates are surfaced, not dropped. sqlite schema v6 persists
+the new fields plus previously-dropped selected_paths/extra_ips.
+Verified: 3 managed_devices tests incl. restart persistence, ui build.
+Evidence: `docs/merger/evidence/2026-11-13-bn015-u1-netbox-inventory-onboarding/`.
