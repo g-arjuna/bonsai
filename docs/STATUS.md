@@ -1103,3 +1103,30 @@ no-IP candidates are surfaced, not dropped. sqlite schema v6 persists
 the new fields plus previously-dropped selected_paths/extra_ips.
 Verified: 3 managed_devices tests incl. restart persistence, ui build.
 Evidence: `docs/merger/evidence/2026-11-13-bn015-u1-netbox-inventory-onboarding/`.
+
+BN-015-U1 P0 review hardening + merge (13 November, PR #15 merged at
+`e5373f0`): external identities are now instance-scoped
+(`netbox:{scheme}:{host}:{port}:device:{id}` — credentials/tokens never
+participate) with persistence-boundary uniqueness via partial unique
+index `idx_devices_external_id` (schema v7); ambiguous identities and
+canonical-address conflicts (host vs host:port, IPv6) fail closed.
+Registry mutations are transactional — memory/SQLite/audit commit or
+roll back together, errors propagate, and notifications publish only
+after durable commit. Graph projection is reported separately as
+`synced`/`pending` and reconciled by unchanged re-imports.
+Inventory-only assets are skipped by subscriber startup, seed-plan
+merge and collector assignment even if `enabled` is set; activation
+requires an explicit validated collection plan. Re-imports refresh
+importer-owned declared metadata only — operator configuration is
+preserved and drift surfaces as conflict. sqlite v6/v7 migrations
+distinguish duplicate-column partial runs from real failures and
+verify columns before advancing `user_version` (fail closed on
+duplicate external ids). UI selects by `external_id`, disables
+ineligible candidates and shows per-object results.
+Verified: lib suite 355 pass / 3 documented BN-019-B6 baseline
+failures (`api_registry_persists` baseline now passes); http_server
+24/24 incl. authenticated-router RBAC; sqlite_store 6/6 migration
+tests; `bn015_u1_inventory_browser` Playwright/Chromium acceptance
+against the real router + mocked paginated NetBox (duplicate-address
+candidates, ineligible rows, per-object conflict, inventory-only
+badge). U3/U4/U6 remain open.
