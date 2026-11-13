@@ -170,3 +170,9 @@ date,command,scope,wall_seconds,result,notes
 2026-11-13,cargo test -p bonsai --lib sqlite_store --offline,bonsai lib sqlite migration tests,111.0,pass,6/6 migration tests; ~1m51s compile + 1.2s run
 2026-11-13,cargo test --test bn015_u1_inventory_browser --offline,NetBox browser acceptance,422.0,pass,7m02s cold link incl all bins + 7.2s run; Playwright chromium; 1/1
 2026-11-13,npm run build (ui),ui vite build,6.37,pass,Onboarding.svelte + Devices.svelte compile; existing chunk warnings only
+2026-11-13,cargo test -p bonsai --lib --offline (post BN-019-B6 baseline fixes),bonsai lib full suite,,pass,363 pass / 0 fail in 64.77s test exec; fixes: archive i64 overflow, subscription_status port-strip edge key, service_pattern space separator
+2026-11-13,scripts/ci/gates.sh l0,fail-closed L0 gate,,pass,~3s; scoped rustfmt on changed files vs origin/main (warns pre-existing drift in src/graph/mod.rs), python compileall, cargo metadata
+2026-11-13,cargo test -p bonsai --lib --profile ci --no-run (CARGO_TARGET_DIR=/tmp/ci-target-probe),ci-profile cold build probe,,,in-progress,lbug cmake native build dominates; measures GitHub-runner sizing requirement
+2026-11-13,scripts/ci/gates.sh l2 (CARGO_PROFILE=dev),L2 required behavioral gates,,,in-progress,21 integration targets compile-once; dev profile reuses warm deps
+2026-11-13,cargo test -p bonsai --test zz_inject_fail --offline (failure injection),temp failing integration test,,fail-expected,exit 101; cargo builds all bin targets for any integration test (3 ~1GB bin links) — key compile-once evidence
+2026-11-13,cargo test -p bonsai --lib --offline remediation::trust,bonsai lib trust tests,221.0,pass,11/11 incl fixed persistence_round_trip; ~3m41s recompile of lib test after trust.rs change + 0.01s run

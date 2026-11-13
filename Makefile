@@ -58,32 +58,56 @@ release: ## Build Rust release binary + UI, package into dist/
 
 # ── Test ───────────────────────────────────────────────────────────────────
 
-test: ## Run Rust (nextest) + Python tests
-	$(CARGO) nextest run --workspace 2>/dev/null || $(CARGO) test --workspace
+test: ## Run Rust + Python tests (fail-closed: runner chosen once, failures propagate)
+	@if cargo nextest --version >/dev/null 2>&1; then \
+		cargo nextest run --workspace; \
+	else \
+		echo "cargo-nextest not installed; using cargo test --workspace"; \
+		cargo test --workspace; \
+	fi
 	cd $(PYTHON_DIR) && python -m pytest tests/ -v
 
 test-python: ## Run Python tests only
 	cd $(PYTHON_DIR) && python -m pytest tests/ -v
 
-test-ui: ## Run UI smoke tests (Playwright)
-	cd $(UI_DIR) && npm run test:smoke 2>/dev/null || echo "No UI smoke tests configured yet"
+test-ui: ## Run UI acceptance (Playwright via cargo harness). Requires ui build + chromium.
+	@echo "UI specs live in tests/ui_driver and run through cargo test targets"
+	@echo "(e.g. cargo test --test bn016_u1_topology_browser --offline)."
+	@echo "Run 'just verify-release' for the canonical UI build + acceptance gate."
 
-test-integration: ## Run Rust integration tests only
-	$(CARGO) test --test '*' -- 2>/dev/null || echo "No integration test files found"
+test-integration: ## Run every tests/*.rs integration target; any failure fails the target
+	@set -e; \
+	for t in tests/*.rs; do \
+		name=$$(basename $$t .rs); \
+		echo "=== integration target: $$name ==="; \
+		$(CARGO) test --test $$name --offline; \
+	done
 
-test-all: ## Run all test suites (Rust + Python + UI)
+test-all: ## Run all test suites (Rust + Python). Browser acceptance runs via cargo test --test <name> (see justfile verify-release).
 	@echo "=== Rust tests ==="
-	$(CARGO) nextest run --workspace 2>/dev/null || $(CARGO) test --workspace
+	@if cargo nextest --version >/dev/null 2>&1; then \
+		cargo nextest run --workspace; \
+	else \
+		echo "cargo-nextest not installed; using cargo test --workspace"; \
+		cargo test --workspace; \
+	fi
 	@echo "=== Python tests ==="
-	cd $(PYTHON_DIR) && python -m pytest tests/ -v || true
+	cd $(PYTHON_DIR) && python -m pytest tests/ -v
 	@echo "=== UI tests ==="
-	cd $(UI_DIR) && npm run test:smoke 2>/dev/null || echo "No UI smoke tests"
+	@echo "UI acceptance is Playwright-driven (tests/ui_driver) and runs through"
+	@echo "cargo test --test <suite> — see 'just verify-release' for the canonical gate."
 
 # ── Lint ───────────────────────────────────────────────────────────────────
 
-lint: ## Run clippy + Python ruff (or flake8)
+lint: ## Run clippy + Python ruff (or flake8); a missing linter or lint failure fails the target
 	$(CARGO) clippy -- -D warnings
-	cd $(PYTHON_DIR) && (ruff check . 2>/dev/null || python -m flake8 . --max-line-length=120 || true)
+	cd $(PYTHON_DIR) && if command -v ruff >/dev/null 2>&1; then \
+		ruff check .; \
+	elif python -m flake8 --version >/dev/null 2>&1; then \
+		python -m flake8 . --max-line-length=120; \
+	else \
+		echo "No Python linter available (install ruff or flake8)" >&2; exit 1; \
+	fi
 
 # ── UI ─────────────────────────────────────────────────────────────────────
 

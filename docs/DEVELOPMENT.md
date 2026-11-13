@@ -91,6 +91,39 @@ calls `cargo clean`. Do not treat `make test-all` as a trustworthy hard
 gate: it currently has `|| true` paths masking failures. The playbook
 documents the planned BN-019 fixes and safer measurement procedure.
 
+## Canonical Validation Gates (BN-019-B6)
+
+`scripts/ci/gates.sh` is the single fail-closed definition of the tiered
+gates; `just gate <tier>` and `just gate-all` are thin wrappers, and
+`.github/workflows/ci.yml` runs the same script in CI.
+
+| Tier | Scope | Command |
+|------|-------|---------|
+| L0 | Source checks: rustfmt on changed files (new drift only), python compile, cargo metadata | `scripts/ci/gates.sh l0` |
+| L1 | Compile/static: `cargo check --workspace --all-targets --profile ci`, UI build, SDK import | `scripts/ci/gates.sh l1` |
+| L2 | Required behavioral: bonsai lib tests, rbmp crates, 21 core integration targets | `scripts/ci/gates.sh l2` |
+| L3 | Cross-component: 13 workflow/browser integration targets + python suites | `scripts/ci/gates.sh l3` |
+| L4 | Lab/deployment acceptance (containerlab, live NOS, soak) — never implied by L0–L3 | manual, see `gates.sh l4` |
+
+A green gate means the named tests compiled, executed and passed. Missing
+tools, missing `--test` targets, build errors and test failures all exit
+nonzero. Optional lab suites are reported as skipped, never as passed.
+
+Environment knobs: `GATE_BASE` (fmt-diff base ref, default `origin/main`),
+`CARGO_PROFILE` (default `ci`), `SKIP_UI_BUILD=1` (reuse `ui/dist`).
+
+### CI runners
+
+GitHub-hosted `ubuntu-latest` runners cannot build the full Bonsai test
+suite: `target/` exceeds 100 GB and parallel test-binary links exceed 16 GB
+RAM. The `rust-gates` job therefore requires a **self-hosted runner**
+labelled `[self-hosted, linux, x64, bonsai-ci]` with: Rust 1.95.0
+(`rust-toolchain.toml`), `sccache`, `mold`, `protoc`, `cmake`, Node 20,
+warm cargo registry, and ~150 GB free disk. The `source-checks`,
+`python-tests` and `ui-build` jobs run on hosted runners. Until a
+self-hosted runner is registered the rust job stays queued — that is
+intentional fail-closed behaviour, not a pass.
+
 ## Canonical Local Helpers
 
 Use these scripts instead of ad hoc PATH-dependent commands:

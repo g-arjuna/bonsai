@@ -6463,6 +6463,12 @@ fn write_subscription_status_blocking(
     )
     .context("execute SubscriptionStatus upsert")?;
 
+    // Device nodes are keyed by the canonical port-stripped address
+    // (see upsert_device), so the edge MATCH must use the same key —
+    // a raw "host:port" device_address would silently match nothing.
+    // `s.device_address` keeps the reported address verbatim so
+    // read_subscription_statuses lookups by registry address still work.
+    let device_key = crate::registry::strip_port(&status.device_address).to_string();
     let mut edge_stmt = conn
         .prepare(
             "MATCH (d:Device {address: $addr}), (s:SubscriptionStatus {id: $id}) \
@@ -6472,7 +6478,7 @@ fn write_subscription_status_blocking(
     conn.execute(
         &mut edge_stmt,
         vec![
-            ("addr", Value::String(status.device_address)),
+            ("addr", Value::String(device_key)),
             ("id", Value::String(id)),
         ],
     )
@@ -10753,16 +10759,19 @@ mod tests {
             .await
             .expect("write subscription status");
 
+        // Device nodes are keyed by the canonical port-stripped address
+        // ("dut"), while SubscriptionStatus.device_address keeps the
+        // reported "dut:57400" verbatim for registry lookups.
         let mut status_query = conn
             .prepare(
                 "MATCH (d:Device {address: $addr})-[:HAS_SUBSCRIPTION_STATUS]->(s:SubscriptionStatus) \
-                 RETURN d.vendor, d.hostname, s.path, s.status",
+                 RETURN d.vendor, d.hostname, s.device_address, s.path, s.status",
             )
             .expect("prepare status query");
         let rows = conn
             .execute(
                 &mut status_query,
-                vec![("addr", Value::String("dut:57400".to_string()))],
+                vec![("addr", Value::String("dut".to_string()))],
             )
             .expect("query status")
             .collect::<Vec<_>>();
@@ -10770,8 +10779,9 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(read_str(&rows[0][0]), "nokia_srl");
         assert_eq!(read_str(&rows[0][1]), "dut1");
-        assert_eq!(read_str(&rows[0][2]), "interface[name=*]/statistics");
-        assert_eq!(read_str(&rows[0][3]), "subscribed_but_silent");
+        assert_eq!(read_str(&rows[0][2]), "dut:57400");
+        assert_eq!(read_str(&rows[0][3]), "interface[name=*]/statistics");
+        assert_eq!(read_str(&rows[0][4]), "subscribed_but_silent");
     }
 
     #[tokio::test]
