@@ -912,7 +912,7 @@ fn walk_xr_lldp_blob(value: &JsonValue) -> Option<JsonValue> {
     }))
 }
 
-fn extract_bracketed(path: &str, prefix: &str) -> Option<String> {
+pub(crate) fn extract_bracketed(path: &str, prefix: &str) -> Option<String> {
     let start = path.find(prefix)? + prefix.len();
     let rest = &path[start..];
     let end = rest.find(']')?;

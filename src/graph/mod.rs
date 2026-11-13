@@ -32,7 +32,8 @@ use crate::store::BonsaiStore;
 use crate::streaming::bgp_ls::BgpLsEvent;
 use crate::streaming::bmp::BmpEvent;
 use crate::telemetry::{
-    TelemetryEvent, TelemetryUpdate, json_f64, json_i64, json_i64_multi, json_str,
+    TelemetryEvent, TelemetryUpdate, extract_bracketed, json_f64, json_i64, json_i64_multi,
+    json_str,
 };
 
 pub const REMEDIATION_TRUST_CUTOFF_ISO: &str = "2026-04-20T09:32:50+00:00";
@@ -335,6 +336,14 @@ impl GraphStore {
         );
 
         let t = Instant::now();
+        store.migrate_bgp_session_edges()?;
+        info!(
+            phase = "bgp_edge_migration",
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "startup"
+        );
+
+        let t = Instant::now();
         store.backfill_remediation_trust_marks()?;
         info!(
             phase = "backfill",
@@ -527,6 +536,10 @@ impl GraphStore {
                 peer_as                 INT64,\
                 session_state           STRING,\
                 established_transitions INT64,\
+                source                  STRING,\
+                resolved_device         STRING,\
+                resolution_status       STRING,\
+                resolution_reason       STRING,\
                 updated_at              TIMESTAMP_NS,\
                 PRIMARY KEY (id))",
         )
@@ -569,9 +582,45 @@ impl GraphStore {
                 FROM Device TO Device, \
                 session_state STRING, \
                 peer_as INT64, \
-                source STRING)",
+                source STRING, \
+                peer_address STRING)",
         )
         .context("create BGP_SESSION_WITH rel")?;
+
+        // BN-016-U1: session-scoped BGP edge identity (peer_address keys
+        // each session's edge) and per-session resolution evidence on
+        // BgpNeighbor. ALTER TABLE ADD is idempotent in lbug (ignored if
+        // the column already exists) — this upgrades pre-existing DBs.
+        // A real migration failure must NOT be swallowed: an incomplete
+        // schema upgrade would produce an apparently healthy runtime
+        // missing the columns the writers rely on.
+        alter_add_column(&conn, "BgpNeighbor", "source", "STRING DEFAULT ''")?;
+        alter_add_column(&conn, "BgpNeighbor", "resolved_device", "STRING DEFAULT ''")?;
+        alter_add_column(&conn, "BgpNeighbor", "resolution_status", "STRING DEFAULT ''")?;
+        alter_add_column(&conn, "BgpNeighbor", "resolution_reason", "STRING DEFAULT ''")?;
+        alter_add_column(&conn, "BgpNeighbor", "network_instance", "STRING DEFAULT ''")?;
+        alter_add_column(&conn, "BgpNeighbor", "peer_type", "INT64 DEFAULT -1")?;
+        alter_add_column(
+            &conn,
+            "BgpNeighbor",
+            "route_distinguisher",
+            "STRING DEFAULT ''",
+        )?;
+        alter_add_column(&conn, "BGP_SESSION_WITH", "peer_address", "STRING DEFAULT ''")?;
+        alter_add_column(&conn, "BGP_SESSION_WITH", "session_id", "STRING DEFAULT ''")?;
+        alter_add_column(&conn, "BGP_SESSION_WITH", "peer_type", "INT64 DEFAULT -1")?;
+        alter_add_column(
+            &conn,
+            "BGP_SESSION_WITH",
+            "route_distinguisher",
+            "STRING DEFAULT ''",
+        )?;
+        alter_add_column(
+            &conn,
+            "BGP_SESSION_WITH",
+            "network_instance",
+            "STRING DEFAULT ''",
+        )?;
 
         conn.query(
             "CREATE REL TABLE IF NOT EXISTS BFD_PEER_WITH(\
@@ -2698,6 +2747,136 @@ impl GraphStore {
         .context("spawn_blocking panicked")?
     }
 
+    /// BN-016-U1/B4: one-shot reconciliation of `BGP_SESSION_WITH` edges
+    /// written before edges carried a `session_id`.
+    ///
+    /// A legacy edge is re-keyed onto a session ONLY when exactly one
+    /// `BgpNeighbor` session node can claim it (matched on source
+    /// device + peer_address, or resolved_device when the edge predates
+    /// peer_address). Zero or multiple candidates means the historical
+    /// edge cannot be attributed to a session without guessing — it is
+    /// deleted from authoritative traversal; the underlying session
+    /// evidence in `BgpNeighbor` nodes is retained. Rekeyed edges whose
+    /// stored destination contradicts the session's recorded resolution
+    /// are deleted as stale rather than perpetuated.
+    ///
+    /// Idempotent: once every edge carries `session_id` the scan finds
+    /// nothing.
+    fn migrate_bgp_session_edges(&self) -> Result<()> {
+        let _guard = self.write_lock.lock().expect("write lock poisoned");
+        let conn = Connection::new(&self.db).context("bgp edge migration connection")?;
+        conn.query("BEGIN TRANSACTION")
+            .context("begin bgp edge migration")?;
+        let outcome = (|| -> Result<()> {
+            // Eagerly collect: lbug does not allow an open read cursor
+            // and writes on the same connection simultaneously.
+            let mut scan = conn
+                .prepare(
+                    "MATCH (a:Device)-[r:BGP_SESSION_WITH]->(b:Device) \
+                     WHERE r.session_id IS NULL OR r.session_id = '' \
+                     RETURN a.address, b.address, r.source, r.peer_address",
+                )
+                .context("prepare legacy BGP edge scan")?;
+            let rows: Vec<Vec<Value>> = conn
+                .execute(&mut scan, vec![])
+                .context("execute legacy BGP edge scan")?
+                .collect();
+
+            let mut rekeyed = 0usize;
+            let mut invalidated = 0usize;
+            for row in rows {
+                let src = read_str(&row[0]);
+                let dst = read_str(&row[1]);
+                let edge_source = read_str(&row[2]);
+                let peer = read_str(&row[3]);
+
+                let candidates =
+                    legacy_session_candidates(&conn, &src, &peer, &dst, &edge_source)?;
+
+                let unique = if candidates.len() == 1 {
+                    candidates.into_iter().next()
+                } else {
+                    None
+                };
+
+                match unique {
+                    Some(c) => {
+                        // If the session's recorded resolution names a
+                        // different device than the edge's destination,
+                        // the edge is stale — invalidate, don't rekey.
+                        let resolved = read_str(&c[4]);
+                        if !resolved.is_empty() && resolved != dst {
+                            delete_legacy_bgp_edge(&conn, &src, &dst, &edge_source, &peer)?;
+                            invalidated += 1;
+                            continue;
+                        }
+                        let session_id = read_str(&c[0]);
+                        let node_source = {
+                            let s = read_str(&c[1]);
+                            if s.is_empty() {
+                                if session_id.starts_with("bmp:") {
+                                    "bmp".to_string()
+                                } else {
+                                    "gnmi".to_string()
+                                }
+                            } else {
+                                s
+                            }
+                        };
+                        let mut upd = conn
+                            .prepare(
+                                "MATCH (a:Device {address: $src})-[r:BGP_SESSION_WITH]->(b:Device {address: $dst}) \
+                                 WHERE (r.session_id IS NULL OR r.session_id = '') \
+                                   AND (r.source = $esource OR ($esource = '' AND (r.source IS NULL OR r.source = ''))) \
+                                   AND (r.peer_address = $epeer OR ($epeer = '' AND (r.peer_address IS NULL OR r.peer_address = ''))) \
+                                 SET r.session_id = $sid, r.source = $csource, \
+                                     r.session_state = $state, r.peer_as = $pas, \
+                                     r.peer_type = $pt, r.route_distinguisher = $rd, \
+                                     r.network_instance = $ni",
+                            )
+                            .context("prepare legacy BGP edge rekey")?;
+                        conn.execute(
+                            &mut upd,
+                            vec![
+                                ("src", Value::String(src.clone())),
+                                ("dst", Value::String(dst.clone())),
+                                ("esource", Value::String(edge_source.clone())),
+                                ("epeer", Value::String(peer.clone())),
+                                ("sid", Value::String(session_id)),
+                                ("csource", Value::String(node_source)),
+                                ("state", c[2].clone()),
+                                ("pas", c[3].clone()),
+                                ("pt", c[5].clone()),
+                                ("rd", c[6].clone()),
+                                ("ni", c[7].clone()),
+                            ],
+                        )
+                        .context("execute legacy BGP edge rekey")?;
+                        rekeyed += 1;
+                    }
+                    None => {
+                        delete_legacy_bgp_edge(&conn, &src, &dst, &edge_source, &peer)?;
+                        invalidated += 1;
+                    }
+                }
+            }
+            if rekeyed > 0 || invalidated > 0 {
+                info!(rekeyed, invalidated, "migrated legacy BGP_SESSION_WITH edges");
+            }
+            Ok(())
+        })();
+        match outcome {
+            Ok(()) => conn
+                .query("COMMIT")
+                .context("commit bgp edge migration")
+                .map(|_| ()),
+            Err(error) => {
+                let _ = conn.query("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
     fn backfill_remediation_trust_marks(&self) -> Result<()> {
         const MARKER_ID: &str = "backfill_trust_v1";
         let conn = Connection::new(&self.db).context("trust-mark backfill connection")?;
@@ -3640,10 +3819,42 @@ impl GraphStore {
             if sig_filter.needs_refresh() {
                 sig_filter.refresh(&conn);
             }
+            // One transaction owner per write operation: the whole
+            // write_blocking unit (node upserts, edge reconciles, event
+            // rows) commits or rolls back atomically. lbug rejects
+            // nested BEGIN TRANSACTION, so helpers must never open
+            // their own.
+            conn.query("BEGIN TRANSACTION")
+                .context("begin single-write transaction")?;
             let result = write_blocking(&conn, &update, &event_tx, &corr_buf, &sig_filter);
+            match result {
+                Ok(()) => {
+                    // lbug rolls the whole transaction back on ANY
+                    // statement error — including sub-write failures that
+                    // write_blocking deliberately tolerates. When that
+                    // happens the remaining statements already
+                    // auto-committed individually, so there is nothing
+                    // left to commit; report success with a warning
+                    // rather than a spurious write failure.
+                    if let Err(error) = conn
+                        .query("COMMIT")
+                        .context("commit single-write transaction")
+                    {
+                        if error.to_string().contains("No active transaction") {
+                            warn!(%error, "write transaction already rolled back; statements auto-committed");
+                        } else {
+                            return Err(error);
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = conn.query("ROLLBACK");
+                    return Err(error);
+                }
+            }
             metrics::histogram!("bonsai_graph_write_latency_seconds", "target" => target)
                 .record(t0.elapsed().as_secs_f64());
-            result
+            Ok(())
         })
         .await
         .context("spawn_blocking panicked")?
@@ -3666,6 +3877,12 @@ impl GraphStore {
             }
             conn.query("BEGIN TRANSACTION").context("begin batch transaction")?;
             let mut errors = 0u32;
+            // lbug rolls the entire transaction back on the first
+            // statement-level error; a Rust-level failure inside
+            // write_blocking (e.g. unparseable payload) leaves the
+            // transaction alive. Only the COMMIT result tells us which
+            // happened, so collect failures and decide after COMMIT.
+            let mut failed_updates: Vec<TelemetryUpdate> = Vec::new();
             for update in &updates {
                 metrics::counter!("bonsai_telemetry_updates_total", "target" => update.target.clone())
                     .increment(1);
@@ -3679,39 +3896,59 @@ impl GraphStore {
                         "batched graph write failed (skipped)"
                     );
                     errors += 1;
+                    failed_updates.push(update.clone());
                     metrics::counter!("bonsai_graph_write_errors_total", "target" => update.target.clone())
                         .increment(1);
                 }
             }
-            if let Err(error) = conn.query("COMMIT").context("commit batch transaction") {
-                let _ = conn.query("ROLLBACK");
-                tracing::warn!(
-                    %error,
-                    batch_len,
-                    errors,
-                    "batch transaction failed; retrying updates individually"
-                );
-                drop(conn);
-
-                for update in updates {
-                    let target = update.target.clone();
-                    let path = update.path.clone();
-                    let single_conn = Connection::new(&db).context("single-write fallback connection")?;
-                    if let Err(single_error) =
-                        write_blocking(&single_conn, &update, &event_tx, &corr_buf, &sig_filter)
-                    {
-                        tracing::warn!(
-                            target = %target,
-                            path = %path,
-                            error = %single_error,
-                            "individual graph write failed after batch fallback"
+            match conn.query("COMMIT") {
+                Ok(_) => {
+                    // Batch committed; retry ONLY the failed updates,
+                    // each in its own transaction.
+                    for update in failed_updates {
+                        retry_update_individually(
+                            &db, update, &event_tx, &corr_buf, &sig_filter,
                         );
-                        metrics::counter!("bonsai_graph_write_errors_total", "target" => target)
-                            .increment(1);
+                    }
+                    if errors > 0 {
+                        tracing::debug!(errors, "batch committed with per-update retries");
                     }
                 }
-            } else if errors > 0 {
-                tracing::debug!(errors, "batch committed with partial write failures");
+                Err(commit_error) => {
+                    let txn_dead = commit_error
+                        .to_string()
+                        .contains("No active transaction");
+                    drop(conn);
+                    if txn_dead {
+                        // The transaction died mid-batch (a tolerated
+                        // sub-write error rolled it back); updates after
+                        // that point already auto-committed per
+                        // statement. Retry only the failed updates.
+                        tracing::warn!(
+                            %commit_error,
+                            batch_len,
+                            errors,
+                            "batch transaction died mid-write; retrying failed updates individually"
+                        );
+                        for update in failed_updates {
+                            retry_update_individually(
+                                &db, update, &event_tx, &corr_buf, &sig_filter,
+                            );
+                        }
+                    } else {
+                        tracing::warn!(
+                            %commit_error,
+                            batch_len,
+                            errors,
+                            "batch transaction failed; retrying all updates individually"
+                        );
+                        for update in updates {
+                            retry_update_individually(
+                                &db, update, &event_tx, &corr_buf, &sig_filter,
+                            );
+                        }
+                    }
+                }
             }
             metrics::histogram!("bonsai_graph_batch_write_latency_seconds")
                 .record(t0.elapsed().as_secs_f64());
@@ -4882,7 +5119,174 @@ impl GraphStore {
     }
 }
 
+/// Candidate `BgpNeighbor` session nodes that could own a legacy
+/// (session-id-less) `BGP_SESSION_WITH` edge. Returns rows of
+/// (id, source, session_state, peer_as, resolved_device, peer_type,
+/// route_distinguisher, network_instance), filtered to provenance
+/// compatible with the edge's `source` (an empty edge source accepts
+/// any single consistent provenance — multiple still means ambiguous).
+fn legacy_session_candidates(
+    conn: &Connection<'_>,
+    src_device: &str,
+    peer_address: &str,
+    dst_device: &str,
+    edge_source: &str,
+) -> Result<Vec<Vec<Value>>> {
+    let cypher = if !peer_address.is_empty() {
+        "MATCH (n:BgpNeighbor) \
+         WHERE n.device_address = $src AND n.peer_address = $peer \
+         RETURN n.id, n.source, n.session_state, n.peer_as, n.resolved_device, \
+                n.peer_type, n.route_distinguisher, n.network_instance"
+    } else {
+        // Edge predates peer_address: the only trustworthy session
+        // evidence is the recorded resolution matching the edge dst.
+        "MATCH (n:BgpNeighbor) \
+         WHERE n.device_address = $src AND n.resolved_device = $dst \
+         RETURN n.id, n.source, n.session_state, n.peer_as, n.resolved_device, \
+                n.peer_type, n.route_distinguisher, n.network_instance"
+    };
+    let mut stmt = conn.prepare(cypher).context("prepare legacy session candidates")?;
+    let rows: Vec<Vec<Value>> = conn
+        .execute(
+            &mut stmt,
+            vec![
+                ("src", Value::String(src_device.to_string())),
+                ("peer", Value::String(peer_address.to_string())),
+                ("dst", Value::String(dst_device.to_string())),
+            ],
+        )
+        .context("execute legacy session candidates")?
+        .collect();
+
+    let mut out: Vec<Vec<Value>> = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    for row in rows {
+        let id = read_str(&row[0]);
+        if id.is_empty() || !seen_ids.insert(id.clone()) {
+            continue;
+        }
+        let node_source = {
+            let s = read_str(&row[1]);
+            if s.is_empty() {
+                if id.starts_with("bmp:") {
+                    "bmp".to_string()
+                } else {
+                    "gnmi".to_string()
+                }
+            } else {
+                s
+            }
+        };
+        // Provenance must be compatible: an edge that records a source
+        // only matches sessions of that provenance; an unsourced edge
+        // accepts any, but multiple candidates still fail the
+        // uniqueness check above.
+        if !edge_source.is_empty() && node_source != edge_source {
+            continue;
+        }
+        out.push(row);
+    }
+    Ok(out)
+}
+
+/// Delete legacy `BGP_SESSION_WITH` edges matching the exact stored
+/// (src, dst, source, peer_address) identity — used by the one-shot
+/// migration for edges that cannot be uniquely attributed to a session.
+fn delete_legacy_bgp_edge(
+    conn: &Connection<'_>,
+    src: &str,
+    dst: &str,
+    edge_source: &str,
+    peer: &str,
+) -> Result<()> {
+    let mut del = conn
+        .prepare(
+            "MATCH (a:Device {address: $src})-[r:BGP_SESSION_WITH]->(b:Device {address: $dst}) \
+             WHERE (r.session_id IS NULL OR r.session_id = '') \
+               AND (r.source = $esource OR ($esource = '' AND (r.source IS NULL OR r.source = ''))) \
+               AND (r.peer_address = $epeer OR ($epeer = '' AND (r.peer_address IS NULL OR r.peer_address = ''))) \
+             DELETE r",
+        )
+        .context("prepare legacy BGP edge delete")?;
+    conn.execute(
+        &mut del,
+        vec![
+            ("src", Value::String(src.to_string())),
+            ("dst", Value::String(dst.to_string())),
+            ("esource", Value::String(edge_source.to_string())),
+            ("epeer", Value::String(peer.to_string())),
+        ],
+    )
+    .context("execute legacy BGP edge delete")?;
+    Ok(())
+}
+
+/// Retry one telemetry update on a fresh connection inside its own
+/// transaction — the per-update fallback used when a batch transaction
+/// cannot carry it. Failures are counted and logged, never swallowed.
+fn retry_update_individually(
+    db: &Arc<Database>,
+    update: TelemetryUpdate,
+    event_tx: &broadcast::Sender<BonsaiEvent>,
+    corr_buf: &CorrelationBuffer,
+    sig_filter: &SignalFilter,
+) {
+    let target = update.target.clone();
+    let path = update.path.clone();
+    let result = (|| -> Result<()> {
+        let single_conn = Connection::new(db).context("single-write fallback connection")?;
+        single_conn
+            .query("BEGIN TRANSACTION")
+            .context("begin fallback write transaction")?;
+        let write_result = write_blocking(&single_conn, &update, event_tx, corr_buf, sig_filter);
+        match write_result {
+            Ok(()) => single_conn
+                .query("COMMIT")
+                .context("commit fallback write transaction")
+                .map(|_| ()),
+            Err(error) => {
+                let _ = single_conn.query("ROLLBACK");
+                Err(error)
+            }
+        }
+    })();
+    if let Err(single_error) = result {
+        tracing::warn!(
+            target = %target,
+            path = %path,
+            error = %single_error,
+            "individual graph write failed after batch fallback"
+        );
+        metrics::counter!("bonsai_graph_write_errors_total", "target" => target)
+            .increment(1);
+    }
+}
+
 // ── blocking write helpers ────────────────────────────────────────────────────
+
+/// `ALTER TABLE <table> ADD <column> <definition>` that tolerates ONLY the
+/// already-exists case. Any other failure is a real migration error and is
+/// propagated so an incomplete schema upgrade cannot masquerade as healthy.
+fn alter_add_column(
+    conn: &Connection<'_>,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
+    let sql = format!("ALTER TABLE {table} ADD {column} {definition}");
+    match conn.query(&sql) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("already has property") {
+                debug!(table, column, "schema column already present");
+                Ok(())
+            } else {
+                Err(e).with_context(|| format!("schema migration failed: {sql}"))
+            }
+        }
+    }
+}
 
 fn write_blocking(
     conn: &Connection<'_>,
@@ -6301,16 +6705,39 @@ fn write_bgp_neighbor(
     corr_buf: &CorrelationBuffer,
 ) -> Result<()> {
     let bare = crate::registry::strip_port(&u.target);
-    let id = format!("{}:{}", bare, peer_addr);
+    // BN-016-U1/B2: the gNMI network-instance is real session context the
+    // source provides — preserve it in the session identity instead of
+    // collapsing VRFs that share a peer address. The conventional
+    // "default"/absent instance keeps the legacy `{device}:{peer}` id so
+    // existing consumers and stored nodes remain compatible; named
+    // instances extend the id.
+    let network_instance = bgp_network_instance(u);
+    let ni_key = if network_instance.is_empty() || network_instance == "default" {
+        String::new()
+    } else {
+        format!("{}:", network_instance)
+    };
+    let id = format!("{}:{}{}", bare, ni_key, peer_addr);
     let now = ts(u.timestamp_ns);
     let new_state = json_str(val, "session-state").to_lowercase();
 
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
 
-    // Read current state before upserting so we can detect transitions.
-    let old_state = get_bgp_state(conn, &id)?;
+    // Read current state AND peer-as before upserting so we can detect
+    // transitions and preserve the stored peer-as when an ON_CHANGE
+    // notification omits it.
+    let (old_state, old_peer_as) = get_bgp_session_props(conn, &id)?;
 
     let peer_as = json_i64(val, "peer-as");
+    // Effective persisted peer-as: a zero/missing value in this
+    // notification must not clobber the stored one, and the projected
+    // relationship must carry the effective value, not the raw parse.
+    let effective_peer_as = if peer_as != 0 { peer_as } else { old_peer_as };
+
+    // BN-016-U1: deterministic peer→device resolution for THIS session
+    // observation. The result is evidence on the session node; only a
+    // unique Resolved outcome may produce a BGP_SESSION_WITH edge.
+    let resolution = crate::graph::common::resolve_peer_typed(conn, peer_addr);
 
     // ON MATCH: only overwrite peer_as when the notification actually carries it
     // (non-zero). ON_CHANGE updates for session-state transitions omit peer-as,
@@ -6325,10 +6752,14 @@ fn write_bgp_neighbor(
          ON CREATE SET \
            n.device_address = $addr, n.peer_address = $peer, \
            n.peer_as = $peer_as, n.session_state = $state, \
-           n.established_transitions = $estab, n.updated_at = $ts \
+           n.established_transitions = $estab, n.updated_at = $ts, \
+           n.network_instance = $ni, n.peer_type = $pt, \
+           n.route_distinguisher = $rd \
          ON MATCH SET \
            {on_match_peer_as}n.session_state = $state, \
-           n.established_transitions = $estab, n.updated_at = $ts"
+           n.established_transitions = $estab, n.updated_at = $ts, \
+           n.network_instance = CASE WHEN $ni <> '' THEN $ni ELSE n.network_instance END, \
+           n.peer_type = $pt, n.route_distinguisher = $rd"
     );
     let mut stmt = conn
         .prepare(&cypher)
@@ -6347,6 +6778,9 @@ fn write_bgp_neighbor(
                 Value::Int64(json_i64(val, "established-transitions")),
             ),
             ("ts", now.clone()),
+            ("ni", Value::String(network_instance.clone())),
+            ("pt", Value::Int64(-1)),
+            ("rd", Value::String(String::new())),
         ],
     )
     .context("execute BgpNeighbor upsert")?;
@@ -6384,7 +6818,7 @@ fn write_bgp_neighbor(
         &mut edge_stmt,
         vec![
             ("addr", Value::String(bare.to_string())),
-            ("id", Value::String(id)),
+            ("id", Value::String(id.clone())),
         ],
     )
     .context("execute PEERS_WITH merge")?;
@@ -6395,27 +6829,54 @@ fn write_bgp_neighbor(
     // was not yet known at the time of this write.
     let _ = crate::graph::common::upsert_device_address(conn, peer_addr, "bgp_peer", now.clone());
 
-    // Attempt to resolve peer_address → Device and create a BGP_SESSION_WITH edge.
-    // Best-effort: silently skipped when the peer is not yet in the graph.
-    if let Some(peer_device) = resolve_peer_to_device(conn, peer_addr) {
-        let mut bgp_d2d = conn
-            .prepare(
-                "MATCH (a:Device {address: $src}), (b:Device {address: $dst}) \
-                 MERGE (a)-[r:BGP_SESSION_WITH {source: 'gnmi'}]->(b) \
-                 SET r.session_state = $state, r.peer_as = $peer_as",
-            )
-            .context("prepare BGP_SESSION_WITH merge")?;
-        let _ = conn.execute(
-            &mut bgp_d2d,
-            vec![
-                ("src", Value::String(bare.to_string())),
-                ("dst", Value::String(peer_device.clone())),
-                ("state", Value::String(new_state.clone())),
-                ("peer_as", Value::Int64(peer_as)),
-            ],
-        );
-        debug!(src = %bare, dst = %peer_device, state = %new_state, "BGP_SESSION_WITH resolved");
-    }
+    // Session-level resolution evidence on the BgpNeighbor node: source
+    // protocol, resolved remote device (empty when unresolved) and an
+    // explicit status/reason. Missing context stays unknown — the gNMI
+    // path carries no VRF/session discriminator today.
+    let resolution_reason = resolution.reason();
+    let mut res_stmt = conn
+        .prepare(
+            "MATCH (n:BgpNeighbor {id: $id}) \
+             SET n.source = $source, n.resolved_device = $rd, \
+                 n.resolution_status = $rs, n.resolution_reason = $rr",
+        )
+        .context("prepare BgpNeighbor resolution SET")?;
+    conn.execute(
+        &mut res_stmt,
+        vec![
+            ("id", Value::String(id.clone())),
+            ("source", Value::String("gnmi".to_string())),
+            (
+                "rd",
+                Value::String(resolution.device().unwrap_or_default().to_string()),
+            ),
+            ("rs", Value::String(resolution.status().to_string())),
+            ("rr", Value::String(resolution_reason)),
+        ],
+    )
+    .context("execute BgpNeighbor resolution SET")?;
+
+    // Reconcile the session-scoped Device→Device edge for THIS session
+    // (src, source, peer_address, session_id): create only on unique
+    // resolution, drop the stale edge on
+    // unresolved/ambiguous/conflict/unavailable so an old relationship
+    // is never left presenting itself as current. The projected
+    // peer-as is the effective persisted value, not the raw parse.
+    crate::graph::common::reconcile_bgp_session_edge(
+        conn,
+        &crate::graph::common::BgpSessionEdgeKey {
+            src_device: &bare,
+            source: "gnmi",
+            peer_address: peer_addr,
+            session_id: &id,
+            peer_type: -1,
+            route_distinguisher: String::new(),
+            network_instance: network_instance.clone(),
+        },
+        resolution.device(),
+        &new_state,
+        effective_peer_as,
+    )?;
 
     info!(
         target = %u.target,
@@ -6425,6 +6886,11 @@ fn write_bgp_neighbor(
     );
     Ok(())
 }
+
+/// BN-016-U1: `BGP_SESSION_WITH` reconciliation lives in
+/// `crate::graph::common::reconcile_bgp_session_edge` — it participates
+/// in the caller's transaction (lbug rejects nested BEGIN TRANSACTION,
+/// so it must never open its own).
 
 fn write_bfd_session(
     conn: &Connection<'_>,
@@ -6734,20 +7200,46 @@ fn get_isis_adjacency_state(conn: &Connection<'_>, id: &str) -> Result<Option<St
     }))
 }
 
-fn get_bgp_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
+/// Extract the gNMI network-instance context for a BGP neighbor
+/// observation. SRL/OC paths carry `network-instance[name=X]`; XRd
+/// ON_CHANGE blobs (`path == "network-instances"`) may carry a `name`
+/// attribute on the network-instance object. Returns "" when the source
+/// provides no context — recorded as unknown, never guessed.
+fn bgp_network_instance(u: &TelemetryUpdate) -> String {
+    if let Some(ni) = extract_bracketed(&u.path, "network-instance[name=") {
+        return ni;
+    }
+    if u.path == "network-instances"
+        && let Some(name) = u
+            .value
+            .get("network-instance")
+            .and_then(|ni| ni.get("name"))
+            .and_then(|n| n.as_str())
+    {
+        return name.to_string();
+    }
+    String::new()
+}
+
+fn get_bgp_session_props(conn: &Connection<'_>, id: &str) -> Result<(Option<String>, i64)> {
     let mut stmt = conn
-        .prepare("MATCH (n:BgpNeighbor {id: $id}) RETURN n.session_state")
-        .context("prepare BGP state lookup")?;
+        .prepare("MATCH (n:BgpNeighbor {id: $id}) RETURN n.session_state, n.peer_as")
+        .context("prepare BGP session props lookup")?;
     let mut result = conn
         .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
-        .context("execute BGP state lookup")?;
-    Ok(result.next().and_then(|row| {
-        if let Value::String(s) = &row[0] {
-            Some(s.clone())
-        } else {
-            None
-        }
-    }))
+        .context("execute BGP session props lookup")?;
+    Ok(result.next().map(|row| {
+        let state = match &row[0] {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        };
+        let peer_as = match &row[1] {
+            Value::Int64(n) => *n,
+            Value::Int32(n) => *n as i64,
+            _ => 0,
+        };
+        (state, peer_as)
+    }).unwrap_or((None, 0)))
 }
 
 fn get_bfd_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
@@ -7714,18 +8206,35 @@ fn write_bmp_peer_state(
 
     // Mirror peer state into BgpNeighbor so the topology API shows BMP-only
     // devices (e.g. frr-rr which has no gNMI) alongside gNMI-sourced peers.
+    //
+    // BN-016-U1: the BMP observation gets its OWN session node —
+    // `bmp:{bmp_session_id}` — so a BMP report can never silently
+    // overwrite a gNMI session node when the global BMP session id
+    // collides with the gNMI `{device}:{peer}` id. peer_type and
+    // router_distinguisher preserve the BMP session context the source
+    // actually provides.
     if !event.peer_address.is_empty() {
         let bmp_bare = bare;
-        let bgp_id = id.clone();
+        let bgp_id = format!("bmp:{}", id);
+        // BN-016-U1: deterministic peer→device resolution for THIS BMP
+        // session observation — the same contract as the gNMI path.
+        let resolution = crate::graph::common::resolve_peer_typed(conn, &event.peer_address);
+        let resolution_reason = resolution.reason();
+        // Preserve the BMP session context the source actually provides
+        // on the session node so edge re-resolution can rebuild the
+        // relationship without re-parsing telemetry.
         let mut stmt = conn
             .prepare(
                 "MERGE (n:BgpNeighbor {id: $id}) \
                  ON CREATE SET \
                    n.device_address = $addr, n.peer_address = $peer, \
                    n.peer_as = $peer_as, n.session_state = $state, \
-                   n.established_transitions = 0, n.updated_at = $ts \
+                   n.established_transitions = 0, n.updated_at = $ts, \
+                   n.peer_type = $pt, n.route_distinguisher = $rd, \
+                   n.network_instance = '' \
                  ON MATCH SET \
-                   n.session_state = $state, n.updated_at = $ts",
+                   n.session_state = $state, n.updated_at = $ts, \
+                   n.peer_type = $pt, n.route_distinguisher = $rd",
             )
             .context("prepare BgpNeighbor upsert (bmp)")?;
         conn.execute(
@@ -7737,6 +8246,8 @@ fn write_bmp_peer_state(
                 ("peer_as", Value::Int64(event.peer_as as i64)),
                 ("state", Value::String(event.session_state.clone())),
                 ("ts", ts(update.timestamp_ns)),
+                ("pt", Value::Int64(event.peer_type as i64)),
+                ("rd", Value::String(event.router_distinguisher.to_string())),
             ],
         )
         .context("execute BgpNeighbor upsert (bmp)")?;
@@ -7751,10 +8262,39 @@ fn write_bmp_peer_state(
             &mut edge,
             vec![
                 ("addr", Value::String(bmp_bare.to_string())),
-                ("id", Value::String(bgp_id)),
+                ("id", Value::String(bgp_id.clone())),
             ],
         )
         .context("execute PEERS_WITH merge (bmp)")?;
+
+        let mut res_stmt = conn
+            .prepare(
+                "MATCH (n:BgpNeighbor {id: $id}) \
+                 SET n.source = 'bmp', \
+                     n.resolved_device = $resolved, n.resolution_status = $rs, \
+                     n.resolution_reason = $rr",
+            )
+            .context("prepare BgpNeighbor resolution SET (bmp)")?;
+        conn.execute(
+            &mut res_stmt,
+            vec![
+                ("id", Value::String(bgp_id)),
+                (
+                    "resolved",
+                    Value::String(
+                        resolution.device().unwrap_or_default().to_string(),
+                    ),
+                ),
+                ("rs", Value::String(resolution.status().to_string())),
+                ("rr", Value::String(resolution_reason)),
+            ],
+        )
+        .context("execute BgpNeighbor resolution SET (bmp)")?;
+
+        // The BGP_SESSION_WITH edge for this BMP session was already
+        // reconciled inside upsert_bmp_session (same session id, same
+        // resolution inputs) — reconciling again here would be a
+        // redundant duplicate of that work.
     }
 
     if old_state.as_deref() != Some(event.session_state.as_str()) {
@@ -8552,7 +9092,7 @@ fn upsert_bmp_session(
         &mut edge_stmt,
         vec![
             ("addr", Value::String(bare.to_string())),
-            ("id", Value::String(id)),
+            ("id", Value::String(id.clone())),
         ],
     )?;
 
@@ -8598,22 +9138,28 @@ fn upsert_bmp_session(
 
     // BGP_SESSION_WITH from BMP perspective: the BMP-reported device (update.target) has
     // a BGP session with the peer (event.peer_address). Both may be known devices.
+    // BN-016-U1: same deterministic resolution + session-keyed reconcile as the
+    // gNMI path — an unresolvable peer never leaves a stale edge behind, and
+    // distinct BMP sessions (peer-type / route-distinguisher) never share an edge.
     if !event.peer_address.is_empty() {
-        if let Some(peer_device) = resolve_peer_to_device(conn, &event.peer_address) {
-            let mut bgp_d2d = conn.prepare(
-                "MATCH (a:Device {address: $src}), (b:Device {address: $dst}) \
-                 MERGE (a)-[r:BGP_SESSION_WITH {source: 'bmp'}]->(b) \
-                 SET r.session_state = $state, r.peer_as = $peer_as",
-            )?;
-            let _ = conn.execute(
-                &mut bgp_d2d,
-                vec![
-                    ("src", Value::String(bare.to_string())),
-                    ("dst", Value::String(peer_device.clone())),
-                    ("state", Value::String(event.session_state.clone())),
-                    ("peer_as", Value::Int64(event.peer_as as i64)),
-                ],
-            );
+        let resolution = crate::graph::common::resolve_peer_typed(conn, &event.peer_address);
+        let session_node_id = format!("bmp:{}", id);
+        crate::graph::common::reconcile_bgp_session_edge(
+            conn,
+            &crate::graph::common::BgpSessionEdgeKey {
+                src_device: &bare,
+                source: "bmp",
+                peer_address: &event.peer_address,
+                session_id: &session_node_id,
+                peer_type: event.peer_type as i64,
+                route_distinguisher: event.router_distinguisher.to_string(),
+                network_instance: String::new(),
+            },
+            resolution.device(),
+            &event.session_state,
+            event.peer_as as i64,
+        )?;
+        if let Some(peer_device) = resolution.device() {
             debug!(src = %bare, dst = %peer_device, "BGP_SESSION_WITH (bmp) resolved");
         }
     }
@@ -11176,6 +11722,919 @@ mod tests {
             .await
             .expect("list should not error");
         assert!(results.is_empty());
+    }
+
+    // ─── BN-016-U1: deterministic BGP peer resolution ─────────────────────
+
+    fn bgp_neighbor_update(
+        target: &str,
+        peer: &str,
+        state: &str,
+        peer_as: i64,
+        ts_ns: i64,
+    ) -> TelemetryUpdate {
+        TelemetryUpdate {
+            target: target.to_string(),
+            vendor: "nokia_srl".to_string(),
+            hostname: target.to_string(),
+            role: "leaf".to_string(),
+            site: "dc-a".to_string(),
+            timestamp_ns: ts_ns,
+            path: format!(
+                "network-instance[name=default]/protocols/bgp/neighbor[peer-address={peer}]"
+            ),
+            value: serde_json::json!({
+                "session-state": state,
+                "peer-as": peer_as,
+            }),
+        }
+    }
+
+    fn bmp_peer_state_update(
+        target: &str,
+        peer: &str,
+        state: &str,
+        peer_as: u32,
+        ts_ns: i64,
+    ) -> TelemetryUpdate {
+        TelemetryUpdate {
+            target: target.to_string(),
+            vendor: "nokia_srl".to_string(),
+            hostname: target.to_string(),
+            role: "leaf".to_string(),
+            site: "dc-a".to_string(),
+            timestamp_ns: ts_ns,
+            path: "streaming/bmp/peer-state".to_string(),
+            value: serde_json::json!({
+                "timestamp_ns": ts_ns,
+                "collector_peer": "10.255.0.1:179",
+                "message_type": "peer-state",
+                "peer_type": 0,
+                "peer_flags": 0,
+                "router_distinguisher": 0,
+                "router_address": target,
+                "peer_address": peer,
+                "peer_as": peer_as,
+                "peer_bgp_id": "192.0.2.1",
+                "session_state": state,
+                "route_entries": [],
+                "raw_len": 64,
+            }),
+        }
+    }
+
+    fn seed_device(conn: &Connection<'_>, address: &str) {
+        upsert_device(conn, address, "vendor", address, "", "", ts(1))
+            .expect("seed device");
+    }
+
+    fn claim_alias(conn: &Connection<'_>, ip: &str, device: &str) {
+        upsert_device_address(conn, ip, "test_alias", ts(1)).expect("upsert alias");
+        link_device_address(conn, ip, device).expect("link alias");
+    }
+
+    /// (src, dst, source, peer_address, session_state) sorted for stable asserts.
+    fn bgp_edges(conn: &Connection<'_>) -> Vec<(String, String, String, String, String)> {
+        let mut stmt = conn
+            .prepare(
+                "MATCH (a:Device)-[r:BGP_SESSION_WITH]->(b:Device) \
+                 RETURN a.address, b.address, r.source, r.peer_address, r.session_state",
+            )
+            .expect("prepare bgp edges");
+        let mut rows = conn.execute(&mut stmt, vec![]).expect("query bgp edges");
+        let mut out = Vec::new();
+        while let Some(row) = rows.next() {
+            out.push((
+                read_str(&row[0]),
+                read_str(&row[1]),
+                read_str(&row[2]),
+                read_str(&row[3]),
+                read_str(&row[4]),
+            ));
+        }
+        out.sort();
+        out
+    }
+
+    /// (id, device_address, peer_address, session_state, resolution_status, resolved_device)
+    fn bgp_neighbors(
+        conn: &Connection<'_>,
+    ) -> Vec<(String, String, String, String, String, String)> {
+        let mut stmt = conn
+            .prepare(
+                "MATCH (n:BgpNeighbor) \
+                 RETURN n.id, n.device_address, n.peer_address, n.session_state, \
+                        n.resolution_status, n.resolved_device",
+            )
+            .expect("prepare bgp neighbors");
+        let mut rows = conn.execute(&mut stmt, vec![]).expect("query bgp neighbors");
+        let mut out = Vec::new();
+        while let Some(row) = rows.next() {
+            out.push((
+                read_str(&row[0]),
+                read_str(&row[1]),
+                read_str(&row[2]),
+                read_str(&row[3]),
+                read_str(&row[4]),
+                read_str(&row[5]),
+            ));
+        }
+        out.sort();
+        out
+    }
+
+    #[tokio::test]
+    async fn bgp_session_resolves_unique_alias_and_isolates_neighbors() {
+        // H1+H2+H3: router R peers A (loopback alias) and B (loopback alias)
+        // plus one unknown peer. Each resolves independently of write order.
+        let path = temp_graph_path("bgp-resolve-multi");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1"); // R
+            seed_device(&conn, "10.0.0.2"); // A
+            seed_device(&conn, "10.0.0.3"); // B
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+            claim_alias(&conn, "10.9.9.10", "10.0.0.3");
+        }
+        // Write in an order that must not matter: unknown first.
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.99", "idle", 65000, 10))
+            .await
+            .expect("write unknown peer");
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 11))
+            .await
+            .expect("write peer A");
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.10", "established", 65002, 12))
+            .await
+            .expect("write peer B");
+
+        let conn = Connection::new(&store.db).expect("conn");
+        let edges = bgp_edges(&conn);
+        assert_eq!(
+            edges,
+            vec![
+                (
+                    "10.0.0.1".to_string(),
+                    "10.0.0.2".to_string(),
+                    "gnmi".to_string(),
+                    "10.9.9.9".to_string(),
+                    "established".to_string()
+                ),
+                (
+                    "10.0.0.1".to_string(),
+                    "10.0.0.3".to_string(),
+                    "gnmi".to_string(),
+                    "10.9.9.10".to_string(),
+                    "established".to_string()
+                ),
+            ],
+            "only the two uniquely resolved sessions may produce edges"
+        );
+
+        let neighbors = bgp_neighbors(&conn);
+        assert_eq!(neighbors.len(), 3, "three session observations retained");
+        let unknown = neighbors
+            .iter()
+            .find(|n| n.2 == "10.9.9.99")
+            .expect("unknown peer session node");
+        assert_eq!(unknown.4, "unresolved");
+        assert_eq!(unknown.5, "");
+        let resolved_a = neighbors
+            .iter()
+            .find(|n| n.2 == "10.9.9.9")
+            .expect("peer A session node");
+        assert_eq!(resolved_a.4, "resolved");
+        assert_eq!(resolved_a.5, "10.0.0.2");
+        assert_eq!(resolved_a.0, "10.0.0.1:10.9.9.9");
+    }
+
+    #[tokio::test]
+    async fn bgp_session_ambiguous_alias_produces_no_edge() {
+        // H4: two devices claim the same peer address — explicit ambiguity,
+        // never an arbitrary first match.
+        let path = temp_graph_path("bgp-ambiguous");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            seed_device(&conn, "10.0.0.3");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.3");
+        }
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .await
+            .expect("write bgp neighbor");
+
+        let conn = Connection::new(&store.db).expect("conn");
+        assert!(
+            bgp_edges(&conn).is_empty(),
+            "ambiguous alias must not fabricate an edge"
+        );
+        let neighbors = bgp_neighbors(&conn);
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(neighbors[0].4, "ambiguous");
+        assert_eq!(neighbors[0].5, "");
+    }
+
+    #[tokio::test]
+    async fn bgp_session_conflicting_tiers_produces_no_edge() {
+        // H5: device D owns the peer IP as its primary address while
+        // device E claims it as an alias — deterministic conflict.
+        let path = temp_graph_path("bgp-conflict");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.9.9.9"); // primary owner
+            seed_device(&conn, "10.0.0.4"); // alias claimant
+            claim_alias(&conn, "10.9.9.9", "10.0.0.4");
+        }
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .await
+            .expect("write bgp neighbor");
+
+        let conn = Connection::new(&store.db).expect("conn");
+        assert!(
+            bgp_edges(&conn).is_empty(),
+            "conflicting evidence must not fabricate an edge"
+        );
+        let neighbors = bgp_neighbors(&conn);
+        assert_eq!(neighbors[0].4, "conflict");
+        assert!(neighbors[0].5.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bgp_session_multiple_peers_to_same_device_keep_state() {
+        // H6: two distinct sessions R→A via different peer addresses —
+        // independent session state on separate keyed edges.
+        let path = temp_graph_path("bgp-multi-session");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+            claim_alias(&conn, "10.9.9.10", "10.0.0.2");
+        }
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .await
+            .expect("write session 1");
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.10", "idle", 65001, 11))
+            .await
+            .expect("write session 2");
+
+        let conn = Connection::new(&store.db).expect("conn");
+        let edges = bgp_edges(&conn);
+        assert_eq!(edges.len(), 2, "two keyed session edges");
+        assert!(edges.iter().any(|e| e.3 == "10.9.9.9" && e.4 == "established"));
+        assert!(edges.iter().any(|e| e.3 == "10.9.9.10" && e.4 == "idle"));
+    }
+
+    #[tokio::test]
+    async fn bgp_session_gnmi_and_bmp_keep_separate_provenance() {
+        // H8: gNMI and BMP report the same session — distinct session
+        // nodes and distinct edges; states do not collapse.
+        let path = temp_graph_path("bgp-bmp-gnmi");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+        }
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .await
+            .expect("write gnmi neighbor");
+        store
+            .write(bmp_peer_state_update("10.0.0.1", "10.9.9.9", "established", 65001, 11))
+            .await
+            .expect("write bmp peer state");
+
+        let conn = Connection::new(&store.db).expect("conn");
+        let neighbors = bgp_neighbors(&conn);
+        assert_eq!(neighbors.len(), 2, "gnmi and bmp session nodes are distinct");
+        assert!(neighbors.iter().any(|n| n.0 == "10.0.0.1:10.9.9.9"));
+        assert!(neighbors.iter().any(|n| n.0 == "bmp:10.0.0.1:10.9.9.9"));
+
+        let edges = bgp_edges(&conn);
+        assert_eq!(edges.len(), 2, "one edge per provenance");
+        assert!(edges.iter().any(|e| e.2 == "gnmi" && e.1 == "10.0.0.2"));
+        assert!(edges.iter().any(|e| e.2 == "bmp" && e.1 == "10.0.0.2"));
+    }
+
+    #[tokio::test]
+    async fn bgp_session_stale_edge_reconciled_on_ownership_loss() {
+        // H9: peer resolves → edge exists; alias ownership removed → the
+        // next observation must delete the stale edge.
+        let path = temp_graph_path("bgp-stale");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+        }
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .await
+            .expect("write resolved neighbor");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            assert_eq!(bgp_edges(&conn).len(), 1);
+            conn.query("MATCH ()-[r:KNOWN_ADDRESS_OF]->() DELETE r")
+                .expect("remove alias ownership");
+        }
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 11))
+            .await
+            .expect("re-write after ownership loss");
+
+        let conn = Connection::new(&store.db).expect("conn");
+        assert!(
+            bgp_edges(&conn).is_empty(),
+            "stale edge must be reconciled away"
+        );
+        let neighbors = bgp_neighbors(&conn);
+        assert_eq!(neighbors[0].4, "unresolved");
+    }
+
+    #[tokio::test]
+    async fn bgp_session_replay_is_idempotent_across_restart() {
+        // H10: replaying the same observation creates no duplicates and
+        // survives a store reopen.
+        let path = temp_graph_path("bgp-replay");
+        {
+            let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+            {
+                let conn = Connection::new(&store.db).expect("conn");
+                seed_device(&conn, "10.0.0.1");
+                seed_device(&conn, "10.0.0.2");
+                claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+            }
+            for ts_ns in [10, 11, 12] {
+                store
+                    .write(bgp_neighbor_update(
+                        "10.0.0.1",
+                        "10.9.9.9",
+                        "established",
+                        65001,
+                        ts_ns,
+                    ))
+                    .await
+                    .expect("write bgp neighbor");
+            }
+            let conn = Connection::new(&store.db).expect("conn");
+            assert_eq!(bgp_edges(&conn).len(), 1, "replay must not duplicate edges");
+        }
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("reopen store");
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 13))
+            .await
+            .expect("post-restart write");
+        let conn = Connection::new(&store.db).expect("conn");
+        assert_eq!(bgp_edges(&conn).len(), 1, "restart replay stays idempotent");
+    }
+
+    // ─── BN-016-U1 closeout: batch writes, session identity, fail-closed ──
+
+    fn iface_stats_update(target: &str, if_name: &str, ts_ns: i64) -> TelemetryUpdate {
+        TelemetryUpdate {
+            target: target.to_string(),
+            vendor: "nokia_srl".to_string(),
+            hostname: target.to_string(),
+            role: "leaf".to_string(),
+            site: "dc-a".to_string(),
+            timestamp_ns: ts_ns,
+            path: format!("interface[name={if_name}]/statistics"),
+            value: serde_json::json!({"in-octets": 1000, "out-octets": 2000}),
+        }
+    }
+
+    fn bmp_peer_state_full(
+        target: &str,
+        peer: &str,
+        state: &str,
+        peer_as: u32,
+        peer_type: u8,
+        rd: u64,
+        ts_ns: i64,
+    ) -> TelemetryUpdate {
+        TelemetryUpdate {
+            target: target.to_string(),
+            vendor: "nokia_srl".to_string(),
+            hostname: target.to_string(),
+            role: "leaf".to_string(),
+            site: "dc-a".to_string(),
+            timestamp_ns: ts_ns,
+            path: "streaming/bmp/peer-state".to_string(),
+            value: serde_json::json!({
+                "timestamp_ns": ts_ns,
+                "collector_peer": "10.255.0.1:179",
+                "message_type": "peer-state",
+                "peer_type": peer_type,
+                "peer_flags": 0,
+                "router_distinguisher": rd,
+                "router_address": target,
+                "peer_address": peer,
+                "peer_as": peer_as,
+                "peer_bgp_id": "192.0.2.1",
+                "session_state": state,
+                "route_entries": [],
+                "raw_len": 64,
+            }),
+        }
+    }
+
+    /// (src, dst, source, peer_address, session_state, session_id) sorted.
+    fn bgp_session_edges(conn: &Connection<'_>) -> Vec<(String, String, String, String, String, String)> {
+        let mut stmt = conn
+            .prepare(
+                "MATCH (a:Device)-[r:BGP_SESSION_WITH]->(b:Device) \
+                 RETURN a.address, b.address, r.source, r.peer_address, r.session_state, r.session_id",
+            )
+            .expect("prepare bgp session edges");
+        let mut rows = conn.execute(&mut stmt, vec![]).expect("query bgp session edges");
+        let mut out = Vec::new();
+        while let Some(row) = rows.next() {
+            out.push((
+                read_str(&row[0]),
+                read_str(&row[1]),
+                read_str(&row[2]),
+                read_str(&row[3]),
+                read_str(&row[4]),
+                read_str(&row[5]),
+            ));
+        }
+        out.sort();
+        out
+    }
+
+    #[tokio::test]
+    async fn bgp_batch_write_produces_session_edges_and_state() {
+        // B1: the production path is write_batch (WriteCoordinator). A
+        // batch containing BGP neighbors, a BMP report and an interface
+        // update must commit real graph state — previously the nested
+        // BEGIN TRANSACTION in the reconcile helper failed every
+        // BGP/BMP update inside the batch transaction.
+        let path = temp_graph_path("bgp-batch");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            seed_device(&conn, "10.0.0.3");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+            claim_alias(&conn, "10.9.9.10", "10.0.0.3");
+        }
+        store
+            .write_batch(vec![
+                bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10),
+                bgp_neighbor_update("10.0.0.1", "10.9.9.10", "idle", 65002, 11),
+                bmp_peer_state_update("10.0.0.2", "10.9.9.9", "established", 65001, 12),
+                iface_stats_update("10.0.0.1", "ethernet-1/1", 13),
+            ])
+            .await
+            .expect("batch write");
+
+        let conn = Connection::new(&store.db).expect("conn");
+        let edges = bgp_edges(&conn);
+        assert_eq!(edges.len(), 3, "gnmi x2 + bmp x1 session edges: {edges:?}");
+        assert!(edges.iter().any(|e| e.1 == "10.0.0.2" && e.2 == "gnmi"));
+        assert!(edges.iter().any(|e| e.1 == "10.0.0.3" && e.2 == "gnmi" && e.4 == "idle"));
+        assert!(edges.iter().any(|e| e.2 == "bmp"));
+        // Interface write in the same batch committed too.
+        let mut stmt = conn
+            .prepare("MATCH (i:Interface {id: '10.0.0.1:ethernet-1/1'}) RETURN i.in_octets")
+            .expect("prepare iface check");
+        let mut rows = conn.execute(&mut stmt, vec![]).expect("iface check");
+        let row = rows.next().expect("interface row");
+        assert_eq!(row[0].to_string(), "1000");
+    }
+
+    #[tokio::test]
+    async fn bgp_batch_ambiguous_peer_produces_no_edge() {
+        let path = temp_graph_path("bgp-batch-ambig");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            seed_device(&conn, "10.0.0.3");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.3");
+        }
+        store
+            .write_batch(vec![
+                bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10),
+                iface_stats_update("10.0.0.1", "ethernet-1/1", 11),
+            ])
+            .await
+            .expect("batch write");
+        let conn = Connection::new(&store.db).expect("conn");
+        assert!(bgp_edges(&conn).is_empty(), "ambiguous peer: no edge");
+        let neighbors = bgp_neighbors(&conn);
+        assert_eq!(neighbors[0].4, "ambiguous");
+    }
+
+    #[tokio::test]
+    async fn bgp_batch_failure_does_not_poison_other_updates() {
+        // A malformed BMP event inside a batch is counted and skipped;
+        // the remaining updates still commit and later writes succeed.
+        let path = temp_graph_path("bgp-batch-partial");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+        }
+        let mut bad = bmp_peer_state_update("10.0.0.1", "10.9.9.9", "established", 65001, 10);
+        bad.value = serde_json::json!({"not": "a bmp event"});
+        store
+            .write_batch(vec![
+                bad,
+                bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 11),
+            ])
+            .await
+            .expect("batch write returns ok with per-update errors");
+        let conn = Connection::new(&store.db).expect("conn");
+        assert_eq!(bgp_edges(&conn).len(), 1, "good update still committed");
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "idle", 65001, 12))
+            .await
+            .expect("subsequent single write");
+        let conn = Connection::new(&store.db).expect("conn");
+        assert_eq!(bgp_edges(&conn)[0].4, "idle");
+    }
+
+    #[tokio::test]
+    async fn bgp_same_peer_distinct_route_distinguishers_keep_separate_edges() {
+        // B2: two BMP sessions to the same peer address under different
+        // RDs are distinct sessions — they must not collapse.
+        let path = temp_graph_path("bgp-rd-split");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+        }
+        store
+            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "established", 65001, 1, 100, 10))
+            .await
+            .expect("bmp rd=100");
+        store
+            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "idle", 65001, 1, 200, 11))
+            .await
+            .expect("bmp rd=200");
+
+        let conn = Connection::new(&store.db).expect("conn");
+        let edges = bgp_session_edges(&conn);
+        let bmp_edges: Vec<_> = edges.iter().filter(|e| e.2 == "bmp").collect();
+        assert_eq!(bmp_edges.len(), 2, "distinct RDs -> distinct edges: {edges:?}");
+        assert_ne!(bmp_edges[0].5, bmp_edges[1].5, "session ids differ");
+        assert!(bmp_edges.iter().any(|e| e.4 == "established"));
+        assert!(bmp_edges.iter().any(|e| e.4 == "idle"));
+        // Reconciling one session (rd=100 goes unresolved via re-write is
+        // not possible — peer still resolves); instead verify that a
+        // THIRD session write does not disturb the other two.
+        store
+            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "active", 65001, 1, 300, 12))
+            .await
+            .expect("bmp rd=300");
+        let conn = Connection::new(&store.db).expect("conn");
+        let edges = bgp_session_edges(&conn);
+        assert_eq!(
+            edges.iter().filter(|e| e.2 == "bmp").count(),
+            3,
+            "new session added without disturbing existing: {edges:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bgp_same_peer_distinct_peer_types_keep_separate_edges() {
+        let path = temp_graph_path("bgp-ptype-split");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+        }
+        store
+            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "established", 65001, 0, 0, 10))
+            .await
+            .expect("global peer");
+        store
+            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "established", 65001, 2, 0, 11))
+            .await
+            .expect("local peer");
+        let conn = Connection::new(&store.db).expect("conn");
+        let edges = bgp_session_edges(&conn);
+        assert_eq!(edges.len(), 2, "peer-type distinguishes sessions: {edges:?}");
+    }
+
+    #[tokio::test]
+    async fn bgp_gnmi_same_peer_two_network_instances_keep_separate_sessions() {
+        // B2: the SR Linux classifier path carries network-instance —
+        // two VRFs with the same peer address are distinct sessions.
+        let path = temp_graph_path("bgp-ni-split");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+        }
+        for (ni, state, ts_ns) in [("vrf-a", "established", 10), ("vrf-b", "idle", 11)] {
+            store
+                .write(TelemetryUpdate {
+                    target: "10.0.0.1".to_string(),
+                    vendor: "nokia_srl".to_string(),
+                    hostname: "10.0.0.1".to_string(),
+                    role: "leaf".to_string(),
+                    site: "dc-a".to_string(),
+                    timestamp_ns: ts_ns,
+                    path: format!(
+                        "network-instance[name={ni}]/protocols/bgp/neighbor[peer-address=10.9.9.9]"
+                    ),
+                    value: serde_json::json!({"session-state": state, "peer-as": 65001}),
+                })
+                .await
+                .expect("write ni session");
+        }
+        let conn = Connection::new(&store.db).expect("conn");
+        let neighbors = bgp_neighbors(&conn);
+        assert_eq!(neighbors.len(), 2, "two NI sessions: {neighbors:?}");
+        assert!(neighbors.iter().any(|n| n.0 == "10.0.0.1:vrf-a:10.9.9.9"));
+        assert!(neighbors.iter().any(|n| n.0 == "10.0.0.1:vrf-b:10.9.9.9"));
+        let edges = bgp_session_edges(&conn);
+        assert_eq!(edges.len(), 2, "independent edges per NI: {edges:?}");
+        assert!(edges.iter().any(|e| e.4 == "established"));
+        assert!(edges.iter().any(|e| e.4 == "idle"));
+    }
+
+    #[tokio::test]
+    async fn bgp_peer_as_preserved_when_update_omits_it() {
+        // B5: an ON_CHANGE down notification without peer-as must not
+        // project peer_as=0 onto the relationship.
+        let path = temp_graph_path("bgp-peer-as");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+        }
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .await
+            .expect("established with peer-as");
+        // Down update omitting peer-as entirely.
+        store
+            .write(TelemetryUpdate {
+                target: "10.0.0.1".to_string(),
+                vendor: "nokia_srl".to_string(),
+                hostname: "10.0.0.1".to_string(),
+                role: "leaf".to_string(),
+                site: "dc-a".to_string(),
+                timestamp_ns: 11,
+                path: "network-instance[name=default]/protocols/bgp/neighbor[peer-address=10.9.9.9]"
+                    .to_string(),
+                value: serde_json::json!({"session-state": "down"}),
+            })
+            .await
+            .expect("down without peer-as");
+        let conn = Connection::new(&store.db).expect("conn");
+        let mut stmt = conn
+            .prepare(
+                "MATCH (a:Device)-[r:BGP_SESSION_WITH]->(b:Device) \
+                 RETURN r.peer_as, r.session_state",
+            )
+            .expect("prepare edge props");
+        let mut rows = conn.execute(&mut stmt, vec![]).expect("edge props");
+        let row = rows.next().expect("edge row");
+        assert_eq!(row[0].to_string(), "65001", "effective peer-as preserved");
+        assert_eq!(read_str(&row[1]), "down");
+    }
+
+    #[tokio::test]
+    async fn bgp_edge_invalidated_when_ownership_becomes_ambiguous() {
+        // B4: ownership evidence changes WITHOUT a new BGP observation —
+        // the stored relationship must be invalidated immediately.
+        let path = temp_graph_path("bgp-invalidate");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+        }
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .await
+            .expect("resolved write");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            assert_eq!(bgp_edges(&conn).len(), 1, "edge exists after resolve");
+            // A second device now claims the same peer address — no new
+            // BGP telemetry is sent.
+            seed_device(&conn, "10.0.0.3");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.3");
+        }
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            assert!(
+                bgp_edges(&conn).is_empty(),
+                "ambiguous ownership must invalidate the stored edge"
+            );
+            // Removing the conflict restores a unique resolution — the
+            // edge is rebuilt from the still-current session evidence.
+            conn.query("MATCH (a:DeviceAddress {ip: '10.9.9.9'})-[r:KNOWN_ADDRESS_OF]->(d:Device {address: '10.0.0.3'}) DELETE r")
+                .expect("remove conflicting claim");
+            // KNOWN_ADDRESS_OF deletion is not hooked; simulate the
+            // operator re-asserting the surviving claim.
+            link_device_address(&conn, "10.9.9.9", "10.0.0.2").expect("relink");
+        }
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            let edges = bgp_edges(&conn);
+            assert_eq!(edges.len(), 1, "unique resolution restored: {edges:?}");
+            assert_eq!(edges[0].1, "10.0.0.2");
+        }
+    }
+
+    #[tokio::test]
+    async fn bgp_edge_invalidated_on_identity_claim_change() {
+        // B4: EntityIdentity mgmt_ip is ownership evidence too — a new
+        // claim on the peer address invalidates without BGP telemetry.
+        let path = temp_graph_path("bgp-identity-invalidate");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+        }
+        store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .await
+            .expect("resolved write");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            assert_eq!(bgp_edges(&conn).len(), 1);
+            seed_device(&conn, "10.0.0.4");
+            // Device 10.0.0.4's identity claims the peer address as its
+            // mgmt_ip — conflicting with the alias owner.
+            crate::graph::common::upsert_entity_identity(
+                &conn, "10.0.0.4", "host-d", "", "10.9.9.9", "test", 20,
+            )
+            .expect("identity claim");
+        }
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            assert!(
+                bgp_edges(&conn).is_empty(),
+                "conflicting identity claim must invalidate the edge"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bgp_resolution_unavailable_fails_closed() {
+        // B3: when a required evidence tier cannot be examined the
+        // resolution is Unavailable — never Resolved on partial
+        // evidence, and no authoritative edge is created.
+        let path = temp_graph_path("bgp-unavailable");
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            seed_device(&conn, "10.0.0.1");
+            seed_device(&conn, "10.0.0.2");
+            claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+            // Simulate an unreadable evidence tier.
+            conn.query("DROP TABLE HAS_IDENTITY").expect("drop rel");
+            conn.query("DROP TABLE EntityIdentity").expect("drop table");
+        }
+        // The write itself may report a commit error (lbug rolls the
+        // transaction back when the dropped table breaks a tolerated
+        // sub-write) — what matters is the recorded resolution is
+        // fail-closed: no authoritative edge is created.
+        let _ = store
+            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .await;
+        let conn = Connection::new(&store.db).expect("conn");
+        assert!(
+            bgp_edges(&conn).is_empty(),
+            "unavailable resolution must not create an edge"
+        );
+        let neighbors = bgp_neighbors(&conn);
+        assert_eq!(neighbors.len(), 1, "session observation retained");
+        assert_eq!(neighbors[0].4, "unavailable", "status: {neighbors:?}");
+        assert!(neighbors[0].5.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bgp_legacy_unkeyed_edges_migrated_on_open() {
+        // B4 migration: edges without session_id are re-keyed when
+        // exactly one session node can claim them, invalidated when
+        // ambiguous.
+        let path = temp_graph_path("bgp-legacy-migrate");
+        {
+            let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open store");
+            {
+                let conn = Connection::new(&store.db).expect("conn");
+                seed_device(&conn, "10.0.0.1");
+                seed_device(&conn, "10.0.0.2");
+                seed_device(&conn, "10.0.0.3");
+                claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+                claim_alias(&conn, "10.9.9.10", "10.0.0.3");
+            }
+            store
+                .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+                .await
+                .expect("write session A");
+            store
+                .write(bgp_neighbor_update("10.0.0.1", "10.9.9.10", "idle", 65002, 11))
+                .await
+                .expect("write session B");
+            // Simulate pre-session_id edges: strip the key.
+            let conn = Connection::new(&store.db).expect("conn");
+            conn.query(
+                "MATCH ()-[r:BGP_SESSION_WITH]->() SET r.session_id = '', r.peer_type = -1, r.route_distinguisher = '', r.network_instance = ''",
+            )
+            .expect("strip session ids");
+        }
+        // Reopen: migration runs.
+        let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("reopen store");
+        let conn = Connection::new(&store.db).expect("conn");
+        let edges = bgp_session_edges(&conn);
+        assert_eq!(edges.len(), 2, "both sessions re-keyed: {edges:?}");
+        assert!(
+            edges.iter().all(|e| !e.5.is_empty()),
+            "every edge carries a session id"
+        );
+        assert!(edges.iter().any(|e| e.4 == "established"));
+        assert!(edges.iter().any(|e| e.4 == "idle"));
+
+        // Ambiguous legacy edges: two BMP sessions share the peer
+        // address, so unkeyed edges cannot be attributed to a session
+        // without guessing — they must be invalidated, not arbitrarily
+        // assigned. Session evidence remains in the BgpNeighbor nodes.
+        let path2 = temp_graph_path("bgp-legacy-ambig");
+        {
+            let store = GraphStore::open(&path2, 256 * 1024 * 1024).expect("open store");
+            {
+                let conn = Connection::new(&store.db).expect("conn");
+                seed_device(&conn, "10.0.0.1");
+                seed_device(&conn, "10.0.0.2");
+                claim_alias(&conn, "10.9.9.9", "10.0.0.2");
+            }
+            store
+                .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "established", 65001, 1, 100, 10))
+                .await
+                .expect("bmp rd100");
+            store
+                .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "idle", 65001, 1, 200, 11))
+                .await
+                .expect("bmp rd200");
+            let conn = Connection::new(&store.db).expect("conn");
+            conn.query(
+                "MATCH ()-[r:BGP_SESSION_WITH]->() SET r.session_id = ''",
+            )
+            .expect("strip session ids");
+        }
+        let store = GraphStore::open(&path2, 256 * 1024 * 1024).expect("reopen store2");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            assert!(
+                bgp_session_edges(&conn).is_empty(),
+                "ambiguous legacy edges must be invalidated, not guessed"
+            );
+            // Session evidence is retained; re-observation rebuilds only
+            // the observed session's edge.
+            let neighbors = bgp_neighbors(&conn);
+            assert_eq!(neighbors.len(), 2, "session nodes retained");
+        }
+        store
+            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "established", 65001, 1, 100, 12))
+            .await
+            .expect("re-observe rd100");
+        {
+            let conn = Connection::new(&store.db).expect("conn");
+            let edges = bgp_session_edges(&conn);
+            assert_eq!(edges.len(), 1, "only re-observed session edged: {edges:?}");
+            assert!(edges[0].5.contains("rd100"));
+        }
     }
 }
 

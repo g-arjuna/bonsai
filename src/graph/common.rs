@@ -195,6 +195,14 @@ pub fn link_device_address(conn: &Connection<'_>, signal_ip: &str, device_ip: &s
         ],
     ) {
         tracing::debug!(error = %e, signal_ip, device_ip, "KNOWN_ADDRESS_OF edge skipped");
+        return Ok(());
+    }
+    // Ownership evidence for `signal_ip` just changed: any stored
+    // BGP_SESSION_WITH edge projecting a session that names this address
+    // must be re-resolved now — not whenever the next BGP update happens
+    // to arrive (which may be never for an idle session).
+    if let Err(e) = reconcile_bgp_session_edges_for_peer(conn, signal_ip) {
+        tracing::warn!(error = %e, signal_ip, "BGP edge re-resolution after alias link failed");
     }
     Ok(())
 }
@@ -223,6 +231,18 @@ pub fn upsert_entity_identity(
     };
     let id = format!("identity:{key}");
     let now = ts(now_ns);
+
+    // Capture the previous mgmt_ip claim so a change (or first claim)
+    // can trigger BGP edge re-resolution for BOTH the newly claimed and
+    // the previously claimed address.
+    let mut prev_stmt = conn
+        .prepare("MATCH (e:EntityIdentity {id: $id}) RETURN e.mgmt_ip")
+        .context("prepare EntityIdentity mgmt_ip lookup")?;
+    let prev_mgmt_ip = conn
+        .execute(&mut prev_stmt, vec![("id", Value::String(id.clone()))])
+        .ok()
+        .and_then(|mut rows| rows.next().map(|row| read_str(&row[0])))
+        .unwrap_or_default();
 
     let mut stmt = conn
         .prepare(
@@ -265,6 +285,21 @@ pub fn upsert_entity_identity(
             ],
         ) {
             tracing::debug!(error = %e, device_address, "HAS_IDENTITY edge skipped (device not yet written)");
+        }
+    }
+
+    // mgmt_ip ownership evidence changed (new claim or reassignment):
+    // re-resolve BGP session edges that name the affected addresses.
+    // Gated on an actual value change so routine telemetry writes do not
+    // pay for peer scans.
+    if !mgmt_ip.is_empty() && mgmt_ip != prev_mgmt_ip {
+        for ip in [mgmt_ip, prev_mgmt_ip.as_str()] {
+            if ip.is_empty() {
+                continue;
+            }
+            if let Err(e) = reconcile_bgp_session_edges_for_peer(conn, ip) {
+                tracing::warn!(error = %e, ip, "BGP edge re-resolution after identity claim change failed");
+            }
         }
     }
     Ok(())
@@ -661,68 +696,364 @@ pub fn link_host_endpoint_to_interface(
     Ok(())
 }
 
-/// Attempt to resolve a peer IP address (loopback, interface IP, mgmt IP, etc.) to a
-/// known Device's primary address (bare IP PK).
+/// Deterministic outcome of resolving a peer address to a Device.
 ///
-/// Resolution order (first hit wins):
-///   1. Exact `Device.address` match  — mgmt/gNMI IP onboarded directly
-///   2. `DeviceAddress.ip` lookup      — any registered secondary IP (loopback, extra_ip, etc.)
-///   3. `EntityIdentity.mgmt_ip` match — learned from LLDP or onboarding enrichment
+/// A BGP neighbor observation and a resolved device-to-device
+/// relationship are different entities: this enum is the contract
+/// between them. `Unresolved`, `Ambiguous` and `Conflicted` are all
+/// explicit non-results — callers must never substitute an arbitrary
+/// candidate for them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerResolution {
+    /// Exactly one device claims the address, consistently across all
+    /// evidence tiers that have an opinion.
+    Resolved(String),
+    /// No device claims the address.
+    Unresolved,
+    /// Multiple distinct devices claim the address within the alias or
+    /// identity tiers (no authoritative primary-address claim).
+    Ambiguous,
+    /// The primary `Device.address` tier and the alias/identity tiers
+    /// disagree about ownership.
+    Conflicted { primary: String, alias: String },
+    /// One or more required evidence tiers could not be examined (query
+    /// preparation/execution failure). This is NOT a successful "no
+    /// results" lookup — resolution is unavailable and callers must not
+    /// treat any candidate as authoritative.
+    Unavailable { detail: String },
+}
+
+impl PeerResolution {
+    /// The resolved device address, or `None` for every non-result.
+    pub fn device(&self) -> Option<&str> {
+        match self {
+            PeerResolution::Resolved(device) => Some(device),
+            _ => None,
+        }
+    }
+
+    /// Stable machine-readable status for API/UI consumers.
+    pub fn status(&self) -> &'static str {
+        match self {
+            PeerResolution::Resolved(_) => "resolved",
+            PeerResolution::Unresolved => "unresolved",
+            PeerResolution::Ambiguous => "ambiguous",
+            PeerResolution::Conflicted { .. } => "conflict",
+            PeerResolution::Unavailable { .. } => "unavailable",
+        }
+    }
+
+    /// Human/machine-readable explanation for non-resolved outcomes.
+    /// Empty for `Resolved`.
+    pub fn reason(&self) -> String {
+        match self {
+            PeerResolution::Resolved(_) => String::new(),
+            PeerResolution::Unresolved => "no_device_claims_address".to_string(),
+            PeerResolution::Ambiguous => "multiple_devices_claim_address".to_string(),
+            PeerResolution::Conflicted { primary, alias } => {
+                format!("primary_address_owner={primary} alias_owner={alias}")
+            }
+            PeerResolution::Unavailable { detail } => detail.clone(),
+        }
+    }
+}
+
+/// Resolve a peer IP address to the Device that owns it, collecting ALL
+/// evidence before deciding. No `LIMIT 1` arbitrary picks, no prefix
+/// matches, no provisional flow/syslog/SNMP/OTLP claims.
 ///
-/// Returns `Some(device_address)` on success, `None` when peer is unknown.
-/// All failures are silent (best-effort) so callers should treat None as "not yet known".
-pub fn resolve_peer_to_device(conn: &Connection<'_>, peer_ip: &str) -> Option<String> {
+/// Evidence tiers (all must agree for `Resolved`):
+///   1. Exact `Device.address` match — the primary, authoritative key.
+///   2. `DeviceAddress.ip` → `KNOWN_ADDRESS_OF` — registered aliases
+///      (extra_ips, loopbacks, protocol-observed addresses).
+///   3. `EntityIdentity.mgmt_ip` → `HAS_IDENTITY` — identity evidence.
+///
+/// Multiple pieces of evidence pointing at the SAME device deduplicate
+/// to `Resolved`. Distinct claimants produce `Ambiguous` (within a
+/// tier) or `Conflicted` (primary vs alias/identity disagreement).
+pub fn resolve_peer_typed(conn: &Connection<'_>, peer_ip: &str) -> PeerResolution {
     if peer_ip.is_empty() {
-        return None;
+        return PeerResolution::Unresolved;
     }
     let bare = crate::registry::strip_port(peer_ip);
 
-    // Tier 1: exact Device.address match
-    if let Ok(mut stmt) = conn.prepare("MATCH (d:Device {address: $ip}) RETURN d.address LIMIT 1") {
-        if let Ok(mut rows) = conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))])
-        {
-            if let Some(row) = rows.next() {
-                if let Value::String(addr) = &row[0] {
-                    if !addr.is_empty() {
-                        return Some(addr.clone());
-                    }
+    // Each evidence tier is a required lookup. A failed prepare/execute is
+    // NOT the same as a successful lookup with zero rows: it means the
+    // evidence could not be examined, so the resolution is Unavailable
+    // rather than Resolved on partial evidence (fail closed).
+    let tier = |label: &str,
+                cypher: &str|
+     -> std::result::Result<Vec<String>, String> {
+        let mut stmt = conn
+            .prepare(cypher)
+            .map_err(|e| format!("{label}: prepare failed: {e}"))?;
+        let mut rows = conn
+            .execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))])
+            .map_err(|e| format!("{label}: execute failed: {e}"))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next() {
+            if let Value::String(addr) = &row[0] {
+                if !addr.is_empty() && !out.contains(addr) {
+                    out.push(addr.clone());
                 }
             }
         }
-    }
+        Ok(out)
+    };
 
-    // Tier 2: DeviceAddress lookup (loopback, extra_ip, BMP peer, NetFlow exporter, etc.)
-    if let Ok(mut stmt) = conn.prepare(
-        "MATCH (a:DeviceAddress {ip: $ip})-[:KNOWN_ADDRESS_OF]->(d:Device) RETURN d.address LIMIT 1",
-    ) {
-        if let Ok(mut rows) = conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))]) {
-            if let Some(row) = rows.next() {
-                if let Value::String(addr) = &row[0] {
-                    if !addr.is_empty() {
-                        return Some(addr.clone());
-                    }
+    let primary = tier(
+        "primary_address",
+        "MATCH (d:Device {address: $ip}) RETURN DISTINCT d.address",
+    );
+    let aliases = tier(
+        "alias_address",
+        "MATCH (a:DeviceAddress {ip: $ip})-[:KNOWN_ADDRESS_OF]->(d:Device) \
+         RETURN DISTINCT d.address",
+    );
+    let identities = tier(
+        "entity_identity",
+        "MATCH (e:EntityIdentity {mgmt_ip: $ip})<-[:HAS_IDENTITY]-(d:Device) \
+         RETURN DISTINCT d.address",
+    );
+
+    let (primary, aliases, identities) = match (primary, aliases, identities) {
+        (Ok(p), Ok(a), Ok(i)) => (p, a, i),
+        (p, a, i) => {
+            let mut failures: Vec<String> = Vec::new();
+            for (label, res) in [
+                ("primary_address", &p),
+                ("alias_address", &a),
+                ("entity_identity", &i),
+            ] {
+                if let Err(e) = res {
+                    failures.push(format!("{label}: {e}"));
                 }
             }
+            metrics::counter!("bonsai_peer_resolution_unavailable_total").increment(1);
+            return PeerResolution::Unavailable {
+                detail: format!("evidence_lookup_failed: {}", failures.join("; ")),
+            };
+        }
+    };
+
+    // Union of all claimants, deduplicated.
+    let mut all: Vec<String> = primary.clone();
+    for addr in aliases.iter().chain(identities.iter()) {
+        if !all.contains(addr) {
+            all.push(addr.clone());
         }
     }
 
-    // Tier 3: EntityIdentity.mgmt_ip (covers Cisco chassis-id-as-mgmt-IP quirk and
-    // any IP learned from LLDP management-address TLV but not yet a DeviceAddress node).
-    if let Ok(mut stmt) = conn.prepare(
-        "MATCH (e:EntityIdentity {mgmt_ip: $ip})<-[:HAS_IDENTITY]-(d:Device) RETURN d.address LIMIT 1",
-    ) {
-        if let Ok(mut rows) = conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))]) {
-            if let Some(row) = rows.next() {
-                if let Value::String(addr) = &row[0] {
-                    if !addr.is_empty() {
-                        return Some(addr.clone());
-                    }
+    match all.len() {
+        0 => PeerResolution::Unresolved,
+        1 => PeerResolution::Resolved(all[0].clone()),
+        _ => {
+            // Primary address is the strongest claim. If it exists and
+            // any alias/identity evidence names a DIFFERENT device, the
+            // evidence contradicts — explicit conflict, never a guess.
+            if let Some(primary_addr) = primary.first() {
+                if let Some(other) = all.iter().find(|a| *a != primary_addr) {
+                    return PeerResolution::Conflicted {
+                        primary: primary_addr.clone(),
+                        alias: other.clone(),
+                    };
                 }
             }
+            PeerResolution::Ambiguous
         }
     }
+}
 
-    None
+/// Attempt to resolve a peer IP address (loopback, interface IP, mgmt IP, etc.) to a
+/// known Device's primary address (bare IP PK).
+///
+/// Thin wrapper over [`resolve_peer_typed`]: returns `Some(device)` only
+/// for a uniquely, consistently resolved device. Ambiguous, conflicting
+/// and unknown peers all return `None` — callers must not substitute an
+/// arbitrary candidate.
+///
+/// Returns `Some(device_address)` on success, `None` when peer is unknown
+/// or resolution is not unique. All failures are silent (best-effort) so
+/// callers should treat None as "not yet known".
+pub fn resolve_peer_to_device(conn: &Connection<'_>, peer_ip: &str) -> Option<String> {
+    resolve_peer_typed(conn, peer_ip).device().map(str::to_string)
+}
+
+/// Identity of ONE BGP session observation as projected onto a
+/// `BGP_SESSION_WITH` Device→Device edge.
+///
+/// `session_id` is the `BgpNeighbor` node id — the same identifier the
+/// session evidence uses — so distinct sessions that share a peer
+/// address (different BMP peer-type/route-distinguisher, different gNMI
+/// network-instances) never collapse onto one relationship.
+pub(crate) struct BgpSessionEdgeKey<'a> {
+    pub src_device: &'a str,
+    /// Protocol provenance: "gnmi" or "bmp".
+    pub source: &'a str,
+    pub peer_address: &'a str,
+    /// `BgpNeighbor.id` of the session node this edge projects.
+    pub session_id: &'a str,
+    /// BMP peer-type; -1 when the source does not provide one.
+    pub peer_type: i64,
+    /// BMP route distinguisher; "" when not provided.
+    pub route_distinguisher: String,
+    /// gNMI network-instance context; "" when not provided.
+    pub network_instance: String,
+}
+
+/// Transactionally reconcile the `BGP_SESSION_WITH` Device→Device edge
+/// for ONE session observation, keyed by (src device, source protocol,
+/// peer address, session id).
+///
+/// * `resolved_device = Some(dst)` — the peer address resolved uniquely:
+///   replace any edge for THIS session with a single edge to `dst`
+///   carrying the observed session state.
+/// * `resolved_device = None` — unresolved/ambiguous/conflicting/
+///   unavailable: every edge for THIS session is removed. A session
+///   observation that cannot be resolved must never leave a previous
+///   resolution presenting itself as current. Edges belonging to OTHER
+///   sessions (different `session_id`) are untouched.
+///
+/// The caller owns the surrounding transaction: inside `write_batch`
+/// this participates in the batch transaction; inside `write` the
+/// single-write transaction; elsewhere statements auto-commit. lbug
+/// rejects nested BEGIN TRANSACTION, so this function must never open
+/// its own.
+///
+/// Edges predating `session_id` (`NULL`/`''`) are NOT touched here —
+/// they are handled once by `migrate_bgp_session_edges` at store open,
+/// which re-keys them only when exactly one session node can claim
+/// them and invalidates the rest.
+pub(crate) fn reconcile_bgp_session_edge(
+    conn: &Connection<'_>,
+    key: &BgpSessionEdgeKey<'_>,
+    resolved_device: Option<&str>,
+    session_state: &str,
+    peer_as: i64,
+) -> Result<()> {
+    let mut clear = conn
+        .prepare(
+            "MATCH (a:Device {address: $src})-[r:BGP_SESSION_WITH]->() \
+             WHERE r.source = $source AND r.session_id = $sid \
+             DELETE r",
+        )
+        .context("prepare BGP_SESSION_WITH reconcile clear")?;
+    conn.execute(
+        &mut clear,
+        vec![
+            ("src", Value::String(key.src_device.to_string())),
+            ("source", Value::String(key.source.to_string())),
+            ("sid", Value::String(key.session_id.to_string())),
+        ],
+    )
+    .context("execute BGP_SESSION_WITH reconcile clear")?;
+
+    if let Some(dst) = resolved_device {
+        let mut link = conn
+            .prepare(
+                "MATCH (a:Device {address: $src}), (b:Device {address: $dst}) \
+                 MERGE (a)-[r:BGP_SESSION_WITH {source: $source, peer_address: $peer, session_id: $sid}]->(b) \
+                 SET r.session_state = $state, r.peer_as = $peer_as, \
+                     r.peer_type = $pt, r.route_distinguisher = $rd, \
+                     r.network_instance = $ni",
+            )
+            .context("prepare BGP_SESSION_WITH reconcile merge")?;
+        conn.execute(
+            &mut link,
+            vec![
+                ("src", Value::String(key.src_device.to_string())),
+                ("dst", Value::String(dst.to_string())),
+                ("source", Value::String(key.source.to_string())),
+                ("peer", Value::String(key.peer_address.to_string())),
+                ("sid", Value::String(key.session_id.to_string())),
+                ("state", Value::String(session_state.to_string())),
+                ("peer_as", Value::Int64(peer_as)),
+                ("pt", Value::Int64(key.peer_type)),
+                ("rd", Value::String(key.route_distinguisher.clone())),
+                ("ni", Value::String(key.network_instance.clone())),
+            ],
+        )
+        .context("execute BGP_SESSION_WITH reconcile merge")?;
+    }
+    Ok(())
+}
+
+/// Re-resolve every BGP session that names `peer_ip` and reconcile its
+/// stored `BGP_SESSION_WITH` edge against CURRENT ownership evidence.
+///
+/// Called when ownership evidence mutates (KNOWN_ADDRESS_OF links,
+/// EntityIdentity mgmt_ip claims) so a stored relationship cannot keep
+/// presenting stale ownership as current while no new BGP observation
+/// arrives. The lookup is scoped to `BgpNeighbor` rows for this one
+/// peer address — never a whole-graph scan.
+pub(crate) fn reconcile_bgp_session_edges_for_peer(
+    conn: &Connection<'_>,
+    peer_ip: &str,
+) -> Result<()> {
+    if peer_ip.is_empty() {
+        return Ok(());
+    }
+    // Read all session rows first: lbug does not allow an open read
+    // cursor and writes on the same connection simultaneously.
+    let mut stmt = conn
+        .prepare(
+            "MATCH (n:BgpNeighbor) WHERE n.peer_address = $ip \
+             RETURN n.id, n.device_address, n.peer_address, n.source, \
+                    n.session_state, n.peer_as, n.peer_type, \
+                    n.route_distinguisher, n.network_instance",
+        )
+        .context("prepare BGP peer session scan")?;
+    let rows: Vec<Vec<Value>> = conn
+        .execute(&mut stmt, vec![("ip", Value::String(peer_ip.to_string()))])
+        .context("execute BGP peer session scan")?
+        .collect();
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let resolution = resolve_peer_typed(conn, peer_ip);
+    for row in rows {
+        let session_id = read_str(&row[0]);
+        let src = read_str(&row[1]);
+        let peer = read_str(&row[2]);
+        let source = {
+            let s = read_str(&row[3]);
+            if s.is_empty() {
+                "gnmi".to_string()
+            } else {
+                s
+            }
+        };
+        let state = read_str(&row[4]);
+        let peer_as = match &row[5] {
+            Value::Int64(n) => *n,
+            Value::Int32(n) => *n as i64,
+            _ => 0,
+        };
+        let peer_type = match &row[6] {
+            Value::Int64(n) => *n,
+            Value::Int32(n) => *n as i64,
+            _ => -1,
+        };
+        let rd = read_str(&row[7]);
+        let ni = read_str(&row[8]);
+        reconcile_bgp_session_edge(
+            conn,
+            &BgpSessionEdgeKey {
+                src_device: &src,
+                source: &source,
+                peer_address: &peer,
+                session_id: &session_id,
+                peer_type,
+                route_distinguisher: rd,
+                network_instance: ni,
+            },
+            resolution.device(),
+            &state,
+            peer_as,
+        )?;
+    }
+    Ok(())
 }
 
 pub fn read_str(v: &Value) -> String {

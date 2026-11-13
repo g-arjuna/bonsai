@@ -268,19 +268,28 @@ pub(super) async fn device_detail_handler(
         let mut stmt = conn
             .prepare(
                 "MATCH (n:BgpNeighbor) WHERE n.device_address = $addr \
-                     RETURN n.peer_address, n.session_state, n.peer_as \
+                     RETURN n.peer_address, n.session_state, n.peer_as, n.source \
                      ORDER BY n.peer_address",
             )
             .map_err(|e| e.to_string())?;
         let bgp_rows = conn
             .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
             .map_err(|e| e.to_string())?;
+        // BN-016-U1: same deterministic resolution contract as topology —
+        // peer_device is populated only for a unique resolution.
         let bgp: Vec<BgpJson> = bgp_rows
-            .map(|row| BgpJson {
-                peer: read_str(&row[0]),
-                state: read_str(&row[1]),
-                peer_as: read_i64(&row[2]),
-                peer_device: String::new(),
+            .map(|row| {
+                let peer = read_str(&row[0]);
+                let resolution = crate::graph::common::resolve_peer_typed(&conn, &peer);
+                BgpJson {
+                    peer,
+                    state: read_str(&row[1]),
+                    peer_as: read_i64(&row[2]),
+                    peer_device: resolution.device().unwrap_or_default().to_string(),
+                    source: read_str(&row[3]),
+                    resolution: resolution.status().to_string(),
+                    reason: resolution.reason(),
+                }
             })
             .collect();
 

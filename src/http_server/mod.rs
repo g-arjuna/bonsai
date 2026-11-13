@@ -237,10 +237,21 @@ pub(super) struct BgpJson {
     peer: String,
     state: String,
     peer_as: i64,
-    /// Resolved Device.address of the BGP peer — populated when peer_address maps to a
-    /// known device via BGP_SESSION_WITH or DeviceAddress lookup. Empty string when unresolved.
+    /// Resolved Device.address of the BGP peer — populated ONLY when the
+    /// peer address deterministically resolves to exactly one device.
+    /// Empty string when unresolved, ambiguous or conflicting.
     #[serde(skip_serializing_if = "String::is_empty")]
     peer_device: String,
+    /// Observation provenance: "gnmi" or "bmp". Empty for legacy rows.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    source: String,
+    /// BN-016-U1 resolution status: resolved | unresolved | ambiguous |
+    /// conflict | unavailable (evidence lookup failed — fail closed).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    resolution: String,
+    /// Machine-readable explanation for non-resolved outcomes.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    reason: String,
 }
 
 #[derive(Serialize)]

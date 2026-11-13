@@ -1038,3 +1038,30 @@ Residual: duplicate display names across branches still cannot be
 distinguished by a free-text device.site claim — canonical site_id
 migration remains BN-015-U3. Evidence:
 `docs/merger/evidence/2026-11-13-bn015-u2-site-hierarchy/`.
+
+BN-016-U1 BGP false-edge protection (13 November,
+`fix/bn016-u1-bgp-session-identity`): the topology API derived
+`peer_device` by scanning every `BGP_SESSION_WITH` edge out of a
+device and accepting any onboarded destination; the shared
+`resolve_peer_to_device` returned the first `LIMIT 1` row across three
+evidence tiers; edges were keyed only by `{source}` per device pair so
+multiple sessions overwrote each other and stale resolutions stayed
+authoritative forever; BMP's global-session id collided with the gNMI
+`{device}:{peer}` `BgpNeighbor` id; and `Topology.svelte` re-resolved
+peers client-side. Now `resolve_peer_typed` collects ALL evidence
+(Device.address / DeviceAddress→KNOWN_ADDRESS_OF /
+EntityIdentity.mgmt_ip) and returns `Resolved` only on a single
+consistent claimant — `Unresolved`/`Ambiguous`/`Conflicted` are
+explicit non-results. `BGP_SESSION_WITH` edges are keyed per session
+`(source, peer_address)`, created only on unique resolution and
+transactionally reconciled on every observation; `BgpNeighbor` carries
+`source`, `resolved_device`, `resolution_status`, `resolution_reason`
+with BMP sessions under `bmp:`-prefixed ids. API exposes
+`peer_device`/`source`/`resolution`/`reason`; the UI draws only
+backend-resolved peers and badges unresolved/ambiguous/conflict.
+Verified: 7 new `graph::tests::bgp_session_*` regressions + graph::
+suite 87 pass / 1 documented BN-019-B6 baseline failure. Residual:
+globally address-keyed schema fails closed on overlapping private
+peer addresses (no cross-tenant isolation claim); gNMI path carries
+no VRF discriminator. Evidence:
+`docs/merger/evidence/2026-11-13-bn016-u1-bgp-session-identity/`.
