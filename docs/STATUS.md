@@ -1014,3 +1014,27 @@ otlp / sflow regressions. Revocation guarantee is process-local
 (epoch) with cross-process changes bounded by the 5s TTL — recorded
 under BN-021g-6 production acceptance. Evidence:
 `docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.
+
+BN-015-U2 site-hierarchy preservation (13 November,
+`fix/bn015-u2-preserve-site-hierarchy`): `save_managed_device` →
+`sync_sites_from_targets` previously built a blank root `SiteRecord`
+(name-derived id, empty parent, `kind="unknown"`, zeroed
+coords/metadata) and ran it through `upsert_site_record`, whose
+`ON MATCH SET` overwrote every field and deleted all `PARENT_OF`
+edges — any device save flattened Region→DC→Building→Rack
+hierarchies and could merge distinct same-named sites. Device saves
+now resolve the free-text `site` claim via `ensure_target_site`:
+name-derived id match, else UNIQUE exact-name match (explicit-id and
+imported sites), else create-only insert (same shape as the NetBox
+backfill — `ON MATCH` touches nothing). Ambiguous display names
+produce no link and no duplicate; only the device's `LOCATED_AT`
+association is written. Site admin `upsert_site` +
+`validate_site_hierarchy` are unchanged and retain full authority.
+Verified: 6 new `graph::tests::site_sync_*` regressions + the stale
+`site_sync_creates_site_and_located_at_edge` baseline failure fixed
+(queried port-full address instead of canonical `Device.address`);
+lib 305 pass / 4 documented BN-019-B6 baseline failures (was 5).
+Residual: duplicate display names across branches still cannot be
+distinguished by a free-text device.site claim — canonical site_id
+migration remains BN-015-U3. Evidence:
+`docs/merger/evidence/2026-11-13-bn015-u2-site-hierarchy/`.
