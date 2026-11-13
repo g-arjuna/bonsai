@@ -368,6 +368,8 @@ mod tests {
             created_by: String::new(),
             updated_by: String::new(),
             last_operator_action: String::new(),
+            external_id: None,
+            inventory_only: false,
         };
         let gnmi = GnmiReadinessReport {
             service_status: "reachable".to_string(),

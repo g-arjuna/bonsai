@@ -172,6 +172,23 @@ impl ApiRegistry {
         Ok(state.targets.get(address).cloned())
     }
 
+    /// Find a registered device by its stable external identity
+    /// (e.g. `netbox:device:123`). Returns `None` when no device carries
+    /// the id; multiple matches are impossible in practice but the first
+    /// is returned deterministically by address ordering.
+    pub fn find_by_external_id(&self, external_id: &str) -> Result<Option<TargetConfig>> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        Ok(state
+            .targets
+            .values()
+            .filter(|t| t.external_id.as_deref() == Some(external_id))
+            .min_by(|a, b| a.address.cmp(&b.address))
+            .cloned())
+    }
+
     pub fn add_device(&self, target: TargetConfig) -> Result<TargetConfig> {
         self.add_device_with_audit(target, &default_audit_actor(), "registry_add_device")
     }
@@ -719,6 +736,8 @@ mod tests {
             created_by: String::new(),
             updated_by: String::new(),
             last_operator_action: String::new(),
+            external_id: None,
+            inventory_only: false,
         }
     }
 

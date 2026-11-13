@@ -1554,6 +1554,8 @@ mod tests {
             created_by: String::new(),
             updated_by: String::new(),
             last_operator_action: String::new(),
+            external_id: None,
+            inventory_only: false,
         }];
         let map = SnmpTargetMap::new(&targets);
         let resolved = map.resolve(
@@ -1616,6 +1618,8 @@ mod tests {
             created_by: String::new(),
             updated_by: String::new(),
             last_operator_action: String::new(),
+            external_id: None,
+            inventory_only: false,
         };
         // Two tenants reuse the same private IP.
         let map = SnmpTargetMap::new(&[

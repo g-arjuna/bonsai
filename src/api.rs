@@ -2380,6 +2380,8 @@ pub fn target_from_managed_device(
         created_by: String::new(),
         updated_by: String::new(),
         last_operator_action: String::new(),
+        external_id: None,
+        inventory_only: false,
         paths: vec![],
         optional: false,
     })

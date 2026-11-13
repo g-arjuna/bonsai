@@ -299,6 +299,13 @@ pub(super) async fn save_managed_device(
         if target.vendor.is_none() {
             target.vendor = existing.vendor;
         }
+        // BN-015-U1: an inventory-only asset stays inventory-only while it
+        // remains disabled; explicitly enabling collection clears the
+        // marker. Never resurrect it for an already-configured device.
+        target.inventory_only = existing.inventory_only && !target.enabled;
+        if target.external_id.is_none() {
+            target.external_id = existing.external_id;
+        }
     }
     let address = target.address.clone();
     let result = match state
@@ -712,6 +719,270 @@ pub(super) async fn bulk_import_handler(
     }))
 }
 
+// ── BN-015-U1: inventory-only import ────────────────────────────────────────
+//
+// Registers declared inventory assets WITHOUT authorizing telemetry
+// acquisition. Imported devices are persisted with `enabled = false`,
+// `inventory_only = true`, no credential alias and no selected paths —
+// the subscriber manager never spawns a collector for them. Activation
+// is a separate explicit operator action (configure a collection plan
+// and credentials via the managed-device update path).
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct InventoryImportRequest {
+    /// Source system label, e.g. "netbox". Recorded in the audit action.
+    #[serde(default)]
+    pub source: String,
+    pub devices: Vec<InventoryImportDevice>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct InventoryImportDevice {
+    /// Stable external identity, e.g. "netbox:device:123".
+    pub external_id: String,
+    #[serde(default)]
+    pub name: String,
+    /// Primary management address. Required — candidates without one are
+    /// reported `invalid`, never silently discarded or fabricated.
+    pub address: String,
+    #[serde(default)]
+    pub site: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub vendor: Option<String>,
+    /// Accepted for forward compatibility; not yet persisted on the
+    /// device record (deferred to BN-015-U3 metadata work).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub status: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub tenant: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(super) struct InventoryImportRow {
+    pub external_id: String,
+    pub address: String,
+    pub name: String,
+    /// imported | already_imported | updated | conflict | invalid | failed
+    pub outcome: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(super) struct InventoryImportResponse {
+    pub results: Vec<InventoryImportRow>,
+    pub imported: usize,
+    pub already_present: usize,
+    pub updated: usize,
+    pub conflicts: usize,
+    pub invalid: usize,
+    pub failed: usize,
+}
+
+fn inventory_row(
+    dev: &InventoryImportDevice,
+    outcome: &str,
+    reason: impl Into<String>,
+) -> InventoryImportRow {
+    InventoryImportRow {
+        external_id: dev.external_id.trim().to_string(),
+        address: crate::registry::strip_port(dev.address.trim()).to_string(),
+        name: dev.name.trim().to_string(),
+        outcome: outcome.to_string(),
+        reason: reason.into(),
+    }
+}
+
+pub(super) async fn inventory_import_handler(
+    State(state): State<AppState>,
+    Json(req): Json<InventoryImportRequest>,
+) -> Result<Json<InventoryImportResponse>, (StatusCode, String)> {
+    let mut results = Vec::with_capacity(req.devices.len());
+    let mut imported = 0usize;
+    let mut already = 0usize;
+    let mut updated = 0usize;
+    let mut conflicts = 0usize;
+    let mut invalid = 0usize;
+    let mut failed = 0usize;
+    let mut touched: Vec<TargetConfig> = Vec::new();
+
+    for dev in &req.devices {
+        let address = crate::registry::strip_port(dev.address.trim()).to_string();
+        let external_id = dev.external_id.trim().to_string();
+
+        if address.is_empty() {
+            invalid += 1;
+            results.push(inventory_row(dev, "invalid", "missing primary IP address"));
+            continue;
+        }
+        if external_id.is_empty() {
+            invalid += 1;
+            results.push(inventory_row(dev, "invalid", "missing external id"));
+            continue;
+        }
+
+        // 1. Same external object already registered?
+        match state.registry.find_by_external_id(&external_id) {
+            Ok(Some(existing)) => {
+                let existing_addr = crate::registry::strip_port(&existing.address).to_string();
+                if existing_addr != address {
+                    conflicts += 1;
+                    results.push(inventory_row(
+                        dev,
+                        "conflict",
+                        format!(
+                            "external id '{external_id}' is already bound to {existing_addr}; \
+                             refusing to silently re-address the imported object"
+                        ),
+                    ));
+                    continue;
+                }
+                // Same object, same address: refresh declared metadata only.
+                // Credentials, enabled flag, selected paths, collector
+                // assignment and operational state are NEVER touched.
+                let mut target = existing.clone();
+                let mut changed = false;
+                let mut set_if = |slot: &mut Option<String>, new: Option<&str>| {
+                    let trimmed = new.map(str::trim).filter(|s| !s.is_empty());
+                    if trimmed.map(str::to_string) != *slot {
+                        *slot = trimmed.map(str::to_string);
+                        changed = true;
+                    }
+                };
+                set_if(&mut target.hostname, Some(dev.name.as_str()));
+                set_if(&mut target.site, dev.site.as_deref());
+                set_if(&mut target.role, dev.role.as_deref());
+                set_if(&mut target.vendor, dev.vendor.as_deref());
+                if changed {
+                    let action = format!(
+                        "api_inventory_import_update:{}",
+                        req.source.trim()
+                    );
+                    match state.registry.update_device_with_audit(
+                        target.clone(),
+                        "api",
+                        &action,
+                    ) {
+                        Ok(_) => {
+                            updated += 1;
+                            touched.push(target);
+                            results.push(inventory_row(dev, "updated", "metadata refreshed"));
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            results.push(inventory_row(dev, "failed", format!("{e:#}")));
+                        }
+                    }
+                } else {
+                    already += 1;
+                    results.push(inventory_row(dev, "already_imported", "unchanged"));
+                }
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                failed += 1;
+                results.push(inventory_row(dev, "failed", format!("registry lookup: {e:#}")));
+                continue;
+            }
+        }
+
+        // 2. Address claimed by a different identity?
+        match state.registry.get_device(&address) {
+            Ok(Some(existing)) => {
+                conflicts += 1;
+                let holder = existing
+                    .external_id
+                    .clone()
+                    .unwrap_or_else(|| "a manually registered device".to_string());
+                results.push(inventory_row(
+                    dev,
+                    "conflict",
+                    format!("address {address} is already registered to {holder}"),
+                ));
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                failed += 1;
+                results.push(inventory_row(dev, "failed", format!("registry lookup: {e:#}")));
+                continue;
+            }
+        }
+
+        // 3. New inventory asset: declared only. No credential selection,
+        //    no subscription paths, no connectivity attempt.
+        let target = TargetConfig {
+            address: address.clone(),
+            enabled: false,
+            inventory_only: true,
+            external_id: Some(external_id.clone()),
+            hostname: option_string(dev.name.trim().to_string()),
+            role: dev
+                .role
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            site: dev
+                .site
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            vendor: dev
+                .vendor
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            ..Default::default()
+        };
+        match state
+            .registry
+            .add_device_with_audit(
+                target.clone(),
+                "api",
+                &format!("api_inventory_import:{}", req.source.trim()),
+            )
+        {
+            Ok(_) => {
+                imported += 1;
+                touched.push(target);
+                results.push(inventory_row(dev, "imported", "inventory only"));
+            }
+            Err(e) => {
+                failed += 1;
+                results.push(inventory_row(dev, "failed", format!("{e:#}")));
+            }
+        }
+    }
+
+    // Site association for graph visibility (LOCATED_AT edges only).
+    if !touched.is_empty() {
+        if let Err(e) = state.store.sync_sites_from_targets(touched).await {
+            tracing::warn!(error = %e, "inventory import site sync failed");
+        }
+    }
+
+    Ok(Json(InventoryImportResponse {
+        results,
+        imported,
+        already_present: already,
+        updated,
+        conflicts,
+        invalid,
+        failed,
+    }))
+}
+
 pub(super) async fn remove_impact_handler(
     State(state): State<AppState>,
     Json(req): Json<RemoveManagedDeviceRequest>,
@@ -759,10 +1030,12 @@ pub(super) fn managed_device_json(
         hostname: target.hostname.unwrap_or_default(),
         role: target.role.unwrap_or_default(),
         site: target.site.unwrap_or_default(),
-        selected_paths: target.selected_paths,
+        selected_paths: target.selected_paths.clone(),
         subscription_statuses: statuses.get(&address).cloned().unwrap_or_default(),
         address,
         resolution_audit: audit,
+        external_id: target.external_id.clone().unwrap_or_default(),
+        inventory_only: target.inventory_only,
     }
 }
 pub(super) fn target_from_request(
@@ -815,6 +1088,8 @@ pub(super) fn target_from_request(
         created_by: String::new(),
         updated_by: String::new(),
         last_operator_action: String::new(),
+        external_id: None,
+        inventory_only: false,
         paths: vec![],
         optional: false,
     })
@@ -2182,5 +2457,218 @@ mod tests {
             rows.iter().all(|row| read_str(&row[0]).is_empty()),
             "explicit clear must blank the mirrored d.site claim"
         );
+    }
+
+    // ── BN-015-U1: inventory-only NetBox import ─────────────────────────────
+
+    async fn post_inventory(
+        router: &axum::Router,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let request = Request::post("/api/onboarding/inventory/import")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("build request");
+        let response = router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("oneshot response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    fn nb_device(ext: &str, addr: &str, name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "external_id": ext,
+            "name": name,
+            "address": addr,
+            "site": "Site A",
+            "role": "leaf",
+            "vendor": "Nokia",
+        })
+    }
+
+    #[tokio::test]
+    async fn inventory_import_creates_declared_only_assets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+        let state = AppState::new_minimal_with_runtime_dir(
+            Arc::clone(&store),
+            dir.path().to_str().expect("utf8 tempdir"),
+        );
+        let router = crate::http_server::managed_device_routes().with_state(state);
+
+        let (status, body) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [
+                    nb_device("netbox:device:1", "10.20.0.1", "r1"),
+                    nb_device("netbox:device:2", "10.20.0.2", "r2"),
+                ],
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["imported"], 2, "{body}");
+        assert_eq!(body["results"][0]["outcome"], "imported");
+
+        // Per-row idempotence: same external ids again → already_imported.
+        let (_, body2) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:device:1", "10.20.0.1", "r1")],
+            }),
+        )
+        .await;
+        assert_eq!(body2["already_present"], 1, "{body2}");
+        assert_eq!(body2["results"][0]["outcome"], "already_imported");
+
+        // Conflict: same external id bound to a different address.
+        let (_, body3) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:device:1", "10.20.0.9", "r1-moved")],
+            }),
+        )
+        .await;
+        assert_eq!(body3["conflicts"], 1, "{body3}");
+        assert_eq!(body3["results"][0]["outcome"], "conflict");
+
+        // Conflict: different external id claiming an imported address.
+        let (_, body4) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:device:99", "10.20.0.1", "impostor")],
+            }),
+        )
+        .await;
+        assert_eq!(body4["conflicts"], 1, "{body4}");
+
+        // Invalid: missing address / missing external id.
+        let (_, body5) = post_inventory(
+            &router,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [
+                    {"external_id": "netbox:device:7", "name": "noip", "address": ""},
+                    {"external_id": "", "name": "noid", "address": "10.20.0.7"},
+                ],
+            }),
+        )
+        .await;
+        assert_eq!(body5["invalid"], 2, "{body5}");
+
+        // Verify persisted state through the managed-devices API:
+        // enabled=false, inventory_only=true, no credential, no paths.
+        let request = Request::get("/api/onboarding/devices")
+            .body(Body::empty())
+            .expect("build request");
+        let response = router.oneshot(request).await.expect("oneshot");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let devices = json["devices"].as_array().expect("devices array");
+        let r1 = devices
+            .iter()
+            .find(|d| d["address"] == "10.20.0.1")
+            .expect("r1 listed");
+        assert_eq!(r1["enabled"], false, "{r1}");
+        assert_eq!(r1["inventory_only"], true, "{r1}");
+        assert_eq!(r1["external_id"], "netbox:device:1", "{r1}");
+        assert_eq!(r1["credential_alias"], "", "{r1}");
+        assert_eq!(r1["selected_paths"].as_array().unwrap().len(), 0, "{r1}");
+        assert_eq!(r1["subscription_statuses"].as_array().unwrap().len(), 0, "{r1}");
+    }
+
+    #[tokio::test]
+    async fn inventory_import_preserves_existing_device_and_restarts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = dir.path().to_str().expect("utf8 tempdir").to_string();
+        let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open"));
+
+        // Existing ACTIVELY configured device at the same address.
+        {
+            let state = AppState::new_minimal_with_runtime_dir(
+                Arc::clone(&store),
+                &runtime,
+            );
+            let router = crate::http_server::managed_device_routes().with_state(state);
+            let (_, body) = post_device(
+                &router,
+                serde_json::json!({
+                    "address": "10.20.1.1",
+                    "hostname": "active-r1",
+                    "enabled": true,
+                    "vendor": "Cisco",
+                }),
+            )
+            .await;
+            assert_eq!(body["success"], true, "{body}");
+        }
+
+        // Import must conflict, not overwrite the active device.
+        let state2 = AppState::new_minimal_with_runtime_dir(Arc::clone(&store), &runtime);
+        let router2 = crate::http_server::managed_device_routes().with_state(state2);
+        let (_, body) = post_inventory(
+            &router2,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:device:5", "10.20.1.1", "nb-r1")],
+            }),
+        )
+        .await;
+        assert_eq!(body["conflicts"], 1, "{body}");
+
+        // Import a fresh inventory device, then "restart" (new AppState on
+        // the same runtime dir) and verify declared-only state persists
+        // and does NOT become collection-enabled.
+        let (_, body) = post_inventory(
+            &router2,
+            serde_json::json!({
+                "source": "netbox",
+                "devices": [nb_device("netbox:device:6", "10.20.1.2", "nb-r2")],
+            }),
+        )
+        .await;
+        assert_eq!(body["imported"], 1, "{body}");
+
+        let state3 = AppState::new_minimal_with_runtime_dir(Arc::clone(&store), &runtime);
+        let router3 = crate::http_server::managed_device_routes().with_state(state3);
+        let request = Request::get("/api/onboarding/devices")
+            .body(Body::empty())
+            .expect("build request");
+        let response = router3.oneshot(request).await.expect("oneshot");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let devices = json["devices"].as_array().expect("devices array");
+        let r2 = devices
+            .iter()
+            .find(|d| d["address"] == "10.20.1.2")
+            .expect("r2 listed after restart");
+        assert_eq!(r2["enabled"], false, "{r2}");
+        assert_eq!(r2["inventory_only"], true, "{r2}");
+        assert_eq!(r2["external_id"], "netbox:device:6", "{r2}");
+
+        // The pre-existing active device is untouched by the import.
+        let active = devices
+            .iter()
+            .find(|d| d["address"] == "10.20.1.1")
+            .expect("active device listed");
+        assert_eq!(active["enabled"], true, "{active}");
+        assert!(active.get("inventory_only").is_none() || active["inventory_only"] == false);
     }
 }

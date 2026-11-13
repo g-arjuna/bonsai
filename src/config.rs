@@ -1977,6 +1977,17 @@ pub struct TargetConfig {
     pub updated_by: String,
     #[serde(default)]
     pub last_operator_action: String,
+    /// Stable external identity for imported inventory assets, e.g.
+    /// `netbox:device:123`. Never derived from mutable hostname/IP alone.
+    #[serde(default)]
+    pub external_id: Option<String>,
+    /// Declared inventory asset whose telemetry collection has not been
+    /// configured. Always paired with `enabled = false`; an operator must
+    /// explicitly configure a collection plan (and credentials) to
+    /// activate acquisition. Distinct from administrative disablement of
+    /// an already-configured collector target.
+    #[serde(default)]
+    pub inventory_only: bool,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]

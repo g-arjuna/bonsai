@@ -400,7 +400,7 @@
       if (!r.ok) throw new Error(await r.text());
       const data = await r.json();
       nbCandidates = data.candidates || [];
-      nbSelected = data.candidates.map(c => c.address);
+      nbSelected = (data.candidates || []).filter(c => c.eligible).map(c => c.address);
       nbVersion = data.netbox_version || '';
       nbWarnings = data.warnings || [];
     } catch (e) {
@@ -419,43 +419,47 @@
   }
 
   async function nbImportSelected() {
-    const toImport = nbCandidates.filter(c => nbSelected.includes(c.address));
+    const toImport = nbCandidates.filter(c => c.eligible && nbSelected.includes(c.address));
     if (!toImport.length) return;
     nbImporting = true;
     nbImportDone = [];
     error = '';
-    // Use the first available credential alias (if any) as a hint
-    const credHint = credentials[0]?.alias || '';
-    const results = [];
-    for (const dev of toImport) {
-      try {
-        const r = await fetch('/api/onboarding/devices/with_paths', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            address: dev.address,
-            hostname: dev.name,
-            vendor: dev.vendor,
-            role: dev.role || 'leaf',
-            site: dev.site,
-            enabled: true,
-            credential_alias: credHint,
-            username_env: '',
-            password_env: '',
-            tls_domain: '',
-            ca_cert: '',
-            selected_paths: [],
-          }),
-        });
-        const body = await r.json();
-        results.push({ address: dev.address, ok: body.success, msg: body.error || '' });
-      } catch (e) {
-        results.push({ address: dev.address, ok: false, msg: e.message });
-      }
+    try {
+      const r = await fetch('/api/onboarding/inventory/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          source: 'netbox',
+          devices: toImport.map(c => ({
+            external_id: c.external_id,
+            name: c.name,
+            address: c.address,
+            site: c.site || null,
+            role: c.role || null,
+            vendor: c.vendor || null,
+            platform: c.platform || null,
+            status: c.status || null,
+            tenant: c.tenant || null,
+          })),
+        }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || body.message || `HTTP ${r.status}`);
+      const okOutcomes = new Set(['imported', 'already_imported', 'updated']);
+      nbImportDone = (body.results || []).map(row => ({
+        address: row.address,
+        ok: okOutcomes.has(row.outcome),
+        msg: row.outcome === 'imported' ? 'inventory only'
+          : row.outcome === 'already_imported' ? 'already imported'
+          : row.outcome === 'updated' ? 'updated'
+          : `${row.outcome}${row.reason ? ': ' + row.reason : ''}`,
+      }));
+    } catch (e) {
+      error = e.message;
+    } finally {
+      nbImporting = false;
+      await loadDevices();
     }
-    nbImportDone = results;
-    nbImporting = false;
-    await loadDevices();
   }
 
   // ── Custom path customisation (T2-6) ─────────────────────────────────────
@@ -1778,32 +1782,37 @@
           <div class="nb-candidate-header">
             <label class="select-all">
               <input type="checkbox"
-                checked={nbSelected.length === nbCandidates.length}
-                onchange={() => nbSelected = nbSelected.length === nbCandidates.length ? [] : nbCandidates.map(c => c.address)}
+                checked={nbCandidates.filter(c => c.eligible).length > 0 && nbSelected.length === nbCandidates.filter(c => c.eligible).length}
+                onchange={() => {
+                  const eligible = nbCandidates.filter(c => c.eligible).map(c => c.address);
+                  nbSelected = nbSelected.length === eligible.length ? [] : eligible;
+                }}
               />
-              <span>{nbSelected.length} of {nbCandidates.length} selected</span>
+              <span>{nbSelected.length} of {nbCandidates.filter(c => c.eligible).length} eligible selected</span>
             </label>
             <button onclick={nbImportSelected} disabled={nbImporting || !nbSelected.length}>
-              {nbImporting ? 'Importing…' : `Import ${nbSelected.length} device${nbSelected.length === 1 ? '' : 's'}`}
+              {nbImporting ? 'Importing…' : `Import ${nbSelected.length} device${nbSelected.length === 1 ? '' : 's'} as inventory only`}
             </button>
           </div>
 
           {#each nbCandidates as cand}
             {@const done = nbImportDone.find(d => d.address === cand.address)}
-            <div class="nb-candidate-row" class:nb-done={done?.ok} class:nb-fail={done && !done.ok}>
+            <div class="nb-candidate-row" class:nb-done={done?.ok} class:nb-fail={done && !done.ok} class:nb-ineligible={!cand.eligible}>
               <label class="nb-check">
-                <input type="checkbox" checked={nbSelected.includes(cand.address)} onchange={() => nbToggle(cand.address)} />
+                <input type="checkbox" checked={nbSelected.includes(cand.address)} disabled={!cand.eligible} onchange={() => nbToggle(cand.address)} />
               </label>
               <div class="nb-meta">
                 <strong>{cand.name}</strong>
-                <code>{cand.address}</code>
-                <span class="muted">{cand.site} · {cand.role || 'role unknown'} · {cand.vendor || 'vendor unknown'}</span>
+                <code>{cand.address || '—'}</code>
+                <span class="muted">{cand.site} · {cand.role || 'role unknown'} · {cand.vendor || 'vendor unknown'}{cand.status ? ` · ${cand.status}` : ''}</span>
+                {#if !cand.eligible}<span class="muted"> · {cand.skip_reason || 'unsupported'}</span>{/if}
               </div>
               {#if done}
-                <span class="badge {done.ok ? 'healthy' : 'critical'}">{done.ok ? 'imported' : done.msg || 'failed'}</span>
+                <span class="badge {done.ok ? 'healthy' : 'critical'}">{done.msg || (done.ok ? 'imported' : 'failed')}</span>
               {/if}
             </div>
           {/each}
+          <p class="muted" style="margin-top:8px;">Imported devices are registered as <strong>inventory only</strong> — no credentials are assigned and telemetry collection is not activated. Configure acquisition later from the device page.</p>
         </div>
       {:else if nbVersion}
         <p class="empty">No active devices with a primary IP found.</p>

@@ -106,7 +106,8 @@ use managed_devices::{
     add_credential_handler, add_managed_device_handler, add_managed_device_with_paths_handler,
     bootstrap_device_handler, bulk_bootstrap_handler, bulk_import_handler,
     bulk_managed_device_action_handler, credentials_handler, device_seed_handler, discover_handler,
-    managed_devices_handler, remove_credential_handler, remove_impact_handler,
+    inventory_import_handler, managed_devices_handler, remove_credential_handler,
+    remove_impact_handler,
     remove_managed_device_handler, remove_site_handler, resolve_credential_handler,
     site_summary_handler, sites_handler, test_credential_handler, update_credential_handler,
     upsert_site_handler,
@@ -479,6 +480,13 @@ pub(super) struct ManagedDeviceJson {
     selected_paths: Vec<SelectedSubscriptionPath>,
     subscription_statuses: Vec<SubscriptionStatusJson>,
     resolution_audit: Vec<String>,
+    /// Stable external identity (e.g. "netbox:device:123") for imported
+    /// inventory assets; empty for locally registered devices.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    external_id: String,
+    /// True when this is a declared inventory asset whose telemetry
+    /// collection has not been configured — NOT an observed device.
+    inventory_only: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -1816,6 +1824,10 @@ fn managed_device_routes() -> Router<AppState> {
             post(bulk_managed_device_action_handler),
         )
         .route("/api/onboarding/import", post(bulk_import_handler))
+        .route(
+            "/api/onboarding/inventory/import",
+            post(inventory_import_handler),
+        )
         .route("/api/onboarding/discover", post(discover_handler))
         .route("/api/devices/bootstrap", post(bootstrap_device_handler))
         .route("/api/devices/bootstrap/bulk", post(bulk_bootstrap_handler))

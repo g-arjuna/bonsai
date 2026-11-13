@@ -1410,6 +1410,12 @@ pub(super) struct NetboxImportRequest {
 
 #[derive(Debug, serde::Serialize)]
 pub(super) struct NetboxImportCandidate {
+    /// NetBox immutable object ID (e.g. 1234). 0 when the source did not
+    /// provide one — such candidates cannot be imported as stable
+    /// external identities.
+    pub netbox_id: u64,
+    /// Stable external identity derived from the NetBox object ID.
+    pub external_id: String,
     pub name: String,
     pub address: String,
     pub site: String,
@@ -1417,6 +1423,13 @@ pub(super) struct NetboxImportCandidate {
     pub vendor: String,
     pub platform: String,
     pub status: String,
+    pub tenant: String,
+    /// False when the candidate cannot be imported as-is (e.g. no primary
+    /// IP, no stable NetBox object ID). Surfaced explicitly, never
+    /// silently dropped.
+    pub eligible: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub skip_reason: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1507,6 +1520,7 @@ pub(super) async fn netbox_import_handler(
         }
         #[derive(serde::Deserialize)]
         struct NbDeviceImport {
+            id: Option<u64>,
             name: Option<String>,
             primary_ip: Option<NbIpImport>,
             site: Option<NbNestedImport>,
@@ -1514,6 +1528,7 @@ pub(super) async fn netbox_import_handler(
             device_type: Option<NbDeviceTypeImport>,
             platform: Option<NbNestedImport>,
             status: Option<NbStatusImport>,
+            tenant: Option<NbNestedImport>,
         }
         #[derive(serde::Deserialize)]
         struct NbIpImport {
@@ -1555,9 +1570,18 @@ pub(super) async fn netbox_import_handler(
                 .map(|ip| ip.address.split('/').next().unwrap_or("").to_string())
                 .unwrap_or_default();
 
-            if raw_ip.is_empty() {
-                warnings.push(format!("device '{name}' has no primary IP — skipped"));
-                continue;
+            let netbox_id = dev.id.unwrap_or(0);
+            let (eligible, skip_reason) = if raw_ip.is_empty() {
+                (false, "no primary IP address".to_string())
+            } else if netbox_id == 0 {
+                (false, "no stable NetBox object id".to_string())
+            } else {
+                (true, String::new())
+            };
+            if !eligible {
+                warnings.push(format!(
+                    "device '{name}' ineligible for import: {skip_reason}"
+                ));
             }
 
             let site = dev
@@ -1587,7 +1611,19 @@ pub(super) async fn netbox_import_handler(
                 .map(|s| s.value.clone())
                 .unwrap_or_else(|| "active".to_string());
 
+            let tenant = dev
+                .tenant
+                .as_ref()
+                .map(|t| t.name.clone())
+                .unwrap_or_default();
+
             candidates.push(NetboxImportCandidate {
+                netbox_id,
+                external_id: if netbox_id > 0 {
+                    format!("netbox:device:{netbox_id}")
+                } else {
+                    String::new()
+                },
                 name,
                 address: raw_ip,
                 site,
@@ -1595,6 +1631,9 @@ pub(super) async fn netbox_import_handler(
                 vendor,
                 platform,
                 status,
+                tenant,
+                eligible,
+                skip_reason,
             });
         }
 

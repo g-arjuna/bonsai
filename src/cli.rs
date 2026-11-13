@@ -638,6 +638,8 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
                     created_by: String::new(),
                     updated_by: String::new(),
                     last_operator_action: String::new(),
+                    external_id: None,
+                    inventory_only: false,
                 },
                 "cli",
                 "cli_add_device",
