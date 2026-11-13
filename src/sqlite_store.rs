@@ -24,7 +24,30 @@ const DB_FILE: &str = CONFIG_DB_FILE_NAME;
 /// Schema version the management service migrates to. Read-only
 /// consumers (routing service) compare against this and fail closed
 /// when the database is older.
-pub const CURRENT_SCHEMA_VERSION: i64 = 5;
+pub const CURRENT_SCHEMA_VERSION: i64 = 7;
+
+/// True when an `ALTER TABLE ... ADD COLUMN` failed only because the
+/// column already exists (i.e. a previous migration attempt partially
+/// applied). Any other error is a genuine migration failure.
+fn is_duplicate_column_error(error: &rusqlite::Error) -> bool {
+    error.to_string().contains("duplicate column name")
+}
+
+/// Verify that every expected column exists on `devices`. Migration
+/// callers use this so `user_version` only advances after the schema is
+/// actually complete — a silently swallowed ALTER can never pass.
+fn verify_device_columns(db: &Connection, columns: &[&str]) -> Result<()> {
+    let mut stmt = db.prepare("PRAGMA table_info(devices)")?;
+    let present: std::collections::HashSet<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<_, _>>()?;
+    for column in columns {
+        if !present.contains(*column) {
+            anyhow::bail!("devices column '{column}' missing after migration");
+        }
+    }
+    Ok(())
+}
 
 /// SQLite config store with versioned schema and audit trail.
 pub struct SqliteStore {
@@ -351,6 +374,88 @@ impl SqliteStore {
                 .context("failed to set schema version")?;
         }
 
+        // Version 6: BN-015-U1 inventory-only onboarding. Persist the
+        // external source identity, the inventory-only marker, and the
+        // operator-selected subscription/extra-IP lists so registry
+        // state survives restart (the devices table previously dropped
+        // selected_paths/extra_ips on every sqlite-backed reload).
+        //
+        // Migration discipline: an "already exists" column error means a
+        // previous partial run — safe to continue. ANY other ALTER
+        // failure aborts the migration BEFORE user_version advances, and
+        // the resulting schema is verified column-by-column so a
+        // half-applied v6 can never be reported as migrated.
+        if user_version < 6 {
+            for sql in [
+                "ALTER TABLE devices ADD COLUMN external_id TEXT",
+                "ALTER TABLE devices ADD COLUMN inventory_only INTEGER DEFAULT 0",
+                "ALTER TABLE devices ADD COLUMN selected_paths TEXT",
+                "ALTER TABLE devices ADD COLUMN extra_ips TEXT",
+            ] {
+                match db.execute_batch(sql) {
+                    Ok(()) => {}
+                    Err(e) if is_duplicate_column_error(&e) => {}
+                    Err(e) => return Err(e).context("schema v6 migration failed on devices ALTER"),
+                }
+            }
+            verify_device_columns(
+                &db,
+                &[
+                    "external_id",
+                    "inventory_only",
+                    "selected_paths",
+                    "extra_ips",
+                ],
+            )
+            .context("schema v6 verification failed")?;
+            db.execute("PRAGMA user_version=6", [])
+                .context("failed to set schema version")?;
+        }
+
+        // Version 7: BN-015-U1 hardening — atomic external-identity
+        // uniqueness and declared inventory metadata (platform,
+        // lifecycle status, tenant). Additive only.
+        //
+        // `idx_devices_external_id` is the persistence-boundary
+        // enforcement that makes concurrent imports unable to establish
+        // duplicate external identities, including across processes
+        // sharing this database. It is a partial unique index so
+        // locally registered devices (NULL external_id) are unaffected.
+        // If pre-existing ambiguous rows make the index un-creatable the
+        // migration FAILS CLOSED: user_version stays at 6 and startup
+        // reports the conflict instead of silently picking a winner.
+        if user_version < 7 {
+            for sql in [
+                "ALTER TABLE devices ADD COLUMN inventory_platform TEXT",
+                "ALTER TABLE devices ADD COLUMN inventory_status TEXT",
+                "ALTER TABLE devices ADD COLUMN inventory_tenant TEXT",
+            ] {
+                match db.execute_batch(sql) {
+                    Ok(()) => {}
+                    Err(e) if is_duplicate_column_error(&e) => {}
+                    Err(e) => return Err(e).context("schema v7 migration failed on devices ALTER"),
+                }
+            }
+            verify_device_columns(
+                &db,
+                &["inventory_platform", "inventory_status", "inventory_tenant"],
+            )
+            .context("schema v7 column verification failed")?;
+
+            db.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_external_id \
+                 ON devices(external_id) \
+                 WHERE external_id IS NOT NULL AND external_id != ''",
+            )
+            .context(
+                "schema v7 failed: existing devices contain duplicate external_id values; \
+                 resolve the ambiguity before upgrading",
+            )?;
+
+            db.execute("PRAGMA user_version=7", [])
+                .context("failed to set schema version")?;
+        }
+
         Ok(())
     }
 
@@ -380,8 +485,12 @@ impl SqliteStore {
                     let count = registry_state.targets.len();
                     for (address, target) in registry_state.targets {
                         let paths_json = serde_json::to_string(&target.paths).unwrap_or_default();
+                        let selected_paths_json =
+                            serde_json::to_string(&target.selected_paths).unwrap_or_default();
+                        let extra_ips_json =
+                            serde_json::to_string(&target.extra_ips).unwrap_or_default();
                         tx.execute(
-                            "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                            "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
                             params![
                                 address,
                                 target.enabled,
@@ -404,8 +513,21 @@ impl SqliteStore {
                                 target.created_by,
                                 target.updated_by,
                                 target.last_operator_action,
+                                target.external_id,
+                                target.inventory_only,
+                                selected_paths_json,
+                                extra_ips_json,
+                                target.inventory_platform,
+                                target.inventory_status,
+                                target.inventory_tenant,
                             ],
-                        ).ok();
+                        )
+                        .with_context(|| {
+                            format!(
+                                "failed to migrate device '{}' from JSON registry",
+                                address
+                            )
+                        })?;
                     }
                     tracing::info!("migrated {} devices from JSON", count);
                 }
@@ -506,10 +628,18 @@ impl SqliteStore {
 
     pub fn list_devices(&self) -> Result<Vec<crate::config::TargetConfig>> {
         let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare("SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action FROM devices")?;
+        let mut stmt = db.prepare("SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant FROM devices")?;
         let rows = stmt.query_map([], |row| {
             let paths_json: String = row.get(14)?;
             let paths: Vec<String> = serde_json::from_str(&paths_json).unwrap_or_default();
+            let selected_paths: Vec<crate::config::SelectedSubscriptionPath> = row
+                .get::<_, Option<String>>(23)?
+                .and_then(|j| serde_json::from_str(&j).ok())
+                .unwrap_or_default();
+            let extra_ips: Vec<String> = row
+                .get::<_, Option<String>>(24)?
+                .and_then(|j| serde_json::from_str(&j).ok())
+                .unwrap_or_default();
             Ok(crate::config::TargetConfig {
                 address: row.get(0)?,
                 enabled: row.get(1)?,
@@ -532,6 +662,13 @@ impl SqliteStore {
                 created_by: row.get(18)?,
                 updated_by: row.get(19)?,
                 last_operator_action: row.get(20)?,
+                external_id: row.get(21)?,
+                inventory_only: row.get::<_, i64>(22)? != 0,
+                selected_paths,
+                extra_ips,
+                inventory_platform: row.get(25)?,
+                inventory_status: row.get(26)?,
+                inventory_tenant: row.get(27)?,
                 ..Default::default()
             })
         })?;
@@ -542,11 +679,19 @@ impl SqliteStore {
     pub fn get_device(&self, address: &str) -> Result<Option<crate::config::TargetConfig>> {
         let db = self.db.lock().unwrap();
         let result = db.query_row(
-            "SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action FROM devices WHERE address = ?1",
+            "SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant FROM devices WHERE address = ?1",
             params![address],
             |row| {
                 let paths_json: String = row.get(14)?;
                 let paths: Vec<String> = serde_json::from_str(&paths_json).unwrap_or_default();
+                let selected_paths: Vec<crate::config::SelectedSubscriptionPath> = row
+                    .get::<_, Option<String>>(23)?
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default();
+                let extra_ips: Vec<String> = row
+                    .get::<_, Option<String>>(24)?
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default();
                 Ok(crate::config::TargetConfig {
                     address: row.get(0)?,
                     enabled: row.get(1)?,
@@ -569,6 +714,13 @@ impl SqliteStore {
                     created_by: row.get(18)?,
                     updated_by: row.get(19)?,
                     last_operator_action: row.get(20)?,
+                    external_id: row.get(21)?,
+                    inventory_only: row.get::<_, i64>(22)? != 0,
+                    selected_paths,
+                    extra_ips,
+                    inventory_platform: row.get(25)?,
+                    inventory_status: row.get(26)?,
+                    inventory_tenant: row.get(27)?,
                     ..Default::default()
                 })
             },
@@ -596,11 +748,13 @@ impl SqliteStore {
             .unwrap_or(0);
 
         let paths_json = serde_json::to_string(&device.paths).unwrap_or_default();
+        let selected_paths_json = serde_json::to_string(&device.selected_paths).unwrap_or_default();
+        let extra_ips_json = serde_json::to_string(&device.extra_ips).unwrap_or_default();
 
         {
             let db = self.db.lock().unwrap();
             db.execute(
-                "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21) ON CONFLICT(address) DO UPDATE SET enabled=?2, hostname=?3, tls_domain=?4, vendor=?5, credential_alias=?6, username_env=?7, role=?8, site=?9, collector_id=?10, username=?11, password=?12, password_env=?13, ca_cert=?14, paths=?15, optional=?16, updated_at_ns=?18, updated_by=?20, last_operator_action=?21",
+                "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28) ON CONFLICT(address) DO UPDATE SET enabled=?2, hostname=?3, tls_domain=?4, vendor=?5, credential_alias=?6, username_env=?7, role=?8, site=?9, collector_id=?10, username=?11, password=?12, password_env=?13, ca_cert=?14, paths=?15, optional=?16, updated_at_ns=?18, updated_by=?20, last_operator_action=?21, external_id=?22, inventory_only=?23, selected_paths=?24, extra_ips=?25, inventory_platform=?26, inventory_status=?27, inventory_tenant=?28",
                 params![
                     device.address,
                     device.enabled,
@@ -623,6 +777,13 @@ impl SqliteStore {
                     device.created_by,
                     actor,
                     action,
+                    device.external_id,
+                    device.inventory_only,
+                    selected_paths_json,
+                    extra_ips_json,
+                    device.inventory_platform,
+                    device.inventory_status,
+                    device.inventory_tenant,
                 ],
             )?;
         }
@@ -1655,4 +1816,284 @@ fn binding_from_row(
         created_by: row.get(14)?,
         updated_by: row.get(15)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::TargetConfig;
+
+    /// The devices-table shape as of schema v5 (v1 columns; the v2 ALTERs
+    /// all targeted columns v1 already created, so they were no-ops).
+    const DEVICES_V5_DDL: &str = r#"
+        CREATE TABLE devices (
+            address TEXT PRIMARY KEY,
+            enabled INTEGER DEFAULT 1,
+            hostname TEXT,
+            tls_domain TEXT,
+            vendor TEXT,
+            credential_alias TEXT,
+            username_env TEXT,
+            role TEXT,
+            site TEXT,
+            collector_id TEXT,
+            username TEXT,
+            password TEXT,
+            password_env TEXT,
+            ca_cert TEXT,
+            paths TEXT,
+            optional INTEGER DEFAULT 0,
+            created_at_ns INTEGER,
+            updated_at_ns INTEGER,
+            created_by TEXT,
+            updated_by TEXT,
+            last_operator_action TEXT
+        );
+
+        CREATE TABLE audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            table_name TEXT,
+            operation TEXT,
+            record_key TEXT,
+            actor TEXT,
+            action TEXT,
+            timestamp_ns INTEGER,
+            old_value TEXT,
+            new_value TEXT
+        );
+    "#;
+
+    fn v6_extra_columns() -> &'static str {
+        ", external_id TEXT, inventory_only INTEGER DEFAULT 0, \
+         selected_paths TEXT, extra_ips TEXT"
+    }
+
+    fn seed_device_row(conn: &Connection, address: &str) {
+        conn.execute(
+            "INSERT INTO devices (address, enabled, paths, optional, created_at_ns, \
+             updated_at_ns, created_by, updated_by, last_operator_action) \
+             VALUES (?1, 1, '[]', 0, 1, 2, 'seed', 'seed', 'seed')",
+            params![address],
+        )
+        .expect("seed device row");
+    }
+
+    fn open_at(dir: &tempfile::TempDir) -> Result<SqliteStore> {
+        SqliteStore::open_file(&dir.path().join(DB_FILE))
+    }
+
+    #[test]
+    fn fresh_database_reaches_v7_with_inventory_columns_and_index() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_at(&dir).expect("open");
+        assert_eq!(store.schema_version().expect("version"), 7);
+
+        let db = store.db.lock().unwrap();
+        let mut stmt = db.prepare("PRAGMA table_info(devices)").expect("table_info");
+        let cols: std::collections::HashSet<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .expect("query")
+            .collect::<std::result::Result<_, _>>()
+            .expect("collect");
+        for col in [
+            "external_id",
+            "inventory_only",
+            "selected_paths",
+            "extra_ips",
+            "inventory_platform",
+            "inventory_status",
+            "inventory_tenant",
+        ] {
+            assert!(cols.contains(col), "missing column {col}");
+        }
+        let index_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND name='idx_devices_external_id'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("index query");
+        assert_eq!(index_count, 1, "external_id unique index must exist");
+    }
+
+    #[test]
+    fn v5_database_upgrades_to_v7_preserving_rows_and_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join(DB_FILE);
+        {
+            let conn = Connection::open(&db_path).expect("open raw");
+            conn.execute_batch(DEVICES_V5_DDL).expect("v5 ddl");
+            conn.execute(
+                "INSERT INTO devices (address, enabled, hostname, vendor, role, site, \
+                 paths, created_at_ns, updated_at_ns, created_by, updated_by, \
+                 last_operator_action) \
+                 VALUES ('10.0.0.1', 1, 'r1', 'arista', 'router', 'dc1', \
+                 '[\"/interfaces\"]', 5, 6, 'seed', 'seed', 'seed')",
+                [],
+            )
+            .expect("seed v5 row");
+            conn.execute("PRAGMA user_version=5", []).expect("set v5");
+        }
+
+        let store = SqliteStore::open_file(&db_path).expect("migrate v5->v7");
+        assert_eq!(store.schema_version().expect("version"), 7);
+
+        let devices = store.list_devices().expect("list");
+        assert_eq!(devices.len(), 1);
+        let d = &devices[0];
+        assert_eq!(d.address, "10.0.0.1");
+        assert_eq!(d.hostname.as_deref(), Some("r1"));
+        assert_eq!(d.vendor.as_deref(), Some("arista"));
+        assert_eq!(d.paths, vec!["/interfaces".to_string()]);
+        assert_eq!(d.external_id, None);
+        assert!(!d.inventory_only);
+        assert!(d.selected_paths.is_empty());
+        assert!(d.extra_ips.is_empty());
+
+        // selected_paths / extra_ips round-trip through upsert+read.
+        let mut updated = d.clone();
+        updated.selected_paths = vec![crate::config::SelectedSubscriptionPath {
+            path: "/interfaces".to_string(),
+            ..Default::default()
+        }];
+        updated.extra_ips = vec!["10.0.0.9".to_string()];
+        store
+            .upsert_device(&updated, "test", "roundtrip")
+            .expect("upsert");
+        let reread = store.get_device("10.0.0.1").expect("get").expect("some");
+        assert_eq!(reread.selected_paths.len(), 1);
+        assert_eq!(reread.selected_paths[0].path, "/interfaces");
+        assert_eq!(reread.extra_ips, vec!["10.0.0.9".to_string()]);
+        assert_eq!(reread.hostname.as_deref(), Some("r1"));
+    }
+
+    #[test]
+    fn partial_v6_columns_are_tolerated_but_verified() {
+        // Simulate a crashed v6 migration: external_id exists, the other
+        // v6 columns and all v7 columns do not, user_version still 5.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join(DB_FILE);
+        {
+            let conn = Connection::open(&db_path).expect("open raw");
+            conn.execute_batch(DEVICES_V5_DDL).expect("v5 ddl");
+            conn.execute_batch("ALTER TABLE devices ADD COLUMN external_id TEXT")
+                .expect("partial column");
+            seed_device_row(&conn, "10.0.0.2");
+            conn.execute("PRAGMA user_version=5", []).expect("set v5");
+        }
+
+        let store = SqliteStore::open_file(&db_path).expect("migrate partial v6");
+        assert_eq!(store.schema_version().expect("version"), 7);
+        let devices = store.list_devices().expect("list");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].address, "10.0.0.2");
+    }
+
+    #[test]
+    fn v7_fails_closed_on_duplicate_external_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join(DB_FILE);
+        {
+            let conn = Connection::open(&db_path).expect("open raw");
+            let v6_ddl = format!(
+                "CREATE TABLE devices (address TEXT PRIMARY KEY, enabled INTEGER DEFAULT 1, \
+                 hostname TEXT, tls_domain TEXT, vendor TEXT, credential_alias TEXT, \
+                 username_env TEXT, role TEXT, site TEXT, collector_id TEXT, username TEXT, \
+                 password TEXT, password_env TEXT, ca_cert TEXT, paths TEXT, \
+                 optional INTEGER DEFAULT 0, created_at_ns INTEGER, updated_at_ns INTEGER, \
+                 created_by TEXT, updated_by TEXT, last_operator_action TEXT{})",
+                v6_extra_columns()
+            );
+            conn.execute_batch(&v6_ddl).expect("v6 ddl");
+            for addr in ["10.0.0.3", "10.0.0.4"] {
+                conn.execute(
+                    "INSERT INTO devices (address, enabled, paths, external_id, \
+                     inventory_only, created_at_ns, updated_at_ns) \
+                     VALUES (?1, 0, '[]', 'netbox:https:nb:443:device:7', 1, 1, 2)",
+                    params![addr],
+                )
+                .expect("seed dup external_id");
+            }
+            conn.execute("PRAGMA user_version=6", []).expect("set v6");
+        }
+
+        let result = SqliteStore::open_file(&db_path);
+        let err = match result {
+            Ok(_) => panic!("duplicate external_id must fail migration closed"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("duplicate")
+            || format!("{err:#}").contains("external_id"),
+            "unexpected error: {err:#}");
+
+        // user_version must NOT have advanced past the failed migration.
+        let conn = Connection::open(&db_path).expect("reopen raw");
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .expect("version");
+        assert_eq!(v, 6, "failed v7 migration must not advance user_version");
+    }
+
+    #[test]
+    fn external_id_unique_index_rejects_concurrent_style_duplicates() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_at(&dir).expect("open");
+
+        let mut first = TargetConfig {
+            address: "10.0.0.10".to_string(),
+            enabled: false,
+            inventory_only: true,
+            external_id: Some("netbox:https:nb:443:device:99".to_string()),
+            ..Default::default()
+        };
+        store
+            .upsert_device(&first, "test", "insert")
+            .expect("first insert");
+
+        // Same external identity under a DIFFERENT address must be
+        // rejected at the persistence boundary — not merged, not
+        // silently duplicated.
+        let mut second = first.clone();
+        second.address = "10.0.0.11".to_string();
+        let err = store
+            .upsert_device(&second, "test", "insert")
+            .expect_err("duplicate external_id must fail at sqlite boundary");
+        assert!(format!("{err:#}").contains("UNIQUE")
+            || format!("{err:#}").contains("unique"),
+            "unexpected error: {err:#}");
+
+        // NULL external_id rows (local devices) are unaffected by the
+        // partial index.
+        first.external_id = None;
+        first.address = "10.0.0.12".to_string();
+        store.upsert_device(&first, "test", "insert").expect("null id ok");
+        let mut third = first.clone();
+        third.address = "10.0.0.13".to_string();
+        store.upsert_device(&third, "test", "insert").expect("second null id ok");
+    }
+
+    #[test]
+    fn malformed_persisted_json_recovers_to_empty_lists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_at(&dir).expect("open");
+        {
+            let db = store.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO devices (address, enabled, paths, optional, created_at_ns, \
+                 updated_at_ns, created_by, updated_by, last_operator_action, \
+                 selected_paths, extra_ips) \
+                 VALUES ('10.0.0.20', 0, '[]', 0, 1, 2, 't', 't', 't', \
+                 'not-json', '{\"broken\"')",
+                [],
+            )
+            .expect("seed malformed");
+        }
+        let devices = store.list_devices().expect("list");
+        assert_eq!(devices.len(), 1);
+        // Defined recovery: unparseable JSON list columns degrade to
+        // empty rather than fabricating values or crashing the read.
+        assert!(devices[0].selected_paths.is_empty());
+        assert!(devices[0].extra_ips.is_empty());
+    }
 }

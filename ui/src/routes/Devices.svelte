@@ -225,9 +225,13 @@
               <td>{device.site || '—'}</td>
               <td>{device.collector_id || 'unassigned'}</td>
               <td class="status-cell">
-                <span class="badge {device.enabled ? 'healthy' : 'critical'}">
-                  {device.enabled ? 'enabled' : 'disabled'}
-                </span>
+                {#if device.inventory_only}
+                  <span class="badge warn" title="Declared inventory asset — telemetry collection not configured">inventory only</span>
+                {:else}
+                  <span class="badge {device.enabled ? 'healthy' : 'critical'}">
+                    {device.enabled ? 'enabled' : 'disabled'}
+                  </span>
+                {/if}
                 {#if incidentSevClass(device.address)}
                   <span class="badge {incidentSevClass(device.address)}">
                     {incidentMap.get(device.address)} incident

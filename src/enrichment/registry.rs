@@ -162,6 +162,11 @@ mod tests {
             created_by: String::new(),
             updated_by: String::new(),
             last_operator_action: String::new(),
+            external_id: None,
+            inventory_only: false,
+            inventory_platform: None,
+            inventory_status: None,
+            inventory_tenant: None,
         }
     }
 
