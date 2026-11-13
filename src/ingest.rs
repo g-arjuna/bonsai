@@ -489,34 +489,78 @@ async fn drain_queue_to_core(
             anyhow::bail!("core rejected telemetry ingest stream: {}", response.error);
         }
 
-        let accepted = response.accepted as usize;
-        if accepted == 0 {
-            anyhow::bail!("core accepted zero records from non-empty telemetry ingest batch");
+        // H2/R3 acknowledgement contract: the core consumes the ENTIRE
+        // client stream before responding — every record is either
+        // `accepted` (enqueued to the event bus) or `rejected`
+        // (permanently refused: authorization denial, malformed
+        // payload, protocol skew). A received response therefore means
+        // the whole batch was processed — but ONLY an exactly
+        // consistent accounting (`accepted + rejected == submitted`,
+        // checked arithmetic) proves it. An inconsistent or impossible
+        // response is a protocol violation: bail WITHOUT acking so the
+        // batch is retained and replayed — a loud failure, never
+        // silent record loss.
+        //
+        // Compatibility: pre-`rejected` cores report `accepted` only,
+        // but their accepted count already equals the submitted count
+        // (they had no permanent per-record rejections), so the strict
+        // equality still holds for old cores. A response whose
+        // protocol_version is major-skewed cannot be trusted to honor
+        // the contract at all — also retained.
+        match crate::api::check_protocol_compat(
+            response.protocol_version,
+            crate::api::PROTOCOL_VERSION_CURRENT,
+        ) {
+            crate::api::VersionCompat::Compatible => {}
+            crate::api::VersionCompat::MinorSkew { client, server: _ } => {
+                warn!(
+                    %collector_id,
+                    core_version = client,
+                    collector_version = crate::api::PROTOCOL_VERSION_CURRENT,
+                    "core ingest response protocol version minor skew"
+                );
+            }
+            crate::api::VersionCompat::MajorSkew { client, server } => {
+                anyhow::bail!(
+                    "core ingest response protocol version major skew \
+                     (core={client} collector={server}); batch retained for replay"
+                );
+            }
         }
-        let ack_index = accepted.saturating_sub(1).min(batch.records.len() - 1);
-        let ack_offset = batch.records[ack_index].next_offset;
+        let accepted = response.accepted;
+        let rejected = response.rejected;
+        let batch_len = u64::try_from(batch.records.len())
+            .context("collector queue batch length exceeds u64")?;
+        let accounted = accepted.checked_add(rejected);
+        if accounted != Some(batch_len) {
+            anyhow::bail!(
+                "core ingest accounting mismatch: accepted={accepted} \
+                 rejected={rejected} submitted={batch_len}; batch retained for replay"
+            );
+        }
+        let accepted = accepted as usize;
+        let rejected = rejected as usize;
+        let ack_offset = batch.records[batch.records.len() - 1].next_offset;
         queue
             .ack(ack_offset, collector_id)
             .context("failed to ack collector queue records")?;
 
         metrics::counter!("bonsai_queue_drained_total", "collector_id" => collector_id.to_string())
             .increment(accepted as u64);
+        if rejected > 0 {
+            metrics::counter!("bonsai_queue_rejected_total", "collector_id" => collector_id.to_string())
+                .increment(rejected as u64);
+        }
 
         info!(
             accepted = response.accepted,
+            rejected = response.rejected,
             queued_remaining = queue
                 .stats()
                 .map(|stats| stats.pending_records)
                 .unwrap_or(0),
             "collector queue batch delivered"
         );
-
-        if accepted < batch.records.len() {
-            anyhow::bail!(
-                "core accepted only {accepted} of {} queued telemetry records",
-                batch.records.len()
-            );
-        }
     }
 }
 
@@ -1224,10 +1268,13 @@ mod tests {
 
     use super::{
         CollectorQueue, RawQueuedRecord, client_tls_config, connect_core_channel,
-        ingest_update_to_telemetry, telemetry_to_ingest_update, zstd_size,
+        create_ingest_client, drain_queue_to_core, ingest_update_to_telemetry,
+        telemetry_to_ingest_update, zstd_size,
     };
-    use crate::config::{CollectorQueueConfig, RuntimeTlsConfig};
+    use crate::config::{CollectorQueueConfig, RuntimeConfig, RuntimeTlsConfig};
+    use crate::event_bus::InProcessBus;
     use crate::telemetry::TelemetryUpdate;
+    use std::time::Duration;
 
     #[test]
     fn telemetry_ingest_proto_round_trips_msgpack_payload() {
@@ -1472,6 +1519,753 @@ mod tests {
             update,
             next_offset: 0,
         }
+    }
+
+    // ── H2: drain_queue_to_core acknowledgement contract ──────────────────
+    //
+    // The core consumes the ENTIRE client stream before responding, so a
+    // received TelemetryIngestResponse means every record in the batch
+    // was processed — `accepted` and `rejected` are truthful counts, and
+    // the queue may retire the whole batch. These tests run the REAL
+    // forwarder against a real (development-compat) core server; only
+    // undecodable payloads are rejected there.
+
+    struct DevCore {
+        addr: std::net::SocketAddr,
+        _dir: tempfile::TempDir,
+        _server: tokio::task::JoinHandle<()>,
+        // Keeps the never-drained subscriber channel alive for the
+        // bus-saturation test; dropping it would close the channel and
+        // unblock the router.
+        _blocked_rx:
+            Option<tokio::sync::mpsc::Receiver<std::sync::Arc<crate::telemetry::TelemetryUpdate>>>,
+    }
+
+    async fn start_dev_core() -> DevCore {
+        start_dev_core_mode(None, false).await
+    }
+
+    /// `bus` injects a custom event bus (e.g. a tiny router with a
+    /// permanently-blocked subscriber to force router-queue overload);
+    /// `saturate` registers a BlockProducer subscriber that is never
+    /// drained.
+    async fn start_dev_core_mode(
+        bus: Option<std::sync::Arc<InProcessBus>>,
+        saturate: bool,
+    ) -> DevCore {
+        use crate::api::{BonsaiGraphServer, CoreService};
+        use crate::assignment::CollectorManager;
+        use crate::collector_auth::AuthPolicy;
+        use crate::credentials::CredentialVault;
+        use crate::event_bus::{InProcessBus, MpscSubscriber, OverflowPolicy};
+        use crate::graph::GraphStore;
+        use crate::registry::ApiRegistry;
+        use crate::sidecar_registry::SidecarRegistry;
+        use tokio::net::TcpListener;
+        use tokio_stream::wrappers::TcpListenerStream;
+        use tonic::transport::Server;
+
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("BONSAI_DRAIN_TEST_VAULT_PASSPHRASE", "pw") };
+        let graph = std::sync::Arc::new(
+            GraphStore::open(
+                dir.path().join("graph.db").to_str().unwrap(),
+                256 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+        let registry = std::sync::Arc::new(
+            ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap(),
+        );
+        let credentials = std::sync::Arc::new(
+            CredentialVault::open(
+                dir.path().join("vault"),
+                "BONSAI_DRAIN_TEST_VAULT_PASSPHRASE",
+            )
+            .unwrap(),
+        );
+        let bus = bus.unwrap_or_else(|| InProcessBus::new(1024));
+        let mut blocked_rx = None;
+        if saturate {
+            // A subscriber whose queue is never drained: the router
+            // blocks on it once its 1-slot queue fills, so the bounded
+            // router channel backs up and publish() reports overload.
+            let (sub, rx) = MpscSubscriber::new("blocked", 1, OverflowPolicy::BlockProducer);
+            bus.add_subscriber(sub).await;
+            blocked_rx = Some(rx);
+        }
+        let manager = std::sync::Arc::new(CollectorManager::new(
+            std::sync::Arc::clone(&registry),
+            std::sync::Arc::clone(&credentials),
+            vec![],
+        ));
+        let sidecars = std::sync::Arc::new(SidecarRegistry::new(vec![]));
+        let svc = CoreService::new(
+            graph,
+            std::sync::Arc::clone(&registry),
+            credentials,
+            bus,
+            None,
+            Some(manager),
+            sidecars,
+            registry.sqlite_store(),
+            None,
+            None,
+        )
+        .with_auth_policy(AuthPolicy::DevelopmentCompat);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(BonsaiGraphServer::new(svc))
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        DevCore {
+            addr,
+            _dir: dir,
+            _server: server,
+            _blocked_rx: blocked_rx,
+        }
+    }
+
+    fn drain_runtime(addr: std::net::SocketAddr) -> RuntimeConfig {
+        let mut cfg = RuntimeConfig::default();
+        cfg.core_ingest_endpoint = format!("http://{addr}");
+        cfg.tls.enabled = false;
+        cfg
+    }
+
+    /// A permanently-rejected record: msgpack byte 0xc1 is reserved and
+    /// fails decode on the core — the record is retired, never retried.
+    fn poison_proto(collector_id: &str, index: i64) -> crate::api::pb::TelemetryIngestUpdate {
+        let mut u = sample_proto(collector_id, index);
+        u.value_msgpack = vec![0xc1];
+        u
+    }
+
+    async fn wait_queue_drained(queue: &CollectorQueue) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if queue.stats().unwrap().pending_records == 0 {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "queue did not drain: {:?}",
+                queue.stats().unwrap()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_acks_whole_batch_with_interleaved_rejections() {
+        let core = start_dev_core().await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        // Interleaved accepted/rejected records in ONE batch: the core
+        // consumes the entire stream before responding, so the whole
+        // batch — including the rejected middle record — is processed
+        // and retired exactly once.
+        for (i, u) in [
+            sample_proto("collector-a", 1),
+            poison_proto("collector-a", 2),
+            sample_proto("collector-a", 3),
+            poison_proto("collector-a", 4),
+            sample_proto("collector-a", 5),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let _ = i;
+            queue.append(u, "collector-a").unwrap();
+        }
+
+        let mut client = create_ingest_client(&drain_runtime(core.addr))
+            .await
+            .unwrap();
+        let (sd_tx, sd_rx) = tokio::sync::watch::channel(false);
+        let q = std::sync::Arc::clone(&queue);
+        let drain =
+            tokio::spawn(
+                async move { drain_queue_to_core(&mut client, q, "collector-a", sd_rx).await },
+            );
+        wait_queue_drained(&queue).await;
+        sd_tx.send(true).unwrap();
+        drain.await.unwrap().unwrap();
+        assert_eq!(queue.stats().unwrap().pending_records, 0);
+    }
+
+    #[tokio::test]
+    async fn drain_retires_fully_rejected_batch_without_blocking() {
+        let core = start_dev_core().await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        // Entire batch permanently rejected (all poison): retired, not
+        // replayed forever — and the NEXT legitimate batch still flows.
+        queue
+            .append(poison_proto("collector-a", 1), "collector-a")
+            .unwrap();
+        queue
+            .append(poison_proto("collector-a", 2), "collector-a")
+            .unwrap();
+        queue
+            .append(sample_proto("collector-a", 3), "collector-a")
+            .unwrap();
+
+        let mut client = create_ingest_client(&drain_runtime(core.addr))
+            .await
+            .unwrap();
+        let (sd_tx, sd_rx) = tokio::sync::watch::channel(false);
+        let q = std::sync::Arc::clone(&queue);
+        let drain =
+            tokio::spawn(
+                async move { drain_queue_to_core(&mut client, q, "collector-a", sd_rx).await },
+            );
+        wait_queue_drained(&queue).await;
+        sd_tx.send(true).unwrap();
+        drain.await.unwrap().unwrap();
+        assert_eq!(queue.stats().unwrap().pending_records, 0);
+    }
+
+    #[tokio::test]
+    async fn drain_retains_records_on_retryable_core_failure() {
+        let core = start_dev_core().await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        queue
+            .append(sample_proto("collector-a", 1), "collector-a")
+            .unwrap();
+        queue
+            .append(sample_proto("collector-a", 2), "collector-a")
+            .unwrap();
+
+        let mut client = create_ingest_client(&drain_runtime(core.addr))
+            .await
+            .unwrap();
+        // Core dies mid-operation: the RPC fails BEFORE a response, so
+        // no acknowledgement is written and both records are retained
+        // for replay (at-least-once).
+        core._server.abort();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let (_sd_tx, sd_rx) = tokio::sync::watch::channel(false);
+        let q = std::sync::Arc::clone(&queue);
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            drain_queue_to_core(&mut client, q, "collector-a", sd_rx),
+        )
+        .await
+        .expect("drain must return on core failure, not hang");
+        assert!(result.is_err(), "core outage must surface as drain error");
+        assert_eq!(
+            queue.stats().unwrap().pending_records,
+            2,
+            "unacknowledged records must survive a failed drain for replay"
+        );
+    }
+
+    // ── R3: scripted-core drain contract tests ──────────────────────────
+    //
+    // A minimal BonsaiGraph stub that consumes the whole client stream
+    // then returns a SCRIPTED TelemetryIngestResponse — used to prove
+    // the collector refuses to acknowledge inconsistent, impossible or
+    // protocol-incompatible accounting.
+
+    struct ScriptedCore {
+        accepted: u64,
+        rejected: u64,
+        protocol_version: u32,
+        error: String,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<crate::api::pb::TelemetryIngestUpdate>>>,
+    }
+
+    #[tonic::async_trait]
+    impl crate::api::BonsaiGraph for ScriptedCore {
+        type RegisterCollectorStream = tokio_stream::wrappers::ReceiverStream<
+            std::result::Result<crate::api::pb::AssignmentUpdate, tonic::Status>,
+        >;
+        type StreamEventsStream = tokio_stream::wrappers::ReceiverStream<
+            std::result::Result<crate::api::pb::StateEvent, tonic::Status>,
+        >;
+
+        async fn telemetry_ingest(
+            &self,
+            request: tonic::Request<tonic::Streaming<crate::api::pb::TelemetryIngestUpdate>>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::TelemetryIngestResponse>,
+            tonic::Status,
+        > {
+            let mut stream = request.into_inner();
+            while let Some(update) = stream
+                .message()
+                .await
+                .map_err(|e| tonic::Status::unavailable(e.to_string()))?
+            {
+                self.seen.lock().unwrap().push(update);
+            }
+            if !self.error.is_empty() {
+                return Err(tonic::Status::unavailable(&self.error));
+            }
+            Ok(tonic::Response::new(
+                crate::api::pb::TelemetryIngestResponse {
+                    accepted: self.accepted,
+                    error: String::new(),
+                    protocol_version: self.protocol_version,
+                    rejected: self.rejected,
+                },
+            ))
+        }
+
+        // All RPCs other than telemetry_ingest are unused by the drain
+        // path — written out explicitly because #[async_trait] cannot
+        // desugar async fns emitted by an inner macro_rules! call.
+        async fn get_leader(
+            &self,
+            _r: tonic::Request<crate::api::pb::GetLeaderRequest>,
+        ) -> std::result::Result<tonic::Response<crate::api::pb::GetLeaderResponse>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("get_leader"))
+        }
+        async fn register_collector(
+            &self,
+            _r: tonic::Request<crate::api::pb::CollectorIdentity>,
+        ) -> std::result::Result<tonic::Response<Self::RegisterCollectorStream>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("register_collector"))
+        }
+        async fn heartbeat(
+            &self,
+            _r: tonic::Request<crate::api::pb::CollectorStats>,
+        ) -> std::result::Result<tonic::Response<crate::api::pb::HeartbeatAck>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("heartbeat"))
+        }
+        async fn query(
+            &self,
+            _r: tonic::Request<crate::api::pb::QueryRequest>,
+        ) -> std::result::Result<tonic::Response<crate::api::pb::QueryResponse>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("query"))
+        }
+        async fn get_devices(
+            &self,
+            _r: tonic::Request<crate::api::pb::GetDevicesRequest>,
+        ) -> std::result::Result<tonic::Response<crate::api::pb::GetDevicesResponse>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("get_devices"))
+        }
+        async fn get_interfaces(
+            &self,
+            _r: tonic::Request<crate::api::pb::GetInterfacesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::GetInterfacesResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("get_interfaces"))
+        }
+        async fn get_bgp_neighbors(
+            &self,
+            _r: tonic::Request<crate::api::pb::GetBgpNeighborsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::GetBgpNeighborsResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("get_bgp_neighbors"))
+        }
+        async fn get_topology(
+            &self,
+            _r: tonic::Request<crate::api::pb::GetTopologyRequest>,
+        ) -> std::result::Result<tonic::Response<crate::api::pb::GetTopologyResponse>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("get_topology"))
+        }
+        async fn list_managed_devices(
+            &self,
+            _r: tonic::Request<crate::api::pb::ListManagedDevicesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::ListManagedDevicesResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("list_managed_devices"))
+        }
+        async fn add_device(
+            &self,
+            _r: tonic::Request<crate::api::pb::AddDeviceRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::DeviceMutationResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("add_device"))
+        }
+        async fn update_device(
+            &self,
+            _r: tonic::Request<crate::api::pb::UpdateDeviceRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::DeviceMutationResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("update_device"))
+        }
+        async fn remove_device(
+            &self,
+            _r: tonic::Request<crate::api::pb::RemoveDeviceRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::DeviceMutationResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("remove_device"))
+        }
+        async fn discover_device(
+            &self,
+            _r: tonic::Request<crate::api::pb::DiscoverRequest>,
+        ) -> std::result::Result<tonic::Response<crate::api::pb::DiscoveryReport>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("discover_device"))
+        }
+        async fn list_sites(
+            &self,
+            _r: tonic::Request<crate::api::pb::ListSitesRequest>,
+        ) -> std::result::Result<tonic::Response<crate::api::pb::ListSitesResponse>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("list_sites"))
+        }
+        async fn add_site(
+            &self,
+            _r: tonic::Request<crate::api::pb::AddSiteRequest>,
+        ) -> std::result::Result<tonic::Response<crate::api::pb::SiteMutationResponse>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("add_site"))
+        }
+        async fn update_site(
+            &self,
+            _r: tonic::Request<crate::api::pb::UpdateSiteRequest>,
+        ) -> std::result::Result<tonic::Response<crate::api::pb::SiteMutationResponse>, tonic::Status>
+        {
+            Err(tonic::Status::unimplemented("update_site"))
+        }
+        async fn list_credentials(
+            &self,
+            _r: tonic::Request<crate::api::pb::ListCredentialsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::ListCredentialsResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("list_credentials"))
+        }
+        async fn add_credential(
+            &self,
+            _r: tonic::Request<crate::api::pb::AddCredentialRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::CredentialMutationResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("add_credential"))
+        }
+        async fn remove_credential(
+            &self,
+            _r: tonic::Request<crate::api::pb::RemoveCredentialRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::CredentialMutationResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("remove_credential"))
+        }
+        async fn stream_events(
+            &self,
+            _r: tonic::Request<crate::api::pb::StreamEventsRequest>,
+        ) -> std::result::Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("stream_events"))
+        }
+        async fn detection_ingest(
+            &self,
+            _r: tonic::Request<tonic::Streaming<crate::api::pb::DetectionEventIngest>>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::DetectionIngestResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("detection_ingest"))
+        }
+        async fn create_detection(
+            &self,
+            _r: tonic::Request<crate::api::pb::CreateDetectionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::CreateDetectionResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("create_detection"))
+        }
+        async fn create_remediation(
+            &self,
+            _r: tonic::Request<crate::api::pb::CreateRemediationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::CreateRemediationResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("create_remediation"))
+        }
+        async fn push_remediation(
+            &self,
+            _r: tonic::Request<crate::api::pb::PushRemediationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::PushRemediationResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("push_remediation"))
+        }
+        async fn register_sidecar(
+            &self,
+            _r: tonic::Request<crate::api::pb::RegisterSidecarRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::RegisterSidecarResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("register_sidecar"))
+        }
+        async fn sidecar_heartbeat(
+            &self,
+            _r: tonic::Request<crate::api::pb::SidecarHeartbeatRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::SidecarHeartbeatResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("sidecar_heartbeat"))
+        }
+    }
+
+    struct ScriptedCoreHandle {
+        addr: std::net::SocketAddr,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<crate::api::pb::TelemetryIngestUpdate>>>,
+        _server: tokio::task::JoinHandle<()>,
+    }
+
+    async fn start_scripted_core(
+        accepted: u64,
+        rejected: u64,
+        protocol_version: u32,
+    ) -> ScriptedCoreHandle {
+        use crate::api::BonsaiGraphServer;
+        use tokio::net::TcpListener;
+        use tokio_stream::wrappers::TcpListenerStream;
+        use tonic::transport::Server;
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let svc = ScriptedCore {
+            accepted,
+            rejected,
+            protocol_version,
+            error: String::new(),
+            seen: std::sync::Arc::clone(&seen),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(BonsaiGraphServer::new(svc))
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        ScriptedCoreHandle {
+            addr,
+            seen,
+            _server: server,
+        }
+    }
+
+    /// Run one drain session against `addr` until the queue empties,
+    /// the drain task exits (error), or the deadline passes — then
+    /// signal shutdown and return the drain's own result.
+    async fn run_drain_once(
+        addr: std::net::SocketAddr,
+        queue: &std::sync::Arc<CollectorQueue>,
+    ) -> Result<(), anyhow::Error> {
+        let mut client = create_ingest_client(&drain_runtime(addr)).await?;
+        let (sd_tx, sd_rx) = tokio::sync::watch::channel(false);
+        let q = std::sync::Arc::clone(queue);
+        let drain =
+            tokio::spawn(
+                async move { drain_queue_to_core(&mut client, q, "collector-a", sd_rx).await },
+            );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if drain.is_finished() || queue.stats().map(|s| s.pending_records).unwrap_or(0) == 0 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "drain did not settle: {:?}",
+                queue.stats()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let _ = sd_tx.send(true);
+        drain
+            .await
+            .map_err(|e| anyhow::anyhow!("drain task panicked: {e}"))?
+    }
+
+    #[tokio::test]
+    async fn drain_acks_consistent_scripted_batch() {
+        // Old-core shape: accepted-only accounting where accepted ==
+        // submitted (pre-rejected cores never permanently rejected).
+        let core = start_scripted_core(3, 0, crate::api::PROTOCOL_VERSION_CURRENT).await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        for i in 0..3 {
+            queue
+                .append(sample_proto("collector-a", i), "collector-a")
+                .unwrap();
+        }
+        run_drain_once(core.addr, &queue).await.unwrap();
+        // Drain loop continues waiting for more work — shutdown via drop
+        // is fine; assert the batch was acked.
+        assert_eq!(queue.stats().unwrap().pending_records, 0);
+        assert_eq!(core.seen.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn drain_retains_batch_on_accounting_mismatch() {
+        // Core claims accepted=1, rejected=0 for a 2-record batch —
+        // inconsistent accounting must NOT advance the ack offset.
+        let core = start_scripted_core(1, 0, crate::api::PROTOCOL_VERSION_CURRENT).await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        queue
+            .append(sample_proto("collector-a", 1), "collector-a")
+            .unwrap();
+        queue
+            .append(sample_proto("collector-a", 2), "collector-a")
+            .unwrap();
+        let err = run_drain_once(core.addr, &queue).await.unwrap_err();
+        assert!(err.to_string().contains("accounting mismatch"), "{err}");
+        assert_eq!(
+            queue.stats().unwrap().pending_records,
+            2,
+            "mismatched accounting must retain the whole batch for replay"
+        );
+        assert_eq!(
+            core.seen.lock().unwrap().len(),
+            2,
+            "core consumed the stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_retains_batch_on_impossible_counts() {
+        // u64::MAX + u64::MAX overflows checked arithmetic — impossible
+        // accounting must be rejected without acking.
+        let core =
+            start_scripted_core(u64::MAX, u64::MAX, crate::api::PROTOCOL_VERSION_CURRENT).await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        queue
+            .append(sample_proto("collector-a", 1), "collector-a")
+            .unwrap();
+        let err = run_drain_once(core.addr, &queue).await.unwrap_err();
+        assert!(err.to_string().contains("accounting mismatch"), "{err}");
+        assert_eq!(queue.stats().unwrap().pending_records, 1);
+    }
+
+    #[tokio::test]
+    async fn drain_retains_batch_on_protocol_version_skew() {
+        // Response protocol_version = 0 predates version negotiation —
+        // major skew, contract untrustworthy, batch retained.
+        let core = start_scripted_core(1, 0, 0).await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        queue
+            .append(sample_proto("collector-a", 1), "collector-a")
+            .unwrap();
+        let err = run_drain_once(core.addr, &queue).await.unwrap_err();
+        assert!(err.to_string().contains("major skew"), "{err}");
+        assert_eq!(queue.stats().unwrap().pending_records, 1);
+    }
+
+    #[tokio::test]
+    async fn drain_replays_retained_batch_after_core_recovers() {
+        // Restart/replay: a retained batch is delivered again once the
+        // core returns a consistent response.
+        let bad = start_scripted_core(0, 0, crate::api::PROTOCOL_VERSION_CURRENT).await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        queue
+            .append(sample_proto("collector-a", 1), "collector-a")
+            .unwrap();
+        queue
+            .append(sample_proto("collector-a", 2), "collector-a")
+            .unwrap();
+        // First core under-reports (accepted=0 for 2 records) → retained.
+        run_drain_once(bad.addr, &queue).await.unwrap_err();
+        assert_eq!(queue.stats().unwrap().pending_records, 2);
+        bad._server.abort();
+
+        // "Restarted" core reports consistent accounting → replay acks.
+        let good = start_scripted_core(2, 0, crate::api::PROTOCOL_VERSION_CURRENT).await;
+        run_drain_once(good.addr, &queue).await.unwrap();
+        assert_eq!(queue.stats().unwrap().pending_records, 0);
+        assert_eq!(
+            good.seen.lock().unwrap().len(),
+            2,
+            "replay delivered both records"
+        );
+    }
+
+    /// R3 bus semantics: when the bounded event-bus router queue is
+    /// full, `publish()` reports overload and `telemetry_ingest`
+    /// aborts the stream WITHOUT a response — the collector retains the
+    /// entire batch for replay instead of acknowledging a silent drop.
+    #[tokio::test]
+    async fn drain_retains_batch_on_bus_router_overload() {
+        // Tiny router (capacity 4) + permanently-blocked subscriber.
+        let bus = InProcessBus::new(4);
+        let core = start_dev_core_mode(Some(bus), true).await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        for i in 0..10 {
+            queue
+                .append(sample_proto("collector-a", i), "collector-a")
+                .unwrap();
+        }
+
+        let mut client = create_ingest_client(&drain_runtime(core.addr))
+            .await
+            .unwrap();
+        let (_sd_tx, sd_rx) = tokio::sync::watch::channel(false);
+        let q = std::sync::Arc::clone(&queue);
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            drain_queue_to_core(&mut client, q, "collector-a", sd_rx),
+        )
+        .await
+        .expect("drain must return on bus overload, not hang");
+        assert!(result.is_err(), "bus overload must surface as drain error");
+        assert_eq!(
+            queue.stats().unwrap().pending_records,
+            10,
+            "overload must retain the whole batch — no silent delivery loss"
+        );
     }
 }
 

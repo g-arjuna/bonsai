@@ -255,12 +255,113 @@ LAB VERIFIED (11 November).
   saturation + recovery, SIGKILL restart/replay).
 - Evidence: `docs/merger/evidence/2026-11-11-bn021f-revocation-hardening/`.
 
-**BN-021g — Production acceptance** — OPEN (renamed from BN-021f slot;
-see above for the implemented slice).
-- Cross-protocol identity regression tests; multi-site overlapping
-  addresses; unknown/conflicting handling; collector restart/failover;
-  source-alias migration + journal replay; identity metrics/diagnostics;
-  simultaneous credential-authorization rotation (schema v5 candidate).
+**BN-021g — Production trust foundation** — SLICE 1 IMPLEMENTED
+(12 November): authenticated collector identity + scoped ingest
+authorization on the existing collector→core gRPC channel.
+
+- **BN-021g-1 collector trust foundation (this slice, hardened after
+  independent review):** transport principal extracted from tonic
+  `TlsConnectInfo` peer certificates (never payload/metadata);
+  `"sha256:<hex>"` leaf fingerprint must match
+  `exporter_bindings.match_ingress_credential` on an ACTIVE
+  credential-pinned binding — certificate/collector mismatch, unbound
+  certs, revoked bindings, ambiguous bindings, unattested principals
+  and unauthorized scopes are rejected per message. Capability gates:
+  `collector` (ingest plane per claimed `collector_id`, heartbeat,
+  register stream), `detection-ingest` (separate authority + target/
+  source-event provenance verification), `core-admin` (device/site/
+  credential mutation, query, remediation writes), `sidecar`,
+  `operator-read` (global reads incl. topology/sites/event stream;
+  device-scoped reads limited to assigned devices), any-pinned-binding
+  (`get_leader`). **Classified observation boundary (H1):** each record
+  is decoded, classified (`TelemetryEvent::authority`) and only then
+  authorized — canonical classes (YANG paths AND canonical writers on
+  `streaming/` paths: BMP, BGP-LS, interface summaries, config-state)
+  require an enabled registry device assigned to the collector;
+  provisional classes require a `*src/` source key re-namespaced to
+  the authenticated collector; unclassified paths are ignored. Path
+  prefixes never establish graph authority. **Queue ack contract
+  (H2):** the core consumes the whole ingest stream before responding;
+  `accepted`+`rejected`==submitted, rejected records are permanently
+  retired, RPC errors retain the batch — acks describe records
+  actually processed. **Per-message capability revalidation (H3):**
+  `detection-ingest` is re-checked on every message of an open stream;
+  authz decisions are epoch-stamped so binding mutations invalidate
+  the cache immediately. **Detection provenance (H4):** remote
+  detections require non-empty, existing, same-device,
+  server-provenanced non-provisional source events; malformed payloads
+  rejected; `remote_detection_ingest` provenance marker stored;
+  storage failures are retryable stream errors. **Read ambiguity
+  (H5):** scoped reads use the same trusted-binding ambiguity rules as
+  ingest (no `DISTINCT` collapse); one credential cannot be provisioned
+  for two collector identities. **Session lifecycle (H6):** assignment
+  cleanup is owned by a stream drop guard (disconnect/cancellation
+  safe); generation check + cleanup run under one lock. **Auth
+  policy:** `runtime.auth_mode` = `required` (default, fail
+  closed) / `development-compat` (explicit dev opt-in). Authz decisions
+  cached ≤5s (bounded 4096-entry cache, epoch-invalidated);
+  durable provenance via `audit_log`. Verified:
+  `tests/bn021g_collector_trust_foundation.rs`
+  25/25 real loopback mTLS + real GraphStore wiring — classified-
+  authority canonical-writer gating, provisional namespace
+  re-homing, per-message detection revocation mid-stream, evidence
+  provenance denial, ambiguous-binding read denial, disconnect
+  cleanup — plus real-server queue drain tests (interleaved
+  rejection, all-reject, retryable failure). Evidence:
+  `docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.
+- **Residual-findings round (R1–R4, 13 November, same branch):** a
+  third review confirmed four residual defects, all closed:
+  **R1** provisional normalization now unconditionally pins effective
+  `source_key`/`exporter_id`/`identity_status` server-side (missing,
+  null, numeric or malformed producer claims cannot reach
+  `classify()`'s untrusted `exporter_address` fallback; originals
+  preserved under `claimed_*` evidence; `otlpapp/` ids re-derived
+  under the authenticated namespace; payload prefix must match the
+  classified protocol). **R2** `verify_detection_scope` is a positive
+  allowlist of server-established `source_type` provenance with
+  structured detail parsing — the previously missing `sce-no-prov`
+  submission is now tested; malformed details permanent, store
+  failures retryable. **R3** the collector validates ingest responses
+  before acking (response protocol version not major-skewed;
+  `accepted + rejected` == submitted via checked arithmetic —
+  violations retain the batch); protocol version is verified per
+  record; `InProcessBus::publish` returns `PublishOutcome` so router
+  saturation is a retryable failure, not silent loss. **R4** active
+  `protocol="collector"` identities are globally unique (schema v5
+  partial unique indexes + provisioning checks + authorization
+  fail-closed on ambiguous rows; rotation keeps one `binding_id`).
+  Cache epoch is captured before the store read and bumped before
+  audit persistence; indexed credential lookup verified via
+  `EXPLAIN QUERY PLAN`. Verified:
+  `tests/bn021g_collector_trust_foundation.rs` **31/31** + 16/16
+  ingest drain tests (scripted-core contract: consistent batch,
+  accounting mismatch, impossible counts, version skew, bus
+  saturation, replay) + lib 299 pass/5 documented BN-019-B6 baseline
+  failures + 110/110 BN-021b–f/BN-022/syslog/snmp/otlp/sflow
+  regressions.
+- **BN-021g-2 first verified original-source projection:** narrow OTLP
+  case via direct authenticated producer identity or explicitly
+  authorized attestation; no arbitrary remote-peer ownership inference.
+- **BN-021g-3 trusted syslog acquisition.**
+- **BN-021g-4 NetFlow/IPFIX + sFlow acquisition.**
+- **BN-021g-5 SNMPv3 USM cryptographic verification (supported libs).**
+- **BN-021g-6 production acceptance:** NAT, overlapping private
+  addresses, replay, rotation overlap, failover, revocation fan-out,
+  migration, coverage, evidence retention, explicit trust states in
+  API/UI.
+
+Remaining BN-021g-1 limitations: assignment authorizes the collector's
+acquisition process for a configured device — it is NOT cryptographic
+proof of original device identity, so a compromised collector can
+still forge observations for its assigned devices (BN-021g-2+ owns
+verified original-source projection); revocation cannot recall device
+credentials already delivered over an assignment stream (rotate them
+operationally); the 5s authz cache is the documented maximum
+revocation window; capability bindings (`collector`,
+`detection-ingest`, `core-admin`, `sidecar`, `operator-read`) must be
+provisioned via the existing identity admin API before mTLS clients
+can use those RPCs; `runtime.auth_mode=development-compat` must never
+be used outside isolated loopback development.
 
 ### Source-audited correctness refinements (existing BN ownership)
 

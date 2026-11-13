@@ -126,3 +126,25 @@ date,command,scope,wall_seconds,result,notes
 2026-11-12,cargo check -p bonsai --lib,bonsai --lib,9.30,pass,warm; post B3 ambiguity edit
 2026-11-12,cargo test --test bn021e_otlp_source_identity (B3 ambiguity),bn021e otlp suite B3,533,pass,8m53s relink + focused run; candidate_probe_reports_ambiguity ok
 2026-11-12,cargo test --test bn021e_otlp_source_identity (final),bn021e otlp suite final,3.48,pass,14/14 no rebuild; run only
+2026-11-12,cargo test --test bn021g_collector_trust_foundation (attempt1),bn021g mTLS acceptance,~150,fail-fixture,buffer pool 64MB too small + rustls CryptoProvider missing; fixture fixes only
+2026-11-12,cargo test --test bn021g_collector_trust_foundation,bn021g mTLS acceptance,65,pass,42s relink + 10.3s run; 6/6 real loopback mTLS scenarios
+2026-11-12,cargo test --test bn021f_authenticated_ingress --test bn021f_hardening --test bn022_graph_read_boundary --test bn021b_trusted_identity,bn021f/b trust regressions post-gn,~120,pass,36/36 (9+9+5+13); warm binaries
+2026-11-12,cargo check -p bonsai --lib (post-fmt),bonsai --lib,10.71,pass,warm
+2026-11-12,cargo test -j 1 --test bn021g_collector_trust_foundation (hardening, run1),bn021g extended suite,~290,fail-1,4m24s link + 18.6s run; 18/19 — provisional flow fixture used wrong value keys (l4_protocol, missing exporter_id)
+2026-11-12,cargo test -j 1 --test bn021g_collector_trust_foundation provisional_payloads (fix attempt),bn021g focused,~55,fail-1,57s relink; still flowsrc/ assertion — classifier needs exporter_id+protocol fields
+2026-11-12,cargo test -j 1 --test bn021g_collector_trust_foundation provisional_payloads (final),bn021g focused,~50,pass,47.7s relink + 3.2s run; NetFlow evidence is AppFlow node keyed by exporter_id, not StateChangeEvent
+2026-11-12,cargo test -j 1 --test bn021g_collector_trust_foundation (final full),bn021g extended suite,~50,pass,19/19 in 18.62s; real mTLS + real GraphStore writer wiring
+2026-11-12,cargo test -p bonsai --lib,bonsai lib unit tests,~195,baseline,2m40s compile + 35.1s run; 290 pass / 5 fail = unchanged BN-019-B6 baseline (archive overflow, site_sync, subscription_status, registry, service_discovery)
+2026-11-12,cargo test -j 1 --test bn021b..bn022 batch (6 targets),bn021b/c/d/f + bn022 regressions,~195,pass,3m15s links + runs; 68/68 (13+17+15+9+9+5)
+2026-11-12,cargo test -j 1 --test bn021e* bn005* bn006* ownership batch (10 targets),bn021e isolation + bn005/006 + ownership,~246,pass,4m06s links + runs; 72 pass / 1 ignored (containerlab-required live test, documented skip)
+2026-11-12,cargo test -j 1 --test bn006_native_nos_adapter,bn006 adapter unit suite,~22,pass,7/7; unaffected module, run for completeness
+2026-11-12,cargo check -p bonsai --lib,bonsai --lib,9.80,pass,warm workspace; sccache active; H1-H6 hardening edits
+2026-11-12,cargo test -p bonsai --lib ingest::tests::drain (x2),bonsai lib drain/queue tests,~115,pass,1m54s compile + 3.74s run; 3/3 real-server drain tests (interleaved reject, all-reject, retryable failure)
+2026-11-12,cargo test -j 1 --test bn021g_collector_trust_foundation (x3),bn021g extended suite,~310,pass-final,3m49s+52s+final link; 25/25 in 22.5s; earlier runs exposed contract-test updates (rejected-count semantics) and a test-side pin bug
+2026-11-12,cargo test -p bonsai --lib -- ingest:: assignment:: collector_auth:: telemetry::,bonsai lib focused modules,~20,pass,15/15; queue/assignment/authz unit regressions
+2026-11-12,cargo test -j 1 --test bn021b..bn022 batch (8 targets),bn021b/c/d/e(otlp+sflow)/f+bn022 regressions,~560,pass,8m59s links + ~21s runs; 89/89 (13+17+15+14+7+9+9+5); bn021e snmp/syslog slices not rerun (unaffected modules)
+2026-11-13,cargo check -p bonsai --lib --tests,bonsai lib+tests check,~200,pass,incremental; scripted-core stub trait impl fixes (async_trait cannot desugar macro-emitted async fns); final check 10.65s warm
+2026-11-13,cargo test -p bonsai --lib ingest::tests::,bonsai lib ingest tests,~120,pass,1m55s compile + 4.13s run; 16/16 incl. new scripted-core drain contract tests (consistent batch, accounting mismatch, impossible counts, version skew, bus saturation, replay)
+2026-11-13,cargo test -j 1 --test bn021g_collector_trust_foundation (x2),bn021g final suite,~150,pass-final,31/31 in 24.8s; first run exposed 3 stale assertions (claimed_* evidence contract, partial unique index plan); second run clean
+2026-11-13,cargo test -p bonsai --lib,bonsai lib unit tests,~40,pass-with-baseline,299 pass / 5 fail = documented BN-019-B6 baseline set (archive hourly writer, site_sync, subscription_status, api_registry_persists, service_pattern_matching); no new failures
+2026-11-13,cargo test --test bn021b..bn022 batch (10 targets),bn021b-f+bn022+syslog/snmp/otlp/sflow regressions,~1500,pass,24m22s link+run dominated by 10 ~1GB test binary links; 110/110 pass

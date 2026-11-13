@@ -15,6 +15,7 @@
 use anyhow::{Context, Result, anyhow};
 use rusqlite::{Connection, params};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// File name of the config database inside a runtime directory.
@@ -23,12 +24,17 @@ const DB_FILE: &str = CONFIG_DB_FILE_NAME;
 /// Schema version the management service migrates to. Read-only
 /// consumers (routing service) compare against this and fail closed
 /// when the database is older.
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 /// SQLite config store with versioned schema and audit trail.
 pub struct SqliteStore {
     db: Arc<Mutex<Connection>>,
     config_replicator: Option<Arc<crate::ha_coordinator::ConfigReplicator>>,
+    /// Process-local authorization epoch (BN-021g H3/H6). Incremented on
+    /// every `exporter_bindings` mutation so `CollectorAuthz` decision
+    /// caches invalidate immediately instead of waiting out the TTL.
+    /// Cross-process mutations are still bounded by the cache TTL.
+    authz_epoch: AtomicU64,
 }
 
 impl SqliteStore {
@@ -41,6 +47,7 @@ impl SqliteStore {
         let store = Self {
             db: Arc::new(Mutex::new(db)),
             config_replicator: None,
+            authz_epoch: AtomicU64::new(0),
         };
 
         store.init_schema()?;
@@ -73,7 +80,19 @@ impl SqliteStore {
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
             config_replicator: None,
+            authz_epoch: AtomicU64::new(0),
         })
+    }
+
+    /// Current process-local authorization epoch. `CollectorAuthz`
+    /// stamps cached decisions with this value; a change means every
+    /// cached binding/capability decision must be re-evaluated.
+    pub fn authz_epoch(&self) -> u64 {
+        self.authz_epoch.load(Ordering::SeqCst)
+    }
+
+    fn bump_authz_epoch(&self) {
+        self.authz_epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Current schema version recorded in the database (`user_version`).
@@ -284,6 +303,51 @@ impl SqliteStore {
             );
 
             db.execute("PRAGMA user_version=4", [])
+                .context("failed to set schema version")?;
+        }
+
+        // Version 5: BN-021g R4 — global collector identity uniqueness.
+        // Additive only: two partial unique indexes enforce, at the
+        // database level (including concurrent provisioning), that an
+        // ACTIVE `protocol='collector'` binding's `exporter_id`
+        // (the collector id) is globally unique across scopes and
+        // credentials, and that each ingress credential pins at most
+        // one collector identity. If pre-existing ambiguous rows make
+        // an index un-creatable we log loudly and continue — runtime
+        // authorization still fails closed on ambiguous rows and
+        // provisioning checks still reject new conflicts.
+        if user_version < 5 {
+            for (name, sql) in [
+                // General credential lookup index: `find_credential_bindings`
+                // and `credential_binding_permits` filter on
+                // `match_ingress_credential` across ALL protocols —
+                // without this they full-scan exporter_bindings.
+                (
+                    "idx_exporter_bindings_credential",
+                    "CREATE INDEX IF NOT EXISTS idx_exporter_bindings_credential ON exporter_bindings(match_ingress_credential)",
+                ),
+                (
+                    "idx_exporter_bindings_collector_identity",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_exporter_bindings_collector_identity ON exporter_bindings(exporter_id) WHERE protocol = 'collector' AND status = 'active'",
+                ),
+                (
+                    "idx_exporter_bindings_collector_credential",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_exporter_bindings_collector_credential ON exporter_bindings(match_ingress_credential) WHERE protocol = 'collector' AND status = 'active'",
+                ),
+            ] {
+                if let Err(e) = db.execute_batch(sql) {
+                    tracing::error!(
+                        index = name,
+                        error = %e,
+                        "collector uniqueness index could not be created — \
+                         existing ambiguous exporter_bindings rows detected; \
+                         authorization fails closed on ambiguous rows and \
+                         new conflicting provisioning is still rejected"
+                    );
+                }
+            }
+
+            db.execute("PRAGMA user_version=5", [])
                 .context("failed to set schema version")?;
         }
 
@@ -1224,6 +1288,42 @@ impl SqliteStore {
             }
         }
 
+        // BN-021g R4: `protocol = 'collector'` identity is GLOBAL —
+        // collector ids are not scoped. Enforce across ALL scopes:
+        //   - one active binding per collector id (any credential);
+        //   - one collector identity per ingress credential.
+        // The partial unique indexes (schema v5) make this atomic at
+        // the database level; these checks produce precise errors and
+        // cover databases where index creation was skipped.
+        if stored.protocol == crate::collector_auth::COLLECTOR_PROTOCOL {
+            for other in self.list_exporter_bindings(
+                None,
+                Some(crate::collector_auth::COLLECTOR_PROTOCOL),
+                false,
+            )? {
+                if other.binding_id == stored.binding_id {
+                    continue;
+                }
+                if other.exporter_id == stored.exporter_id {
+                    anyhow::bail!(
+                        "collector identity '{}' is already bound by '{}'",
+                        stored.exporter_id,
+                        other.binding_id
+                    );
+                }
+                if let (Some(new_cred), Some(old_cred)) = (
+                    stored.match_ingress_credential.as_deref(),
+                    other.match_ingress_credential.as_deref(),
+                ) && new_cred == old_cred
+                {
+                    anyhow::bail!(
+                        "credential is already bound to collector identity '{}'",
+                        other.exporter_id
+                    );
+                }
+            }
+        }
+
         let old = existing
             .as_ref()
             .map(|b| serde_json::to_string(b).unwrap_or_default());
@@ -1254,6 +1354,10 @@ impl SqliteStore {
             )?;
         }
 
+        // Invalidate authorization caches BEFORE audit persistence:
+        // a committed binding mutation must invalidate cached
+        // decisions even if the audit write subsequently fails.
+        self.bump_authz_epoch();
         self.audit(
             "exporter_bindings",
             "UPSERT",
@@ -1327,6 +1431,119 @@ impl SqliteStore {
             .map_err(|e| anyhow!("failed to collect exporter bindings: {e}"))
     }
 
+    /// Indexed lookup for credential-pinned bindings (BN-021g authz).
+    /// Returns ACTIVE bindings matching the optional protocol and
+    /// exporter-id constraints for an exact `match_ingress_credential`
+    /// fingerprint. Bounded by `LIMIT` — callers needing ambiguity
+    /// detection request enough rows to see duplicates.
+    pub fn find_credential_bindings(
+        &self,
+        protocol: Option<&str>,
+        exporter_id: Option<&str>,
+        credential: &str,
+    ) -> Result<Vec<crate::telemetry_identity::TrustedBinding>> {
+        let db = self.db.lock().unwrap();
+        let mut sql = String::from(
+            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, match_ingress_credential, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE status = 'active' AND match_ingress_credential = ?1",
+        );
+        if protocol.is_some() {
+            sql.push_str(" AND protocol = ?2");
+        }
+        if exporter_id.is_some() {
+            sql.push_str(if protocol.is_some() {
+                " AND exporter_id = ?3"
+            } else {
+                " AND exporter_id = ?2"
+            });
+        }
+        sql.push_str(" LIMIT 16");
+        let mut stmt = db.prepare(&sql)?;
+        let params_vec: Vec<rusqlite::types::Value> = match (protocol, exporter_id) {
+            (Some(p), Some(e)) => vec![
+                rusqlite::types::Value::Text(credential.to_string()),
+                rusqlite::types::Value::Text(p.to_string()),
+                rusqlite::types::Value::Text(e.to_string()),
+            ],
+            (Some(p), None) => vec![
+                rusqlite::types::Value::Text(credential.to_string()),
+                rusqlite::types::Value::Text(p.to_string()),
+            ],
+            (None, Some(e)) => vec![
+                rusqlite::types::Value::Text(credential.to_string()),
+                rusqlite::types::Value::Text(e.to_string()),
+            ],
+            (None, None) => vec![rusqlite::types::Value::Text(credential.to_string())],
+        };
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
+            binding_from_row(row)
+        })?;
+        rows.collect::<Result<Vec<crate::telemetry_identity::TrustedBinding>, _>>()
+            .map_err(|e| anyhow!("failed to collect credential bindings: {e}"))
+    }
+
+    /// Whether at least one ACTIVE binding pins this credential for the
+    /// given protocol (`None` = any protocol). Indexed `LIMIT 1` probe —
+    /// never enumerates the binding table.
+    pub fn credential_binding_permits(
+        &self,
+        protocol: Option<&str>,
+        credential: &str,
+    ) -> Result<bool> {
+        let db = self.db.lock().unwrap();
+        let sql = if protocol.is_some() {
+            "SELECT 1 FROM exporter_bindings WHERE status = 'active' AND match_ingress_credential = ?1 AND protocol = ?2 LIMIT 1"
+        } else {
+            "SELECT 1 FROM exporter_bindings WHERE status = 'active' AND match_ingress_credential = ?1 LIMIT 1"
+        };
+        let mut stmt = db.prepare(sql)?;
+        let params_vec: Vec<rusqlite::types::Value> = match protocol {
+            Some(p) => vec![
+                rusqlite::types::Value::Text(credential.to_string()),
+                rusqlite::types::Value::Text(p.to_string()),
+            ],
+            None => vec![rusqlite::types::Value::Text(credential.to_string())],
+        };
+        let mut rows = stmt.query(rusqlite::params_from_iter(params_vec))?;
+        Ok(rows.next()?.is_some())
+    }
+
+    /// ACTIVE `"collector"` bindings pinned to this credential — the
+    /// collector-scoped read boundary (BN-021g H5). Returns full binding
+    /// rows (NOT `SELECT DISTINCT`): the same collector id provisioned
+    /// under multiple scopes must remain visible so the caller can apply
+    /// the same fail-closed ambiguity rule used for ingest.
+    pub fn collector_bindings_for_credential(
+        &self,
+        credential: &str,
+    ) -> Result<Vec<crate::telemetry_identity::TrustedBinding>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, match_ingress_credential, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE status = 'active' AND protocol = 'collector' AND match_ingress_credential = ?1 LIMIT 1024",
+        )?;
+        let rows = stmt.query_map(params![credential], |row| binding_from_row(row))?;
+        rows.collect::<Result<Vec<crate::telemetry_identity::TrustedBinding>, _>>()
+            .map_err(|e| anyhow!("failed to collect collector scope bindings: {e}"))
+    }
+
+    /// ACTIVE `"collector"` bindings for a collector identity
+    /// (`exporter_id`) across ALL scopes and credentials — the global
+    /// uniqueness read used by authorization to fail closed on
+    /// ambiguous pre-existing rows (BN-021g R4). Returns full rows so
+    /// the caller can count distinct credentials, never `SELECT
+    /// DISTINCT` (which would hide the ambiguity).
+    pub fn collector_bindings_for_exporter(
+        &self,
+        exporter_id: &str,
+    ) -> Result<Vec<crate::telemetry_identity::TrustedBinding>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, match_ingress_credential, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE status = 'active' AND protocol = 'collector' AND exporter_id = ?1 LIMIT 1024",
+        )?;
+        let rows = stmt.query_map(params![exporter_id], |row| binding_from_row(row))?;
+        rows.collect::<Result<Vec<crate::telemetry_identity::TrustedBinding>, _>>()
+            .map_err(|e| anyhow!("failed to collect collector identity bindings: {e}"))
+    }
+
     /// Explicitly invalidate a binding. Revocation is the only supported
     /// "unbind" operation — bindings are never silently deleted, keeping
     /// the audit trail intact.
@@ -1358,6 +1575,9 @@ impl SqliteStore {
             )?;
         }
 
+        // Invalidate authorization caches BEFORE audit persistence —
+        // see `upsert_exporter_binding`.
+        self.bump_authz_epoch();
         self.audit(
             "exporter_bindings",
             "REVOKE",

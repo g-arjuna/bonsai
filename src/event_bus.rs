@@ -185,6 +185,19 @@ impl BusSubscriber for BroadcastSubscriber {
     }
 }
 
+/// Result of [`InProcessBus::publish`]. The bus is intentionally
+/// non-blocking: `Overloaded` means the bounded router queue was full
+/// (or closed) and the update was NOT delivered to subscribers. It is
+/// a transient availability signal — durability-boundary callers must
+/// treat it as retryable, never as successful delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishOutcome {
+    /// The update was enqueued to the router for subscriber delivery.
+    Enqueued,
+    /// The router queue was full/closed; the update was dropped.
+    Overloaded,
+}
+
 /// The single in-process event bus. Publishers call publish(); subscribers register via
 /// add_subscriber(). The internal router delivers Arc<TelemetryUpdate> to all registered
 /// subscribers concurrently. Subscriber list is lock-free on the read path via ArcSwap.
@@ -236,20 +249,33 @@ impl InProcessBus {
         self.subscribers.load().len()
     }
 
-    /// Wrap in Arc and submit to the router. Publishing is non-blocking; if the router
-    /// queue is full the message is dropped and a metric is incremented.
-    pub fn publish(&self, update: TelemetryUpdate) {
+    /// Wrap in Arc and submit to the router. Publishing is non-blocking.
+    ///
+    /// Returns [`PublishOutcome`] so callers at durability boundaries can
+    /// distinguish a real enqueue from a router-queue drop. The
+    /// broadcast tap is intentionally lossy and fire-and-forget; the
+    /// router channel is the delivery path to registered subscribers
+    /// (including the collector forwarder). When the router queue is
+    /// full the message is dropped and a metric is incremented —
+    /// callers MUST NOT treat [`PublishOutcome::Overloaded`] as
+    /// successful delivery.
+    pub fn publish(&self, update: TelemetryUpdate) -> PublishOutcome {
         let arc_update = Arc::new(update);
         let _ = self.broadcast_tx.send(Arc::clone(&arc_update));
-        if self.router_tx.try_send(arc_update).is_err() {
-            warn!("event bus router queue full, dropping message");
-            metrics::counter!("bonsai_event_bus_router_drops_total").increment(1);
-        }
+        let outcome = match self.router_tx.try_send(arc_update) {
+            Ok(()) => PublishOutcome::Enqueued,
+            Err(_) => {
+                warn!("event bus router queue full, dropping message");
+                metrics::counter!("bonsai_event_bus_router_drops_total").increment(1);
+                PublishOutcome::Overloaded
+            }
+        };
         let depth = (self
             .router_capacity
             .saturating_sub(self.router_tx.capacity())) as u64;
         EVENT_BUS_DEPTH.store(depth, Ordering::Relaxed);
         metrics::gauge!("bonsai_event_bus_depth").set(depth as f64);
+        outcome
     }
 
     pub fn snapshot() -> EventBusSnapshot {
