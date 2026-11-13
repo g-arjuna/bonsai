@@ -661,68 +661,174 @@ pub fn link_host_endpoint_to_interface(
     Ok(())
 }
 
-/// Attempt to resolve a peer IP address (loopback, interface IP, mgmt IP, etc.) to a
-/// known Device's primary address (bare IP PK).
+/// Deterministic outcome of resolving a peer address to a Device.
 ///
-/// Resolution order (first hit wins):
-///   1. Exact `Device.address` match  — mgmt/gNMI IP onboarded directly
-///   2. `DeviceAddress.ip` lookup      — any registered secondary IP (loopback, extra_ip, etc.)
-///   3. `EntityIdentity.mgmt_ip` match — learned from LLDP or onboarding enrichment
+/// A BGP neighbor observation and a resolved device-to-device
+/// relationship are different entities: this enum is the contract
+/// between them. `Unresolved`, `Ambiguous` and `Conflicted` are all
+/// explicit non-results — callers must never substitute an arbitrary
+/// candidate for them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerResolution {
+    /// Exactly one device claims the address, consistently across all
+    /// evidence tiers that have an opinion.
+    Resolved(String),
+    /// No device claims the address.
+    Unresolved,
+    /// Multiple distinct devices claim the address within the alias or
+    /// identity tiers (no authoritative primary-address claim).
+    Ambiguous,
+    /// The primary `Device.address` tier and the alias/identity tiers
+    /// disagree about ownership.
+    Conflicted { primary: String, alias: String },
+}
+
+impl PeerResolution {
+    /// The resolved device address, or `None` for every non-result.
+    pub fn device(&self) -> Option<&str> {
+        match self {
+            PeerResolution::Resolved(device) => Some(device),
+            _ => None,
+        }
+    }
+
+    /// Stable machine-readable status for API/UI consumers.
+    pub fn status(&self) -> &'static str {
+        match self {
+            PeerResolution::Resolved(_) => "resolved",
+            PeerResolution::Unresolved => "unresolved",
+            PeerResolution::Ambiguous => "ambiguous",
+            PeerResolution::Conflicted { .. } => "conflict",
+        }
+    }
+
+    /// Human/machine-readable explanation for non-resolved outcomes.
+    /// Empty for `Resolved`.
+    pub fn reason(&self) -> String {
+        match self {
+            PeerResolution::Resolved(_) => String::new(),
+            PeerResolution::Unresolved => "no_device_claims_address".to_string(),
+            PeerResolution::Ambiguous => "multiple_devices_claim_address".to_string(),
+            PeerResolution::Conflicted { primary, alias } => {
+                format!("primary_address_owner={primary} alias_owner={alias}")
+            }
+        }
+    }
+}
+
+/// Resolve a peer IP address to the Device that owns it, collecting ALL
+/// evidence before deciding. No `LIMIT 1` arbitrary picks, no prefix
+/// matches, no provisional flow/syslog/SNMP/OTLP claims.
 ///
-/// Returns `Some(device_address)` on success, `None` when peer is unknown.
-/// All failures are silent (best-effort) so callers should treat None as "not yet known".
-pub fn resolve_peer_to_device(conn: &Connection<'_>, peer_ip: &str) -> Option<String> {
+/// Evidence tiers (all must agree for `Resolved`):
+///   1. Exact `Device.address` match — the primary, authoritative key.
+///   2. `DeviceAddress.ip` → `KNOWN_ADDRESS_OF` — registered aliases
+///      (extra_ips, loopbacks, protocol-observed addresses).
+///   3. `EntityIdentity.mgmt_ip` → `HAS_IDENTITY` — identity evidence.
+///
+/// Multiple pieces of evidence pointing at the SAME device deduplicate
+/// to `Resolved`. Distinct claimants produce `Ambiguous` (within a
+/// tier) or `Conflicted` (primary vs alias/identity disagreement).
+pub fn resolve_peer_typed(conn: &Connection<'_>, peer_ip: &str) -> PeerResolution {
     if peer_ip.is_empty() {
-        return None;
+        return PeerResolution::Unresolved;
     }
     let bare = crate::registry::strip_port(peer_ip);
 
-    // Tier 1: exact Device.address match
-    if let Ok(mut stmt) = conn.prepare("MATCH (d:Device {address: $ip}) RETURN d.address LIMIT 1") {
-        if let Ok(mut rows) = conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))])
+    let mut primary: Vec<String> = Vec::new();
+    if let Ok(mut stmt) =
+        conn.prepare("MATCH (d:Device {address: $ip}) RETURN DISTINCT d.address")
+    {
+        if let Ok(mut rows) =
+            conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))])
         {
-            if let Some(row) = rows.next() {
+            while let Some(row) = rows.next() {
                 if let Value::String(addr) = &row[0] {
                     if !addr.is_empty() {
-                        return Some(addr.clone());
+                        primary.push(addr.clone());
                     }
                 }
             }
         }
     }
 
-    // Tier 2: DeviceAddress lookup (loopback, extra_ip, BMP peer, NetFlow exporter, etc.)
+    let mut aliases: Vec<String> = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
-        "MATCH (a:DeviceAddress {ip: $ip})-[:KNOWN_ADDRESS_OF]->(d:Device) RETURN d.address LIMIT 1",
+        "MATCH (a:DeviceAddress {ip: $ip})-[:KNOWN_ADDRESS_OF]->(d:Device) \
+         RETURN DISTINCT d.address",
     ) {
-        if let Ok(mut rows) = conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))]) {
-            if let Some(row) = rows.next() {
+        if let Ok(mut rows) =
+            conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))])
+        {
+            while let Some(row) = rows.next() {
                 if let Value::String(addr) = &row[0] {
-                    if !addr.is_empty() {
-                        return Some(addr.clone());
+                    if !addr.is_empty() && !aliases.contains(addr) {
+                        aliases.push(addr.clone());
                     }
                 }
             }
         }
     }
 
-    // Tier 3: EntityIdentity.mgmt_ip (covers Cisco chassis-id-as-mgmt-IP quirk and
-    // any IP learned from LLDP management-address TLV but not yet a DeviceAddress node).
+    let mut identities: Vec<String> = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
-        "MATCH (e:EntityIdentity {mgmt_ip: $ip})<-[:HAS_IDENTITY]-(d:Device) RETURN d.address LIMIT 1",
+        "MATCH (e:EntityIdentity {mgmt_ip: $ip})<-[:HAS_IDENTITY]-(d:Device) \
+         RETURN DISTINCT d.address",
     ) {
-        if let Ok(mut rows) = conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))]) {
-            if let Some(row) = rows.next() {
+        if let Ok(mut rows) =
+            conn.execute(&mut stmt, vec![("ip", Value::String(bare.to_string()))])
+        {
+            while let Some(row) = rows.next() {
                 if let Value::String(addr) = &row[0] {
-                    if !addr.is_empty() {
-                        return Some(addr.clone());
+                    if !addr.is_empty() && !identities.contains(addr) {
+                        identities.push(addr.clone());
                     }
                 }
             }
         }
     }
 
-    None
+    // Union of all claimants, deduplicated.
+    let mut all: Vec<String> = primary.clone();
+    for addr in aliases.iter().chain(identities.iter()) {
+        if !all.contains(addr) {
+            all.push(addr.clone());
+        }
+    }
+
+    match all.len() {
+        0 => PeerResolution::Unresolved,
+        1 => PeerResolution::Resolved(all[0].clone()),
+        _ => {
+            // Primary address is the strongest claim. If it exists and
+            // any alias/identity evidence names a DIFFERENT device, the
+            // evidence contradicts — explicit conflict, never a guess.
+            if let Some(primary_addr) = primary.first() {
+                if let Some(other) = all.iter().find(|a| *a != primary_addr) {
+                    return PeerResolution::Conflicted {
+                        primary: primary_addr.clone(),
+                        alias: other.clone(),
+                    };
+                }
+            }
+            PeerResolution::Ambiguous
+        }
+    }
+}
+
+/// Attempt to resolve a peer IP address (loopback, interface IP, mgmt IP, etc.) to a
+/// known Device's primary address (bare IP PK).
+///
+/// Thin wrapper over [`resolve_peer_typed`]: returns `Some(device)` only
+/// for a uniquely, consistently resolved device. Ambiguous, conflicting
+/// and unknown peers all return `None` — callers must not substitute an
+/// arbitrary candidate.
+///
+/// Returns `Some(device_address)` on success, `None` when peer is unknown
+/// or resolution is not unique. All failures are silent (best-effort) so
+/// callers should treat None as "not yet known".
+pub fn resolve_peer_to_device(conn: &Connection<'_>, peer_ip: &str) -> Option<String> {
+    resolve_peer_typed(conn, peer_ip).device().map(str::to_string)
 }
 
 pub fn read_str(v: &Value) -> String {

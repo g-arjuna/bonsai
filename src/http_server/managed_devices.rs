@@ -451,6 +451,9 @@ pub(super) async fn site_summary_handler(
             state: session_state,
             peer_as: 0,
             peer_device: String::new(),
+            source: String::new(),
+            resolution: String::new(),
+            reason: String::new(),
         });
     }
 

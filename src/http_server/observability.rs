@@ -41,7 +41,7 @@ pub(super) async fn topology_handler(
 ) -> Result<Json<TopologyResponse>, (StatusCode, String)> {
     let db = state.store.db();
 
-    let (devices_raw, interfaces_raw, links_raw, bgp_raw, bgp_d2d_raw, bfd_d2d_raw, isis_d2d_raw, host_endpoints_raw, isis_raw) = tokio::task::spawn_blocking(move || {
+    let (devices_raw, interfaces_raw, links_raw, bgp_raw, bfd_d2d_raw, isis_d2d_raw, host_endpoints_raw, isis_raw) = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
 
         // Devices
@@ -119,32 +119,34 @@ pub(super) async fn topology_handler(
         let links_raw: Vec<(String, String, String, String, i64, bool)> =
             links_raw.into_iter().chain(mgmt_raw).collect();
 
-        // BGP neighbors (protocol-level BgpNeighbor nodes)
+        // BGP neighbors (protocol-level BgpNeighbor session nodes).
+        // BN-016-U1: each neighbor is resolved through the same
+        // deterministic contract the graph writers use — never from an
+        // unrelated Device→Device edge list. Resolved peer identity,
+        // provenance (gNMI vs BMP) and explicit resolution status are
+        // returned per session.
         let bgp_rows = conn
             .query(
                 "MATCH (n:BgpNeighbor) \
-                 RETURN n.device_address, n.peer_address, n.session_state, n.peer_as",
+                 RETURN n.device_address, n.peer_address, n.session_state, n.peer_as, n.source",
             )
             .map_err(|e| e.to_string())?;
-        let bgp_raw: Vec<(String, String, String, i64)> = bgp_rows
+        let bgp_raw: Vec<(String, String, String, i64, String, String, String, String)> = bgp_rows
             .map(|row| {
+                let peer = read_str(&row[1]);
+                let resolution = crate::graph::common::resolve_peer_typed(&conn, &peer);
                 (
                     read_str(&row[0]),
-                    read_str(&row[1]),
+                    peer,
                     read_str(&row[2]),
                     read_i64(&row[3]),
+                    read_str(&row[4]),
+                    resolution.device().unwrap_or_default().to_string(),
+                    resolution.status().to_string(),
+                    resolution.reason(),
                 )
             })
             .collect();
-
-        // BGP Device-to-Device resolved sessions (peer_device lookup for L3 topology)
-        let bgp_d2d_raw: Vec<(String, String, String)> = match conn.query(
-            "MATCH (a:Device)-[r:BGP_SESSION_WITH]->(b:Device) \
-             RETURN a.address, b.address, r.session_state",
-        ) {
-            Ok(rows) => rows.map(|row| (read_str(&row[0]), read_str(&row[1]), read_str(&row[2]))).collect(),
-            Err(_) => Vec::new(),
-        };
 
         // BFD Device-to-Device resolved sessions
         let bfd_d2d_raw: Vec<(String, String, String)> = match conn.query(
@@ -206,7 +208,7 @@ pub(super) async fn topology_handler(
             Err(_) => Vec::new(),
         };
 
-        Ok::<_, String>((devices_raw, interfaces_raw, links_raw, bgp_raw, bgp_d2d_raw, bfd_d2d_raw, isis_d2d_raw, host_endpoints_raw, isis_raw))
+        Ok::<_, String>((devices_raw, interfaces_raw, links_raw, bgp_raw, bfd_d2d_raw, isis_d2d_raw, host_endpoints_raw, isis_raw))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -250,25 +252,22 @@ pub(super) async fn topology_handler(
         ifaces.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
-    // Group BGP by device, enriching with peer_device when resolved via BGP_SESSION_WITH
+    // Group BGP sessions by device. peer_device comes ONLY from the
+    // deterministic per-session resolution — never inferred from an
+    // arbitrary connected device.
     let mut bgp_by_device: HashMap<String, Vec<BgpJson>> = HashMap::new();
-    for (dev, peer, st, peer_as) in bgp_raw {
+    for (dev, peer, st, peer_as, source, peer_device, resolution, reason) in bgp_raw {
         if !allowed_devices.contains(&dev) {
             continue;
         }
-        // peer_device: look for any D2D edge from this device where the resolved peer
-        // matches a known device address (peer may equal resolved address, or peer IP
-        // is a loopback that resolves to the device).
-        let peer_device = bgp_d2d_raw
-            .iter()
-            .find(|(src, dst, _)| src == &dev && (dst == &peer || allowed_devices.contains(dst)))
-            .map(|(_, dst, _)| dst.clone())
-            .unwrap_or_default();
         bgp_by_device.entry(dev).or_default().push(BgpJson {
             peer,
             state: st,
             peer_as,
             peer_device,
+            source,
+            resolution,
+            reason,
         });
     }
 

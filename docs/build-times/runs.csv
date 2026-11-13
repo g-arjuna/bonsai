@@ -155,3 +155,9 @@ date,command,scope,wall_seconds,result,notes
 2026-11-13,cargo test -p bonsai --lib --offline site,bonsai lib site tests,172,pass,2m52s link + 12.64s run; 18/18 incl. managed_device_api_site_claim_lifecycle
 2026-11-13,cargo test -p bonsai --lib --offline enrichment::netbox,bonsai lib netbox tests,3,pass,8/8 backfill regression
 2026-11-13,cargo test -p bonsai --lib --offline registry,bonsai lib registry tests,1,baseline-fail,18 pass / 1 fail = documented BN-019-B6 api_registry_persists baseline
+2026-11-13,cargo check -p bonsai --lib --offline,bonsai lib check,24,pass,BN-016-U1 resolver+reconcile+API compile clean
+2026-11-13,cargo test -p bonsai --lib --offline graph::tests::bgp_session,bonsai lib bgp session tests,110,pass,1m42s link + 6.25s run; 7/7 new BN-016-U1 regressions
+2026-11-13,cargo test -p bonsai --lib --offline graph::,bonsai lib graph suite,39,pass-with-baseline,87 pass / 1 fail = documented BN-019-B6 subscription_status baseline
+2026-11-13,cargo test --test b09_peer_and_correlation --test bn021c_exporter_isolation --test bn021f_authenticated_ingress,bonsai BMP/BN-021 regressions,812,pass,12m22s link + ~9s run; 3/3 + 17/17 + 9/9
+2026-11-13,cargo test -p bonsai --lib --offline http_server,bonsai lib http_server tests,5,pass,8/8 incl managed_device_api_site_claim_lifecycle
+2026-11-13,npm run build (ui),ui vite build,6,pass,Topology.svelte change compiles; existing chunk warnings only

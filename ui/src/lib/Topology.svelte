@@ -76,16 +76,16 @@
       : []
   );
 
-  // BGP links: use resolved peer_device field (populated when peer IP maps to a known Device
-  // via BGP_SESSION_WITH edge). Falls back to direct peer match (when mgmt IP == peer IP).
+  // BGP links: draw ONLY sessions the backend deterministically resolved
+  // (b.peer_device). The browser never establishes topology relationships
+  // itself — unresolved/ambiguous/conflicting peers stay observations.
   const bgpLinks = $derived(
     filteredDevices.flatMap(dev =>
       (dev.bgp ?? [])
-        .map(b => ({ bgp: b, peerDevice: b.peer_device || (filteredAddresses.has(b.peer) ? b.peer : null) }))
-        .filter(({ peerDevice }) => peerDevice && filteredAddresses.has(peerDevice))
-        .map(({ bgp: b, peerDevice }) => ({
+        .filter(b => b.peer_device && filteredAddresses.has(b.peer_device))
+        .map(b => ({
           src_device: dev.address, src_iface: 'BGP',
-          dst_device: peerDevice, dst_iface: 'BGP',
+          dst_device: b.peer_device, dst_iface: 'BGP',
           state: b.state, bytes_total: 0, isBgp: true, proto: 'bgp',
         }))
     )
@@ -110,7 +110,7 @@
 
   const unresolvedBgpSessions = $derived(
     filteredDevices.reduce((n, dev) =>
-      n + (dev.bgp ?? []).filter(b => !b.peer_device && !filteredAddresses.has(b.peer)).length
+      n + (dev.bgp ?? []).filter(b => !b.peer_device).length
     , 0)
   );
 
@@ -612,6 +612,11 @@
                       <div class="bgp-row">
                         <code>{b.peer}</code>{b.peer_as ? ` AS${b.peer_as}` : ''}
                         <span class="badge {b.state === 'established' ? 'healthy' : 'critical'}">{b.state}</span>
+                        {#if !b.peer_device}
+                          <span class="badge warn" title={b.reason || 'peer address does not resolve to a unique device'}>
+                            {b.resolution === 'ambiguous' ? 'ambiguous' : b.resolution === 'conflict' ? 'conflict' : 'unresolved'}
+                          </span>
+                        {/if}
                       </div>
                     {/each}
                     {#if !(d.bgp ?? []).length}<span class="dim">—</span>{/if}
