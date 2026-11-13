@@ -161,3 +161,7 @@ date,command,scope,wall_seconds,result,notes
 2026-11-13,cargo test --test b09_peer_and_correlation --test bn021c_exporter_isolation --test bn021f_authenticated_ingress,bonsai BMP/BN-021 regressions,812,pass,12m22s link + ~9s run; 3/3 + 17/17 + 9/9
 2026-11-13,cargo test -p bonsai --lib --offline http_server,bonsai lib http_server tests,5,pass,8/8 incl managed_device_api_site_claim_lifecycle
 2026-11-13,npm run build (ui),ui vite build,6,pass,Topology.svelte change compiles; existing chunk warnings only
+2026-11-13,cargo test -p bonsai --lib --offline graph::tests::bgp_session,bonsai lib BGP session regressions (18 tests),,pass,18/18 incl write_batch tx-ownership, session-id keying, fail-closed resolver, legacy migration, replay
+2026-11-13,cargo test -p bonsai --lib --offline graph::,bonsai lib graph suite,,pass-with-baseline,98 pass / 1 fail = documented BN-019-B6 subscription_status_write_preserves_device_metadata baseline
+2026-11-13,cargo test --test bn016_u1_topology_browser,browser topology acceptance,,pass,10m01s cold link + 6.5s run; Playwright chromium via /usr/bin/google-chrome; 1/1
+2026-11-13,npm run build (ui),ui vite build,,pass,6.51s; SPA bundle for router_from_state serving
