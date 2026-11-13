@@ -11,6 +11,7 @@ api_addr   = "0.0.0.0:50051"
 
 [runtime]
 mode         = "all"
+auth_mode    = "development-compat"  # BN-021g: plaintext containerlab dev only
 collector_id = "lab-dc"
 
 [archive]

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use futures::{Stream, StreamExt};
 use lbug::{Connection, Value};
 use tokio_stream::wrappers::BroadcastStream;
-use tonic::{Request, Response, Status, Streaming};
+use tonic::{Code, Request, Response, Status, Streaming};
 
 use crate::collector_auth::{
     AuthPolicy, CORE_ADMIN_PROTOCOL, CollectorAuthz, CollectorGrant,
@@ -287,56 +287,137 @@ impl<S: BonsaiStore> BonsaiService<S> {
         }
     }
 
-    /// G1 observation-authorization boundary. For an authenticated
-    /// collector, canonical (non-provisional) telemetry may only target
-    /// a registry device ASSIGNED to that collector; producer-supplied
-    /// vendor/hostname/role/site are replaced by authoritative inventory
-    /// values. Provisional protocol paths (`streaming/`, `signals/`)
-    /// remain provisional downstream and pass through unchanged.
-    /// Dev-compat plaintext keeps legacy behavior.
+    /// G1+H1 observation-authorization boundary. For an authenticated
+    /// collector the DECODED observation is classified with the same
+    /// `TelemetryUpdate::classify` the graph writer uses, and the
+    /// resulting authority class decides the projection: canonical
+    /// classes require an assigned-device target with inventory-rewritten
+    /// metadata; provisional classes require a `*src/` source key
+    /// namespaced to the authenticated collector. Path prefixes never
+    /// establish authority. Dev-compat plaintext keeps legacy behavior.
     fn authorize_observation(
         &self,
         grant: Option<&CollectorGrant>,
-        update: &TelemetryIngestUpdate,
-    ) -> Result<Option<(String, String, String, String)>, Status> {
+        telemetry: &mut crate::telemetry::TelemetryUpdate,
+    ) -> Result<(), Status> {
+        use crate::telemetry::ObservationAuthority;
         let Some(grant) = grant else {
-            return Ok(None);
+            return Ok(());
         };
-        if is_provisional_observation_path(&update.path) {
-            return Ok(None);
+        let event = telemetry.classify();
+        match event.authority() {
+            ObservationAuthority::Ignored => Ok(()),
+            ObservationAuthority::CanonicalDevice => {
+                let bare = crate::registry::strip_port(&telemetry.target);
+                let target = self.registry.get_device(&bare).map_err(|e| {
+                    tracing::error!(%e, "observation authorization registry lookup failed");
+                    Status::internal("device registry error")
+                })?;
+                let authorized = target.as_ref().is_some_and(|t| {
+                    t.enabled && t.collector_id.as_deref() == Some(grant.collector_id())
+                });
+                if !authorized {
+                    metrics::counter!(
+                        "bonsai_telemetry_observation_denied_total",
+                        "reason" => "unauthorized_target"
+                    )
+                    .increment(1);
+                    tracing::warn!(
+                        collector_id = %grant.collector_id(),
+                        target = %telemetry.target,
+                        path = %telemetry.path,
+                        "canonical telemetry denied: target not assigned to collector"
+                    );
+                    return Err(Status::permission_denied(
+                        "observation target is not assigned to this collector",
+                    ));
+                }
+                let t = target.expect("checked above");
+                // Untrusted metadata never overrides canonical inventory.
+                telemetry.vendor = t.vendor.clone().unwrap_or_default();
+                telemetry.hostname = t.hostname.clone().unwrap_or_default();
+                telemetry.role = t.role.clone().unwrap_or_default();
+                telemetry.site = t.site.clone().unwrap_or_default();
+                Ok(())
+            }
+            ObservationAuthority::Provisional => {
+                self.authorize_provisional_source(grant, telemetry, &event)
+            }
         }
-        let bare = crate::registry::strip_port(&update.target);
-        let target = self.registry.get_device(&bare).map_err(|e| {
-            tracing::error!(%e, "observation authorization registry lookup failed");
-            Status::internal("device registry error")
-        })?;
-        let authorized = target
-            .as_ref()
-            .is_some_and(|t| t.enabled && t.collector_id.as_deref() == Some(grant.collector_id()));
-        if !authorized {
-            metrics::counter!(
-                "bonsai_telemetry_observation_denied_total",
-                "reason" => "unauthorized_target"
-            )
-            .increment(1);
-            tracing::warn!(
-                collector_id = %grant.collector_id(),
-                target = %update.target,
-                path = %update.path,
-                "canonical telemetry denied: target not assigned to collector"
+    }
+
+    /// H1 provisional-source boundary. A provisional observation's
+    /// `target` IS its graph identity (`StateChangeEvent.device_address`,
+    /// AppFlow `exporter_id`), so it must be a recognized `*src/...`
+    /// source key — never a canonical device address. The collector
+    /// namespace segment is rewritten to the authenticated collector
+    /// id: a collector cannot file evidence under another collector's
+    /// namespace, and the original producer claim is preserved inside
+    /// the payload as unverified evidence.
+    fn authorize_provisional_source(
+        &self,
+        grant: &CollectorGrant,
+        telemetry: &mut crate::telemetry::TelemetryUpdate,
+        event: &crate::telemetry::TelemetryEvent,
+    ) -> Result<(), Status> {
+        use crate::telemetry::TelemetryEvent;
+        let claimed_target = telemetry.target.clone();
+        let normalized =
+            namespace_provisional_source_key(&claimed_target, grant.collector_id()).ok_or_else(
+                || {
+                    metrics::counter!(
+                        "bonsai_telemetry_observation_denied_total",
+                        "reason" => "invalid_provisional_source"
+                    )
+                    .increment(1);
+                    tracing::warn!(
+                        collector_id = %grant.collector_id(),
+                        target = %claimed_target,
+                        path = %telemetry.path,
+                        "provisional observation denied: target is not a *src/ source key"
+                    );
+                    Status::permission_denied(
+                        "provisional observation target must be a *src/ source key",
+                    )
+                },
+            )?;
+        telemetry.target = normalized.clone();
+        if let serde_json::Value::Object(map) = &mut telemetry.value {
+            // Preserve the producer's original claim as evidence; the
+            // forwarding collector's identity is recorded separately —
+            // neither upgrades the observation's authority.
+            map.insert(
+                "claimed_source_key".to_string(),
+                serde_json::Value::String(claimed_target),
             );
-            return Err(Status::permission_denied(
-                "observation target is not assigned to this collector",
-            ));
+            map.insert(
+                "forwarding_collector_id".to_string(),
+                serde_json::Value::String(grant.collector_id().to_string()),
+            );
+            // Pin payload-level source identity to the same
+            // authenticated namespace. For flow records `exporter_id`
+            // is the AppFlow/event identity: it must be a `*src/` key —
+            // a non-key value (including a canonical-looking address)
+            // is replaced by the normalized target key.
+            let flow_identity = matches!(
+                event,
+                TelemetryEvent::NetflowRecord { .. }
+                    | TelemetryEvent::SflowRecord { .. }
+                    | TelemetryEvent::SflowCounters { .. }
+            );
+            for key in ["exporter_id", "source_key"] {
+                let Some(serde_json::Value::String(s)) = map.get(key).cloned() else {
+                    continue;
+                };
+                let replacement = match namespace_provisional_source_key(&s, grant.collector_id()) {
+                    Some(namespaced) => namespaced,
+                    None if flow_identity || key == "exporter_id" => normalized.clone(),
+                    None => continue,
+                };
+                map.insert(key.to_string(), serde_json::Value::String(replacement));
+            }
         }
-        let t = target.expect("checked above");
-        // Untrusted metadata never overrides canonical inventory.
-        Ok(Some((
-            t.vendor.clone().unwrap_or_default(),
-            t.hostname.clone().unwrap_or_default(),
-            t.role.clone().unwrap_or_default(),
-            t.site.clone().unwrap_or_default(),
-        )))
+        Ok(())
     }
 
     /// Verify remote-detection provenance (G2). The detection target
@@ -375,7 +456,18 @@ impl<S: BonsaiStore> BonsaiService<S> {
             ));
         }
         if event_ids.is_empty() {
-            return Ok(());
+            // H4: remote DetectionIngest requires positive source-event
+            // provenance — an evidence-free remote detection is denied.
+            // Evidence-free authoring remains available to core-admin
+            // principals via CreateDetection.
+            metrics::counter!(
+                "bonsai_detection_ingest_denied_total",
+                "reason" => "missing_source_events"
+            )
+            .increment(1);
+            return Err(Status::permission_denied(
+                "remote detection requires at least one source-event reference",
+            ));
         }
         let ids = event_ids.to_vec();
         let want = bare;
@@ -385,7 +477,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
             for id in &ids {
                 let mut stmt = conn
                     .prepare(
-                        "MATCH (e:StateChangeEvent {id: $id}) RETURN e.device_address, e.detail",
+                        "MATCH (e:StateChangeEvent {id: $id}) RETURN e.device_address, e.detail, e.source_type",
                     )
                     .map_err(|e| e.to_string())?;
                 let rows = conn
@@ -408,12 +500,24 @@ impl<S: BonsaiStore> BonsaiService<S> {
                 }
                 // Provisional-source events are keyed by their
                 // `*src/...` source key, never a canonical device
-                // address — but defense in depth: reject events whose
-                // detail marks them unverified/provisional.
-                if let lbug::Value::String(detail) = &row[1]
-                    && (detail.contains("\"identity_status\":\"provisional\"")
-                        || detail.contains("\"authority\":\"unverified\""))
-                {
+                // address — but defense in depth for historical rows
+                // written before the ingest boundary existed: reject
+                // events whose server-owned `source_type` is a
+                // provisional protocol, or whose detail marks them
+                // unverified/provisional. `device_address` alone is
+                // never treated as proof of canonical identity.
+                let provisional_source = matches!(
+                    &row[2],
+                    lbug::Value::String(s)
+                        if matches!(
+                            s.as_str(),
+                            "otlp" | "netflow" | "sflow" | "syslog" | "snmp"
+                        )
+                );
+                let detail_provisional = matches!(&row[1], lbug::Value::String(detail)
+                    if detail.contains("\"identity_status\":\"provisional\"")
+                        || detail.contains("\"authority\":\"unverified\""));
+                if provisional_source || detail_provisional {
                     return Err(format!(
                         "state change event '{id}' is provisional/unverified evidence"
                     ));
@@ -517,6 +621,35 @@ impl<S: BonsaiStore> BonsaiService<S> {
     }
 }
 
+/// H6: RAII guard owning assignment-stream session cleanup. Dropping
+/// the guard (normal stream end, client disconnect, or cancellation —
+/// including a stream dropped before its first poll) unregisters the
+/// collector session under generation fencing. The unregister work is
+/// dispatched to the blocking pool so `Drop` never performs blocking
+/// I/O on an async worker.
+struct AssignmentSessionGuard {
+    manager: Arc<crate::assignment::CollectorManager>,
+    collector_id: String,
+    generation: u64,
+}
+
+impl Drop for AssignmentSessionGuard {
+    fn drop(&mut self) {
+        let manager = Arc::clone(&self.manager);
+        let collector_id = self.collector_id.clone();
+        let generation = self.generation;
+        let unregister = move || {
+            manager.unregister_collector(&collector_id, generation);
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn_blocking(unregister);
+            }
+            Err(_) => unregister(),
+        }
+    }
+}
+
 /// Stream-side revalidation for the assignment channel (G4): the
 /// claimed collector id must still be pinned to the connection's
 /// credential. Plaintext dev-compat always passes.
@@ -531,14 +664,57 @@ fn stream_collector_authorized(
     }
 }
 
-/// Provisional protocol evidence paths (BN-021d/e/f). Observations on
-/// these paths are keyed by `*src/...` exporter source keys and remain
-/// provisional downstream — they can never gain canonical device
-/// authority through the collector channel. An attacker relabeling a
-/// flow/OTLP/syslog payload onto a canonical YANG path is caught by the
-/// assigned-device check in `authorize_observation`, not by the prefix.
-fn is_provisional_observation_path(path: &str) -> bool {
-    path.starts_with("streaming/") || path.starts_with("signals/")
+/// Provisional protocol evidence source-key prefixes (BN-021d/e/f).
+/// Observations keyed by these `*src/...` keys remain provisional
+/// downstream — they can never gain canonical device authority through
+/// the collector channel.
+const PROVISIONAL_SOURCE_PREFIXES: [&str; 5] = [
+    "flowsrc/",
+    "sflowsrc/",
+    "syslogsrc/",
+    "snmpsrc/",
+    "otlpsrc/",
+];
+
+/// Recognized provisional `*src/...` source-key prefix, if any.
+fn provisional_source_prefix(key: &str) -> Option<&'static str> {
+    PROVISIONAL_SOURCE_PREFIXES
+        .iter()
+        .copied()
+        .find(|p| key.starts_with(p))
+}
+
+/// Ingest-stream error classification (H2). Permanent rejections are
+/// deterministic client/data faults — replaying the record can never
+/// succeed, so it is counted `rejected` and retired with the batch.
+/// Everything else (store unavailable, internal errors, timeouts) is
+/// retryable: the stream fails and the whole batch is replayed
+/// (at-least-once delivery).
+fn is_permanent_ingest_rejection(status: &Status) -> bool {
+    matches!(
+        status.code(),
+        Code::InvalidArgument
+            | Code::PermissionDenied
+            | Code::Unauthenticated
+            | Code::FailedPrecondition
+            | Code::Unimplemented
+            | Code::OutOfRange
+    )
+}
+
+/// Rewrite the collector-namespace segment (the path segment directly
+/// after the `*src/` prefix) of a provisional source key to the
+/// authenticated collector id, preserving the remainder verbatim.
+/// Returns `None` when `key` is not a recognized provisional source
+/// key or lacks a collector segment — callers must fail closed.
+fn namespace_provisional_source_key(key: &str, collector_id: &str) -> Option<String> {
+    let prefix = provisional_source_prefix(key)?;
+    let rest = &key[prefix.len()..];
+    let slash = rest.find('/')?;
+    Some(format!(
+        "{prefix}{collector_id}/{}",
+        &rest[slash + 1..]
+    ))
 }
 
 pub type CollectorService = BonsaiService<crate::collector::graph::CollectorGraphStore>;
@@ -744,12 +920,21 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let manager_for_stream = manager.clone();
         let collector_id_for_stream = collector_id.clone();
         let principal_for_stream = principal.clone();
         let authz_for_stream = self.collector_authz.clone();
+        // H6: session cleanup is owned by a drop guard captured by the
+        // stream — a client disconnect or cancellation drops the
+        // generator (polled or not) and the guard still unregisters the
+        // session under generation fencing.
+        let session_guard = AssignmentSessionGuard {
+            manager: Arc::clone(manager),
+            collector_id: collector_id.clone(),
+            generation,
+        };
 
         let stream = async_stream::stream! {
+            let _session_guard = session_guard;
             // G4: bounded revalidation of this credential-bearing stream.
             // Authorization is re-checked before the initial assignment
             // delivery, before every subsequent delivery, and
@@ -785,9 +970,8 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                     }
                 }
             }
-            // Cleanup on stream close — fenced by session generation.
-            manager_for_stream
-                .unregister_collector(&collector_id_for_stream, generation);
+            // `_session_guard` drops here (and on cancellation),
+            // unregistering the session under generation fencing.
         };
 
         Ok(Response::new(Box::pin(stream)))
@@ -1453,22 +1637,17 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         let mut audited = std::collections::HashSet::new();
         let mut stream = req.into_inner();
         let mut accepted = 0_u64;
-        let mut denied = 0_u64;
+        let mut rejected = 0_u64;
+        let mut compat_checked = false;
 
-        while let Some(mut update) = stream
+        while let Some(update) = stream
             .message()
             .await
             .map_err(|e| Status::unavailable(e.to_string()))?
         {
-            let mut grant = None;
-            if let Some(p) = &principal {
-                let collector_id = update.collector_id.clone();
-                if let Some(g) = self.authorize_ingest(Some(p), &collector_id)? {
-                    self.audit_ingest_grant(p, &g, &mut audited);
-                    grant = Some(g);
-                }
-            }
-            if accepted == 0 {
+            let collector_id = update.collector_id.clone();
+            if !compat_checked {
+                compat_checked = true;
                 match check_protocol_compat(update.protocol_version, PROTOCOL_VERSION_CURRENT) {
                     VersionCompat::Compatible => {}
                     VersionCompat::MinorSkew { client, server } => {
@@ -1480,40 +1659,77 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                         );
                     }
                     VersionCompat::MajorSkew { client, server } => {
+                        // Permanent per-record rejection: a skewed
+                        // collector's records are retired with the batch
+                        // rather than replayed forever.
                         tracing::warn!(
                             collector_id = %update.collector_id,
                             collector_version = client,
                             server_version = server,
-                            "telemetry stream protocol version skew"
+                            "telemetry record rejected: protocol version major skew"
                         );
-                        return Err(Status::failed_precondition(format!(
-                            "protocol version major skew: collector={client} server={server}; upgrade required"
-                        )));
+                        metrics::counter!(
+                            "bonsai_telemetry_ingest_rejected_total",
+                            "reason" => "protocol_skew"
+                        )
+                        .increment(1);
+                        rejected += 1;
+                        continue;
                     }
                 }
             }
 
-            // G1: observation authorization — an authenticated collector
-            // may only project canonical telemetry for devices assigned
-            // to it; producer metadata is rewritten from inventory.
-            // Denied observations are dropped, never published.
-            match self.authorize_observation(grant.as_ref(), &update) {
-                Ok(Some((vendor, hostname, role, site))) => {
-                    update.vendor = vendor;
-                    update.hostname = hostname;
-                    update.role = role;
-                    update.site = site;
-                }
-                Ok(None) => {}
-                Err(_) => {
-                    denied += 1;
-                    continue;
+            // Per-record collector authorization. Permanent denials
+            // (unbound/ambiguous/revoked credential bindings) retire the
+            // record; retryable store failures abort the stream so the
+            // batch is replayed (at-least-once).
+            let mut grant = None;
+            if let Some(p) = &principal {
+                match self.authorize_ingest(Some(p), &collector_id) {
+                    Ok(Some(g)) => {
+                        self.audit_ingest_grant(p, &g, &mut audited);
+                        grant = Some(g);
+                    }
+                    Ok(None) => {}
+                    Err(status) if is_permanent_ingest_rejection(&status) => {
+                        rejected += 1;
+                        continue;
+                    }
+                    Err(status) => return Err(status),
                 }
             }
 
-            let collector_id = update.collector_id.clone();
-            let telemetry = ingest::ingest_update_to_telemetry(update)
-                .map_err(|e| Status::invalid_argument(format!("{e:#}")))?;
+            // Decode the bounded observation BEFORE authorization so the
+            // authority class decided here is the same one the graph
+            // writer will project. Malformed payloads are permanent
+            // rejections — a poison record must not retry forever.
+            let mut telemetry = match ingest::ingest_update_to_telemetry(update) {
+                Ok(t) => t,
+                Err(e) => {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_telemetry_ingest_rejected_total",
+                        "reason" => "undecodable"
+                    )
+                    .increment(1);
+                    tracing::warn!(%collector_id, %e, "telemetry record rejected: undecodable payload");
+                    continue;
+                }
+            };
+
+            // G1+H1: observation authorization — an authenticated
+            // collector may only project canonical telemetry for
+            // devices assigned to it (metadata rewritten from
+            // inventory), and provisional evidence only under its own
+            // `*src/` namespace. Denied observations are dropped,
+            // never published.
+            if let Err(status) = self.authorize_observation(grant.as_ref(), &mut telemetry) {
+                if is_permanent_ingest_rejection(&status) {
+                    rejected += 1;
+                    continue;
+                }
+                return Err(status);
+            }
 
             if let Some(ref d) = self.debouncer
                 && d.should_drop(&telemetry)
@@ -1530,13 +1746,14 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             }
         }
 
-        if denied > 0 {
-            tracing::warn!(accepted, denied, "telemetry ingest dropped unauthorized observations");
+        if rejected > 0 {
+            tracing::warn!(accepted, rejected, "telemetry ingest rejected unauthorized/invalid records");
         }
         Ok(Response::new(pb::TelemetryIngestResponse {
             accepted,
             error: String::new(),
             protocol_version: PROTOCOL_VERSION_CURRENT,
+            rejected,
         }))
     }
 
@@ -1555,25 +1772,68 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         let mut audited = std::collections::HashSet::new();
         let mut stream = req.into_inner();
         let mut accepted = 0_u64;
-        let mut denied = 0_u64;
+        let mut rejected = 0_u64;
 
         while let Some(d) = stream
             .message()
             .await
             .map_err(|e| Status::unavailable(e.to_string()))?
         {
+            let collector_id = d.collector_id.clone();
+
+            // H3: revalidate the SEPARATE detection-ingest capability for
+            // EVERY message, not just at stream start. A capability
+            // revoked mid-stream takes effect on the next message
+            // (bounded by the authz decision cache/epoch), and ordinary
+            // collector ingest authority never substitutes for it.
+            // Capability loss ends the stream — every subsequent message
+            // would fail identically.
+            if let Some(p) = &principal
+                && let Err(status) = self
+                    .collector_authz
+                    .authorize_capability(p, DETECTION_INGEST_PROTOCOL)
+            {
+                return Err(status);
+            }
+
+            // Per-record collector authorization — same permanent vs
+            // retryable split as telemetry ingest.
             let mut grant = None;
             if let Some(p) = &principal {
-                let collector_id = d.collector_id.clone();
-                if let Some(g) = self.authorize_ingest(Some(p), &collector_id)? {
-                    self.audit_ingest_grant(p, &g, &mut audited);
-                    grant = Some(g);
+                match self.authorize_ingest(Some(p), &collector_id) {
+                    Ok(Some(g)) => {
+                        self.audit_ingest_grant(p, &g, &mut audited);
+                        grant = Some(g);
+                    }
+                    Ok(None) => {}
+                    Err(status) if is_permanent_ingest_rejection(&status) => {
+                        rejected += 1;
+                        continue;
+                    }
+                    Err(status) => return Err(status),
                 }
             }
-            let collector_id = d.collector_id.clone();
-            // G2: verify target scope and source-event provenance before
-            // any authoritative DetectionEvent write. Failures drop the
-            // detection — they never reach the graph.
+
+            // H4: authenticated remote detections must carry parseable
+            // payloads and positive source-event provenance. Malformed
+            // JSON is a permanent rejection.
+            if grant.is_some() {
+                if serde_json::from_str::<serde_json::Value>(&d.features_json).is_err()
+                    || serde_json::from_str::<Vec<String>>(&d.source_types_json).is_err()
+                {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_detection_ingest_denied_total",
+                        "reason" => "malformed_payload"
+                    )
+                    .increment(1);
+                    continue;
+                }
+            }
+
+            // G2+H4: verify target scope and source-event provenance
+            // before any authoritative DetectionEvent write. Failures
+            // drop the detection — they never reach the graph.
             let mut event_ids = d.source_event_ids.clone();
             if !d.state_change_event_id.is_empty() {
                 event_ids.push(d.state_change_event_id.clone());
@@ -1582,7 +1842,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 .verify_detection_scope(grant.as_ref(), &d.device_address, &event_ids)
                 .await
             {
-                denied += 1;
+                rejected += 1;
                 tracing::warn!(
                     %collector_id,
                     device = %d.device_address,
@@ -1591,13 +1851,26 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 );
                 continue;
             }
+
+            // H4 provenance: mark detections submitted through the remote
+            // ingest channel so stored `source_types` distinguishes them
+            // from locally-authored (core-admin) detections.
+            let source_types_json = if grant.is_some() {
+                let mut types: Vec<String> =
+                    serde_json::from_str(&d.source_types_json).unwrap_or_default();
+                types.insert(0, "remote_detection_ingest".to_string());
+                serde_json::to_string(&types).unwrap_or_else(|_| d.source_types_json.clone())
+            } else {
+                d.source_types_json.clone()
+            };
+
             match self
                 .write_detection_for_ingest(
                     d.device_address,
                     d.rule_id,
                     d.severity,
                     d.features_json,
-                    d.source_types_json,
+                    source_types_json,
                     d.latency_ns,
                     d.fired_at_ns,
                     d.state_change_event_id,
@@ -1609,17 +1882,23 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                     accepted += 1;
                 }
                 Err(error) => {
-                    tracing::warn!(%collector_id, %error, "failed to write ingested detection to graph");
+                    // Storage failure is retryable, not a permanent
+                    // rejection — abort the stream so the caller knows
+                    // this detection was not durably written.
+                    return Err(Status::unavailable(format!(
+                        "detection write failed: {error}"
+                    )));
                 }
             }
         }
 
-        if denied > 0 {
-            tracing::warn!(accepted, denied, "detection ingest dropped unauthorized detections");
+        if rejected > 0 {
+            tracing::warn!(accepted, rejected, "detection ingest rejected unauthorized/invalid detections");
         }
         Ok(Response::new(pb::DetectionIngestResponse {
             accepted,
             error: String::new(),
+            rejected,
         }))
     }
 

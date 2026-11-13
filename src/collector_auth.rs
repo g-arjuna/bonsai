@@ -26,17 +26,22 @@
 //!    registration. Collector-scoped reads are derived from the
 //!    credential's collector bindings, never from client-supplied labels.
 //! 5. **Observation authorization** — authenticating the forwarding
-//!    collector is not authority over its payload. `api.rs` additionally
-//!    requires canonical (non-provisional) telemetry to target a registry
-//!    device assigned to the authorized collector and rewrites
-//!    site/role/hostname/vendor from authoritative inventory. Provisional
-//!    protocol paths (`streaming/`, `signals/`) remain provisional
-//!    downstream exactly as BN-021d/e/f define.
+//!    collector is not authority over its payload. `api.rs` decodes and
+//!    classifies each observation with the same `TelemetryUpdate::
+//!    classify` the graph writer uses, then applies the resulting
+//!    authority class: canonical classes (YANG/gNMI, BMP, BGP-LS,
+//!    summaries — never path prefixes) require an assigned-device
+//!    target with inventory-rewritten metadata; provisional classes
+//!    (`*src/` keys) are re-namespaced to the authenticated collector
+//!    and remain provisional downstream exactly as BN-021d/e/f define.
 //!
-//! Revocation: decisions are cached for [`AUTHZ_CACHE_TTL`] (5s) so
-//! revocation/binding changes take effect within a bounded window.
-//! Long-lived streams revalidate through the same cache — the TTL bounds
-//! database cost, not the revocation window.
+//! Revocation: decisions are cached for [`AUTHZ_CACHE_TTL`] (5s) and
+//! stamped with the store's authorization epoch — `exporter_bindings`
+//! mutations (upsert/revoke) bump the epoch and invalidate every cached
+//! decision immediately, so same-process revocation takes effect on the
+//! next authorization check. Cross-process binding changes and TTL
+//! expiry bound the window at ~5s; long-lived streams revalidate
+//! through the same path on [`STREAM_REVALIDATE_INTERVAL`].
 //!
 //! Runtime policy ([`AuthPolicy`]): `Required` fails closed when no
 //! transport principal exists (missing TLS peer, plaintext transport,
@@ -89,14 +94,16 @@ pub enum AuthPolicy {
     DevelopmentCompat,
 }
 
-/// Authorization decisions are cached this long so revocation and
-/// binding changes take effect within a bounded window without a
-/// database lookup per telemetry message. Long-lived streams revalidate
-/// through this same cache on this cadence.
+/// Upper bound on cached authorization decisions. Same-process binding
+/// mutations invalidate the cache immediately via the store's
+/// authorization epoch; this TTL bounds staleness for changes made
+/// outside this process (or when no epoch is available). Long-lived
+/// streams revalidate on this cadence.
 pub const AUTHZ_CACHE_TTL: Duration = Duration::from_secs(5);
 /// How often an idle long-lived stream revalidates its authorization.
-/// Equal to the cache TTL: a revoked principal loses stream access within
-/// roughly one TTL of the revocation becoming visible to the cache.
+/// Worst-case revocation visibility for an idle stream is one interval
+/// plus one cache TTL (pre-epoch caches); with epoch invalidation the
+/// effective bound is ~one interval for same-process changes.
 pub const STREAM_REVALIDATE_INTERVAL: Duration = AUTHZ_CACHE_TTL;
 /// Bound on cached decisions; on overflow the cache is cleared rather
 /// than growing unboundedly (next lookup re-reads the store).
@@ -177,10 +184,15 @@ enum CachedDecision {
 #[derive(Clone)]
 pub struct CollectorAuthz {
     store: Option<Arc<SqliteStore>>,
-    /// (fingerprint, subject) → (decision, evaluated_at). `subject` is
-    /// `"collector:<id>"`, `"cap:<protocol>"`, `"any"` or `"read:scope"`.
-    /// `None` decision = recent denial.
-    cache: Arc<Mutex<HashMap<(String, String), (Option<CachedDecision>, Instant)>>>,
+    /// (fingerprint, subject) → (decision, evaluated_at, authz_epoch).
+    /// `subject` is `"collector:<id>"`, `"cap:<protocol>"`, `"any"` or
+    /// `"read:scope"`. `None` decision = recent denial. Entries are
+    /// valid only while `evaluated_at` is within [`AUTHZ_CACHE_TTL`]
+    /// AND the store's authorization epoch is unchanged — binding
+    /// mutations (upsert/revoke) invalidate every cached decision
+    /// immediately, so revocation takes effect on the next check
+    /// rather than after the TTL.
+    cache: Arc<Mutex<HashMap<(String, String), (Option<CachedDecision>, Instant, u64)>>>,
 }
 
 impl CollectorAuthz {
@@ -189,6 +201,12 @@ impl CollectorAuthz {
             store,
             cache: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Process-local authorization epoch of the backing store. `0` when
+    /// no store is configured (decisions then rely on TTL alone).
+    fn authz_epoch(&self) -> u64 {
+        self.store.as_ref().map(|s| s.authz_epoch()).unwrap_or(0)
     }
 
     /// Extract the transport-attested peer principal from tonic request
@@ -241,13 +259,18 @@ impl CollectorAuthz {
     }
 
     fn cached(&self, fp: &str, subject: &str) -> Option<Option<CachedDecision>> {
+        let epoch = self.authz_epoch();
         let cache = self.cache.lock().unwrap();
         cache
             .get(&(fp.to_string(), subject.to_string()))
-            .and_then(|(decision, at)| (at.elapsed() < AUTHZ_CACHE_TTL).then(|| decision.clone()))
+            .and_then(|(decision, at, entry_epoch)| {
+                (at.elapsed() < AUTHZ_CACHE_TTL && *entry_epoch == epoch)
+                    .then(|| decision.clone())
+            })
     }
 
     fn store_decision(&self, fp: &str, subject: &str, decision: Option<CachedDecision>) {
+        let epoch = self.authz_epoch();
         let mut cache = self.cache.lock().unwrap();
         if cache.len() >= AUTHZ_CACHE_CAPACITY {
             // Bounded clear: a flood of distinct (credential, subject)
@@ -257,7 +280,7 @@ impl CollectorAuthz {
         }
         cache.insert(
             (fp.to_string(), subject.to_string()),
-            (decision, Instant::now()),
+            (decision, Instant::now(), epoch),
         );
     }
 
@@ -477,13 +500,29 @@ impl CollectorAuthz {
             };
         }
 
-        let ids = self
+        let bindings = self
             .store()?
-            .collector_ids_for_credential(&fp)
+            .collector_bindings_for_credential(&fp)
             .map_err(|e| {
                 tracing::error!(%e, "collector authz scope lookup failed");
                 Status::internal("identity store error")
             })?;
+        // H5: the same fail-closed ambiguity rule as ingest — a
+        // collector id pinned by MORE THAN ONE active binding for this
+        // credential (e.g. the same id provisioned under multiple
+        // scopes) is ambiguous and must not silently gain scoped read
+        // access. Unambiguous ids remain readable.
+        let mut binding_counts: HashMap<&str, usize> = HashMap::new();
+        for b in &bindings {
+            *binding_counts.entry(b.exporter_id.as_str()).or_default() += 1;
+        }
+        let mut ids: Vec<String> = bindings
+            .iter()
+            .filter(|b| binding_counts.get(b.exporter_id.as_str()) == Some(&1))
+            .map(|b| b.exporter_id.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
         if ids.is_empty() {
             self.store_decision(&fp, &subject, None);
             metrics::counter!("bonsai_collector_authz_total", "result" => "read_denied")

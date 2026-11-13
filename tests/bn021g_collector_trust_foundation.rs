@@ -565,6 +565,45 @@ async fn ingest_detections(
         .map_err(|e| e)
 }
 
+async fn ingest_updates_full(
+    client: &mut BonsaiGraphClient<Channel>,
+    updates: Vec<TelemetryIngestUpdate>,
+) -> Result<TelemetryIngestResponse, tonic::Status> {
+    client
+        .telemetry_ingest(Request::new(tokio_stream::iter(updates)))
+        .await
+        .map(|r| r.into_inner())
+        .map_err(|e| e)
+}
+
+/// H2 contract: permanent per-record authorization/payload rejections
+/// are counted in `rejected`, not surfaced as an RPC error — the batch
+/// continues so one denied record cannot block legitimate telemetry.
+/// Retryable failures still abort the RPC.
+async fn assert_ingest_denied(
+    client: &mut BonsaiGraphClient<Channel>,
+    collector_id: &str,
+    target_addr: &str,
+    path: &str,
+) {
+    let resp = ingest_updates_full(
+        client,
+        vec![telemetry_update(
+            collector_id,
+            target_addr,
+            path,
+            serde_json::json!({"v": 1}),
+        )],
+    )
+    .await
+    .expect("ingest RPC completes with truthful rejected count");
+    assert_eq!(
+        resp.accepted, 0,
+        "denied record must not be accepted: {resp:?}"
+    );
+    assert!(resp.rejected >= 1, "denial must be counted: {resp:?}");
+}
+
 // ── F1/F3/F12: authorized collector works; impersonation rejected ───────────
 
 #[tokio::test]
@@ -616,11 +655,9 @@ async fn authorized_collector_ingests_and_impersonation_is_rejected() {
         .await
         .expect("register_collector should be authorized");
 
-    // F3: cert A claiming collector B's id — rejected, no B authority.
-    let err = ingest_one(&mut client_a, "site-b", "10.0.0.2", "state/foo")
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Code::PermissionDenied, "{err}");
+    // F3: cert A claiming collector B's id — rejected per-record, no B
+    // authority (H2: counted rejection, stream continues).
+    assert_ingest_denied(&mut client_a, "site-b", "10.0.0.2", "state/foo").await;
     let err = client_a
         .heartbeat(Request::new(CollectorStats {
             collector_id: "site-b".to_string(),
@@ -650,10 +687,7 @@ async fn unbound_certificate_is_denied() {
     bind_collector(&lab.sqlite, "site-a", &cert_a.fingerprint);
 
     let mut client = mtls_client(&lab, &pki, &cert_rando).await;
-    let err = ingest_one(&mut client, "site-a", "10.0.0.1", "state/foo")
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Code::PermissionDenied);
+    assert_ingest_denied(&mut client, "site-a", "10.0.0.1", "state/foo").await;
     // Read plane also fails: no active binding pins this credential.
     let err = client
         .get_devices(Request::new(GetDevicesRequest {}))
@@ -693,7 +727,10 @@ async fn forged_payload_principal_is_inert() {
     });
     let updates = tokio_stream::iter(vec![telemetry_update(
         "site-a",
-        "10.0.0.1",
+        // H1: provisional observations must be keyed by a `*src/`
+        // source key namespaced to the authorized collector — a
+        // canonical-looking target is denied outright.
+        "otlpsrc/site-a/http/10.0.0.1:4318",
         "streaming/otlp/metrics",
         forged,
     )]);
@@ -752,14 +789,7 @@ async fn revocation_stops_ingest_within_ttl() {
     // Within AUTHZ_CACHE_TTL (5s) the cached grant may still pass; after
     // expiry every new decision must deny.
     tokio::time::sleep(Duration::from_secs(6)).await;
-    let err = ingest_one(&mut client, "site-a", "10.0.0.1", "state/foo")
-        .await
-        .unwrap_err();
-    assert_eq!(
-        err.code(),
-        Code::PermissionDenied,
-        "revoked binding still authorized: {err}"
-    );
+    assert_ingest_denied(&mut client, "site-a", "10.0.0.1", "state/foo").await;
 }
 
 // ── F9: rotation — re-pin credential, old fingerprint loses authority ───────
@@ -802,10 +832,7 @@ async fn credential_rotation_repins_without_impersonation() {
         1
     );
     // Old credential now denied — no implicit trust carry-over.
-    let err = ingest_one(&mut old_client, "site-a", "10.0.0.1", "state/foo")
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Code::PermissionDenied);
+    assert_ingest_denied(&mut old_client, "site-a", "10.0.0.1", "state/foo").await;
 }
 
 // ── F8: restart + replay — provenance is transport-bound, never payload ────
@@ -826,10 +853,7 @@ async fn replayed_records_cannot_mint_authority() {
     // The replayed bytes cannot recreate the original verified principal.
     let cert_rando = issue_leaf(&pki, "replay-thief", false);
     let mut thief = mtls_client(&lab, &pki, &cert_rando).await;
-    let err = ingest_one(&mut thief, "site-a", "10.0.0.1", "state/foo")
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Code::PermissionDenied);
+    assert_ingest_denied(&mut thief, "site-a", "10.0.0.1", "state/foo").await;
 
     // And the rightful collector still works afterwards.
     let mut client = mtls_client(&lab, &pki, &cert_a).await;
@@ -960,9 +984,11 @@ async fn provisional_payloads_cannot_gain_canonical_authority() {
 
     // 1. Legitimate provisional flow record — passes through as
     //    provisional evidence (flowsrc target key, streaming/ path).
+    //    H1: the source key must carry the authorized collector's
+    //    namespace segment.
     let flow = TelemetryIngestUpdate {
         collector_id: "site-a".to_string(),
-        target: "flowsrc/198.51.100.9#sid=0".to_string(),
+        target: "flowsrc/site-a/nf9/198.51.100.9:49152/sid7".to_string(),
         vendor: String::new(),
         hostname: String::new(),
         role: String::new(),
@@ -1630,10 +1656,7 @@ async fn ambiguous_binding_fails_closed() {
     );
 
     let mut client = mtls_client(&lab, &pki, &cert_a).await;
-    let err = ingest_one(&mut client, "site-x", "10.0.0.1", "state/foo")
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Code::PermissionDenied, "{err}");
+    assert_ingest_denied(&mut client, "site-x", "10.0.0.1", "state/foo").await;
     // Heartbeat and registration are equally ambiguous.
     let err = client
         .heartbeat(Request::new(CollectorStats {
@@ -1684,4 +1707,559 @@ async fn registration_audit_records_real_certificate_fingerprint() {
         fp, cert_a.fingerprint,
         "audit must record the transport-attested certificate fingerprint"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// H1 — classified-authority authorization (path prefixes never authorize)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn bmp_peer_state_update(collector_id: &str, target_addr: &str) -> TelemetryIngestUpdate {
+    telemetry_update(
+        collector_id,
+        target_addr,
+        "streaming/bmp/peer-state",
+        serde_json::json!({
+            "timestamp_ns": 1_700_000_000_000_000_000_i64,
+            "collector_peer": "198.51.100.1:179",
+            "message_type": "peer_up_notification",
+            "peer_type": 0,
+            "peer_flags": 0,
+            "router_distinguisher": 0,
+            "router_address": "10.9.9.9",
+            "peer_address": "10.1.0.1",
+            "peer_as": 65001,
+            "peer_bgp_id": "10.1.0.1",
+            "session_state": "established",
+            "route_entries": [],
+            "raw_len": 0
+        }),
+    )
+}
+
+fn bgp_ls_node_update(collector_id: &str, target_addr: &str) -> TelemetryIngestUpdate {
+    telemetry_update(
+        collector_id,
+        target_addr,
+        "streaming/bgp-ls/node",
+        serde_json::json!({
+            "kind": "node",
+            "router_id": "1.1.1.1",
+            "protocol": "bgp-ls",
+            "asn": 65001,
+            "name": "rtr-a",
+            "sr_node_sid": 100
+        }),
+    )
+}
+
+/// H1: canonical graph writers reachable through `streaming/` paths are
+/// gated by the SAME assigned-device rule as YANG paths — decided from
+/// the classified observation, never the path prefix. Provisional
+/// classes must carry a `*src/` key namespaced to the authorized
+/// collector.
+#[tokio::test]
+async fn classified_authority_gates_canonical_writers_on_streaming_paths() {
+    let pki = make_pki();
+    let lab = start_lab(&pki).await;
+    let cert_a = issue_leaf(&pki, "collector-a", false);
+    bind_collector(&lab.sqlite, "site-a", &cert_a.fingerprint);
+    add_device(
+        &lab.registry,
+        target("10.0.0.1", Some("site-a"), "dc-a", "leaf", "rtr-a", "ios"),
+    );
+    add_device(
+        &lab.registry,
+        target("10.0.0.2", Some("site-b"), "dc-b", "spine", "rtr-b", "junos"),
+    );
+    let mut client = mtls_client(&lab, &pki, &cert_a).await;
+
+    let summary_to_b = {
+        let mut u = telemetry_update(
+            "site-a",
+            "10.0.0.2",
+            "interfaces/interface[name=eth0]/state/counters",
+            serde_json::json!({}),
+        );
+        u.interface_summary = Some(InterfaceSummary {
+            counters: vec![],
+            window_secs: 1,
+            target: String::new(),
+            if_name: "eth0".to_string(),
+        });
+        u
+    };
+
+    let resp = ingest_updates_full(
+        &mut client,
+        vec![
+            // Denied: canonical-class writers on an unassigned device.
+            bmp_peer_state_update("site-a", "10.0.0.2"),
+            bgp_ls_node_update("site-a", "10.0.0.2"),
+            telemetry_update(
+                "site-a",
+                "10.0.0.2",
+                "interfaces/interface[name=eth0]/state/admin-state",
+                serde_json::json!({"admin-state": "up"}),
+            ),
+            summary_to_b,
+            // Denied: provisional observation keyed by a canonical
+            // device address instead of a `*src/` source key.
+            telemetry_update(
+                "site-a",
+                "10.0.0.1",
+                "streaming/otlp/metrics",
+                serde_json::json!({"service_name": "svc", "metric_name": "m", "value": 1.0}),
+            ),
+            // Accepted: assigned-device acquisition through canonical
+            // streaming writers (BMP peer state + BGP-LS node).
+            bmp_peer_state_update("site-a", "10.0.0.1"),
+            bgp_ls_node_update("site-a", "10.0.0.1"),
+            // Accepted but re-namespaced: collector A cannot file flow
+            // evidence under collector B's `flowsrc/` namespace.
+            telemetry_update(
+                "site-a",
+                "flowsrc/site-b/nf9/10.0.0.2:49152/sid7",
+                "streaming/netflow/flow",
+                serde_json::json!({
+                    "exporter_address": "10.0.0.2",
+                    "exporter_id": "flowsrc/site-b/nf9/10.0.0.2:49152/sid7",
+                    "src_address": "10.1.1.1", "src_port": 12345,
+                    "dst_address": "10.1.1.2", "dst_port": 80,
+                    "protocol": "tcp", "bytes_per_sec": 1.0, "packets_per_sec": 1.0
+                }),
+            ),
+            // Accepted: unclassified streaming path → Ignored, no graph effect.
+            telemetry_update(
+                "site-a",
+                "10.0.0.2",
+                "streaming/mystery/unknown-thing",
+                serde_json::json!({"x": 1}),
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.accepted, 4, "accepted={resp:?}");
+    assert_eq!(resp.rejected, 5, "rejected={resp:?}");
+
+    // Canonical graph effects exist ONLY for the assigned device.
+    wait_for_graph_row(
+        &lab.graph,
+        "MATCH (s:BmpSession) RETURN s.id",
+        "bmp session on assigned device",
+    )
+    .await;
+    wait_for_graph_row(
+        &lab.graph,
+        "MATCH (n:BgpLsNode) RETURN n.id",
+        "bgp-ls node on assigned device",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    for cypher in [
+        "MATCH (d:Device {address: '10.0.0.2'})-[:PEERS_WITH]->(n:BgpNeighbor) RETURN n.id",
+        "MATCH (d:Device {address: '10.0.0.2'})-[:HAS_BGPLS_NODE]->(n:BgpLsNode) RETURN n.id",
+        "MATCH (d:Device {address: '10.0.0.2'})-[:HAS_INTERFACE|CONNECTED_TO*]->(i) RETURN i",
+        "MATCH (i:Interface {device_address: '10.0.0.2'}) RETURN i.name",
+        "MATCH (e:StateChangeEvent {device_address: '10.0.0.2', source_type: 'bmp'}) RETURN e.id",
+    ] {
+        assert!(
+            graph_query(&lab.graph, cypher).is_empty(),
+            "canonical writer leaked onto unassigned device: {cypher}"
+        );
+    }
+    // The forged `flowsrc/site-b/` namespace was rewritten to site-a.
+    let flow = wait_for_graph_row(
+        &lab.graph,
+        "MATCH (f:AppFlow) WHERE f.exporter_id STARTS WITH 'flowsrc/' RETURN f.exporter_id",
+        "provisional AppFlow",
+    )
+    .await;
+    assert!(
+        flow[0].starts_with("flowsrc/site-a/"),
+        "provisional evidence must be re-namespaced to the authorized collector: {}",
+        flow[0]
+    );
+    assert!(
+        graph_query(
+            &lab.graph,
+            "MATCH (f:AppFlow) WHERE f.exporter_id STARTS WITH 'flowsrc/site-b/' RETURN f.id"
+        )
+        .is_empty(),
+        "collector A must not file evidence under collector B's namespace"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// H3 — per-message detection-ingest capability revalidation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// H3: the separate `detection-ingest` capability is revalidated per
+/// message on an OPEN stream — revoking only that binding (collector
+/// binding stays active) stops detection authoring on the same stream,
+/// while ordinary collector telemetry keeps working.
+#[tokio::test]
+async fn detection_stream_revocation_stops_authoring_mid_stream() {
+    let pki = make_pki();
+    let lab = start_lab(&pki).await;
+    let cert_a = issue_leaf(&pki, "collector-a", false);
+    bind_collector(&lab.sqlite, "site-a", &cert_a.fingerprint);
+    let det_binding = bind_capability(
+        &lab.sqlite,
+        bonsai::collector_auth::DETECTION_INGEST_PROTOCOL,
+        &cert_a.fingerprint,
+    );
+    add_device(
+        &lab.registry,
+        target("10.0.0.1", Some("site-a"), "dc-a", "leaf", "rtr-a", "ios"),
+    );
+    prepopulate_device(&lab.graph, "10.0.0.1");
+    prepopulate_event(&lab.graph, "sce-a-1", "10.0.0.1", "{}", "gnmi");
+
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let rpc = {
+        let mut client = mtls_client(&lab, &pki, &cert_a).await;
+        tokio::spawn(async move {
+            client
+                .detection_ingest(Request::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
+                .await
+        })
+    };
+
+    // First detection on the still-open stream — authorized.
+    tx.send(detection_update(
+        "site-a",
+        "10.0.0.1",
+        "high",
+        "sce-a-1",
+        vec!["sce-a-1".to_string()],
+    ))
+    .await
+    .unwrap();
+    wait_for_graph_row(
+        &lab.graph,
+        "MATCH (d:Device {address: '10.0.0.1'})-[:TRIGGERED]->(e:DetectionEvent) RETURN e.id",
+        "first authorized detection",
+    )
+    .await;
+
+    // Revoke ONLY the detection-ingest capability; collector binding
+    // stays active.
+    lab.sqlite
+        .revoke_exporter_binding(&det_binding, "test")
+        .unwrap();
+
+    // Same open stream: the next message must be denied. Epoch
+    // invalidation makes the revocation visible on the next check —
+    // no TTL wait required, but allow a small margin for scheduling.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    tx.send(detection_update(
+        "site-a",
+        "10.0.0.1",
+        "critical",
+        "sce-a-1",
+        vec!["sce-a-1".to_string()],
+    ))
+    .await
+    .unwrap();
+    drop(tx);
+    let outcome = tokio::time::timeout(Duration::from_secs(15), rpc)
+        .await
+        .expect("detection RPC must resolve after stream close");
+    let resp = outcome.expect("rpc task");
+    assert!(
+        resp.is_err(),
+        "revoked detection capability must fail the open stream, got {resp:?}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let detections = graph_query(
+        &lab.graph,
+        "MATCH (e:DetectionEvent) RETURN e.id, e.severity",
+    );
+    assert_eq!(
+        detections.len(),
+        1,
+        "revoked capability must not author additional detections: {detections:?}"
+    );
+    assert_eq!(detections[0][1], "high");
+
+    // Ordinary collector telemetry on the SAME credential still works.
+    let mut tel = mtls_client(&lab, &pki, &cert_a).await;
+    assert_eq!(
+        ingest_one(&mut tel, "site-a", "10.0.0.1", "state/foo").await.unwrap(),
+        1,
+        "collector ingest authority must survive detection-capability revocation"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// H4 — positive detection-evidence authority and provenance
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// H4: remote DetectionIngest requires verified, in-scope,
+/// non-provisional source-event provenance — evidence-free submissions,
+/// malformed payloads, provisional-source events with canonical-looking
+/// addresses, and missing server-owned provenance are all denied.
+#[tokio::test]
+async fn detection_ingest_requires_verified_nonprovisional_evidence() {
+    let pki = make_pki();
+    let lab = start_lab(&pki).await;
+    let cert_a = issue_leaf(&pki, "collector-a", false);
+    bind_collector(&lab.sqlite, "site-a", &cert_a.fingerprint);
+    bind_capability(
+        &lab.sqlite,
+        bonsai::collector_auth::DETECTION_INGEST_PROTOCOL,
+        &cert_a.fingerprint,
+    );
+    add_device(
+        &lab.registry,
+        target("10.0.0.1", Some("site-a"), "dc-a", "leaf", "rtr-a", "ios"),
+    );
+    add_device(
+        &lab.registry,
+        target("10.0.0.2", Some("site-b"), "dc-b", "spine", "rtr-b", "junos"),
+    );
+    prepopulate_device(&lab.graph, "10.0.0.1");
+    prepopulate_device(&lab.graph, "10.0.0.2");
+    prepopulate_event(&lab.graph, "sce-a-1", "10.0.0.1", "{}", "gnmi");
+    // Provisional-source event that nonetheless carries a canonical-
+    // looking device_address and a clean detail — only the
+    // server-owned source_type marks it untrusted.
+    prepopulate_event(&lab.graph, "sce-prov-canon", "10.0.0.1", "{}", "syslog");
+    // Canonical-address event with NO server-owned provenance at all.
+    prepopulate_event(&lab.graph, "sce-no-prov", "10.0.0.1", "{}", "");
+
+    let mut client = mtls_client(&lab, &pki, &cert_a).await;
+    let accepted = ingest_detections(
+        &mut client,
+        vec![
+            // Evidence-free remote detection — denied (H4 decision:
+            // remote ingest requires positive provenance).
+            detection_update("site-a", "10.0.0.1", "high", "", vec![]),
+            // Malformed features_json — permanent rejection.
+            {
+                let mut d = detection_update(
+                    "site-a",
+                    "10.0.0.1",
+                    "high",
+                    "sce-a-1",
+                    vec!["sce-a-1".to_string()],
+                );
+                d.features_json = "{not json".to_string();
+                d
+            },
+            // Malformed source_types_json — permanent rejection.
+            {
+                let mut d = detection_update(
+                    "site-a",
+                    "10.0.0.1",
+                    "high",
+                    "sce-a-1",
+                    vec!["sce-a-1".to_string()],
+                );
+                d.source_types_json = "not-an-array".to_string();
+                d
+            },
+            // Provisional-source event (syslog) on a canonical address.
+            detection_update(
+                "site-a",
+                "10.0.0.1",
+                "high",
+                "sce-prov-canon",
+                vec!["sce-prov-canon".to_string()],
+            ),
+            // Cross-device reference.
+            detection_update(
+                "site-a",
+                "10.0.0.1",
+                "high",
+                "sce-b-1",
+                vec!["sce-b-1".to_string()],
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted, 0, "all provenance violations must be dropped");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        graph_query(&lab.graph, "MATCH (e:DetectionEvent) RETURN e.id").is_empty(),
+        "no DetectionEvent may be written without verified provenance"
+    );
+
+    // Valid trusted evidence is accepted and carries remote-ingest
+    // provenance in its stored source_types.
+    let accepted = ingest_detections(
+        &mut client,
+        vec![detection_update(
+            "site-a",
+            "10.0.0.1",
+            "high",
+            "sce-a-1",
+            vec!["sce-a-1".to_string()],
+        )],
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted, 1);
+    let row = wait_for_graph_row(
+        &lab.graph,
+        "MATCH (e:DetectionEvent) RETURN e.source_types",
+        "detection source_types",
+    )
+    .await;
+    assert!(
+        row[0].contains("remote_detection_ingest"),
+        "remote-submitted detection must be marked with ingest provenance: {}",
+        row[0]
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// H5 — consistent ambiguity rules for collector-scoped reads
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// H5: the same credential+collector-id provisioned under multiple
+/// scopes is ambiguous for ingest AND for scoped reads — `DISTINCT`
+/// collapsing must not silently grant read access.
+#[tokio::test]
+async fn ambiguous_collector_binding_denies_scoped_reads() {
+    let pki = make_pki();
+    let lab = start_lab(&pki).await;
+    let cert_a = issue_leaf(&pki, "collector-a", false);
+    // Same collector id + same credential under TWO scopes.
+    bind_collector_scoped(&lab.sqlite, "site-a", &cert_a.fingerprint, "dc-a");
+    bind_collector_scoped(&lab.sqlite, "site-a", &cert_a.fingerprint, "dc-b");
+    add_device(
+        &lab.registry,
+        target("10.0.0.1", Some("site-a"), "dc-a", "leaf", "rtr-a", "ios"),
+    );
+    prepopulate_device(&lab.graph, "10.0.0.1");
+
+    let mut client = mtls_client(&lab, &pki, &cert_a).await;
+    let err = client
+        .get_devices(Request::new(GetDevicesRequest {}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.code(),
+        Code::PermissionDenied,
+        "ambiguous binding must not gain scoped read access: {err}"
+    );
+    // Ingest is denied for the same reason (existing rule, now shared).
+    assert_ingest_denied(&mut client, "site-a", "10.0.0.1", "state/foo").await;
+}
+
+/// H5 model check: the binding store enforces ONE canonical
+/// (collector_id, credential) pair per credential — a second collector
+/// identity cannot be provisioned for the same certificate, so scoped
+/// reads can never silently union or first-match across identities.
+#[tokio::test]
+async fn credential_cannot_bind_multiple_collector_identities() {
+    let pki = make_pki();
+    let lab = start_lab(&pki).await;
+    let cert_a = issue_leaf(&pki, "collector-a", false);
+    bind_collector(&lab.sqlite, "site-a", &cert_a.fingerprint);
+
+    // A second binding for the same credential under a DIFFERENT
+    // collector id is rejected at provisioning time.
+    let device = CanonicalDevice {
+        device_id: String::new(),
+        address: "collector:site-c".to_string(),
+        site: Some("dc-a".to_string()),
+        hostname: None,
+        created_at_ns: 0,
+        updated_at_ns: 0,
+        created_by: String::new(),
+        updated_by: String::new(),
+    };
+    let dev = lab.sqlite.upsert_canonical_device(&device, "test").unwrap();
+    let binding = TrustedBinding {
+        binding_id: SqliteStore::new_binding_id(),
+        scope: "dc-a".to_string(),
+        protocol: bonsai::collector_auth::COLLECTOR_PROTOCOL.to_string(),
+        exporter_id: "site-c".to_string(),
+        device_id: dev.device_id,
+        match_transport: None,
+        match_reported_identity: None,
+        match_exporter_claim: None,
+        match_observation_domain: None,
+        match_ingress_credential: Some(cert_a.fingerprint.clone()),
+        provenance: BindingProvenance::OperatorProvisioned,
+        status: BindingStatus::Active,
+        created_at_ns: 0,
+        updated_at_ns: 0,
+        created_by: String::new(),
+        updated_by: String::new(),
+    };
+    assert!(
+        lab.sqlite.upsert_exporter_binding(&binding, "test").is_err(),
+        "one credential must not be provisioned for two collector identities"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// H6 — assignment-session lifecycle fencing on abrupt disconnect
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// H6: dropping the assignment stream abruptly (client disconnect /
+/// cancellation) must still unregister the session — the drop guard,
+/// not post-loop code, owns cleanup. The collector's devices are
+/// released for reassignment.
+#[tokio::test]
+async fn assignment_stream_disconnect_still_cleans_up_session() {
+    let pki = make_pki();
+    let lab = start_lab(&pki).await;
+    let cert_a = issue_leaf(&pki, "collector-a", false);
+    bind_collector(&lab.sqlite, "site-a", &cert_a.fingerprint);
+    add_device(
+        &lab.registry,
+        target("10.0.0.1", Some("site-a"), "dc-a", "leaf", "rtr-a", "ios"),
+    );
+
+    let mut client = mtls_client(&lab, &pki, &cert_a).await;
+    let mut stream = client
+        .register_collector(Request::new(CollectorIdentity {
+            collector_id: "site-a".to_string(),
+            hostname: "collector-a".to_string(),
+            protocol_version: PROTOCOL_VERSION,
+            auth_token: String::new(),
+        }))
+        .await
+        .expect("register")
+        .into_inner();
+    assert!(stream.message().await.unwrap().is_some(), "initial sync");
+    assert_eq!(
+        lab.registry
+            .get_device("10.0.0.1")
+            .unwrap()
+            .unwrap()
+            .collector_id
+            .as_deref(),
+        Some("site-a")
+    );
+
+    // Abrupt disconnect: drop the stream without reading to end.
+    drop(stream);
+
+    // The guard's blocking unregister must release the assignment.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let assigned = lab
+            .registry
+            .get_device("10.0.0.1")
+            .unwrap()
+            .unwrap()
+            .collector_id
+            .clone();
+        if assigned.is_none() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "session cleanup did not run after stream disconnect"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }

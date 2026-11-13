@@ -207,22 +207,13 @@ impl CollectorManager {
 
         let (tx, rx) = mpsc::channel(32);
 
-        let targets = self.registry.list_assigned_to(&collector_id)?;
-        let mut assignments = Vec::new();
-        for target in targets {
-            assignments.push(create_assignment(
-                &target,
-                &self.credentials,
-                &self.registry,
-            ));
-        }
-
-        tx.send(AssignmentUpdate {
-            assignments,
-            is_full_sync: true,
-        })
-        .await?;
-
+        // H6: install the session BEFORE building/sending assignments.
+        // A concurrent stale-generation cleanup either completes fully
+        // before this insert (its generation no longer matches, so it
+        // is fenced out) or is still running — in which case this
+        // insert waits on the same lock and observes post-cleanup
+        // registry state. Assignments are therefore always computed
+        // against the state the new session will actually own.
         let generation = {
             let mut generations = self.session_generations.lock().unwrap();
             let next = generations.entry(collector_id.clone()).or_insert(0);
@@ -233,7 +224,10 @@ impl CollectorManager {
             let mut collectors = self.active_collectors.lock().unwrap();
             collectors.insert(
                 collector_id.clone(),
-                CollectorSession { generation, tx },
+                CollectorSession {
+                    generation,
+                    tx: tx.clone(),
+                },
             );
         }
         {
@@ -241,6 +235,35 @@ impl CollectorManager {
             let entry = runtime.entry(collector_id.clone()).or_default();
             entry.connected = true;
             entry.last_heartbeat_ns = now_ns();
+        }
+
+        let targets = match self.registry.list_assigned_to(&collector_id) {
+            Ok(targets) => targets,
+            Err(e) => {
+                self.unregister_collector(&collector_id, generation);
+                return Err(e);
+            }
+        };
+        let mut assignments = Vec::new();
+        for target in targets {
+            assignments.push(create_assignment(
+                &target,
+                &self.credentials,
+                &self.registry,
+            ));
+        }
+
+        if tx
+            .send(AssignmentUpdate {
+                assignments,
+                is_full_sync: true,
+            })
+            .await
+            .is_err()
+        {
+            // Receiver already gone — do not leak the session.
+            self.unregister_collector(&collector_id, generation);
+            anyhow::bail!("assignment stream receiver closed during registration");
         }
 
         self.publish_ws(BonsaiEvent {
@@ -260,14 +283,19 @@ impl CollectorManager {
     /// closing after a reconnect is a no-op and must not disconnect the
     /// newer valid session or orphan its devices.
     pub fn unregister_collector(&self, collector_id: &str, generation: u64) -> bool {
-        let removed = {
-            let mut collectors = self.active_collectors.lock().unwrap();
-            match collectors.get(collector_id) {
-                Some(session) if session.generation == generation => {
-                    collectors.remove(collector_id).is_some()
-                }
-                _ => false,
+        // H6: the generation check AND all cleanup run under one
+        // `active_collectors` lock. `register_collector` inserts new
+        // sessions under the same lock, so a stale cleanup either sees
+        // the newer generation and returns immediately, or completes
+        // entirely before the new session exists — it can never mark a
+        // newer session disconnected, clear its assignments, or deliver
+        // stale assignment state.
+        let mut collectors = self.active_collectors.lock().unwrap();
+        let removed = match collectors.get(collector_id) {
+            Some(session) if session.generation == generation => {
+                collectors.remove(collector_id).is_some()
             }
+            _ => false,
         };
         if !removed {
             info!(

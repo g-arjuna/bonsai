@@ -489,34 +489,51 @@ async fn drain_queue_to_core(
             anyhow::bail!("core rejected telemetry ingest stream: {}", response.error);
         }
 
+        // H2 acknowledgement contract: the core consumes the ENTIRE
+        // client stream before responding — every record is either
+        // `accepted` (published to the event bus) or `rejected`
+        // (permanently refused: authorization denial, malformed
+        // payload, protocol skew). A received response therefore means
+        // the whole batch was processed and the queue may retire ALL of
+        // it. `accepted` alone can never identify a processed prefix:
+        // rejections may be interleaved arbitrarily.
+        //
+        // Older cores predate the `rejected` field and only report
+        // `accepted`; they still consumed the whole stream, so
+        // ack-last remains correct — the accounting gap is logged.
         let accepted = response.accepted as usize;
-        if accepted == 0 {
-            anyhow::bail!("core accepted zero records from non-empty telemetry ingest batch");
+        let rejected = response.rejected as usize;
+        let batch_len = batch.records.len();
+        if accepted + rejected != batch_len {
+            warn!(
+                %collector_id,
+                accepted = response.accepted,
+                rejected = response.rejected,
+                batch_len,
+                "core ingest accounting mismatch — batch still fully processed; acking all records"
+            );
         }
-        let ack_index = accepted.saturating_sub(1).min(batch.records.len() - 1);
-        let ack_offset = batch.records[ack_index].next_offset;
+        let ack_offset = batch.records[batch_len - 1].next_offset;
         queue
             .ack(ack_offset, collector_id)
             .context("failed to ack collector queue records")?;
 
         metrics::counter!("bonsai_queue_drained_total", "collector_id" => collector_id.to_string())
             .increment(accepted as u64);
+        if rejected > 0 {
+            metrics::counter!("bonsai_queue_rejected_total", "collector_id" => collector_id.to_string())
+                .increment(rejected as u64);
+        }
 
         info!(
             accepted = response.accepted,
+            rejected = response.rejected,
             queued_remaining = queue
                 .stats()
                 .map(|stats| stats.pending_records)
                 .unwrap_or(0),
             "collector queue batch delivered"
         );
-
-        if accepted < batch.records.len() {
-            anyhow::bail!(
-                "core accepted only {accepted} of {} queued telemetry records",
-                batch.records.len()
-            );
-        }
     }
 }
 
@@ -1224,9 +1241,11 @@ mod tests {
 
     use super::{
         CollectorQueue, RawQueuedRecord, client_tls_config, connect_core_channel,
-        ingest_update_to_telemetry, telemetry_to_ingest_update, zstd_size,
+        create_ingest_client, drain_queue_to_core, ingest_update_to_telemetry,
+        telemetry_to_ingest_update, zstd_size,
     };
-    use crate::config::{CollectorQueueConfig, RuntimeTlsConfig};
+    use crate::config::{CollectorQueueConfig, RuntimeConfig, RuntimeTlsConfig};
+    use std::time::Duration;
     use crate::telemetry::TelemetryUpdate;
 
     #[test]
@@ -1472,6 +1491,218 @@ mod tests {
             update,
             next_offset: 0,
         }
+    }
+
+    // ── H2: drain_queue_to_core acknowledgement contract ──────────────────
+    //
+    // The core consumes the ENTIRE client stream before responding, so a
+    // received TelemetryIngestResponse means every record in the batch
+    // was processed — `accepted` and `rejected` are truthful counts, and
+    // the queue may retire the whole batch. These tests run the REAL
+    // forwarder against a real (development-compat) core server; only
+    // undecodable payloads are rejected there.
+
+    struct DevCore {
+        addr: std::net::SocketAddr,
+        _dir: tempfile::TempDir,
+        _server: tokio::task::JoinHandle<()>,
+    }
+
+    async fn start_dev_core() -> DevCore {
+        use crate::api::{BonsaiGraphServer, CoreService};
+        use crate::assignment::CollectorManager;
+        use crate::collector_auth::AuthPolicy;
+        use crate::credentials::CredentialVault;
+        use crate::event_bus::InProcessBus;
+        use crate::graph::GraphStore;
+        use crate::registry::ApiRegistry;
+        use crate::sidecar_registry::SidecarRegistry;
+        use tokio::net::TcpListener;
+        use tokio_stream::wrappers::TcpListenerStream;
+        use tonic::transport::Server;
+
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("BONSAI_DRAIN_TEST_VAULT_PASSPHRASE", "pw") };
+        let graph = std::sync::Arc::new(
+            GraphStore::open(
+                dir.path().join("graph.db").to_str().unwrap(),
+                256 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+        let registry = std::sync::Arc::new(
+            ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap(),
+        );
+        let credentials = std::sync::Arc::new(
+            CredentialVault::open(dir.path().join("vault"), "BONSAI_DRAIN_TEST_VAULT_PASSPHRASE")
+                .unwrap(),
+        );
+        let bus = InProcessBus::new(1024);
+        let manager = std::sync::Arc::new(CollectorManager::new(
+            std::sync::Arc::clone(&registry),
+            std::sync::Arc::clone(&credentials),
+            vec![],
+        ));
+        let sidecars = std::sync::Arc::new(SidecarRegistry::new(vec![]));
+        let svc = CoreService::new(
+            graph,
+            std::sync::Arc::clone(&registry),
+            credentials,
+            bus,
+            None,
+            Some(manager),
+            sidecars,
+            registry.sqlite_store(),
+            None,
+            None,
+        )
+        .with_auth_policy(AuthPolicy::DevelopmentCompat);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(BonsaiGraphServer::new(svc))
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        DevCore {
+            addr,
+            _dir: dir,
+            _server: server,
+        }
+    }
+
+    fn drain_runtime(addr: std::net::SocketAddr) -> RuntimeConfig {
+        let mut cfg = RuntimeConfig::default();
+        cfg.core_ingest_endpoint = format!("http://{addr}");
+        cfg.tls.enabled = false;
+        cfg
+    }
+
+    /// A permanently-rejected record: msgpack byte 0xc1 is reserved and
+    /// fails decode on the core — the record is retired, never retried.
+    fn poison_proto(collector_id: &str, index: i64) -> crate::api::pb::TelemetryIngestUpdate {
+        let mut u = sample_proto(collector_id, index);
+        u.value_msgpack = vec![0xc1];
+        u
+    }
+
+    async fn wait_queue_drained(queue: &CollectorQueue) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if queue.stats().unwrap().pending_records == 0 {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "queue did not drain: {:?}",
+                queue.stats().unwrap()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_acks_whole_batch_with_interleaved_rejections() {
+        let core = start_dev_core().await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        // Interleaved accepted/rejected records in ONE batch: the core
+        // consumes the entire stream before responding, so the whole
+        // batch — including the rejected middle record — is processed
+        // and retired exactly once.
+        for (i, u) in [
+            sample_proto("collector-a", 1),
+            poison_proto("collector-a", 2),
+            sample_proto("collector-a", 3),
+            poison_proto("collector-a", 4),
+            sample_proto("collector-a", 5),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let _ = i;
+            queue.append(u, "collector-a").unwrap();
+        }
+
+        let mut client = create_ingest_client(&drain_runtime(core.addr))
+            .await
+            .unwrap();
+        let (sd_tx, sd_rx) = tokio::sync::watch::channel(false);
+        let q = std::sync::Arc::clone(&queue);
+        let drain = tokio::spawn(async move {
+            drain_queue_to_core(&mut client, q, "collector-a", sd_rx).await
+        });
+        wait_queue_drained(&queue).await;
+        sd_tx.send(true).unwrap();
+        drain.await.unwrap().unwrap();
+        assert_eq!(queue.stats().unwrap().pending_records, 0);
+    }
+
+    #[tokio::test]
+    async fn drain_retires_fully_rejected_batch_without_blocking() {
+        let core = start_dev_core().await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        // Entire batch permanently rejected (all poison): retired, not
+        // replayed forever — and the NEXT legitimate batch still flows.
+        queue.append(poison_proto("collector-a", 1), "collector-a").unwrap();
+        queue.append(poison_proto("collector-a", 2), "collector-a").unwrap();
+        queue.append(sample_proto("collector-a", 3), "collector-a").unwrap();
+
+        let mut client = create_ingest_client(&drain_runtime(core.addr))
+            .await
+            .unwrap();
+        let (sd_tx, sd_rx) = tokio::sync::watch::channel(false);
+        let q = std::sync::Arc::clone(&queue);
+        let drain = tokio::spawn(async move {
+            drain_queue_to_core(&mut client, q, "collector-a", sd_rx).await
+        });
+        wait_queue_drained(&queue).await;
+        sd_tx.send(true).unwrap();
+        drain.await.unwrap().unwrap();
+        assert_eq!(queue.stats().unwrap().pending_records, 0);
+    }
+
+    #[tokio::test]
+    async fn drain_retains_records_on_retryable_core_failure() {
+        let core = start_dev_core().await;
+        let dir = tempfile::tempdir().unwrap();
+        let queue = std::sync::Arc::new(
+            CollectorQueue::open(queue_config(dir.path(), 1_000_000, 24)).unwrap(),
+        );
+        queue.append(sample_proto("collector-a", 1), "collector-a").unwrap();
+        queue.append(sample_proto("collector-a", 2), "collector-a").unwrap();
+
+        let mut client = create_ingest_client(&drain_runtime(core.addr))
+            .await
+            .unwrap();
+        // Core dies mid-operation: the RPC fails BEFORE a response, so
+        // no acknowledgement is written and both records are retained
+        // for replay (at-least-once).
+        core._server.abort();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let (_sd_tx, sd_rx) = tokio::sync::watch::channel(false);
+        let q = std::sync::Arc::clone(&queue);
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            drain_queue_to_core(&mut client, q, "collector-a", sd_rx),
+        )
+        .await
+        .expect("drain must return on core failure, not hang");
+        assert!(result.is_err(), "core outage must surface as drain error");
+        assert_eq!(
+            queue.stats().unwrap().pending_records,
+            2,
+            "unacknowledged records must survive a failed drain for replay"
+        );
     }
 }
 

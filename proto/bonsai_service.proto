@@ -224,6 +224,13 @@ message TelemetryIngestResponse {
   uint64 accepted = 1;
   string error    = 2;
   uint32 protocol_version = 3; // Stub for version negotiation
+  // Records permanently rejected by the core (authorization denial,
+  // malformed payload, protocol skew). Every submitted record is either
+  // accepted or rejected — the server consumes the whole stream before
+  // responding, so accepted + rejected == submitted record count and the
+  // collector may retire the entire batch. Retryable failures never
+  // produce a response: the stream errors and the batch is replayed.
+  uint64 rejected = 4;
 }
 
 message DetectionEventIngest {
@@ -245,6 +252,9 @@ message DetectionEventIngest {
 message DetectionIngestResponse {
   uint64 accepted = 1;
   string error    = 2;
+  // Detections permanently rejected by the core (capability/collector
+  // denial, invalid provenance references, malformed payloads).
+  uint64 rejected = 3;
 }
 
 // ── Phase 4: Detection + Remediation writes ───────────────────────────────────

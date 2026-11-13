@@ -273,21 +273,41 @@ authorization on the existing collector→core gRPC channel.
   credential mutation, query, remediation writes), `sidecar`,
   `operator-read` (global reads incl. topology/sites/event stream;
   device-scoped reads limited to assigned devices), any-pinned-binding
-  (`get_leader`). **Observation boundary:** canonical-path telemetry
-  requires an enabled registry device assigned to the authenticated
-  collector; producer metadata is rewritten from inventory; provisional
-  `streaming/`/`signals/` paths stay provisional and cannot be relabeled
-  into canonical authority. **Stream fencing:** assignment/event streams
-  revalidate per delivery and while idle; generation-fenced sessions.
-  **Auth policy:** `runtime.auth_mode` = `required` (default, fail
+  (`get_leader`). **Classified observation boundary (H1):** each record
+  is decoded, classified (`TelemetryEvent::authority`) and only then
+  authorized — canonical classes (YANG paths AND canonical writers on
+  `streaming/` paths: BMP, BGP-LS, interface summaries, config-state)
+  require an enabled registry device assigned to the collector;
+  provisional classes require a `*src/` source key re-namespaced to
+  the authenticated collector; unclassified paths are ignored. Path
+  prefixes never establish graph authority. **Queue ack contract
+  (H2):** the core consumes the whole ingest stream before responding;
+  `accepted`+`rejected`==submitted, rejected records are permanently
+  retired, RPC errors retain the batch — acks describe records
+  actually processed. **Per-message capability revalidation (H3):**
+  `detection-ingest` is re-checked on every message of an open stream;
+  authz decisions are epoch-stamped so binding mutations invalidate
+  the cache immediately. **Detection provenance (H4):** remote
+  detections require non-empty, existing, same-device,
+  server-provenanced non-provisional source events; malformed payloads
+  rejected; `remote_detection_ingest` provenance marker stored;
+  storage failures are retryable stream errors. **Read ambiguity
+  (H5):** scoped reads use the same trusted-binding ambiguity rules as
+  ingest (no `DISTINCT` collapse); one credential cannot be provisioned
+  for two collector identities. **Session lifecycle (H6):** assignment
+  cleanup is owned by a stream drop guard (disconnect/cancellation
+  safe); generation check + cleanup run under one lock. **Auth
+  policy:** `runtime.auth_mode` = `required` (default, fail
   closed) / `development-compat` (explicit dev opt-in). Authz decisions
-  cached ≤5s (bounded 4096-entry cache); durable provenance via
-  `audit_log`. Verified: `tests/bn021g_collector_trust_foundation.rs`
-  19/19 real loopback mTLS + real GraphStore wiring — cross-collector
-  denial, unknown-target denial, forged-metadata rewrite, provisional
-  isolation, detection provenance, capability matrix, active-stream
-  revocation, generation fencing, auth-mode enforcement, rotation,
-  replay. Evidence:
+  cached ≤5s (bounded 4096-entry cache, epoch-invalidated);
+  durable provenance via `audit_log`. Verified:
+  `tests/bn021g_collector_trust_foundation.rs`
+  25/25 real loopback mTLS + real GraphStore wiring — classified-
+  authority canonical-writer gating, provisional namespace
+  re-homing, per-message detection revocation mid-stream, evidence
+  provenance denial, ambiguous-binding read denial, disconnect
+  cleanup — plus real-server queue drain tests (interleaved
+  rejection, all-reject, retryable failure). Evidence:
   `docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.
 - **BN-021g-2 first verified original-source projection:** narrow OTLP
   case via direct authenticated producer identity or explicitly

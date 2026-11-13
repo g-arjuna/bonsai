@@ -143,3 +143,55 @@ real loopback mTLS + real `GraphStore` wired to the bus exactly as
 
 Regression: `cargo test -p bonsai --lib` 290 pass / 5 fail — the same
 5 documented BN-019-B6 baseline failures, none new.
+
+---
+
+## Final hardening round (H1–H6, same branch)
+
+A second independent review of the hardened slice confirmed six
+residual defects. All are closed without a second identity
+architecture.
+
+### Findings disposition
+
+| Finding | Disposition |
+|---|---|
+| H1 provisional-path authorization bypass | FIXED — path-prefix exception removed; decode → `TelemetryEvent::authority()` classify → authorize by class. Canonical writers on `streaming/` paths (BMP, BGP-LS, interface summaries, config-state) now require the assigned-device check; provisional classes require a `*src/` key re-namespaced to the authenticated collector; unclassified → Ignored |
+| H2 queue ack semantics | FIXED — `TelemetryIngestResponse.rejected` added; core consumes whole stream before responding so accepted+rejected==submitted; permanent rejections retired, RPC errors retain batch; verified with real `drain_queue_to_core` against a real dev-compat core |
+| H3 stream-start-only detection capability | FIXED — `detection-ingest` revalidated per message; authz decisions epoch-stamped (binding upsert/revoke bumps epoch → immediate cache invalidation); verified by mid-stream revocation test |
+| H4 weak detection provenance | FIXED — remote detections require non-empty, existing, same-device, server-provenanced (`source_type`) non-provisional source events; malformed JSON rejected; `remote_detection_ingest` marker stored; write failures are retryable stream errors |
+| H5 read-scope ambiguity | FIXED — `collector_ids_for_credential` ambiguity rules match ingest; store rejects a second collector identity per credential; no `DISTINCT` first-match collapse |
+| H6 session lifecycle gaps | FIXED — drop guard owns assignment cleanup on disconnect/cancellation (incl. pre-first-poll drop); generation check + cleanup atomic under `active_collectors` lock; idle-stream revocation bound ≈5s poll |
+
+### Verification — final suite
+
+`tests/bn021g_collector_trust_foundation.rs` — **25/25 PASS**
+(new: `classified_authority_gates_canonical_writers_on_streaming_paths`,
+`detection_stream_revocation_stops_authoring_mid_stream`,
+`detection_ingest_requires_verified_nonprovisional_evidence`,
+`ambiguous_collector_binding_denies_scoped_reads`,
+`credential_cannot_bind_multiple_collector_identities`,
+`assignment_stream_disconnect_still_cleans_up_session`; denial
+assertions updated to the truthful `accepted`/`rejected` contract).
+
+`src/ingest.rs` unit tests — **3/3 PASS** real-server drain tests:
+interleaved accepted/rejected batch fully retired,
+fully-rejected batch retired without blocking subsequent records,
+core outage retains unacknowledged records for replay.
+
+Focused lib modules (`ingest::`, `assignment::`, `collector_auth::`,
+`telemetry::`) — 15/15 PASS.
+
+### Remaining limitations
+
+- "Accepted" telemetry = published to the in-memory bus, not a durable
+  graph commit — at-least-once, never exactly-once.
+- Idle-stream revocation bound ≈ `STREAM_REVALIDATE_INTERVAL` (5s);
+  per-message paths are epoch-immediate.
+- Canonical graph entities remain globally address-keyed; collector
+  scoping is assignment-based, not multi-tenant isolation.
+- Historical `StateChangeEvent`s without server-owned `source_type`
+  provenance cannot back remote detections (fail closed).
+- `Query` remains unrestricted Cypher behind `core-admin` — privileged
+  administrative trust boundary; broader query-policy redesign and
+  credential-storage migration stay under BN-022.

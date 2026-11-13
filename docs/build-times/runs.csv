@@ -138,3 +138,7 @@ date,command,scope,wall_seconds,result,notes
 2026-11-12,cargo test -j 1 --test bn021b..bn022 batch (6 targets),bn021b/c/d/f + bn022 regressions,~195,pass,3m15s links + runs; 68/68 (13+17+15+9+9+5)
 2026-11-12,cargo test -j 1 --test bn021e* bn005* bn006* ownership batch (10 targets),bn021e isolation + bn005/006 + ownership,~246,pass,4m06s links + runs; 72 pass / 1 ignored (containerlab-required live test, documented skip)
 2026-11-12,cargo test -j 1 --test bn006_native_nos_adapter,bn006 adapter unit suite,~22,pass,7/7; unaffected module, run for completeness
+2026-11-12,cargo check -p bonsai --lib,bonsai --lib,9.80,pass,warm workspace; sccache active; H1-H6 hardening edits
+2026-11-12,cargo test -p bonsai --lib ingest::tests::drain (x2),bonsai lib drain/queue tests,~115,pass,1m54s compile + 3.74s run; 3/3 real-server drain tests (interleaved reject, all-reject, retryable failure)
+2026-11-12,cargo test -j 1 --test bn021g_collector_trust_foundation (x3),bn021g extended suite,~310,pass-final,3m49s+52s+final link; 25/25 in 22.5s; earlier runs exposed contract-test updates (rejected-count semantics) and a test-side pin bug
+2026-11-12,cargo test -p bonsai --lib -- ingest:: assignment:: collector_auth:: telemetry::,bonsai lib focused modules,~20,pass,15/15; queue/assignment/authz unit regressions

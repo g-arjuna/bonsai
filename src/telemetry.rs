@@ -176,6 +176,77 @@ pub enum TelemetryEvent {
     Ignored,
 }
 
+/// Graph-authority class of a classified observation (BN-021g H1).
+///
+/// This is the SINGLE authority decision shared by the ingest
+/// authorization boundary (`api.rs`) and the graph writer
+/// (`graph/mod.rs`): both consume [`TelemetryEvent`], so the class a
+/// record is authorized under is exactly the class the writer will
+/// project — the writer can never reinterpret an authorized
+/// representation as a different authority class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservationAuthority {
+    /// Source-scoped provisional evidence keyed by `*src/...` source
+    /// keys (OTLP, NetFlow/IPFIX, sFlow, syslog, SNMP). These writers
+    /// fail closed downstream: they never create canonical Device
+    /// state, `CARRIES_FLOW`, or host-endpoint edges, and mark all
+    /// identity `unverified`/`provisional`.
+    Provisional,
+    /// Canonical device/routing state (interfaces, BFD, IS-IS, BGP
+    /// neighbors, LLDP, BMP, BGP-LS, config, environmental, optics,
+    /// service/QoS projections). An authenticated collector may only
+    /// project these for registry devices assigned to it.
+    CanonicalDevice,
+    /// The classifier produced no graph effect. Authorization is
+    /// irrelevant — nothing is written.
+    Ignored,
+}
+
+impl TelemetryEvent {
+    /// Exhaustive authority classification. Adding a `TelemetryEvent`
+    /// variant is a compile error here until an explicit authority
+    /// decision is made — unknown event types can never silently
+    /// become authorized canonical observations.
+    pub fn authority(&self) -> ObservationAuthority {
+        match self {
+            TelemetryEvent::SyslogEvent { .. }
+            | TelemetryEvent::SyslogFact { .. }
+            | TelemetryEvent::SnmpTrap { .. }
+            | TelemetryEvent::SnmpFact { .. }
+            | TelemetryEvent::OtlpSpan { .. }
+            | TelemetryEvent::OtlpMetrics { .. }
+            | TelemetryEvent::NetflowRecord { .. }
+            | TelemetryEvent::SflowRecord { .. }
+            | TelemetryEvent::SflowCounters { .. } => ObservationAuthority::Provisional,
+            TelemetryEvent::Ignored => ObservationAuthority::Ignored,
+            // Every remaining variant writes canonical device/routing
+            // state and is listed explicitly: a NEW TelemetryEvent
+            // variant fails to compile here until it receives an
+            // explicit authority decision.
+            TelemetryEvent::InterfaceStats { .. }
+            | TelemetryEvent::InterfaceSummary { .. }
+            | TelemetryEvent::InterfaceDescription { .. }
+            | TelemetryEvent::BfdSessionState { .. }
+            | TelemetryEvent::IsisAdjacencyState { .. }
+            | TelemetryEvent::BgpNeighborState { .. }
+            | TelemetryEvent::LldpNeighbor { .. }
+            | TelemetryEvent::ServiceEndpoint { .. }
+            | TelemetryEvent::QoSPolicyChange { .. }
+            | TelemetryEvent::InterfaceOperStatus { .. }
+            | TelemetryEvent::ConfigChange { .. }
+            | TelemetryEvent::BmpPeerState
+            | TelemetryEvent::BmpRouteMonitoring
+            | TelemetryEvent::BmpInitiation
+            | TelemetryEvent::BmpStatisticsReport
+            | TelemetryEvent::BgpLsState
+            | TelemetryEvent::EnvSensor { .. }
+            | TelemetryEvent::OpticsDiagnostics { .. }
+            | TelemetryEvent::OpticalChannel { .. }
+            | TelemetryEvent::PowerUnit { .. } => ObservationAuthority::CanonicalDevice,
+        }
+    }
+}
+
 impl TelemetryUpdate {
     pub fn classify(&self) -> TelemetryEvent {
         // ── Summarized paths (Collector summary mode) ───────────────────────

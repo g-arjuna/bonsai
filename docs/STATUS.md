@@ -916,3 +916,51 @@ provenance denial, capability matrix, active-stream revocation,
 generation fencing, auth-mode enforcement). `cargo test --lib`
 290 pass / 5 fail = unchanged BN-019-B6 baseline. Evidence:
 `docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.
+
+BN-021g-1 final hardening (12 November, same branch): a second
+independent review confirmed six residual defects (H1–H6), all now
+closed on the same architecture:
+
+- **H1 classified authority** — the `streaming/`/`signals/` path-prefix
+  bypass is gone. Every record is decoded, classified
+  (`TelemetryEvent::authority`: CanonicalDevice / Provisional /
+  Ignored) and authorized by class: canonical writers reachable through
+  `streaming/` paths (BMP peer-state/route-monitoring/initiation/
+  statistics, BGP-LS node/link/policy, interface summaries,
+  config-state leaves) now require the same enabled+assigned-device
+  check as YANG paths; provisional classes require a `*src/` source
+  key whose collector namespace is rewritten to the authenticated
+  collector id (cross-collector evidence-key forgery impossible);
+  unclassified paths are ignored. Serialized BMP/BGP-LS payloads via
+  generic ingest cannot acquire original-receiver authority.
+- **H2 queue acks** — `TelemetryIngestResponse.rejected` added; the
+  core consumes the whole stream before responding so
+  accepted+rejected==submitted and the collector retires the whole
+  batch. Permanent rejections (authz denial, malformed payload,
+  protocol major skew) never replay; RPC errors retain everything.
+  Verified with the real `drain_queue_to_core` + real core server:
+  interleaved rejection, fully-rejected batch, retryable core outage.
+- **H3 per-message capability** — `detection-ingest` is revalidated on
+  every message of an open stream; authz decisions are stamped with a
+  process-local epoch bumped on every binding upsert/revoke, so
+  revocation is visible on the next check (no TTL wait) — verified by
+  revoking only the detection binding mid-stream.
+- **H4 detection provenance** — remote detections now require
+  non-empty source-event references that exist, belong to the
+  authorized device, and carry server-owned non-provisional
+  `source_type`; malformed JSON permanently rejected; stored
+  `source_types` marked `remote_detection_ingest`; graph-write
+  failures abort as retryable errors.
+- **H5 read ambiguity** — `collector_ids_for_credential` no longer
+  collapses with `DISTINCT`; scoped reads apply the same ambiguity
+  rules as ingest; the store rejects a second collector identity per
+  credential.
+- **H6 session lifecycle** — assignment-stream cleanup is owned by a
+  drop guard (fires on disconnect/cancellation, even before first
+  poll); generation check + all cleanup run under one
+  `active_collectors` lock so stale cleanup cannot touch a newer
+  session. Worst-case idle-stream revocation bound ≈5s poll interval.
+
+Verified: `tests/bn021g_collector_trust_foundation.rs` **25/25** +
+3 real-server queue-drain unit tests + focused lib modules 15/15.
+Evidence: `docs/merger/evidence/2026-11-12-bn021g-collector-trust-foundation/`.

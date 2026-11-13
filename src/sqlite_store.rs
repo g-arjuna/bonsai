@@ -15,6 +15,7 @@
 use anyhow::{Context, Result, anyhow};
 use rusqlite::{Connection, params};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// File name of the config database inside a runtime directory.
@@ -29,6 +30,11 @@ pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 pub struct SqliteStore {
     db: Arc<Mutex<Connection>>,
     config_replicator: Option<Arc<crate::ha_coordinator::ConfigReplicator>>,
+    /// Process-local authorization epoch (BN-021g H3/H6). Incremented on
+    /// every `exporter_bindings` mutation so `CollectorAuthz` decision
+    /// caches invalidate immediately instead of waiting out the TTL.
+    /// Cross-process mutations are still bounded by the cache TTL.
+    authz_epoch: AtomicU64,
 }
 
 impl SqliteStore {
@@ -41,6 +47,7 @@ impl SqliteStore {
         let store = Self {
             db: Arc::new(Mutex::new(db)),
             config_replicator: None,
+            authz_epoch: AtomicU64::new(0),
         };
 
         store.init_schema()?;
@@ -73,7 +80,19 @@ impl SqliteStore {
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
             config_replicator: None,
+            authz_epoch: AtomicU64::new(0),
         })
+    }
+
+    /// Current process-local authorization epoch. `CollectorAuthz`
+    /// stamps cached decisions with this value; a change means every
+    /// cached binding/capability decision must be re-evaluated.
+    pub fn authz_epoch(&self) -> u64 {
+        self.authz_epoch.load(Ordering::SeqCst)
+    }
+
+    fn bump_authz_epoch(&self) {
+        self.authz_epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Current schema version recorded in the database (`user_version`).
@@ -1263,6 +1282,7 @@ impl SqliteStore {
             old.as_deref(),
             Some(&new),
         )?;
+        self.bump_authz_epoch();
 
         Ok(stored)
     }
@@ -1399,16 +1419,22 @@ impl SqliteStore {
         Ok(rows.next()?.is_some())
     }
 
-    /// Collector ids (`exporter_id` on ACTIVE `"collector"` bindings)
-    /// pinned to this credential — the collector-scoped read boundary.
-    pub fn collector_ids_for_credential(&self, credential: &str) -> Result<Vec<String>> {
+    /// ACTIVE `"collector"` bindings pinned to this credential — the
+    /// collector-scoped read boundary (BN-021g H5). Returns full binding
+    /// rows (NOT `SELECT DISTINCT`): the same collector id provisioned
+    /// under multiple scopes must remain visible so the caller can apply
+    /// the same fail-closed ambiguity rule used for ingest.
+    pub fn collector_bindings_for_credential(
+        &self,
+        credential: &str,
+    ) -> Result<Vec<crate::telemetry_identity::TrustedBinding>> {
         let db = self.db.lock().unwrap();
         let mut stmt = db.prepare(
-            "SELECT DISTINCT exporter_id FROM exporter_bindings WHERE status = 'active' AND protocol = 'collector' AND match_ingress_credential = ?1",
+            "SELECT binding_id, scope, protocol, exporter_id, device_id, match_transport, match_reported_identity, match_exporter_claim, match_observation_domain, match_ingress_credential, provenance, status, created_at_ns, updated_at_ns, created_by, updated_by FROM exporter_bindings WHERE status = 'active' AND protocol = 'collector' AND match_ingress_credential = ?1 LIMIT 1024",
         )?;
-        let rows = stmt.query_map(params![credential], |row| row.get::<_, String>(0))?;
-        rows.collect::<Result<Vec<String>, _>>()
-            .map_err(|e| anyhow!("failed to collect collector scope: {e}"))
+        let rows = stmt.query_map(params![credential], |row| binding_from_row(row))?;
+        rows.collect::<Result<Vec<crate::telemetry_identity::TrustedBinding>, _>>()
+            .map_err(|e| anyhow!("failed to collect collector scope bindings: {e}"))
     }
 
     /// Explicitly invalidate a binding. Revocation is the only supported
@@ -1451,6 +1477,7 @@ impl SqliteStore {
             Some(&serde_json::to_string(&existing).unwrap_or_default()),
             Some(&serde_json::to_string(&updated).unwrap_or_default()),
         )?;
+        self.bump_authz_epoch();
 
         Ok(updated)
     }
