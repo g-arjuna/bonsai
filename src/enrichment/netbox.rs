@@ -474,22 +474,13 @@ impl GraphEnricher for NetBoxEnricher {
         let db = store.db();
         let write_lock = store.write_lock();
 
-        // P3: build a site-name → site-id map from devices for location resolution.
-        // This mirrors what sync_sites_from_targets does so Location nodes can find
-        // their parent Site without an extra round-trip to the graph.
-        let site_id_map: std::collections::HashMap<String, String> = nb_devices
-            .iter()
-            .filter_map(|d| d.site.as_ref())
-            .map(|s| (s.name.clone(), crate::graph::site_id_from_name(&s.name)))
-            .collect();
-
         let (nodes_touched, edges_created, write_warnings) =
             tokio::task::spawn_blocking(move || {
                 let _guard = write_lock.lock().expect("write lock poisoned");
                 // P3: backfill LOCATED_AT for any existing devices whose site string
                 // was set but whose LOCATED_AT edge was never written (pre-fix DBs).
                 let conn_bf = lbug::Connection::new(&db).context("backfill connection")?;
-                backfill_located_at(&conn_bf, &site_id_map)?;
+                backfill_located_at(&conn_bf)?;
                 drop(conn_bf);
 
                 write_to_graph(
@@ -1072,11 +1063,14 @@ fn link_interface_vlan(
 
 /// P3: Backfill LOCATED_AT edges for all devices that have a non-empty `site`
 /// property but no outgoing LOCATED_AT edge. Safe to re-run; MERGE is idempotent.
-/// `site_id_map` is site_name → site_id, built from the NetBox device payload.
-fn backfill_located_at(
-    conn: &Connection<'_>,
-    site_id_map: &std::collections::HashMap<String, String>,
-) -> Result<()> {
+///
+/// Site claims resolve through the same deterministic contract as
+/// `sync_sites_from_targets` (`resolve_site_claim`): a unique display-name
+/// match links to that Site, a genuinely new claim creates the minimal
+/// name-derived Site, and an ambiguous name or slug collision is skipped —
+/// the backfill must never fabricate an association the device sync would
+/// refuse to make.
+fn backfill_located_at(conn: &Connection<'_>) -> Result<()> {
     // Find devices with a site string but no LOCATED_AT edge.
     let mut stmt = conn
         .prepare(
@@ -1104,30 +1098,40 @@ fn backfill_located_at(
         .collect();
 
     for (addr, site_name) in rows {
-        let site_id = site_id_map
-            .get(&site_name)
-            .cloned()
-            .unwrap_or_else(|| crate::graph::site_id_from_name(&site_name));
-        // Upsert the Site node (may not exist yet) then link.
-        let now = crate::graph::common::ts(crate::graph::common::now_ns());
-        // upsert_site_record lives in graph/mod.rs and is not pub — write inline.
-        let mut s_stmt = conn
-            .prepare(
-                "MERGE (s:Site {id: $id}) \
-                 ON CREATE SET s.name = $name, s.parent_id = '', s.kind = 'unknown', \
-                               s.lat = 0.0, s.lon = 0.0, s.metadata_json = '{}', s.updated_at = $ts \
-                 ON MATCH SET s.updated_at = $ts",
-            )
-            .context("prepare backfill Site upsert")?;
-        conn.execute(
-            &mut s_stmt,
-            vec![
-                ("id", Value::String(site_id.clone())),
-                ("name", Value::String(site_name.clone())),
-                ("ts", now),
-            ],
-        )
-        .context("execute backfill Site upsert")?;
+        let site_id = match crate::graph::resolve_site_claim(conn, &site_name)? {
+            crate::graph::SiteClaimResolution::Existing(site_id) => site_id,
+            crate::graph::SiteClaimResolution::NewSite { id: site_id } => {
+                // Genuinely new site: create the minimal name-derived
+                // record, same shape the device sync produces.
+                let now = crate::graph::common::ts(crate::graph::common::now_ns());
+                let mut s_stmt = conn
+                    .prepare(
+                        "MERGE (s:Site {id: $id}) \
+                         ON CREATE SET s.name = $name, s.parent_id = '', s.kind = 'unknown', \
+                                       s.lat = 0.0, s.lon = 0.0, s.metadata_json = '{}', s.updated_at = $ts \
+                         ON MATCH SET s.updated_at = $ts",
+                    )
+                    .context("prepare backfill Site upsert")?;
+                conn.execute(
+                    &mut s_stmt,
+                    vec![
+                        ("id", Value::String(site_id.clone())),
+                        ("name", Value::String(site_name.clone())),
+                        ("ts", now),
+                    ],
+                )
+                .context("execute backfill Site upsert")?;
+                site_id
+            }
+            crate::graph::SiteClaimResolution::Unresolved => {
+                debug!(
+                    address = %addr,
+                    site = %site_name,
+                    "skipping LOCATED_AT backfill: site claim is ambiguous or collides"
+                );
+                continue;
+            }
+        };
 
         let mut link = conn
             .prepare(

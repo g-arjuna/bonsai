@@ -522,8 +522,11 @@ pub(super) struct ManagedDeviceRequest {
     hostname: String,
     #[serde(default)]
     role: String,
+    /// Optional site claim. Absent/`null` = field omitted (inherit the
+    /// stored claim on update); `""` = explicit clear; any other value
+    /// is a free-text site name resolved by the graph site sync.
     #[serde(default)]
-    site: String,
+    site: Option<String>,
     #[serde(default)]
     selected_paths: Vec<SelectedSubscriptionPath>,
 }

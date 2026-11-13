@@ -38,22 +38,56 @@ not separate operations.
 
 ## Fix
 
-`sync_sites_from_targets` no longer writes Site records. New
-`ensure_target_site` resolves the free-text claim for `LOCATED_AT`
-linking only:
+`sync_sites_from_targets` no longer writes Site records. Site-claim
+resolution is deterministic and shared (`resolve_site_claim` /
+`SiteClaimResolution` in `src/graph/mod.rs`):
 
-1. `site_id_exists(site_id_from_name(name))` — historical convention,
-   compatible with NetBox `site_id_from_name` derivation;
-2. else `site_ids_named(name)` — exactly one Site with that display
-   name links by its explicit id (admin/imported records);
-3. else create the minimal name-derived record **create-only**
-   (`ON CREATE SET … ON MATCH SET s.updated_at` — the same pattern
-   `enrichment/netbox.rs::backfill_located_at` already used);
-4. ambiguous display name (>1 match, no slug hit) → `None`: no
-   duplicate created, no guessed link — explicit unknown.
+1. UNIQUE exact display-name match → link to that Site (covers
+   slug-id sites, explicit-id imports and admin-created sites
+   uniformly — a free-text claim is NEVER treated as a stable id).
+2. Ambiguous display name (>1 Site shares it) → `Unresolved`, even
+   when one candidate owns the name-derived slug: a free-text claim
+   cannot pick a branch.
+3. No name match → inspect the name-derived id
+   (`site_id_from_name`): if a Site already owns that id under a
+   DIFFERENT display name the claim is a slug collision →
+   `Unresolved` (never link the unrelated site, never create a
+   duplicate under a taken id).
+4. Otherwise → `NewSite`: create the minimal name-derived record
+   create-only (`ON CREATE SET … ON MATCH SET s.updated_at` — the
+   same pattern `enrichment/netbox.rs::backfill_located_at` used).
 
-`upsert_site`/`upsert_site_record`/`validate_site_hierarchy` remain
-the admin path with full overwrite authority — unchanged.
+`ensure_target_site` wraps the resolver and performs only the
+`NewSite` creation. `upsert_site`/`upsert_site_record`/
+`validate_site_hierarchy` remain the admin path with full overwrite
+authority — unchanged.
+
+### LOCATED_AT claim lifecycle (review correction B2)
+
+`sync_sites_from_targets` now distinguishes three claim states per
+device (`TargetConfig.site: Option<String>`):
+
+- `None` (field omitted in a partial update) → existing `LOCATED_AT`
+  association preserved untouched, regardless of which writer
+  established it.
+- `Some("")` (explicit clear, now expressible via
+  `ManagedDeviceRequest.site: Option<String>` — absent/`null` inherits
+  the stored claim, `""` clears) → transactional removal of the edge
+  AND the mirrored `d.site` claim so no writer can resurrect it.
+- `Some(name)` → resolved: transactional replace; ambiguous or
+  slug-colliding: the stale edge is dropped (explicit unknown) rather
+  than left presenting the previous site as current. The raw claim
+  string stays mirrored on `d.site`.
+
+All relationship mutations run inside `BEGIN TRANSACTION … COMMIT`
+(`update_device_site`) so a failure cannot leave a half-applied
+association.
+
+`enrichment/netbox.rs::backfill_located_at` now resolves through the
+same `resolve_site_claim` contract instead of blind
+`site_id_from_name` — it can no longer fabricate an edge the device
+sync would refuse (previously it would also create slug-duplicate
+Site nodes for uniquely-named existing sites).
 
 ## Before / after evidence
 
@@ -76,17 +110,33 @@ cargo test -p bonsai --lib graph::tests::site_sync --offline
 | `site_sync_preserves_slug_id_site_record` | (added with fix — covers the literal ON MATCH clobber path) | PASS |
 | `site_sync_creates_site_and_located_at_edge` (baseline) | PASS in before-run (auto-create path was already correct; the earlier baseline failure was a stale test querying port-full `dut:57400` instead of canonical `dut` — test corrected) | PASS |
 
-After-fix verification:
+After-fix verification (B1/B2 review corrections included):
 
 ```
-cargo test -p bonsai --lib graph::tests::site   → 9/9 PASS
-cargo test -p bonsai --lib                     → 305 pass / 4 fail
+cargo check -p bonsai --lib --offline          → clean (~25s)
+cargo check -p bonsai --tests --offline        → clean (~31s)
+cargo test -p bonsai --lib --offline site      → 18/18 PASS (~13s run)
+cargo test -p bonsai --lib --offline enrichment::netbox → 8/8 PASS
+cargo test -p bonsai --lib --offline registry  → 18 pass / 1 fail
+     (api_registry_persists_and_emits_changes — documented BN-019-B6
+      baseline "registry persistence" failure, unrelated code path)
 ```
 
-Remaining 4 failures are the documented BN-019-B6 baseline set
-(`archive::hourly_writer_limits…`, `subscription_status_write…`,
-`api_registry_persists…`, `service_pattern_matching`) — `site_sync`
-is no longer among them (baseline count 5 → 4).
+New/updated BN-015-U2 tests:
+
+| Test | Coverage |
+|---|---|
+| `site_sync_preserves_existing_hierarchy` | unique-name resolution preserves Region→DC→Building→Rack + metadata byte-for-byte |
+| `site_sync_move_changes_only_device_association` | resolved move replaces only that device's edge |
+| `site_sync_ambiguous_display_name_creates_no_duplicate` | ambiguous name → no edge, no duplicate |
+| `site_sync_preserves_slug_id_site_record` | slug-id Site record preserved; ambiguous "Tower A" (bldg-tower-a + tower-a) now correctly yields NO edge — arbitrary slug-owner selection removed |
+| `site_sync_idempotent_and_survives_restart` | idempotence + reopen persistence |
+| `site_sync_preserves_imported_site_record` | explicit-id imported Site resolves by unique name |
+| `site_sync_slug_collision_with_unrelated_site` | two names → same slug: "Foo Bar" vs existing "Foo-Bar" → Unresolved, no edge, no Site |
+| `site_sync_ambiguous_name_with_slug_owner_stays_unresolved` | two Sites share "DC-1", one owns slug → Unresolved |
+| `site_sync_stale_edge_lifecycle` | valid→ambiguous (edge dropped, claim kept)→omitted (preserved)→corrected (re-resolves)→explicit clear (edge + d.site blanked)→idempotent→restart |
+| `site_sync_omitted_site_preserves_existing_association` | partial update without site field keeps LOCATED_AT |
+| `http_server::managed_devices::tests::managed_device_api_site_claim_lifecycle` | REAL API path: axum route → serde → save_managed_device → registry → graph sync; covers create/omit/ambiguous/corrected/explicit-clear |
 
 ## Scope notes / residuals
 
@@ -94,6 +144,11 @@ is no longer among them (baseline count 5 → 4).
   branches share a display name — now explicit (no link) rather than
   silently wrong; canonical stable `site_id` selection/migration is
   BN-015-U3.
+- Explicit clear is expressible on the HTTP managed-device API
+  (`"site": ""`) and on `TargetConfig.site = Some("")`. The device
+  gRPC API (`target_from_managed_device`) maps empty proto `site` to
+  `None` — proto3 non-optional string cannot distinguish unset from
+  empty, so gRPC retains "omitted preserves" semantics only.
 - `d.site` device property, `site_summary_handler` name-mapping and
   `/api/topology` name-keyed sites are untouched (U3 scope).
 - No schema change, no new topology features, no UI change.
