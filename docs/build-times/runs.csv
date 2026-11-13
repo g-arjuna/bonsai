@@ -142,3 +142,4 @@ date,command,scope,wall_seconds,result,notes
 2026-11-12,cargo test -p bonsai --lib ingest::tests::drain (x2),bonsai lib drain/queue tests,~115,pass,1m54s compile + 3.74s run; 3/3 real-server drain tests (interleaved reject, all-reject, retryable failure)
 2026-11-12,cargo test -j 1 --test bn021g_collector_trust_foundation (x3),bn021g extended suite,~310,pass-final,3m49s+52s+final link; 25/25 in 22.5s; earlier runs exposed contract-test updates (rejected-count semantics) and a test-side pin bug
 2026-11-12,cargo test -p bonsai --lib -- ingest:: assignment:: collector_auth:: telemetry::,bonsai lib focused modules,~20,pass,15/15; queue/assignment/authz unit regressions
+2026-11-12,cargo test -j 1 --test bn021b..bn022 batch (8 targets),bn021b/c/d/e(otlp+sflow)/f+bn022 regressions,~560,pass,8m59s links + ~21s runs; 89/89 (13+17+15+14+7+9+9+5); bn021e snmp/syslog slices not rerun (unaffected modules)
