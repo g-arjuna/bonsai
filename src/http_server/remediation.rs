@@ -1687,6 +1687,20 @@ pub(super) async fn upsert_config_item_handler(
                 .to_string(),
         ));
     }
+    // F7/F8: secret-bearing names (service tokens, legacy passwords)
+    // migrated to AuthStore `service_tokens`. Writing them here would
+    // re-pollute the graph with plaintext credentials; operators set
+    // them via `bonsai auth set-service-token` or the documented env
+    // overrides. `require_auth` is unaffected (safe metadata).
+    if crate::auth_store::PROTECTED_SECRET_CONFIG_NAMES.contains(&item.name.as_str()) {
+        return Err((
+            StatusCode::GONE,
+            "secret-bearing config names are managed by the protected auth \
+             store; use `bonsai auth set-service-token` or the documented \
+             environment override"
+                .to_string(),
+        ));
+    }
     if item.id.is_empty() || item.id.len() > 256 {
         return Err((
             StatusCode::BAD_REQUEST,

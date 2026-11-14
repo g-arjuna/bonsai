@@ -1148,6 +1148,13 @@ pub(super) enum AuthCliCommand {
     RotateEmergency {
         db: String,
     },
+    SetServiceToken {
+        db: String,
+        name: String,
+    },
+    ListServiceTokens {
+        db: String,
+    },
 }
 
 impl AuthCliCommand {
@@ -1221,6 +1228,37 @@ impl AuthCliCommand {
                     db: db.ok_or_else(|| anyhow::anyhow!("auth rotate-emergency requires --db"))?,
                 }))
             }
+            "set-service-token" => {
+                let mut db = None;
+                let mut name = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--db" => db = Some(take(&mut iter, "--db")?),
+                        "--name" => name = Some(take(&mut iter, "--name")?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => anyhow::bail!("unknown auth set-service-token argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::SetServiceToken {
+                    db: db.ok_or_else(|| anyhow::anyhow!("auth set-service-token requires --db"))?,
+                    name: name.ok_or_else(|| anyhow::anyhow!("auth set-service-token requires --name"))?,
+                }))
+            }
+            "list-service-tokens" => {
+                let mut db = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--db" => db = Some(take(&mut iter, "--db")?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => anyhow::bail!("unknown auth list-service-tokens argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::ListServiceTokens {
+                    db: db.ok_or_else(|| anyhow::anyhow!("auth list-service-tokens requires --db"))?,
+                }))
+            }
             "help" | "--help" | "-h" => Ok(Some(Self::Help)),
             other => anyhow::bail!("unknown auth command '{other}'"),
         }
@@ -1250,12 +1288,14 @@ pub(super) async fn run_auth_cli(command: AuthCliCommand) -> Result<()> {
 
     match command {
         AuthCliCommand::Help => {
-            println!("usage: bonsai auth <backup|verify-backup|rotate-emergency>");
+            println!("usage: bonsai auth <backup|verify-backup|rotate-emergency|set-service-token|list-service-tokens>");
             println!("  backup --db <bonsai_auth.db> --dest <backup-path>");
             println!(
                 "  verify-backup --snapshot <bonsai_auth.db> [--manifest <path>] [--keyfile <bonsai_auth.db.key>]"
             );
             println!("  rotate-emergency --db <bonsai_auth.db>");
+            println!("  set-service-token --db <bonsai_auth.db> --name <token-name>   (token read from stdin)");
+            println!("  list-service-tokens --db <bonsai_auth.db>   (names only, never values)");
         }
         AuthCliCommand::Backup { db, dest } => {
             let store = AuthStore::open(std::path::Path::new(&db))?;
@@ -1352,6 +1392,32 @@ pub(super) async fn run_auth_cli(command: AuthCliCommand) -> Result<()> {
                 );
             } else {
                 println!("  every token minted before this rotation is now invalid");
+            }
+        }
+        AuthCliCommand::SetServiceToken { db, name } => {
+            // Token material is read from stdin — never from argv, where
+            // it would be visible in process listings and shell history.
+            use std::io::Read;
+            let mut token = String::new();
+            std::io::stdin().read_to_string(&mut token)?;
+            let token = token.trim();
+            if token.is_empty() {
+                anyhow::bail!("no token supplied on stdin");
+            }
+            let store = AuthStore::open(std::path::Path::new(&db))?;
+            store.set_service_token(&name, token)?;
+            store.audit("cli", "service_token_set", &name, "success");
+            println!("service token '{name}' stored (sealed) in {db}");
+        }
+        AuthCliCommand::ListServiceTokens { db } => {
+            let store = AuthStore::open(std::path::Path::new(&db))?;
+            let names = store.service_token_names()?;
+            if names.is_empty() {
+                println!("no service tokens stored");
+            } else {
+                for n in names {
+                    println!("{n}");
+                }
             }
         }
     }

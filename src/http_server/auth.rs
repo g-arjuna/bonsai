@@ -186,19 +186,50 @@ fn attempts_guard() -> std::sync::MutexGuard<'static, LoginAttemptTracker> {
 }
 
 /// Make room for one new tracked username under the cardinality bound.
+///
+/// F6-hardening: eviction targets ONLY stale entries — a username whose
+/// rate-limit window has fully expired and which holds no active
+/// lockout. Entries with a live window or an active lockout are
+/// protected, so an attacker cannot flush a victim's lockout (or its
+/// pre-lockout failure count) by flooding distinct usernames. If every
+/// tracked entry is live, the new username is simply not tracked
+/// (bounded memory preserved; documented residual — see auth_storage.md).
 fn ensure_tracking_capacity(tracker: &mut LoginAttemptTracker, username: &str) {
     if tracker.map.contains_key(username) || tracker.map.len() < LOGIN_TRACK_MAX_ENTRIES {
         return;
     }
+    let now = Instant::now();
+    let is_evictable = |e: &LoginAttempts| {
+        let locked = e.locked_until.is_some_and(|l| now < l);
+        let window_live = e
+            .window_start
+            .is_some_and(|ws| now.duration_since(ws) < RATE_LIMIT_WINDOW);
+        !locked && !window_live
+    };
+    // Walk insertion order oldest→newest; set aside protected entries
+    // and requeue them so their relative order is preserved.
+    let mut skipped: Vec<String> = Vec::new();
+    let mut evicted = false;
     while let Some(old) = tracker.order.pop_front() {
-        if tracker.map.remove(&old).is_some() {
-            return;
+        match tracker.map.get(&old) {
+            // Stale order reference (entry removed by success/eviction).
+            None => continue,
+            Some(entry) if is_evictable(entry) => {
+                tracker.map.remove(&old);
+                evicted = true;
+                break;
+            }
+            Some(_) => skipped.push(old),
         }
     }
-    // Order queue drained but map still full (defensive): give up
-    // tracking this username rather than grow unboundedly. Auth itself
-    // is unaffected — only the rate-limit counter for this name is off.
-    tracing::warn!("login rate-limit tracker at capacity; not tracking new username");
+    for key in skipped {
+        tracker.order.push_back(key);
+    }
+    if !evicted {
+        // Order drained or every entry is live: do not track this
+        // username rather than grow unboundedly or evict live state.
+        tracing::warn!("login rate-limit tracker at capacity with live entries; not tracking new username");
+    }
 }
 
 /// Returns `true` when `username` is currently inside a lockout window.
@@ -229,10 +260,15 @@ fn record_login_failure(username: &str) {
     let mut tracker = attempts_guard();
     let key = username.to_lowercase();
     ensure_tracking_capacity(&mut tracker, &key);
-    if !tracker.map.contains_key(&key) && tracker.map.len() >= LOGIN_TRACK_MAX_ENTRIES {
+    let is_new = !tracker.map.contains_key(&key);
+    if is_new && tracker.map.len() >= LOGIN_TRACK_MAX_ENTRIES {
         return; // eviction failed — untracked (bounded memory)
     }
-    tracker.order.push_back(key.clone());
+    // Order refs are pushed only for NEW map entries: pushing on every
+    // failure let the queue grow without bound under repeated attempts.
+    if is_new {
+        tracker.order.push_back(key.clone());
+    }
     let entry = tracker.map.entry(key).or_default();
     let now = Instant::now();
 
@@ -2098,7 +2134,147 @@ pub(super) async fn ldap_test_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::session_cookie_value;
+    use super::*;
+    use std::collections::VecDeque;
+
+    fn fresh_entry() -> LoginAttempts {
+        LoginAttempts {
+            count: 1,
+            window_start: Some(Instant::now()),
+            locked_until: None,
+        }
+    }
+
+    fn stale_entry() -> LoginAttempts {
+        LoginAttempts {
+            count: 1,
+            window_start: Instant::now().checked_sub(RATE_LIMIT_WINDOW + Duration::from_secs(1)),
+            locked_until: None,
+        }
+    }
+
+    fn locked_entry() -> LoginAttempts {
+        LoginAttempts {
+            count: RATE_LIMIT_MAX_ATTEMPTS,
+            window_start: Some(Instant::now()),
+            locked_until: Instant::now().checked_add(RATE_LIMIT_LOCKOUT),
+        }
+    }
+
+    /// Tests mutate the process-global tracker — serialize them and
+    /// always release the guard before resetting.
+    static TRACKER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn reset_tracker() {
+        let mut t = LOGIN_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner());
+        t.map.clear();
+        t.order = VecDeque::new();
+    }
+
+    #[test]
+    fn eviction_preserves_locked_and_live_window_entries() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        {
+            let mut t = attempts_guard();
+        // One stale entry (evictable), one locked target, rest live.
+        t.map.insert("stale-user".into(), stale_entry());
+        t.order.push_back("stale-user".into());
+        t.map.insert("victim".into(), locked_entry());
+        t.order.push_back("victim".into());
+        while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+            let name = format!("filler-{}", t.map.len());
+            t.map.insert(name.clone(), fresh_entry());
+            t.order.push_back(name);
+        }
+        ensure_tracking_capacity(&mut t, "attacker-new-name");
+        assert!(t.map.contains_key("victim"), "locked entry must survive eviction");
+        assert!(!t.map.contains_key("stale-user"), "stale entry should be evicted");
+        // Exactly one slot was freed for the incoming username.
+        assert_eq!(t.map.len(), LOGIN_TRACK_MAX_ENTRIES - 1);
+        }
+        reset_tracker();
+    }
+
+    #[test]
+    fn eviction_preserves_pre_lockout_failure_counts() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        {
+            let mut t = attempts_guard();
+        // Victim has 2 recorded failures (below the 3-attempt lockout)
+        // with a live window — evicting it would let an attacker reset
+        // the count and never reach lockout.
+        t.map.insert(
+            "victim".into(),
+            LoginAttempts {
+                count: RATE_LIMIT_MAX_ATTEMPTS - 1,
+                window_start: Some(Instant::now()),
+                locked_until: None,
+            },
+        );
+        t.order.push_back("victim".into());
+        t.map.insert("stale-user".into(), stale_entry());
+        t.order.push_back("stale-user".into());
+        while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+            let name = format!("filler-{}", t.map.len());
+            t.map.insert(name.clone(), fresh_entry());
+            t.order.push_back(name);
+        }
+        ensure_tracking_capacity(&mut t, "attacker-new-name");
+        assert_eq!(
+            t.map.get("victim").map(|e| e.count),
+            Some(RATE_LIMIT_MAX_ATTEMPTS - 1),
+            "live failure count must survive eviction"
+        );
+        }
+        reset_tracker();
+    }
+
+    #[test]
+    fn saturated_live_tracker_does_not_evict_or_grow() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        {
+            let mut t = attempts_guard();
+        while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+            let name = format!("filler-{}", t.map.len());
+            t.map.insert(name.clone(), fresh_entry());
+            t.order.push_back(name);
+        }
+        ensure_tracking_capacity(&mut t, "one-more");
+        assert_eq!(t.map.len(), LOGIN_TRACK_MAX_ENTRIES);
+        assert!(!t.map.contains_key("one-more"));
+        }
+        reset_tracker();
+    }
+
+    #[test]
+    fn repeated_failures_do_not_grow_order_queue() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        {
+            let mut t = attempts_guard();
+            for _ in 0..50 {
+                // Simulate the record path's order bookkeeping directly.
+                let key = "repeat-user".to_string();
+                if !t.map.contains_key(&key) {
+                    t.order.push_back(key.clone());
+                }
+                let entry = t.map.entry(key).or_insert_with(fresh_entry);
+                entry.count += 1;
+            }
+            assert_eq!(t.order.len(), 1, "order refs must be pushed once per user");
+        }
+        // And through the real API: failures on one user add one order ref.
+        record_login_failure("order-check-user");
+        record_login_failure("order-check-user");
+        let t = attempts_guard();
+        let refs = t.order.iter().filter(|k| k.as_str() == "order-check-user").count();
+        assert_eq!(refs, 1);
+        drop(t);
+        reset_tracker();
+    }
 
     #[test]
     fn session_cookie_secure_only_over_tls() {

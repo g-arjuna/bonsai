@@ -1461,3 +1461,155 @@ fn auth_store_rejects_symlink_and_foreign_paths() -> Result<()> {
     }
     Ok(())
 }
+
+// ── F7/F8: protected service tokens leave the graph ─────────────────
+
+fn cfg_item(id: &str, class: &str, name: &str, content_json: &str) -> ConfigItemRecord {
+    ConfigItemRecord {
+        id: id.into(),
+        config_class: class.into(),
+        vendor: String::new(),
+        name: name.into(),
+        version: "1".into(),
+        content_json: content_json.into(),
+        enabled: true,
+        created_by: "test".into(),
+    }
+}
+
+#[tokio::test]
+async fn protected_service_tokens_migrate_out_of_graph() -> Result<()> {
+    clear_auth_env();
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    // Secret-bearing names in allowed classes + a safe auth-policy flag
+    // that must remain in the graph untouched.
+    for item in [
+        cfg_item("app-cfg-rtok", "app_config", "routing_service_token", "\"rtok-synthetic-1\""),
+        cfg_item("rt-cfg-itok", "runtime_config", "internal_service_token", "\"itok-synthetic-2\""),
+        cfg_item("app-cfg-stok", "app_config", "service_token", "stok-synthetic-3"),
+        cfg_item("app-cfg-apw", "app_config", "admin_password", "\"apw-synthetic-4\""),
+        cfg_item("app-cfg-jwt", "app_config", "jwt_secret", "\"stray-jwt-material\""),
+        cfg_item("app-cfg-auth", "app_config", "require_auth", "\"1\""),
+    ] {
+        store.upsert_config_item(item).await?;
+    }
+    store.auth_store.migrate_from_graph(&store).await?;
+    let report = store.auth_store.migrate_protected_config(&store).await?;
+    assert_eq!(report.tokens_imported, 4, "{report:?}");
+    assert_eq!(report.records_quarantined, 1, "jwt_secret name must quarantine");
+    assert_eq!(report.rows_scrubbed, 5);
+
+    // Tokens are sealed in AuthStore and decrypt to exact values.
+    assert_eq!(
+        store.auth_store.get_service_token("routing_service_token")?,
+        Some("rtok-synthetic-1".into())
+    );
+    assert_eq!(
+        store.auth_store.get_service_token("internal_service_token")?,
+        Some("itok-synthetic-2".into())
+    );
+    assert_eq!(
+        store.auth_store.get_service_token("admin_password")?,
+        Some("apw-synthetic-4".into())
+    );
+    assert_eq!(store.auth_store.get_service_token("jwt_secret")?, None);
+
+    // Graph rows are validated tombstones — no secret bytes remain.
+    for class in ["app_config", "runtime_config"] {
+        for item in store.list_config_items(Some(class.into())).await? {
+            if ["routing_service_token", "internal_service_token", "service_token",
+                "admin_password", "jwt_secret"].contains(&item.name.as_str()) {
+                assert!(!item.enabled, "{} must be disabled", item.name);
+                let v: serde_json::Value = serde_json::from_str(&item.content_json)?;
+                assert_eq!(v["migrated_to"], "auth_store", "{}", item.name);
+                assert!(!item.content_json.contains("synthetic"), "secret leaked in tombstone");
+            }
+        }
+    }
+    // require_auth (safe metadata) is untouched and still enabled.
+    let auth_flag = store
+        .list_config_items(Some("app_config".into()))
+        .await?
+        .into_iter()
+        .find(|i| i.name == "require_auth")
+        .expect("require_auth row");
+    assert!(auth_flag.enabled);
+    assert_eq!(auth_flag.content_json, "\"1\"");
+
+    // The routing-service resolver now reads AuthStore, not the graph.
+    let (_url, token, _explicit) =
+        bonsai::routing_service::resolve_routing_service_endpoint_config(&store).await;
+    assert_eq!(token.as_deref(), Some("rtok-synthetic-1"));
+
+    // Idempotent: second run is a no-op.
+    let again = store.auth_store.migrate_protected_config(&store).await?;
+    assert!(again.already_complete);
+    assert_eq!(store.auth_store.get_service_token("routing_service_token")?, Some("rtok-synthetic-1".into()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn config_items_api_rejects_protected_secret_names() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    add_user(&store, "f78-admin", "admin", true);
+    let (base, _h) = serve(Arc::clone(&store)).await;
+    let client = reqwest::Client::new();
+    let token = login(&client, &base, "f78-admin").await.expect("admin login");
+    for name in ["routing_service_token", "internal_service_token", "service_token", "admin_password", "bind_password"] {
+        let resp = client
+            .post(format!("{base}/api/config-items"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({
+                "id": format!("app-cfg-{name}"), "config_class": "app_config",
+                "name": name, "version": "1", "vendor": "",
+                "content_json": "\"secret\"", "enabled": true, "created_by": "t"
+            }))
+            .send()
+            .await?;
+        assert_eq!(resp.status().as_u16(), 410, "{name} must be retired from graph writes");
+    }
+    // require_auth remains writable by admin (safe metadata, F1-ignored).
+    let resp = client
+        .post(format!("{base}/api/config-items"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "id": "app-cfg-auth-ok", "config_class": "app_config",
+            "name": "require_auth", "version": "1", "vendor": "",
+            "content_json": "\"1\"", "enabled": true, "created_by": "t"
+        }))
+        .send()
+        .await?;
+    assert_eq!(resp.status().as_u16(), 204);
+    Ok(())
+}
+
+#[test]
+fn backup_manifest_counts_sealed_service_tokens() -> Result<()> {
+    clear_auth_env();
+    let dir = TempDir::new()?;
+    let auth_path = dir.path().join("bonsai_auth.db");
+    let store = AuthStore::open(&auth_path)?;
+    store.set_service_token("routing_service_token", "rtok-backup-synthetic")?;
+    let _ = store.jwt_secret()?;
+    let dest = dir.path().join("svc-bk.db");
+    store.backup_to(&dest)?;
+    let manifest = dest.with_extension("manifest.json");
+    let keyfile = dir.path().join("bonsai_auth.db.key");
+    let report = AuthStore::verify_backup(&dest, &manifest, Some(&keyfile))?;
+    assert_eq!(report.service_token_count, Some(1));
+    // And a real restore (snapshot + matching keyfile, per the runbook)
+    // still decrypts the token.
+    let restore_dir = dir.path().join("restore");
+    std::fs::create_dir_all(&restore_dir)?;
+    let restored_path = restore_dir.join("bonsai_auth.db");
+    std::fs::copy(&dest, &restored_path)?;
+    std::fs::copy(&keyfile, restore_dir.join("bonsai_auth.db.key"))?;
+    let restored = AuthStore::open(&restored_path)?;
+    assert_eq!(
+        restored.get_service_token("routing_service_token")?,
+        Some("rtok-backup-synthetic".into())
+    );
+    Ok(())
+}

@@ -3167,13 +3167,22 @@ pub async fn resolve_routing_service_endpoint_config(
         std::env::var("BONSAI_ROUTING_SERVICE_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8081".to_string())
     });
-    let token = items
+    // F7/F8: service tokens live sealed in AuthStore (`service_tokens`),
+    // never in graph ConfigItems — post-migration graph rows are audit
+    // tombstones whose content must not be mistaken for credentials.
+    // Decrypt failure is logged and falls through to the env override:
+    // the env var is explicit operator configuration, not a silent
+    // downgrade of stored state.
+    let token = ["routing_service_token", "internal_service_token"]
         .iter()
-        .find(|i| {
-            (i.name == "routing_service_token" || i.name == "internal_service_token") && i.enabled
+        .find_map(|name| match store.auth_store.get_service_token(name) {
+            Ok(Some(t)) if !t.trim().is_empty() => Some(t),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::error!(name, error = %e, "service token decrypt failed");
+                None
+            }
         })
-        .map(|i| i.content_json.trim().trim_matches('"').to_string())
-        .filter(|s| !s.is_empty())
         .or_else(|| {
             std::env::var("BONSAI_ROUTING_SERVICE_TOKEN")
                 .ok()

@@ -50,12 +50,13 @@ const JWT_SECRET_ENV: &str = "BONSAI_JWT_SECRET";
 ///      against a local attacker who already owns the runtime dir.
 const VAULT_PASSPHRASE_ENV: &str = "BONSAI_VAULT_PASSPHRASE";
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Schema versions this build can open. v1 → v2 added `auth_quarantine`;
-/// v2 → v3 seals quarantined record content (AUTH-C4) — additive only,
-/// existing plaintext quarantine rows are re-encrypted in place on open.
-const SUPPORTED_SCHEMA_VERSIONS: &[i64] = &[1, 2, 3];
+/// v2 → v3 seals quarantined record content (AUTH-C4); v3 → v4 adds
+/// `service_tokens` for internal/routing service credentials migrated
+/// out of graph ConfigItems (F7/F8) — additive only.
+const SUPPORTED_SCHEMA_VERSIONS: &[i64] = &[1, 2, 3, 4];
 
 /// Bounded number of retired JWT verification keys retained per store
 /// (AUTH-C3). Oldest retired keys beyond this count are dropped even if
@@ -68,6 +69,34 @@ const JWT_MAX_RETIRED_KEYS: i64 = 8;
 /// structured record — an arbitrary substring match is never enough
 /// (AUTH-C4).
 pub const MIGRATION_MARKER: &str = "bn022-auth-migration-v1";
+
+/// ConfigItem `name` values (any `config_class`) that carry secret
+/// bearer material and must live in `service_tokens`, never in the
+/// graph (F7/F8). `require_auth` is deliberately absent — it is safe
+/// operational metadata ignored for auth decisions since F1.
+/// `jwt_secret` is handled separately: it is quarantined, not imported,
+/// because canonical JWT key material lives in `jwt_keys`.
+pub const PROTECTED_SECRET_CONFIG_NAMES: &[&str] = &[
+    "internal_service_token",
+    "routing_service_token",
+    "service_token",
+    "admin_password",
+    "bind_password",
+];
+
+/// Migration disposition for a protected ConfigItem name:
+/// `Some("imported")` → seal into `service_tokens`;
+/// `Some("quarantined")` → seal into `auth_quarantine` (recoverable but
+/// not authoritative anywhere); `None` → not a protected secret.
+fn protected_config_disposition(name: &str) -> Option<&'static str> {
+    if PROTECTED_SECRET_CONFIG_NAMES.contains(&name) {
+        Some("imported")
+    } else if name == "jwt_secret" {
+        Some("quarantined")
+    } else {
+        None
+    }
+}
 
 // ── Record types (typed API — no generic row access) ────────────────────────
 
@@ -289,6 +318,17 @@ impl AuthStore {
                reason TEXT NOT NULL,
                quarantined_at_ns INTEGER NOT NULL,
                UNIQUE(record_class, item_id)
+             );
+             -- F7/F8: internal service / routing tokens migrated out of
+             -- graph ConfigItems. token_enc is age ciphertext under the
+             -- at-rest key — raw tokens are never stored or graph-
+             -- queryable. Names only (never values) may appear in
+             -- manifests and audit rows.
+             CREATE TABLE IF NOT EXISTS service_tokens (
+               name TEXT PRIMARY KEY,
+               token_enc BLOB NOT NULL,
+               created_at_ns INTEGER NOT NULL,
+               updated_at_ns INTEGER NOT NULL
              );",
         )
         .with_context(|| {
@@ -324,6 +364,7 @@ impl AuthStore {
             "auth_config",
             "auth_audit",
             "auth_quarantine",
+            "service_tokens",
         ] {
             let exists: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
@@ -1280,6 +1321,61 @@ impl AuthStore {
         Ok(())
     }
 
+    // ── Service tokens (F7/F8) ────────────────────────────────────────────
+    //
+    // Internal service / routing bearer tokens (`routing_service_token`,
+    // `internal_service_token`, `service_token`, and legacy
+    // `admin_password`/`bind_password` names) used to live as plaintext
+    // `app_config`/`runtime_config` ConfigItems — graph-queryable by any
+    // admin principal and included in graph exports. They are now sealed
+    // here under the same at-rest key as JWT key material. Raw tokens are
+    // never returned by list endpoints or written to audit rows.
+
+    /// Store (or rotate) a service token. `name` is the stable lookup key
+    /// used by consumers (e.g. `routing_service_token`).
+    pub fn set_service_token(&self, name: &str, token: &str) -> Result<()> {
+        if name.is_empty() || name.len() > 128 || token.is_empty() {
+            bail!("service token requires a non-empty name (<=128 chars) and value");
+        }
+        let enc = age_seal(&self.secret_key, token)?;
+        let conn = self.lock()?;
+        let now = now_ns();
+        conn.execute(
+            "INSERT INTO service_tokens(name, token_enc, created_at_ns, updated_at_ns) \
+             VALUES(?1, ?2, ?3, ?3) \
+             ON CONFLICT(name) DO UPDATE SET token_enc = excluded.token_enc, \
+               updated_at_ns = excluded.updated_at_ns",
+            params![name, enc, now],
+        )?;
+        Ok(())
+    }
+
+    /// Decrypt a service token. `Ok(None)` when no such token exists;
+    /// decrypt failure is fatal (never a fallback to graph or env state).
+    pub fn get_service_token(&self, name: &str) -> Result<Option<String>> {
+        let conn = self.lock()?;
+        let enc: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT token_enc FROM service_tokens WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match enc {
+            Some(bytes) => age_open(&self.secret_key, &bytes).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Names of stored service tokens — metadata only, never values.
+    pub fn service_token_names(&self) -> Result<Vec<String>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare("SELECT name FROM service_tokens ORDER BY name")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow!("service_tokens read failed: {e}"))
+    }
+
     /// Record authentication audit metadata. Never pass secret material —
     /// `subject` is an identifier (username, key id, jti), not a credential.
     pub fn audit(&self, actor: &str, action: &str, subject: &str, outcome: &str) {
@@ -1320,6 +1416,11 @@ impl AuthStore {
         }
         self.last_attempt_ns.store(now_ns(), Ordering::Release);
         let report = self.migrate_from_graph(store).await?;
+        // F7/F8: protected service-token ConfigItems are a separate
+        // record set with their own durable marker — runs even when the
+        // credential-class migration already completed on an earlier
+        // build.
+        self.migrate_protected_config(store).await?;
         if !report.already_complete {
             tracing::info!(
                 users = report.users_imported,
@@ -2035,6 +2136,266 @@ impl AuthStore {
         // IGNORE so retries cannot duplicate).
         Ok(())
     }
+
+    /// F7/F8: migrate secret-bearing ConfigItem names out of the graph.
+    ///
+    /// `PROTECTED_SECRET_CONFIG_NAMES` rows (internal/routing service
+    /// tokens, legacy admin/bind passwords) are sealed into
+    /// `service_tokens` under the at-rest key; a `jwt_secret`-named row
+    /// is sealed into `auth_quarantine` (canonical JWT material lives in
+    /// `jwt_keys`). Every source row is then disabled and replaced with a
+    /// validated migration tombstone — the same contract as the
+    /// credential-class migration, with its own durable marker
+    /// (`protected_config_state`) so deployments that already completed
+    /// the v1 migration still get this pass.
+    ///
+    /// Idempotent and resumable: equal existing tokens are skipped,
+    /// conflicting values abort before any scrub, quarantine rows are
+    /// verified before their graph rows are tombstoned, and a post-scrub
+    /// rescan fails closed if any protected secret remains.
+    pub async fn migrate_protected_config(&self, store: &GraphStore) -> Result<ProtectedConfigReport> {
+        let mut report = ProtectedConfigReport::default();
+        if self
+            .get_auth_config("protected_config_state")?
+            .as_deref()
+            == Some("complete")
+        {
+            report.already_complete = true;
+            return Ok(report);
+        }
+        self.set_auth_config("protected_config_state", "detect")?;
+
+        // ── detect: every class, protected names only ──────────────────
+        let items = store
+            .list_config_items(None)
+            .await
+            .context("protected-config migration: failed to list config items")?;
+        struct Pending {
+            class: String,
+            item: ConfigItemRecord,
+            /// "imported" | "quarantined"
+            disposition: &'static str,
+            /// Extracted secret for "imported" rows.
+            token: Option<String>,
+        }
+        let mut pending: Vec<Pending> = Vec::new();
+        let mut seen_names: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for item in items {
+            if is_migration_tombstone(&item) {
+                continue;
+            }
+            let Some(disposition) = protected_config_disposition(&item.name) else {
+                continue;
+            };
+            if disposition == "imported" {
+                let token = extract_config_secret(&item.content_json);
+                if token.is_empty() {
+                    // Empty/whitespace secret is not importable — seal it
+                    // for operator recovery rather than storing nothing.
+                    pending.push(Pending {
+                        class: item.config_class.clone(),
+                        item,
+                        disposition: "quarantined",
+                        token: None,
+                    });
+                    continue;
+                }
+                if let Some(prev) = seen_names.get(&item.name) {
+                    if *prev != token {
+                        bail!(
+                            "protected-config migration conflict: name '{}' has \
+                             differing secrets across graph records; resolve manually",
+                            item.name
+                        );
+                    }
+                } else {
+                    seen_names.insert(item.name.clone(), token.clone());
+                    // Conflict against an existing protected-store value:
+                    // identical → idempotent skip; different → abort.
+                    if let Some(existing) = self.get_service_token(&item.name)? {
+                        if existing != token {
+                            bail!(
+                                "protected-config migration conflict: '{}' already \
+                                 exists in the auth store with a different value",
+                                item.name
+                            );
+                        }
+                    }
+                }
+                pending.push(Pending {
+                    class: item.config_class.clone(),
+                    item,
+                    disposition: "imported",
+                    token: Some(token),
+                });
+            } else {
+                pending.push(Pending {
+                    class: item.config_class.clone(),
+                    item,
+                    disposition: "quarantined",
+                    token: None,
+                });
+            }
+        }
+        self.set_auth_config("protected_config_state", "import")?;
+
+        // ── import + quarantine ─────────────────────────────────────────
+        let mut quarantined: Vec<(String, ConfigItemRecord, &'static str)> = Vec::new();
+        for p in &pending {
+            match (p.disposition, &p.token) {
+                ("imported", Some(token)) => {
+                    // set_service_token is INSERT OR REPLACE on name; the
+                    // conflict check above guarantees we never overwrite
+                    // a different live value.
+                    self.set_service_token(&p.item.name, token)?;
+                    report.tokens_imported += 1;
+                }
+                _ => {
+                    quarantined.push((
+                        p.class.clone(),
+                        p.item.clone(),
+                        "protected config name not importable as a service token",
+                    ));
+                    report.records_quarantined += 1;
+                }
+            }
+        }
+        for (class, item, reason) in &quarantined {
+            self.quarantine_legacy_record(class, &item.id, &item.content_json, reason)?;
+        }
+        self.verify_quarantine_complete(&quarantined)?;
+
+        // ── verify: every imported token decrypts back to the exact
+        //    graph value before any row is scrubbed ─────────────────────
+        self.set_auth_config("protected_config_state", "verify")?;
+        for p in &pending {
+            if p.disposition == "imported" {
+                let expected = p.token.as_deref().unwrap_or_default();
+                let stored = self.get_service_token(&p.item.name)?;
+                if stored.as_deref() != Some(expected) {
+                    bail!(
+                        "protected-config verify failed: '{}' mismatch after import",
+                        p.item.name
+                    );
+                }
+            }
+        }
+
+        // ── scrub: exact-snapshot check, then tombstone ────────────────
+        self.set_auth_config("protected_config_state", "scrub")?;
+        let mut expected: std::collections::HashMap<(String, String), ConfigItemRecord> =
+            pending
+                .iter()
+                .map(|p| ((p.class.clone(), p.item.id.clone()), p.item.clone()))
+                .collect();
+        for p in &pending {
+            let items_now = store
+                .list_config_items(Some(p.class.clone()))
+                .await
+                .with_context(|| {
+                    format!("protected-config scrub: list '{}' failed", p.class)
+                })?;
+            let current = items_now
+                .iter()
+                .find(|i| i.id == p.item.id)
+                .cloned();
+            match (expected.remove(&(p.class.clone(), p.item.id.clone())), current) {
+                (Some(_), Some(cur))
+                    if cur.name == p.item.name
+                        && cur.version == p.item.version
+                        && cur.vendor == p.item.vendor
+                        && cur.content_json == p.item.content_json
+                        && cur.enabled == p.item.enabled
+                        && cur.created_by == p.item.created_by => {}
+                _ => bail!(
+                    "protected-config source record '{}/{}' changed during migration; \
+                     refusing to scrub unverified state",
+                    p.class,
+                    p.item.id
+                ),
+            }
+            let mut tomb = p.item.clone();
+            tomb.enabled = false;
+            tomb.content_json = serde_json::json!({
+                "migrated_to": "auth_store",
+                "migration": MIGRATION_MARKER,
+                "record_class": p.class,
+                "item_id": tomb.id,
+                "disposition": p.disposition,
+                "quarantined_at_ns": now_ns(),
+            })
+            .to_string();
+            store
+                .upsert_config_item(tomb)
+                .await
+                .with_context(|| {
+                    format!("protected-config scrub '{}/{}' failed", p.class, p.item.id)
+                })?;
+            report.rows_scrubbed += 1;
+        }
+        if !expected.is_empty() {
+            bail!("protected-config migration snapshot mismatch; refusing to complete");
+        }
+
+        // ── fail closed if any protected secret remains graph-readable ──
+        let remaining = store
+            .list_config_items(None)
+            .await
+            .context("protected-config post-scrub rescan failed")?;
+        if remaining.iter().any(|i| {
+            !is_migration_tombstone(i) && protected_config_disposition(&i.name).is_some()
+        }) {
+            bail!(
+                "protected-config migration incomplete: secret-bearing ConfigItems \
+                 remain in the graph; refusing to mark complete"
+            );
+        }
+
+        // ── marker + manifest in one transaction ────────────────────────
+        let manifest_json = serde_json::json!({
+            "format": "bonsai-protected-config-v1",
+            "migration": MIGRATION_MARKER,
+            "completed_at_ns": now_ns(),
+            "tokens_imported": report.tokens_imported,
+            "records_quarantined": report.records_quarantined,
+            "rows_scrubbed": report.rows_scrubbed,
+        })
+        .to_string();
+        {
+            let mut conn = self.lock()?;
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT OR REPLACE INTO auth_config(key, value) \
+                 VALUES('protected_config_report', ?1)",
+                params![manifest_json],
+            )?;
+            tx.execute(
+                "INSERT OR REPLACE INTO auth_config(key, value) \
+                 VALUES('protected_config_state', 'complete')",
+                [],
+            )?;
+            tx.commit()?;
+        }
+        Ok(report)
+    }
+}
+
+/// Outcome of `migrate_protected_config` (F7/F8).
+#[derive(Debug, Default)]
+pub struct ProtectedConfigReport {
+    pub already_complete: bool,
+    pub tokens_imported: usize,
+    pub records_quarantined: usize,
+    pub rows_scrubbed: usize,
+}
+
+/// Extract the effective secret from a ConfigItem `content_json`,
+/// mirroring the legacy resolver semantics: a JSON string is decoded;
+/// anything else is used raw with surrounding quotes/whitespace trimmed.
+fn extract_config_secret(content_json: &str) -> String {
+    serde_json::from_str::<String>(content_json)
+        .unwrap_or_else(|_| content_json.trim().trim_matches('"').to_string())
 }
 
 /// True when a graph ConfigItem is a *validated* migration tombstone:
@@ -2116,6 +2477,20 @@ impl AuthStore {
     /// itself (name for users — the graph row id is not the username;
     /// row id for keys/revocations).
     fn verify_imported_counterpart(&self, class: &str, item: &ConfigItemRecord) -> Result<()> {
+        // F7/F8: protected service-token tombstones carry their actual
+        // config_class (e.g. app_config) — the counterpart is the sealed
+        // service_tokens row keyed by the ConfigItem name.
+        if protected_config_disposition(&item.name) == Some("imported") {
+            if self.get_service_token(&item.name)?.is_none() {
+                bail!(
+                    "migration tombstone '{}/{}' claims 'imported' but no service \
+                     token exists in the auth store",
+                    class,
+                    item.id
+                );
+            }
+            return Ok(());
+        }
         let ok = match class {
             "user" => self.get_user(&item.name)?.is_some(),
             "api_key" => self.api_key_verifier_row(&item.id)?.is_some(),
@@ -2203,6 +2578,11 @@ pub struct AuthBackupManifest {
     pub jwt_key_count: usize,
     pub jwt_revoked_count: usize,
     pub quarantined_record_count: usize,
+    /// Count of sealed service tokens (F7/F8). `None` in manifests
+    /// written before the service_tokens table existed — verification
+    /// skips the comparison rather than rejecting a valid older backup.
+    #[serde(default)]
+    pub service_token_count: Option<usize>,
 }
 
 impl AuthStore {
@@ -2329,6 +2709,7 @@ impl AuthStore {
                 jwt_key_count: count("SELECT COUNT(*) FROM jwt_keys")?,
                 jwt_revoked_count: count("SELECT COUNT(*) FROM jwt_revoked")?,
                 quarantined_record_count: count("SELECT COUNT(*) FROM auth_quarantine")?,
+                service_token_count: Some(count("SELECT COUNT(*) FROM service_tokens")?),
             };
             drop(snap);
 
@@ -2519,6 +2900,26 @@ impl AuthStore {
                 );
             }
         }
+        // service_tokens (schema v4): snapshots predating the table have
+        // no rows to compare; manifests predating the field carry None.
+        let has_service_tokens: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='service_tokens')",
+            [],
+            |r| r.get(0),
+        )?;
+        let service_token_count = if has_service_tokens {
+            Some(count("SELECT COUNT(*) FROM service_tokens")?)
+        } else {
+            None
+        };
+        if let Some(expected) = manifest.service_token_count {
+            let actual = service_token_count.unwrap_or(0);
+            if actual != expected {
+                bail!(
+                    "manifest count mismatch for service_tokens: manifest={expected} actual={actual}"
+                );
+            }
+        }
         let migration_state: Option<String> = conn
             .query_row(
                 "SELECT value FROM auth_config WHERE key = 'migration_state'",
@@ -2589,6 +2990,7 @@ impl AuthStore {
             retired_jwt_keys: retired_jwt,
             jwt_revoked_count,
             quarantined_record_count: quarantined,
+            service_token_count,
             integrity_check: integrity,
             foreign_key_violations: fk_violations as usize,
             key_material_verified,
@@ -2676,6 +3078,9 @@ pub struct BackupVerification {
     pub retired_jwt_keys: usize,
     pub jwt_revoked_count: usize,
     pub quarantined_record_count: usize,
+    /// Sealed service-token rows in the snapshot (`None` for pre-v4
+    /// snapshots that predate the table).
+    pub service_token_count: Option<usize>,
     pub integrity_check: String,
     pub foreign_key_violations: usize,
 /// True only when every persisted `jwt_keys.secret_enc` decrypted.

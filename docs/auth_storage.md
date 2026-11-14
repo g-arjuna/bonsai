@@ -23,6 +23,8 @@ sensitivity. Verified by code inspection on `fix/bn019-b6-fail-closed-ci`
 | 8 | LDAP bind password | env var named by `bind_password_env` / vault alias `ldap-bind` | cleartext secret | Secret — already outside graph (env/vault) | Vault-protected |
 | 9 | Collector/device credentials | `CredentialVault` (`runtime/vault/vault.age`) | age-encrypted username/password pairs | Secret — already protected | Vault-protected |
 | 10 | `app_config.require_auth` | `app_config` | `"1"/"0"` flag | Safe operational metadata | Graph OK — **ignored for auth decisions since F1** (deployment env policy only) |
+| 10a | Internal/routing service tokens | `app_config`/`runtime_config` names `routing_service_token`, `internal_service_token`, `service_token`, `admin_password`, `bind_password` | cleartext bearer tokens/passwords | **Secret** | **Moved to `service_tokens` (schema v4, age-sealed) by `migrate_protected_config`; graph rows tombstoned; `/api/config-items` POST returns 410; resolver reads AuthStore → env fallback** |
+| 10b | Stray `jwt_secret`-named ConfigItem | any class, name `jwt_secret` | ambiguous JWT material | Secret-adjacent | **Quarantined into `auth_quarantine` (sealed) — canonical keys live in `jwt_keys`** |
 | 11 | Env admin bootstrap | `BONSAI_ADMIN_USER` / `BONSAI_ADMIN_PASS` env + vault aliases `bonsai-admin`, `bonsai-admin-pass` | cleartext password compared directly | Secret — env/vault only, never persisted to graph | OK |
 
 **Conclusion:** records 1–5 must leave the graph. Record 6 stays (it is a
@@ -54,6 +56,11 @@ the vault remains the device-credential authority.
 - `auth_config(key PK, value)` — durable migration marker and auth config.
 - `auth_audit(ts_ns, actor, action, subject, outcome)` — authentication
   audit metadata; **never** contains secret material.
+- `service_tokens(name PK, token_enc, created_at_ns, updated_at_ns)` —
+  age-sealed internal service / routing bearer tokens (schema v4).
+  Populated by `migrate_protected_config` from graph ConfigItems and by
+  the offline `bonsai auth set-service-token` CLI; raw values are never
+  listed or audited.
 
 ### Access rules
 
@@ -261,4 +268,8 @@ only counts, classes and record IDs.
 - **F6:** login rate limiting split into `login_is_locked` /
   `record_login_failure` / `record_login_success` — one count per failed
   auth, poisoned mutex recovers the guard (never fails open), tracker is
-  bounded (8192 usernames, FIFO eviction).
+  bounded (8192 usernames). Eviction is **stale-only**: entries with a
+  live window or active lockout are never evicted, so username flooding
+  cannot flush a victim's lockout or pre-lockout failure count. Residual:
+  when all 8192 entries are live, new usernames are untracked (documented
+  trade-off; rate limiting is process-local — see §6 HA note).
