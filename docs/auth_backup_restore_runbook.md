@@ -29,50 +29,98 @@ quiet store gives the cleanest point-in-time).
 
 ## 2. Backup procedure
 
+All commands are executable offline operations — run them on the host
+with filesystem access while the service is stopped or quiesced. There
+is deliberately no HTTP endpoint for auth-database backup/restore.
+
 1. Quiesce or stop the Bonsai service (recommended).
-2. Run the privileged backup path against the runtime auth DB:
-   `AuthStore::backup_to(<backup-dir>/bonsai_auth.db)`.
-3. Verify `<backup-dir>/bonsai_auth.db.manifest.json` exists, is
-   owner-only, and its counts match expectations
-   (`user_count`, `api_key_count`, `jwt_key_count`,
-   `jwt_revoked_count`, `quarantined_record_count`,
-   `migration_state`).
-4. Back up the at-rest key SEPARATELY:
+2. Create the protected snapshot + manifest:
+
+   ```bash
+   bonsai auth backup \
+     --db /var/lib/bonsai/bonsai_auth.db \
+     --dest /backup/bonsai/$(date +%Y%m%d-%H%M%S)/bonsai_auth.db
+   ```
+
+   `backup_to` refuses to overwrite an existing snapshot OR manifest,
+   stages `VACUUM INTO` output in an owner-only file, installs
+   atomically, and removes only artifacts it created on failure.
+3. Verify the manifest exists, is owner-only, and its counts match
+   expectations (`user_count`, `api_key_count`, `jwt_key_count`,
+   `jwt_revoked_count`, `quarantined_record_count`, `migration_state`).
+4. Verify the backup is restorable BEFORE relying on it:
+
+   ```bash
+   bonsai auth verify-backup \
+     --snapshot /backup/bonsai/<ts>/bonsai_auth.db \
+     --keyfile /backup/bonsai/<ts>/bonsai_auth.db.key
+   ```
+
+   This opens a scratch COPY of the snapshot, fails closed on wrong or
+   missing key material, and reports counts — it never prints secrets
+   and never mutates the backup artifact.
+5. Back up the at-rest key SEPARATELY:
    - keyfile mode: copy `bonsai_auth.db.key` into the secret store;
    - passphrase mode: ensure `BONSAI_VAULT_PASSPHRASE` is recorded in
      the operator secret store (never in the snapshot directory).
-5. Test-restore periodically (section 4) — an untested backup is not a
+6. Test-restore periodically (section 4) — an untested backup is not a
    backup.
 
 ## 3. Restore procedure
 
 1. STOP the service. Do not restore over a live store.
-2. Choose the recovery directory (the runtime data dir that contains
-   `bonsai_auth.db`).
-3. Install the snapshot AS `bonsai_auth.db` (plain file copy; it is a
-   complete SQLite database). Install the matching key material:
-   - keyfile mode: place `bonsai_auth.db.key` beside it, mode 0600; or
-   - passphrase mode: export `BONSAI_VAULT_PASSPHRASE` before start.
-4. Start the service. `AuthStore::open` fails closed on wrong or
-   missing key material — an auth store that cannot decrypt its JWT
-   keys refuses to serve rather than silently re-keying.
-5. **Post-restore revocation policy (required reading):** an older
-   backup cannot know revocations, disables, role changes or new
-   accounts created after it was taken. Restoring revives that older
-   state — credentials revoked after the backup timestamp become
-   valid again. After ANY restore from a backup older than the incident
-   window:
-   - run an emergency JWT rotation
-     (`AuthStore::rotate_jwt_key_emergency`) to invalidate every
-     pre-restore token at once;
-   - audit `users` (enabled flags, roles) and `jwt_revoked` against the
-     incident timeline before declaring recovery;
-   - re-issue or re-revoke API keys as required.
-6. Migration state travels with the snapshot (`migration_state`,
+2. Choose a STAGING recovery directory — do NOT install into the live
+   data dir yet. Restored authentication remains ISOLATED until the
+   recovery checks in step 5 pass:
+
+   ```bash
+   install -m 0600 /backup/bonsai/<ts>/bonsai_auth.db \
+     /recovery/bonsai_auth.db
+   install -m 0600 /backup/bonsai/<ts>/bonsai_auth.db.key \
+     /recovery/bonsai_auth.db.key   # keyfile mode only
+   ```
+
+3. Rehearse against the staging copy before touching production:
+
+   ```bash
+   bonsai auth verify-backup \
+     --snapshot /recovery/bonsai_auth.db \
+     --keyfile /recovery/bonsai_auth.db.key
+   ```
+
+4. **Emergency JWT rotation BEFORE reopening normal access (required
+   after restoring any backup older than the incident window):**
+
+   ```bash
+   bonsai auth rotate-emergency --db /recovery/bonsai_auth.db
+   ```
+
+   This invalidates every token minted before the rotation — including
+   any credential an old backup revived.
+5. Reconcile account state against the incident timeline while still
+   isolated:
+   - `users`: re-disable accounts revoked/disabled after the backup,
+     restore correct roles (`bonsai auth` has no user-edit command —
+     use the admin API or SQL against the staging DB);
+   - `api_keys`: revoke keys created-then-revoked or scope-reduced
+     after the backup;
+   - `jwt_revoked`: confirm post-backup revocations are re-applied.
+6. Only after steps 3–5 pass, stop the service, install the staging DB
+   into the live data dir, and start. `AuthStore::open` fails closed on
+   wrong or missing key material — an auth store that cannot decrypt
+   its JWT keys refuses to serve rather than silently re-keying.
+7. Migration state travels with the snapshot (`migration_state`,
    `migration_report`, sealed `auth_quarantine`). A store restored
-   mid-migration resumes idempotently: validated tombstones are
-   recognized, quarantine rows are content-verified before any graph
-   scrub, and the manifest + completion marker commit atomically.
+   mid-migration resumes idempotently: tombstones are re-validated
+   against record identity AND protected-store counterparts, quarantine
+   rows are content-verified before any graph scrub, the scrub only
+   touches records byte-identical to the verified migration set, and
+   the manifest + completion marker commit atomically.
+
+**Unsupported recovery cases (explicit):** snapshots without a
+manifest, snapshots whose at-rest key material is unavailable, and
+stores whose `migration_state`/`migration_report` are inconsistent —
+treat all of these as incomplete backups; do not restore.
 
 ## 4. Verification checklist after restore
 
@@ -94,8 +142,8 @@ quiet store gives the cleanest point-in-time).
 |---|---|
 | Wrong/missing key material | `AuthStore::open` / `jwt_secret()` error; no tokens minted or accepted |
 | Snapshot without manifest | Treat as incomplete — do not restore; re-run backup |
-| Destination already exists | `backup_to` refuses (no silent overwrite) |
-| Partial backup failure | staging + partial artifacts removed automatically |
+| Destination or manifest already exists | `bonsai auth backup` refuses (no silent overwrite, no deletion of foreign artifacts) |
+| Partial backup failure | staging + only self-created artifacts removed automatically |
 | Conflicting quarantine record during migration | migration aborts; resolve manually — never silently accepted |
 
 ## 6. What is deliberately NOT provided

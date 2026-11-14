@@ -703,14 +703,19 @@ pub(super) async fn login_handler(
     // `Secure` is set only for requests that arrived over the verified
     // TLS listener (TlsConnection extension); on plain HTTP the flag
     // would cause browsers to drop the cookie.
-    let secure = if tls.is_some() { "; Secure" } else { "" };
-    if let Ok(cookie_val) = axum::http::HeaderValue::from_str(&format!(
-        "bonsai_token={jwt}; Path=/; SameSite=Lax; HttpOnly{secure}"
-    )) {
+    let cookie = session_cookie_value(&jwt, tls.is_some());
+    if let Ok(cookie_val) = axum::http::HeaderValue::from_str(&cookie) {
         resp.headers_mut()
             .insert(axum::http::header::SET_COOKIE, cookie_val);
     }
     Ok(resp)
+}
+
+/// Session cookie value for `bonsai_token`. `Secure` is included only
+/// when the request arrived over verified TLS — never on plain HTTP.
+fn session_cookie_value(jwt: &str, tls: bool) -> String {
+    let secure = if tls { "; Secure" } else { "" };
+    format!("bonsai_token={jwt}; Path=/; SameSite=Lax; HttpOnly{secure}")
 }
 
 /// POST /api/auth/logout — revoke the JWT by persisting its `jti` as a denylist entry.
@@ -2031,5 +2036,21 @@ pub(super) async fn ldap_test_handler(
             serde_json::json!({"success": true, "message": "LDAP bind successful"}),
         )),
         Err(e) => Ok(Json(serde_json::json!({"success": false, "error": e}))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_cookie_value;
+
+    #[test]
+    fn session_cookie_secure_only_over_tls() {
+        let plain = session_cookie_value("tok", false);
+        assert!(plain.contains("bonsai_token=tok"));
+        assert!(plain.contains("HttpOnly"));
+        assert!(plain.contains("SameSite=Lax"));
+        assert!(!plain.contains("Secure"), "{plain}");
+        let tls = session_cookie_value("tok", true);
+        assert!(tls.contains("; Secure"), "{tls}");
     }
 }

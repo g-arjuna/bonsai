@@ -797,6 +797,292 @@ fn old_backup_restore_revocation_policy_is_documented_and_safe() -> Result<()> {
     Ok(())
 }
 
+// ── AUTH-AF1: backup artifact ownership ────────────────────────────────
+
+#[test]
+fn backup_never_overwrites_or_deletes_foreign_manifest() -> Result<()> {
+    clear_auth_env();
+    let dir = TempDir::new()?;
+    let store = AuthStore::open(&dir.path().join("bonsai_auth.db"))?;
+    let _ = store.jwt_secret()?;
+    let dest = dir.path().join("backups").join("bonsai_auth.db");
+    let manifest_path = dest.with_extension("manifest.json");
+    std::fs::create_dir_all(manifest_path.parent().unwrap())?;
+    std::fs::write(&manifest_path, "FOREIGN-MANIFEST-SENTINEL")?;
+
+    let err = store
+        .backup_to(&dest)
+        .expect_err("existing manifest must abort the backup");
+    assert!(format!("{err:#}").contains("manifest"), "{err:#}");
+    // The foreign manifest is preserved byte-for-byte and no snapshot
+    // was installed — a backup never adopts or destroys prior artifacts.
+    assert_eq!(
+        std::fs::read_to_string(&manifest_path)?,
+        "FOREIGN-MANIFEST-SENTINEL"
+    );
+    assert!(!dest.exists());
+    Ok(())
+}
+
+#[test]
+fn backup_concurrent_attempts_have_single_winner() -> Result<()> {
+    clear_auth_env();
+    let dir = TempDir::new()?;
+    let store = Arc::new(AuthStore::open(&dir.path().join("bonsai_auth.db"))?);
+    let _ = store.jwt_secret()?;
+    let dest = dir.path().join("contended.db");
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        let s = Arc::clone(&store);
+        let d = dest.clone();
+        handles.push(std::thread::spawn(move || s.backup_to(&d).is_ok()));
+    }
+    let results: Vec<bool> = handles
+        .into_iter()
+        .map(|h| h.join().expect("join"))
+        .collect();
+    assert_eq!(
+        results.iter().filter(|r| **r).count(),
+        1,
+        "exactly one concurrent backup may win: {results:?}"
+    );
+    // The winner's artifact pair is complete and consistent.
+    assert!(dest.exists());
+    let manifest_path = dest.with_extension("manifest.json");
+    assert!(manifest_path.exists());
+    let m: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)?;
+    assert_eq!(m["format"], "bonsai-auth-backup-v1");
+    Ok(())
+}
+
+#[test]
+fn backup_manifest_path_collision_is_fail_closed() -> Result<()> {
+    clear_auth_env();
+    let dir = TempDir::new()?;
+    let store = AuthStore::open(&dir.path().join("bonsai_auth.db"))?;
+    let _ = store.jwt_secret()?;
+    let dest = dir.path().join("bk.db");
+    // A non-file artifact squatting on the manifest path must neither be
+    // removed nor overwritten.
+    let manifest_path = dest.with_extension("manifest.json");
+    std::fs::create_dir_all(&manifest_path)?;
+    let err = store
+        .backup_to(&dest)
+        .expect_err("manifest path collision must abort");
+    assert!(format!("{err:#}").contains("manifest"), "{err:#}");
+    assert!(manifest_path.is_dir(), "foreign manifest artifact removed");
+    assert!(!dest.exists(), "partial snapshot left behind");
+    // No staging litter either.
+    for e in std::fs::read_dir(dir.path())? {
+        let n = e?.file_name().to_string_lossy().to_string();
+        assert!(!n.contains(".partial."), "leftover staging file {n}");
+    }
+    Ok(())
+}
+
+// ── AUTH-AF2: migration tombstone identity + counterpart binding ───────
+
+fn migration_tombstone(id: &str, name: &str, class: &str, disposition: &str) -> ConfigItemRecord {
+    ConfigItemRecord {
+        id: id.into(),
+        config_class: class.into(),
+        vendor: String::new(),
+        name: name.into(),
+        version: String::new(),
+        content_json: serde_json::json!({
+            "migrated_to": "auth_store",
+            "migration": bonsai::auth_store::MIGRATION_MARKER,
+            "record_class": class,
+            "item_id": id,
+            "disposition": disposition,
+            "quarantined_at_ns": 0,
+        })
+        .to_string(),
+        enabled: false,
+        created_by: "test".into(),
+    }
+}
+
+#[tokio::test]
+async fn migration_tombstone_without_counterpart_aborts() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    // A well-formed tombstone claiming an imported user that does NOT
+    // exist in the protected store — must not count as migration
+    // evidence.
+    store
+        .upsert_config_item(migration_tombstone(
+            "user-ghost",
+            "ghost",
+            "user",
+            "imported",
+        ))
+        .await?;
+    store
+        .auth_store
+        .set_auth_config("migration_state", "interrupted")?;
+    let err = store
+        .auth_store
+        .migrate_from_graph(&store)
+        .await
+        .expect_err("tombstone without protected counterpart must abort");
+    assert!(format!("{err:#}").contains("counterpart"), "{err:#}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_tombstone_identity_mismatch_aborts() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    // Tombstone whose content claims a DIFFERENT record identity than
+    // the row it sits on.
+    let mut item = migration_tombstone("user-ghost", "ghost", "user", "imported");
+    item.content_json = serde_json::json!({
+        "migrated_to": "auth_store",
+        "migration": bonsai::auth_store::MIGRATION_MARKER,
+        "record_class": "user",
+        "item_id": "user-someone-else",
+        "disposition": "imported",
+        "quarantined_at_ns": 0,
+    })
+    .to_string();
+    store.upsert_config_item(item).await?;
+    store
+        .auth_store
+        .set_auth_config("migration_state", "interrupted")?;
+    let err = store
+        .auth_store
+        .migrate_from_graph(&store)
+        .await
+        .expect_err("identity-mismatched tombstone must abort");
+    assert!(format!("{err:#}").contains("identity mismatch"), "{err:#}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_changed_source_record_aborts_on_resume() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    let pw = bonsai::http_server::hash_password("ChangedSrcPassw0rd!1").unwrap();
+    store
+        .upsert_config_item(ConfigItemRecord {
+            id: "user-mut".into(),
+            config_class: "user".into(),
+            vendor: String::new(),
+            name: "mutuser".into(),
+            version: String::new(),
+            content_json: serde_json::json!({
+                "password_hash": pw, "role": "viewer", "last_login_ns": 0
+            })
+            .to_string(),
+            enabled: true,
+            created_by: "test".into(),
+        })
+        .await?;
+    store.auth_store.migrate_from_graph(&store).await?;
+    assert!(store.auth_store.get_user("mutuser")?.is_some());
+
+    // Simulate a source record changed after its migration was verified:
+    // roll the durable marker back and rewrite the tombstoned row with a
+    // DIFFERENT legacy payload (no markers) — it is now an unverified
+    // original record conflicting with the imported account.
+    store
+        .auth_store
+        .set_auth_config("migration_state", "interrupted")?;
+    let mut rows = store.list_config_items(Some("user".into())).await?;
+    let row = rows
+        .iter_mut()
+        .find(|i| i.id == "user-mut")
+        .expect("tombstoned row");
+    row.enabled = true;
+    row.content_json = serde_json::json!({
+        "password_hash": bonsai::http_server::hash_password("ChangedSrcPassw0rd!2").unwrap(),
+        "role": "admin",
+        "last_login_ns": 0
+    })
+    .to_string();
+    store.upsert_config_item(row.clone()).await?;
+
+    let err = store
+        .auth_store
+        .migrate_from_graph(&store)
+        .await
+        .expect_err("changed source record must abort, not be silently re-scrubbed");
+    assert!(format!("{err:#}").contains("conflict"), "{err:#}");
+    // The conflicting row is still present — nothing was destroyed.
+    let still = store.list_config_items(Some("user".into())).await?;
+    assert!(still.iter().any(|i| i.id == "user-mut"));
+    Ok(())
+}
+
+// ── Residual: Secure cookie + auth-source collision ────────────────────
+
+#[tokio::test]
+async fn session_cookie_secure_flag_only_over_tls() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    add_user(&store, "cookie-user", "viewer", true);
+    let (base, _h) = serve(store).await;
+    let client = reqwest::Client::new();
+    // Plain-HTTP login: the cookie must NOT carry `Secure` (browsers
+    // would drop it); TLS-terminated deployments set it via TlsConnection.
+    let resp = client
+        .post(format!("{base}/api/auth/login"))
+        .json(&serde_json::json!({
+            "username": "cookie-user", "password": "ClosurePassw0rd!1"
+        }))
+        .send()
+        .await?;
+    assert!(resp.status().is_success());
+    let cookie = resp
+        .headers()
+        .get("set-cookie")
+        .expect("set-cookie header")
+        .to_str()?;
+    assert!(cookie.contains("bonsai_token="), "{cookie}");
+    assert!(cookie.contains("HttpOnly"), "{cookie}");
+    assert!(cookie.contains("SameSite=Lax"), "{cookie}");
+    assert!(
+        !cookie.contains("Secure"),
+        "plain HTTP must not set Secure: {cookie}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_token_cannot_exceed_local_account_authority() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    require_auth(&store).await;
+    let (base, _h) = serve(Arc::clone(&store)).await;
+    let client = reqwest::Client::new();
+
+    // A previously-issued external (ldap) token whose CLAIMED role is
+    // admin: token claims are never trusted — authority comes from the
+    // local account record only.
+    let forged_claim = mint_jwt_for_source("collide2", "admin", &store, "ldap")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    // No local account yet → pure external identity, token role stands.
+    assert_eq!(get_status(&client, &base, &forged_claim).await, 200);
+
+    // A local account is later created for the same username with a
+    // LOWER role: the external token must not keep its claimed admin —
+    // the live local record is authoritative (collision policy).
+    add_user(&store, "collide2", "viewer", true);
+    let resp = client
+        .get(format!("{base}/api/auth/users"))
+        .bearer_auth(&forged_claim)
+        .send()
+        .await?;
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "external token must not exceed the local account's viewer role"
+    );
+    Ok(())
+}
+
 fn now_ns_test() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

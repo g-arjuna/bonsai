@@ -1368,6 +1368,12 @@ impl AuthStore {
         // from an interrupted earlier run contribute their recorded
         // dispositions so the manifest covers the whole original set.
         let mut dispositions: Vec<(String, String, String)> = Vec::new();
+        // AUTH-AF2: exact source snapshot for the scrub phase. Every
+        // non-tombstone record seen at detect time is recorded verbatim;
+        // the scrub may only tombstone records that are still identical,
+        // so a record added or mutated mid-migration can never be
+        // silently destroyed without import/quarantine evidence.
+        let mut source_snapshot: Vec<(String, ConfigItemRecord)> = Vec::new();
         let env_jwt_override = std::env::var(JWT_SECRET_ENV).is_ok();
         for class in classes {
             let items = store
@@ -1381,11 +1387,18 @@ impl AuthStore {
                 // recorded disposition to the manifest; anything else
                 // that merely looks disabled is treated as a record.
                 if is_migration_tombstone(&item) {
-                    if let Some((c, id, d)) = tombstone_disposition(&item) {
+                    // A *validated* migration tombstone contributes its
+                    // recorded disposition — but only after binding it
+                    // to this row's actual identity AND verifying the
+                    // protected counterpart exists. A fabricated or
+                    // mismatched tombstone aborts the migration rather
+                    // than being accepted as evidence (AUTH-AF2).
+                    if let Some((c, id, d)) = self.check_migration_tombstone(&item, class)? {
                         dispositions.push((c, id, d));
                     }
                     continue;
                 }
+                source_snapshot.push((class.to_string(), item.clone()));
                 match class {
                     "user" => match parse_legacy_user(&item) {
                         Ok(u) => {
@@ -1630,6 +1643,12 @@ impl AuthStore {
         // AuthStore; malformed records are recoverable (sealed) from
         // auth_quarantine. The graph row becomes a *validated* migration
         // tombstone carrying its disposition for manifest reconstruction.
+        //
+        // AUTH-AF2 exact-set scrub: only records byte-identical to the
+        // detect-phase snapshot may be tombstoned. A record that is new,
+        // changed or vanished since detection aborts the migration
+        // (resumable) instead of being scrubbed without verified
+        // import/quarantine evidence.
         let disposition_of = |class: &str, id: &str| -> String {
             dispositions
                 .iter()
@@ -1638,6 +1657,11 @@ impl AuthStore {
                 .map(|(_, _, d)| d.clone())
                 .unwrap_or_else(|| "scrubbed".to_string())
         };
+        let mut expected: std::collections::HashMap<(String, String), ConfigItemRecord> =
+            source_snapshot
+                .into_iter()
+                .map(|(c, i)| ((c, i.id.clone()), i))
+                .collect();
         for class in ["user", "api_key", "jwt_secret", "jwt_revoked", "session"] {
             let items = store
                 .list_config_items(Some(class.to_string()))
@@ -1645,7 +1669,30 @@ impl AuthStore {
                 .with_context(|| format!("migration quarantine: list '{class}' failed"))?;
             for mut item in items {
                 if is_migration_tombstone(&item) {
+                    // Re-validate at scrub time too: a tombstone planted
+                    // after detect must not be silently skipped.
+                    self.check_migration_tombstone(&item, class)?;
                     continue;
+                }
+                let key = (class.to_string(), item.id.clone());
+                match expected.remove(&key) {
+                    Some(snap)
+                        if snap.name == item.name
+                            && snap.version == item.version
+                            && snap.vendor == item.vendor
+                            && snap.content_json == item.content_json
+                            && snap.enabled == item.enabled
+                            && snap.created_by == item.created_by => {}
+                    Some(_) => bail!(
+                        "migration source record '{class}/{}' changed during migration; \
+                         refusing to scrub unverified state",
+                        item.id
+                    ),
+                    None => bail!(
+                        "new source record '{class}/{}' appeared during migration; \
+                         refusing to scrub unverified state",
+                        item.id
+                    ),
                 }
                 item.enabled = false;
                 item.content_json = serde_json::json!({
@@ -1663,6 +1710,13 @@ impl AuthStore {
                     .with_context(|| format!("migration quarantine: scrub '{class}' row failed"))?;
                 report.quarantined_rows += 1;
             }
+        }
+        if !expected.is_empty() {
+            bail!(
+                "migration source records vanished during migration ({} row(s)); \
+                 refusing to complete with unverified state",
+                expected.len()
+            );
         }
         self.set_auth_config("migration_stage", "done")?;
 
@@ -2001,6 +2055,102 @@ fn tombstone_disposition(item: &ConfigItemRecord) -> Option<(String, String, Str
     Some((class, id, disposition))
 }
 
+impl AuthStore {
+    /// AUTH-AF2: validate a migration tombstone before its disposition is
+    /// accepted as migration evidence.
+    ///
+    /// Returns `Ok(None)` for non-tombstone rows. For tombstones this
+    /// binds the recorded disposition to the ACTUAL record identity —
+    /// `record_class` must equal the class being migrated and `item_id`
+    /// must equal the row's own id — validates the disposition value,
+    /// and verifies the protected counterpart (AuthStore record or
+    /// sealed quarantine row) actually exists. Any mismatch aborts the
+    /// migration: a fabricated or stale tombstone is never treated as
+    /// proof that a record was migrated.
+    fn check_migration_tombstone(
+        &self,
+        item: &ConfigItemRecord,
+        class: &str,
+    ) -> Result<Option<(String, String, String)>> {
+        if !is_migration_tombstone(item) {
+            return Ok(None);
+        }
+        let (tclass, tid, disposition) = tombstone_disposition(item)
+            .context("migration tombstone is missing disposition fields")?;
+        if tclass != class || tid != item.id {
+            bail!(
+                "migration tombstone identity mismatch: row '{class}/{}' claims \
+                 '{tclass}/{tid}'",
+                item.id
+            );
+        }
+        match disposition.as_str() {
+            "imported" => self.verify_imported_counterpart(class, item)?,
+            "quarantined" => self.verify_quarantined_counterpart(class, item)?,
+            // retired (session), skipped_env_override (jwt_secret under
+            // env override) and scrubbed (defensive default) carry no
+            // protected counterpart by design.
+            "retired" | "skipped_env_override" | "scrubbed" => {}
+            other => bail!("migration tombstone has unknown disposition '{other}'"),
+        }
+        Ok(Some((tclass, tid, disposition)))
+    }
+
+    /// The protected-store counterpart for an "imported" disposition
+    /// must exist: the user row, API-key verifier, JWT revocation or a
+    /// stored JWT key. Identity is derived from the tombstoned row
+    /// itself (name for users — the graph row id is not the username;
+    /// row id for keys/revocations).
+    fn verify_imported_counterpart(&self, class: &str, item: &ConfigItemRecord) -> Result<()> {
+        let ok = match class {
+            "user" => self.get_user(&item.name)?.is_some(),
+            "api_key" => self.api_key_verifier_row(&item.id)?.is_some(),
+            "jwt_revoked" => match item.id.strip_prefix("jwt-revoked-") {
+                Some(jti) => self.is_jwt_revoked(jti)?,
+                None => false,
+            },
+            "jwt_secret" => {
+                // The imported secret is sealed inside jwt_keys; exact
+                // equality is not checkable without decrypting, so the
+                // counterpart evidence is that key material exists.
+                let conn = self.lock()?;
+                conn.query_row("SELECT COUNT(*) FROM jwt_keys", [], |r| r.get::<_, i64>(0))? > 0
+            }
+            _ => false,
+        };
+        if !ok {
+            bail!(
+                "migration tombstone '{}/{}' claims 'imported' but no protected \
+                 counterpart exists in the auth store",
+                class,
+                item.id
+            );
+        }
+        Ok(())
+    }
+
+    /// The protected-store counterpart for a "quarantined" disposition
+    /// is a sealed `auth_quarantine` row bound to the same class+id.
+    fn verify_quarantined_counterpart(&self, class: &str, item: &ConfigItemRecord) -> Result<()> {
+        let conn = self.lock()?;
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM auth_quarantine \
+             WHERE record_class = ?1 AND item_id = ?2)",
+            params![class, item.id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            bail!(
+                "migration tombstone '{}/{}' claims 'quarantined' but no sealed \
+                 quarantine record exists",
+                class,
+                item.id
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Non-secret metadata for one `auth_quarantine` row (AUTH-C4).
 #[derive(Debug, Clone, Serialize)]
 pub struct QuarantineRecordInfo {
@@ -2069,6 +2219,16 @@ impl AuthStore {
                 dest_path.display()
             );
         }
+        // The manifest sidecar is part of the backup artifact set: an
+        // existing manifest is NEVER overwritten or deleted by this
+        // operation, even when the snapshot destination is free.
+        let manifest_path = dest_path.with_extension("manifest.json");
+        if manifest_path.exists() {
+            bail!(
+                "auth backup manifest '{}' already exists",
+                manifest_path.display()
+            );
+        }
         if let Some(parent) = dest_path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
@@ -2080,7 +2240,9 @@ impl AuthStore {
         // protected file — the snapshot is never world-readable, even
         // transiently.
         let staging = unique_backup_staging(dest_path)?;
-        create_owner_only_file(&staging)?;
+        // O_EXCL create: a staging path that appeared since the
+        // uniqueness check fails instead of being adopted.
+        drop(open_owner_only_new(&staging)?);
         let result = (|| -> Result<AuthBackupManifest> {
             {
                 let conn = self.lock()?;
@@ -2150,13 +2312,18 @@ impl AuthStore {
             let _ = std::fs::remove_file(&staging);
 
             // Manifest sidecar, written only after the snapshot is
-            // installed. Failure here removes both artifacts — a backup
-            // without its manifest is not a valid backup.
-            let manifest_path = dest_path.with_extension("manifest.json");
+            // installed. Ownership is tracked explicitly: the manifest
+            // is created with O_EXCL so a pre-existing artifact is never
+            // overwritten, and failure cleanup removes ONLY files this
+            // operation created — a foreign manifest is left untouched.
             let json = serde_json::to_string_pretty(&manifest)?;
+            let mut manifest_created = false;
             let write_result = (|| -> Result<()> {
-                create_owner_only_file(&manifest_path)?;
-                std::fs::write(&manifest_path, format!("{json}\n"))?;
+                let mut f = open_owner_only_new(&manifest_path)?;
+                manifest_created = true;
+                use std::io::Write;
+                f.write_all(format!("{json}\n").as_bytes())?;
+                f.sync_all()?;
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -2168,8 +2335,12 @@ impl AuthStore {
                 Ok(())
             })();
             if let Err(e) = write_result {
+                // Remove the snapshot we installed; remove the manifest
+                // ONLY if this operation created it.
                 let _ = std::fs::remove_file(dest_path);
-                let _ = std::fs::remove_file(&manifest_path);
+                if manifest_created {
+                    let _ = std::fs::remove_file(&manifest_path);
+                }
                 return Err(e).context("auth backup manifest write failed; snapshot removed");
             }
             Ok(manifest)

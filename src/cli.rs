@@ -1127,3 +1127,177 @@ pub(super) async fn run_self_test() -> Result<()> {
     }
     Ok(())
 }
+
+// ── AuthCliCommand (BN-022 / AUTH-AF1: offline backup & recovery) ─────────
+//
+// Narrow, privileged, OFFLINE operational commands — run on the host with
+// filesystem access while the service is stopped or quiesced. There is
+// deliberately no HTTP endpoint for auth-database backup/restore.
+
+pub(super) enum AuthCliCommand {
+    Help,
+    Backup { db: String, dest: String },
+    VerifyBackup { snapshot: String, keyfile: Option<String> },
+    RotateEmergency { db: String },
+}
+
+impl AuthCliCommand {
+    pub(super) fn parse() -> Result<Option<Self>> {
+        let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+        if args.first().map(String::as_str) != Some("auth") {
+            return Ok(None);
+        }
+        args.remove(0);
+        let Some(action) = args.first().cloned() else {
+            return Ok(Some(Self::Help));
+        };
+        args.remove(0);
+
+        fn take(args: &mut std::vec::IntoIter<String>, flag: &str) -> Result<String> {
+            require_flag_value(flag, args.next())
+        }
+
+        match action.as_str() {
+            "backup" => {
+                let mut db = None;
+                let mut dest = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--db" => db = Some(take(&mut iter, "--db")?),
+                        "--dest" => dest = Some(take(&mut iter, "--dest")?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => anyhow::bail!("unknown auth backup argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::Backup {
+                    db: db.ok_or_else(|| anyhow::anyhow!("auth backup requires --db"))?,
+                    dest: dest.ok_or_else(|| anyhow::anyhow!("auth backup requires --dest"))?,
+                }))
+            }
+            "verify-backup" => {
+                let mut snapshot = None;
+                let mut keyfile = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--snapshot" => {
+                            snapshot = Some(take(&mut iter, "--snapshot")?)
+                        }
+                        "--keyfile" => keyfile = Some(take(&mut iter, "--keyfile")?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => anyhow::bail!("unknown auth verify-backup argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::VerifyBackup {
+                    snapshot: snapshot.ok_or_else(|| {
+                        anyhow::anyhow!("auth verify-backup requires --snapshot")
+                    })?,
+                    keyfile,
+                }))
+            }
+            "rotate-emergency" => {
+                let mut db = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--db" => db = Some(take(&mut iter, "--db")?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => {
+                            anyhow::bail!("unknown auth rotate-emergency argument '{other}'")
+                        }
+                    }
+                }
+                Ok(Some(Self::RotateEmergency {
+                    db: db.ok_or_else(|| {
+                        anyhow::anyhow!("auth rotate-emergency requires --db")
+                    })?,
+                }))
+            }
+            "help" | "--help" | "-h" => Ok(Some(Self::Help)),
+            other => anyhow::bail!("unknown auth command '{other}'"),
+        }
+    }
+}
+
+pub(super) async fn run_auth_cli(command: AuthCliCommand) -> Result<()> {
+    use bonsai::auth_store::AuthStore;
+
+    match command {
+        AuthCliCommand::Help => {
+            println!("usage: bonsai auth <backup|verify-backup|rotate-emergency>");
+            println!("  backup --db <bonsai_auth.db> --dest <backup-path>");
+            println!("  verify-backup --snapshot <bonsai_auth.db> [--keyfile <bonsai_auth.db.key>]");
+            println!("  rotate-emergency --db <bonsai_auth.db>");
+        }
+        AuthCliCommand::Backup { db, dest } => {
+            let store = AuthStore::open(std::path::Path::new(&db))?;
+            let manifest = store.backup_to(std::path::Path::new(&dest))?;
+            println!("auth backup complete: {}", dest);
+            println!(
+                "  users={} api_keys={} jwt_keys={} jwt_revoked={} quarantined={} migration_state={:?} key_source={}",
+                manifest.user_count,
+                manifest.api_key_count,
+                manifest.jwt_key_count,
+                manifest.jwt_revoked_count,
+                manifest.quarantined_record_count,
+                manifest.migration_state,
+                manifest.key_source,
+            );
+            println!(
+                "  manifest: {}",
+                std::path::Path::new(&dest)
+                    .with_extension("manifest.json")
+                    .display()
+            );
+            println!("  NOTE: back up the at-rest key material separately (keyfile or BONSAI_VAULT_PASSPHRASE).");
+        }
+        AuthCliCommand::VerifyBackup { snapshot, keyfile } => {
+            // Restore rehearsal: open a COPY of the snapshot in a scratch
+            // dir so verification can never mutate the backup artifact.
+            // Prints counts and decrypt-checks JWT key material; never
+            // prints secret material.
+            let scratch = std::env::temp_dir().join(format!(
+                "bonsai-auth-verify-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&scratch)?;
+            let result = (|| -> Result<()> {
+                let db_copy = scratch.join("bonsai_auth.db");
+                std::fs::copy(&snapshot, &db_copy)?;
+                if let Some(kf) = &keyfile {
+                    std::fs::copy(kf, scratch.join("bonsai_auth.db.key"))?;
+                }
+                let store = AuthStore::open(&db_copy)?;
+                // Fails closed on wrong/missing key material.
+                store.jwt_secret()?;
+                println!("backup verification OK: {}", snapshot);
+                println!("  users={}", store.list_users()?.len());
+                println!("  api_keys={}", store.list_api_keys()?.len());
+                println!(
+                    "  quarantined_records={}",
+                    store.quarantined_record_count()?
+                );
+                println!(
+                    "  migration_state={:?}",
+                    store.get_auth_config("migration_state")?
+                );
+                println!("  jwt key material: decrypts OK (secret not printed)");
+                Ok(())
+            })();
+            let _ = std::fs::remove_dir_all(&scratch);
+            result?;
+        }
+        AuthCliCommand::RotateEmergency { db } => {
+            let store = AuthStore::open(std::path::Path::new(&db))?;
+            store.rotate_jwt_key_emergency()?;
+            println!("emergency JWT rotation complete: {}", db);
+            println!("  every token minted before this rotation is now invalid");
+        }
+    }
+    Ok(())
+}
