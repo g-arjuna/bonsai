@@ -276,6 +276,23 @@ gate_l3() {
   [ -x tests/ui_driver/node_modules/.bin/playwright ] \
     || die "playwright driver missing — run: (cd tests/ui_driver && npm ci && npx playwright install chromium)"
 
+  # The pinned @playwright/test expects a specific chromium build under
+  # PLAYWRIGHT_BROWSERS_PATH (or PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH). Verify
+  # the executable playwright will actually launch exists, so a stale or
+  # missing browser fails here with a clear message instead of inside the
+  # spec. Resolution goes through the installed driver so the check always
+  # tracks package-lock.json.
+  local CHROME_PATH
+  if [ -n "${PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH:-}" ]; then
+    CHROME_PATH="$PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"
+  else
+    CHROME_PATH="$(cd tests/ui_driver && node --input-type=module \
+      -e "import { chromium } from '@playwright/test'; console.log(chromium.executablePath())" \
+      2>/dev/null)" || CHROME_PATH=""
+  fi
+  [ -n "$CHROME_PATH" ] && [ -x "$CHROME_PATH" ] \
+    || die "playwright chromium not provisioned (resolved: '${CHROME_PATH:-none}') — run: (cd tests/ui_driver && npx playwright install chromium)"
+
   local args=()
   for t in $L3_INTEGRATION_TESTS; do args+=(--test "$t"); done
   cargo test -p bonsai --profile "$PROFILE" --offline "${args[@]}"

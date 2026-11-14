@@ -15,10 +15,18 @@ export default defineConfig({
     headless: true,
     screenshot: 'only-on-failure',
     video: 'off',
-    launchOptions: {
-      executablePath:
-        process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ||
-        `${process.env.HOME}/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome`,
-    },
+    // Only override the browser executable when explicitly requested. The
+    // previous hardcoded chromium-1228 fallback pinned a browser build that
+    // no longer matches the @playwright/test version in package-lock.json,
+    // and bypassed PLAYWRIGHT_BROWSERS_PATH resolution entirely. Without an
+    // override, playwright resolves the chromium build provisioned for the
+    // pinned driver version.
+    ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+      ? {
+          launchOptions: {
+            executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+          },
+        }
+      : {}),
   },
 });
