@@ -62,24 +62,38 @@ The first authoritative projection is deliberately minimal:
 - **Scope:** direct authenticated OTLP producer → spans/metrics whose
   `resource`/`scope` attributes describe *that producer's own*
   application (e.g. `service.name` of the producing service).
-- **Identity:** stable application identity derived from the
-  authenticated principal + an explicit, bounded producer-chosen app
-  discriminator, e.g.
-  `otlpapp+/{credential_fingerprint}/{app_discriminator}` where
-  `app_discriminator` is a validated resource attribute (bounded length,
-  charset-restricted). The credential fingerprint — not the IP:port —
-  is the stable owner key, so reconnects/NAT rebinding do not fork
-  identity, and credential rotation is an explicit re-binding event.
-- **Ownership:** the verified projection asserts "principal P produced
+- **Identity — four separate concepts, never conflated:**
+  1. *Credential fingerprint* (`sha256:<hex>` of the presented client
+     cert) — the transport-authenticated key. Rotation produces a NEW
+     fingerprint; it is a re-binding event, not a new producer.
+  2. *Stable bound producer identity* — the durable principal record the
+     fingerprint is bound to in `exporter_bindings` (e.g. binding id +
+     authorized capability set). Credential rotation re-binds the SAME
+     producer identity to the new fingerprint; it must never mint a
+     duplicate producer.
+  3. *Producer-local application identity* —
+     `otlpapp+/{producer_identity}/{app_discriminator}` where
+     `app_discriminator` is a validated resource attribute (bounded
+     length, charset-restricted). Scoped to the bound producer; two
+     producers using the same `service.name` yield two distinct ids.
+  4. *Authorized application ownership* — an operator/trusted-inventory
+     binding that MAY later map a producer to a managed
+     device/application record. The first verified slice does NOT create
+     or assert this; it remains a separate, explicit authorization
+     decision.
+- **Ownership:** the verified projection asserts "producer P produced
   application-evidence E at time T" — nothing more. It does not assert
   that P *hosts* the application in an inventory sense unless a trusted
   binding maps the credential to a managed device/application record.
-- **Authoritative vs provisional:** events written under a verified
-  principal carry `identity_status: "verified"` /
-  `authority: "collector-attested"` (exact enum names TBD at
-  implementation); everything else remains `provisional` /
-  `unverified`. Unknown stays unknown — an unattested request is never
-  upgraded.
+- **Verified evidence semantics:** direct authenticated producer evidence
+  is NOT the same as forwarded collector attestation. Machine-readable
+  authority states (exact enum names fixed at implementation):
+  - `verified_direct` — the TLS peer itself produced the evidence.
+  - `claimed_*` — self-reported attributes (hostname, peer address,
+    service labels) preserved as claims only.
+  - `provisional` / `unverified` — everything unattested; an
+    unattested request is never upgraded, and a forwarding collector's
+    upstream claims never become `verified_direct`.
 
 ### 2.3 Transport options (implementation choice deferred to g-2 PR)
 
@@ -106,6 +120,8 @@ The first authoritative projection is deliberately minimal:
 | Retention | Verified and provisional evidence share the parquet archiver + graph-event durability path; verified projections are retained under the same graph retention policy. No separate unbounded store. |
 | Failure modes | TLS handshake failure, untrusted/expired cert, unbound fingerprint, revoked binding, ambiguous binding → reject before parsing payload (no oracle via error differentiation beyond connect-level). Authz-store failure → fail closed (deny), never provisional-upgrade. |
 | Multi-tenancy | Scope (`scope` field / site / tenant) still applies; a verified principal in scope A cannot write verified projections into scope B. |
+| Resource budgets | Verified listener bounds: max concurrent TLS sessions (proposed 64/listener — finalize at implementation); request parse budget inherits the existing body/group/item/string caps; per-producer app-discriminator cardinality cap (proposed 64 distinct app ids/principal); replay dedup window bounded per producer (dedup key = producer identity + app id + span/metric identity, retained for a bounded horizon, not unbounded); graph write amplification capped (verified path shares the existing graph-event budgets — no second unbounded writer); retention identical to provisional evidence; revocation revalidation honors the ≤5 s epoch-stamped decision-cache window documented in g-1. |
+| Acceptance harness | Runs under the local containerized CI (`scripts/ci/run-local.sh`, `docker/ci/Dockerfile`) and the canonical `scripts/ci/gates.sh` tiers — synthetic CA + client certs (rcgen, already a dev-dep), isolated loopback producers only, real temporary GraphStore instances. No production telemetry sources or credentials. New TLS-loopback cases join the L2/L3 manifest explicitly; they are never counted as L4 lab acceptance. |
 
 ## 4. Acceptance matrix (BN-021g-2 exit criteria)
 
