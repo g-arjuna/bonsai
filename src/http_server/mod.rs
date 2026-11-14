@@ -1134,7 +1134,7 @@ impl axum::extract::FromRef<AppState> for Arc<GraphStore> {
     }
 }
 
-pub use auth::{mint_jwt, redact_secrets_in_json};
+pub use auth::{hash_password, mint_jwt, redact_secrets_in_json, verify_jwt, verify_password};
 
 /// Build a standalone Bonsai public router mounting `/health` and `/api/routing/v1/*`
 /// with full Bonsai JWT/API-key RBAC middleware (`auth::auth_middleware`) backed by `GraphStore`.

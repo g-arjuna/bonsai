@@ -411,6 +411,19 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         }
     }
 
+    // BN-022: migrate legacy graph credential records into protected auth
+    // storage BEFORE serving requests. Failure is fatal for auth — the
+    // process continues for non-auth duties but every auth decision fails
+    // closed until the migration can complete.
+    if let Some(Store::Core(ref core_store)) = store {
+        match core_store.auth_store.ensure_migrated(core_store).await {
+            Ok(()) => {}
+            Err(e) => {
+                error!(error = %e, "auth storage migration failed — auth will fail closed");
+            }
+        }
+    }
+
     // D4-7 T5: Restore all runtime config overrides from DB (streaming, retention, ai, etc.).
     if let Some(Store::Core(ref core_store)) = store {
         let n =

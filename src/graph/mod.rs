@@ -292,6 +292,10 @@ pub struct GraphStore {
     /// DS-5: Per-device / per-site / per-role signal feature gates.
     /// Refreshed from the SignalPolicy table every 30 s inside write().
     pub signal_filter: SignalFilter,
+    /// BN-022: Protected authentication storage (users, API keys, JWT
+    /// signing keys, revocations). Lives in `bonsai_auth.db` beside the
+    /// graph database — never inside the queryable graph.
+    pub auth_store: crate::auth_store::AuthStore,
 }
 
 impl GraphStore {
@@ -317,6 +321,12 @@ impl GraphStore {
             "LadybugDB opened"
         );
         let (event_tx, _) = broadcast::channel(1024);
+        // BN-022: open protected auth storage beside the graph database.
+        // Failure to open it fails GraphStore::open — auth must never run
+        // against missing protected storage.
+        let auth_path = crate::auth_store::AuthStore::path_for_graph(path);
+        let auth_store = crate::auth_store::AuthStore::open(&auth_path)
+            .with_context(|| format!("failed to open auth store at '{}'", auth_path.display()))?;
         let store = GraphStore {
             db: Arc::new(db),
             event_tx,
@@ -325,6 +335,7 @@ impl GraphStore {
             correlation_buffer: Arc::new(CorrelationBuffer::new(45)),
             ddos_config: Arc::new(DdosConfig::default()),
             signal_filter: SignalFilter::new(),
+            auth_store,
         };
 
         let t = Instant::now();

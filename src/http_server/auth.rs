@@ -3,10 +3,14 @@
 //! Security standards applied:
 //! - Passwords: Argon2id (OWASP recommended), 19 MiB memory, 2 iterations, 1 thread.
 //! - Session tokens: signed JWT (HS256), standard claims (sub, role, exp, iat, jti).
-//!   JWT secret loaded from `BONSAI_JWT_SECRET` env var; auto-generated + persisted
-//!   to ConfigItem if not set.
-//! - API key storage: SHA-256 hash of raw key (keys are high-entropy random, not
-//!   passwords — SHA-256 is appropriate here; Argon2 is for low-entropy passwords).
+//!   JWT secret managed by `AuthStore` (protected SQLite + age encryption);
+//!   `BONSAI_JWT_SECRET` env var is an explicit override (>= 32 bytes).
+//! - API key storage: SHA-256 hash of raw key in `AuthStore` (keys are
+//!   high-entropy random, not passwords — SHA-256 is appropriate here;
+//!   Argon2 is for low-entropy passwords). Raw keys are never persisted.
+//! - Users, API keys, JWT keys and revocations live in `bonsai_auth.db`
+//!   (see `docs/auth_storage.md`); the operational graph holds no
+//!   credential material after migration.
 //! - All comparisons: constant-time via `subtle::ConstantTimeEq`.
 //! - Login: rate-limited per username (3 attempts / 5 min, 30 min lockout).
 //! - Password policy: ≥16 chars, ≥1 uppercase, ≥1 lowercase, ≥1 digit, ≥1 special char.
@@ -38,7 +42,7 @@ use super::AppState;
 // ── JWT claims ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct JwtClaims {
+pub struct JwtClaims {
     /// Subject: username
     pub sub: String,
     /// Bonsai role string
@@ -51,59 +55,18 @@ pub(crate) struct JwtClaims {
     pub jti: String,
 }
 
-/// Return the JWT secret, loading from `BONSAI_JWT_SECRET` or auto-generating.
-/// Auto-generated secret is persisted as a ConfigItem so it survives restarts.
-pub(super) async fn get_or_init_jwt_secret(store: &crate::graph::GraphStore) -> String {
-    // Prefer explicit env override
-    if let Ok(secret) = std::env::var("BONSAI_JWT_SECRET") {
-        if secret.len() >= 32 {
-            return secret;
-        }
-        tracing::warn!("BONSAI_JWT_SECRET is set but shorter than 32 bytes — ignoring");
-    }
-
-    // Try persisted auto-generated secret
-    let items = store
-        .list_config_items(Some("jwt_secret".to_string()))
-        .await
-        .unwrap_or_default();
-    if let Some(ci) = items
-        .into_iter()
-        .find(|ci| ci.id == "jwt-secret-v1" && ci.enabled)
-    {
-        if ci.content_json.len() >= 32 {
-            return ci.content_json;
-        }
-    }
-
-    // Generate a new 64-byte hex secret and persist it
-    let secret = hex::encode({
-        use sha2::Sha256;
-        // Combine UUID entropy + current time for seeding
-        let seed = format!("{}{}", uuid::Uuid::new_v4(), super::now_ns());
-        Sha256::digest(seed.as_bytes()).to_vec()
-    });
-    let secret2 = format!(
-        "{}{}",
-        hex::encode(Sha256::digest(format!("{}A", &secret).as_bytes())),
-        hex::encode(Sha256::digest(format!("{}B", &secret).as_bytes()))
-    );
-
-    let ci = crate::graph::ConfigItemRecord {
-        id: "jwt-secret-v1".to_string(),
-        config_class: "jwt_secret".to_string(),
-        vendor: String::new(),
-        name: "jwt-secret-v1".to_string(),
-        version: String::new(),
-        content_json: secret2.clone(),
-        enabled: true,
-        created_by: "auto".to_string(),
-    };
-    let _ = store.upsert_config_item(ci).await;
-    tracing::info!(
-        "JWT secret auto-generated and persisted. Set BONSAI_JWT_SECRET env var for explicit control."
-    );
-    secret2
+/// Return the JWT signing secret from protected storage.
+///
+/// `BONSAI_JWT_SECRET` (>= 32 bytes) is an explicit override; otherwise the
+/// active key is read from `AuthStore` — CSPRNG-generated on first use,
+/// age-encrypted under the vault passphrase, stable across restarts.
+/// All failure modes (short env key, missing vault passphrase, storage
+/// error) are hard errors — never a transient or default key.
+async fn get_or_init_jwt_secret(store: &crate::graph::GraphStore) -> Result<String, String> {
+    store
+        .auth_store
+        .jwt_secret()
+        .map_err(|e| format!("jwt secret unavailable: {e:#}"))
 }
 
 /// Mint a signed JWT for a user. `store` is needed to resolve the secret.
@@ -112,7 +75,7 @@ pub async fn mint_jwt(
     role: &str,
     store: &crate::graph::GraphStore,
 ) -> Result<String, String> {
-    let secret = get_or_init_jwt_secret(store).await;
+    let secret = get_or_init_jwt_secret(store).await?;
     let now = super::now_ns() / 1_000_000_000; // seconds
     let exp = now + 24 * 3600; // 24h
     let jti = uuid::Uuid::new_v4().to_string();
@@ -131,21 +94,34 @@ pub async fn mint_jwt(
     .map_err(|e| format!("JWT mint failed: {e}"))
 }
 
-/// Verify a JWT and return claims. Validates signature, expiry, algorithm.
-pub(crate) async fn verify_jwt(
+/// Verify a JWT and return claims. Validates signature against every
+/// currently-valid signing key (active + in-overlap retired), expiry and
+/// algorithm. Storage failure while listing candidates is an error.
+pub async fn verify_jwt(
     token: &str,
     store: &crate::graph::GraphStore,
 ) -> Result<JwtClaims, String> {
-    let secret = get_or_init_jwt_secret(store).await;
+    let candidates = store
+        .auth_store
+        .jwt_verify_candidates()
+        .map_err(|e| format!("jwt key lookup failed: {e:#}"))?;
+    if candidates.is_empty() {
+        return Err("no JWT signing keys available".to_string());
+    }
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
-    decode::<JwtClaims>(
-        token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
-    )
-    .map(|td| td.claims)
-    .map_err(|e| format!("JWT invalid: {e}"))
+    let mut last_err = String::new();
+    for secret in &candidates {
+        match decode::<JwtClaims>(
+            token,
+            &DecodingKey::from_secret(secret.as_bytes()),
+            &validation,
+        ) {
+            Ok(td) => return Ok(td.claims),
+            Err(e) => last_err = format!("JWT invalid: {e}"),
+        }
+    }
+    Err(last_err)
 }
 
 // ── Rate limiting (brute-force lockout) ───────────────────────────────────────
@@ -251,7 +227,7 @@ fn check_password_policy(password: &str) -> Result<(), &'static str> {
 
 /// Hash a password with Argon2id (OWASP recommended parameters).
 /// Returns the full PHC string (includes salt + params).
-fn hash_password(password: &str) -> Result<String, String> {
+pub fn hash_password(password: &str) -> Result<String, String> {
     // OWASP minimum: m=19456 (19 MiB), t=2, p=1
     let params = Params::new(19456, 2, 1, None).map_err(|e| format!("argon2 params: {e}"))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
@@ -265,7 +241,7 @@ fn hash_password(password: &str) -> Result<String, String> {
 /// Verify a password against a stored Argon2 PHC hash string.
 /// Also handles legacy SHA-256 hex hashes (migration path).
 /// Returns `Ok(true)` for match, `Ok(false)` for mismatch.
-pub(crate) fn verify_password(password: &str, stored_hash: &str) -> bool {
+pub fn verify_password(password: &str, stored_hash: &str) -> bool {
     if stored_hash.starts_with("$argon2") {
         // Argon2 PHC format
         let Ok(parsed) = PasswordHash::new(stored_hash) else {
@@ -325,13 +301,9 @@ pub(super) struct CreateApiKeyResponse {
     pub error: String,
 }
 
-#[derive(Serialize, Deserialize)]
-struct ApiKeyContent {
-    key_hash: String,
-    scope: String,
-    expires_at_ns: i64,
-    last_used_at_ns: i64,
-}
+// ApiKeyContent / UserContent records now live in `AuthStore`
+// (`crate::auth_store`); legacy graph JSON shapes are parsed only by the
+// migration code there.
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -339,25 +311,22 @@ struct ApiKeyContent {
 pub(super) async fn list_api_keys_handler(
     State(state): State<AppState>,
 ) -> Result<Json<ApiKeyListResponse>, (StatusCode, String)> {
-    let items = state
+    let keys = state
         .store
-        .list_config_items(Some("api_key".to_string()))
-        .await
+        .auth_store
+        .list_api_keys()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
-    let keys: Vec<ApiKeySummary> = items
-        .iter()
-        .filter_map(|ci| {
-            let content: ApiKeyContent = serde_json::from_str(&ci.content_json).ok()?;
-            Some(ApiKeySummary {
-                id: ci.id.clone(),
-                alias: ci.name.clone(),
-                scope: content.scope,
-                created_at_ns: 0, // DB timestamps handled by upsert
-                last_used_at_ns: content.last_used_at_ns,
-                expires_at_ns: content.expires_at_ns,
-                enabled: ci.enabled,
-            })
+    let keys: Vec<ApiKeySummary> = keys
+        .into_iter()
+        .map(|k| ApiKeySummary {
+            id: k.id,
+            alias: k.alias,
+            scope: k.scope,
+            created_at_ns: k.created_at_ns,
+            last_used_at_ns: k.last_used_at_ns,
+            expires_at_ns: k.expires_at_ns,
+            enabled: k.enabled,
         })
         .collect();
 
@@ -380,45 +349,10 @@ pub(super) async fn create_api_key_handler(
         }));
     }
 
-    // Generate a random key from two UUIDs (256 bits of entropy)
-    let raw_key = format!(
-        "bsk_{}_{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    );
-    // SHA-256 is appropriate for high-entropy random API keys (not passwords)
-    let key_hash = hex::encode(Sha256::digest(raw_key.as_bytes()));
-
-    let now_ns = super::now_ns();
-    let expires_at_ns = if req.expires_in_secs > 0 {
-        now_ns + (req.expires_in_secs * 1_000_000_000)
-    } else {
-        0 // no expiry
-    };
-
-    let id = format!("apikey-{}", &key_hash[..16]);
-    let content = ApiKeyContent {
-        key_hash,
-        scope: req.scope.clone(),
-        expires_at_ns,
-        last_used_at_ns: 0,
-    };
-
-    let item = crate::graph::ConfigItemRecord {
-        id: id.clone(),
-        config_class: "api_key".to_string(),
-        vendor: String::new(),
-        name: alias.clone(),
-        version: String::new(),
-        content_json: serde_json::to_string(&content).unwrap_or_default(),
-        enabled: true,
-        created_by: "ui".to_string(),
-    };
-
-    state
+    let (id, raw_key) = state
         .store
-        .upsert_config_item(item)
-        .await
+        .auth_store
+        .create_api_key(&alias, &req.scope, req.expires_in_secs)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
     Ok(Json(CreateApiKeyResponse {
@@ -436,95 +370,38 @@ pub(super) async fn delete_api_key_handler(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     // Disable rather than hard-delete so audit trail is preserved
-    let items = state
+    match state
         .store
-        .list_config_items(Some("api_key".to_string()))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-
-    let existing = items.into_iter().find(|ci| ci.id == id);
-    match existing {
-        Some(mut item) => {
-            item.enabled = false;
-            state
-                .store
-                .upsert_config_item(item)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-            Ok(StatusCode::NO_CONTENT)
-        }
-        None => Err((StatusCode::NOT_FOUND, format!("API key '{id}' not found"))),
+        .auth_store
+        .disable_api_key(&id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+    {
+        true => Ok(StatusCode::NO_CONTENT),
+        false => Err((StatusCode::NOT_FOUND, format!("API key '{id}' not found"))),
     }
 }
 
 /// POST /api/auth/apikeys/{id}/rotate — rotate an existing key (generates
-/// new secret, preserves alias + scope).
+/// new secret, preserves alias + scope). The disable+create is atomic in
+/// `AuthStore::rotate_api_key`: the old key can never remain active after
+/// a successful rotation.
 pub(super) async fn rotate_api_key_handler(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<CreateApiKeyResponse>, (StatusCode, String)> {
-    let items = state
+    match state
         .store
-        .list_config_items(Some("api_key".to_string()))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-
-    let existing = items.into_iter().find(|ci| ci.id == id);
-    match existing {
-        Some(item) => {
-            let old_content: ApiKeyContent =
-                serde_json::from_str(&item.content_json).unwrap_or(ApiKeyContent {
-                    key_hash: String::new(),
-                    scope: "read".to_string(),
-                    expires_at_ns: 0,
-                    last_used_at_ns: 0,
-                });
-
-            let raw_key = format!(
-                "bsk_{}_{}",
-                uuid::Uuid::new_v4().simple(),
-                uuid::Uuid::new_v4().simple()
-            );
-            let key_hash = hex::encode(Sha256::digest(raw_key.as_bytes()));
-
-            let new_id = format!("apikey-{}", &key_hash[..16]);
-            let content = ApiKeyContent {
-                key_hash,
-                scope: old_content.scope,
-                expires_at_ns: old_content.expires_at_ns,
-                last_used_at_ns: 0,
-            };
-
-            // Disable old key
-            let mut old = item.clone();
-            old.enabled = false;
-            let _ = state.store.upsert_config_item(old).await;
-
-            // Create new key
-            let new_item = crate::graph::ConfigItemRecord {
-                id: new_id.clone(),
-                config_class: "api_key".to_string(),
-                vendor: String::new(),
-                name: item.name.clone(),
-                version: String::new(),
-                content_json: serde_json::to_string(&content).unwrap_or_default(),
-                enabled: true,
-                created_by: "ui".to_string(),
-            };
-            state
-                .store
-                .upsert_config_item(new_item)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-
-            Ok(Json(CreateApiKeyResponse {
-                success: true,
-                api_key: raw_key,
-                alias: item.name,
-                id: new_id,
-                error: String::new(),
-            }))
-        }
+        .auth_store
+        .rotate_api_key(&id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+    {
+        Some((new_id, raw_key, alias)) => Ok(Json(CreateApiKeyResponse {
+            success: true,
+            api_key: raw_key,
+            alias,
+            id: new_id,
+            error: String::new(),
+        })),
         None => Ok(Json(CreateApiKeyResponse {
             success: false,
             api_key: String::new(),
@@ -538,8 +415,10 @@ pub(super) async fn rotate_api_key_handler(
 // ── D4-3 T2: RBAC model ─────────────────────────────────────────────────────
 //
 // Roles: admin, operator, viewer, api_readonly.
-// Users stored as ConfigItem (config_class = "user").
-// Sessions stored as ConfigItem (config_class = "session").
+// Users and their verifiers live in `AuthStore` (see below); legacy graph
+// `ConfigItem` rows are imported then quarantined by `ensure_migrated`.
+// Sessions are JWT-based (see JwtClaims above); legacy `bst_` session rows
+// are ignored by the middleware.
 
 /// Roles from least to most privileged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -571,12 +450,10 @@ impl Role {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-struct UserContent {
-    password_hash: String,
-    role: String,
-    last_login_ns: i64,
-}
+// User records live in `AuthStore` as `AuthUser`; legacy graph JSON shapes
+// are parsed only by the migration code in `crate::auth_store`.
+// Sessions are JWT-based (see JwtClaims above); legacy `bst_` session rows
+// are ignored by the middleware.
 
 #[derive(Serialize)]
 pub(super) struct UserSummary {
@@ -653,13 +530,22 @@ pub(super) async fn login_handler(
         .into_response());
     }
 
-    // Look up user in ConfigItem DB
-    let users = state
+    // Migration must complete before auth decisions on upgraded installs.
+    if let Err(e) = state.store.auth_store.ensure_migrated(&state.store).await {
+        tracing::error!(error = %e, "auth storage migration failed — denying login");
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("auth storage unavailable: {e}"),
+        ));
+    }
+
+    // Look up user in protected auth storage (fail closed on storage error)
+    let user_record = state
         .store
-        .list_config_items(Some("user".to_string()))
-        .await
-        .unwrap_or_default();
-    let user_item = users.iter().find(|ci| ci.name == username && ci.enabled);
+        .auth_store
+        .get_user(&username)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let user_item = user_record.filter(|u| u.enabled);
 
     // Check bootstrap admin — vault-first, then env var fallback (D4-7 T5).
     let admin_user =
@@ -674,13 +560,8 @@ pub(super) async fn login_handler(
         && bool::from(req.password.as_bytes().ct_eq(admin_pass.as_bytes()))
     {
         ("admin".to_string(), true)
-    } else if let Some(ci) = user_item {
-        let content: UserContent = serde_json::from_str(&ci.content_json).unwrap_or(UserContent {
-            password_hash: String::new(),
-            role: "viewer".into(),
-            last_login_ns: 0,
-        });
-        if !verify_password(&req.password, &content.password_hash) {
+    } else if let Some(user) = user_item.as_ref() {
+        if !verify_password(&req.password, &user.password_hash) {
             rate_limit_check(&username, false);
             return Ok(Json(LoginResponse {
                 success: false,
@@ -691,7 +572,7 @@ pub(super) async fn login_handler(
             })
             .into_response());
         }
-        (content.role, false)
+        (user.role.clone(), false)
     } else if state.ldap_config.enabled && !state.ldap_config.server_url.is_empty() {
         match ldap_authenticate(&state.ldap_config, &username, &req.password).await {
             Ok(role) => (role, false),
@@ -729,26 +610,20 @@ pub(super) async fn login_handler(
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
     };
 
-    // Update last_login_ns on the user record (skip for env admin)
+    // Update last_login_ns on the user record (skip for env admin).
+    // Re-hash from legacy SHA-256 to Argon2id on next login.
     if !is_env_admin {
-        let now_ns = super::now_ns();
-        if let Some(ci) = user_item {
-            let mut content: UserContent =
-                serde_json::from_str(&ci.content_json).unwrap_or(UserContent {
-                    password_hash: String::new(),
-                    role: "viewer".into(),
-                    last_login_ns: 0,
-                });
-            // Re-hash from legacy SHA-256 to Argon2id on next login
-            if !content.password_hash.starts_with("$argon2") {
+        if let Some(user) = user_item {
+            let mut updated = user.clone();
+            if !updated.password_hash.starts_with("$argon2") {
                 if let Ok(new_hash) = hash_password(&req.password) {
-                    content.password_hash = new_hash;
+                    updated.password_hash = new_hash;
                 }
             }
-            content.last_login_ns = now_ns;
-            let mut updated = ci.clone();
-            updated.content_json = serde_json::to_string(&content).unwrap_or_default();
-            let _ = state.store.upsert_config_item(updated).await;
+            updated.last_login_ns = super::now_ns();
+            if let Err(e) = state.store.auth_store.upsert_user(&updated) {
+                tracing::warn!(username = %username, error = %e, "failed to update last_login");
+            }
         }
     }
 
@@ -802,19 +677,20 @@ pub(super) async fn logout_handler(
     }
 
     if let Some(bearer) = bearer_token {
-        // Verify and extract claims to get jti for denylist
+        // Verify and extract claims to get jti for denylist. A revocation
+        // storage failure must surface as an error — never silently skip
+        // denylisting.
         if let Ok(claims) = verify_jwt(&bearer, &state.store).await {
-            let item = crate::graph::ConfigItemRecord {
-                id: format!("jwt-revoked-{}", claims.jti),
-                config_class: "jwt_revoked".to_string(),
-                vendor: String::new(),
-                name: claims.sub,
-                version: String::new(),
-                content_json: serde_json::json!({"exp": claims.exp}).to_string(),
-                enabled: true,
-                created_by: "logout".to_string(),
-            };
-            let _ = state.store.upsert_config_item(item).await;
+            state
+                .store
+                .auth_store
+                .revoke_jwt(&claims.jti, claims.exp.saturating_mul(1_000_000_000))
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("revocation store unavailable: {e:#}"),
+                    )
+                })?;
         }
     }
     let mut resp = StatusCode::NO_CONTENT.into_response();
@@ -831,22 +707,18 @@ pub(super) async fn logout_handler(
 pub(super) async fn list_users_handler(
     State(state): State<AppState>,
 ) -> Result<Json<UserListResponse>, (StatusCode, String)> {
-    let items = state
+    let users = state
         .store
-        .list_config_items(Some("user".to_string()))
-        .await
-        .unwrap_or_default();
-    let users = items
-        .iter()
-        .filter_map(|ci| {
-            let content: UserContent = serde_json::from_str(&ci.content_json).ok()?;
-            Some(UserSummary {
-                id: ci.id.clone(),
-                username: ci.name.clone(),
-                role: content.role,
-                enabled: ci.enabled,
-                last_login_ns: content.last_login_ns,
-            })
+        .auth_store
+        .list_users()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+        .into_iter()
+        .map(|u| UserSummary {
+            id: format!("user-{}", u.username.to_lowercase().replace(' ', "-")),
+            username: u.username,
+            role: u.role,
+            enabled: u.enabled,
+            last_login_ns: u.last_login_ns,
         })
         .collect();
     Ok(Json(UserListResponse { users }))
@@ -879,26 +751,19 @@ pub(super) async fn create_user_handler(
     // Hash with Argon2id
     let pw_hash =
         hash_password(&req.password).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let content = UserContent {
+    let user = crate::auth_store::AuthUser {
+        username: username.clone(),
         password_hash: pw_hash,
         role: role.clone(),
-        last_login_ns: 0,
-    };
-    let id = format!("user-{}", username.to_lowercase().replace(' ', "-"));
-    let item = crate::graph::ConfigItemRecord {
-        id,
-        config_class: "user".to_string(),
-        vendor: String::new(),
-        name: username.clone(),
-        version: String::new(),
-        content_json: serde_json::to_string(&content).unwrap_or_default(),
         enabled: true,
-        created_by: "admin".to_string(),
+        last_login_ns: 0,
+        created_at_ns: 0,
+        updated_at_ns: 0,
     };
     state
         .store
-        .upsert_config_item(item)
-        .await
+        .auth_store
+        .upsert_user(&user)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
     Ok(Json(
@@ -906,23 +771,30 @@ pub(super) async fn create_user_handler(
     ))
 }
 
-/// DELETE /api/auth/users/{id} — disable a user.
+/// DELETE /api/auth/users/{id} — disable a user. Accepts either the
+/// `user-<name>` record id (as returned by list_users) or the bare username.
 pub(super) async fn delete_user_handler(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let items = state
+    let users = state
         .store
-        .list_config_items(Some("user".to_string()))
-        .await
-        .unwrap_or_default();
-    match items.into_iter().find(|ci| ci.id == id) {
-        Some(mut item) => {
-            item.enabled = false;
+        .auth_store
+        .list_users()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let username = users
+        .iter()
+        .find(|u| {
+            u.username == id
+                || format!("user-{}", u.username.to_lowercase().replace(' ', "-")) == id
+        })
+        .map(|u| u.username.clone());
+    match username {
+        Some(name) => {
             state
                 .store
-                .upsert_config_item(item)
-                .await
+                .auth_store
+                .set_user_enabled(&name, false)
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             Ok(StatusCode::NO_CONTENT)
         }
@@ -1290,6 +1162,14 @@ pub async fn auth_middleware(
         _ => return Err(StatusCode::UNAUTHORIZED),
     };
 
+    // Migration must complete before auth decisions on upgraded installs.
+    // A failure here denies the request — never fall back to legacy graph
+    // credential records.
+    if let Err(e) = store.auth_store.ensure_migrated(&store).await {
+        tracing::error!(error = %e, "auth storage migration failed — denying request");
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     let mut authenticated_role: Option<Role> = None;
     let mut authenticated_subject = None;
     let mut authenticated_restricted_scope: Option<RoutingAccessScope> = None;
@@ -1298,65 +1178,53 @@ pub async fn auth_middleware(
     // --- Path 1: JWT (bst_ prefix is legacy; JWTs are opaque base64url strings) ---
     if !bearer.starts_with("bsk_") {
         if let Ok(claims) = verify_jwt(&bearer, &store).await {
-            let revoked = store
-                .list_config_items(Some("jwt_revoked".to_string()))
-                .await
-                .unwrap_or_default();
-            let is_revoked = revoked
-                .iter()
-                .any(|ci| ci.id == format!("jwt-revoked-{}", claims.jti) && ci.enabled);
-            if !is_revoked {
-                authenticated_role = Some(Role::from_str(&claims.role));
-                authenticated_subject = Some(format!("user:{}", claims.sub));
+            // Revocation lookup failure must deny — an errored lookup is
+            // not proof the token is still valid.
+            match store.auth_store.is_jwt_revoked(&claims.jti) {
+                Ok(true) => {}
+                Ok(false) => {
+                    authenticated_role = Some(Role::from_str(&claims.role));
+                    authenticated_subject = Some(format!("user:{}", claims.sub));
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "jwt revocation lookup failed — denying");
+                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+                }
             }
         }
     }
 
     // --- Path 2: API key (bsk_ prefix) — constant-time hash comparison ---
     if authenticated_role.is_none() && bearer.starts_with("bsk_") {
-        let presented_hash = hex::encode(Sha256::digest(bearer.as_bytes()));
-        let items = store
-            .list_config_items(Some("api_key".to_string()))
-            .await
-            .unwrap_or_default();
-        for ci in &items {
-            if !ci.enabled {
-                continue;
-            }
-            let Ok(content) = serde_json::from_str::<ApiKeyContent>(&ci.content_json) else {
-                continue;
-            };
-            let hashes_match =
-                bool::from(content.key_hash.as_bytes().ct_eq(presented_hash.as_bytes()));
-            if !hashes_match {
-                continue;
-            }
-            if content.expires_at_ns > 0 && super::now_ns() > content.expires_at_ns {
-                continue;
-            }
-
-            match parse_scope_grant(&content.scope) {
-                ScopeGrant::Global(role) => {
-                    authenticated_role = Some(role);
-                    authenticated_restricted_scope = None;
-                    raw_api_key_scope = Some(content.scope);
+        match store.auth_store.authenticate_api_key(&bearer) {
+            Ok(Some(key)) => {
+                match parse_scope_grant(&key.scope) {
+                    ScopeGrant::Global(role) => {
+                        authenticated_role = Some(role);
+                        authenticated_restricted_scope = None;
+                        raw_api_key_scope = Some(key.scope.clone());
+                    }
+                    ScopeGrant::Restricted { role, scope } => {
+                        authenticated_role = Some(role);
+                        authenticated_restricted_scope = Some(scope);
+                        raw_api_key_scope = Some(key.scope.clone());
+                    }
+                    ScopeGrant::Invalid(reason) => {
+                        tracing::warn!(
+                            scope = %key.scope,
+                            reason = %reason,
+                            "API key has invalid or malformed scope grant — failing closed"
+                        );
+                        return Err(StatusCode::FORBIDDEN);
+                    }
                 }
-                ScopeGrant::Restricted { role, scope } => {
-                    authenticated_role = Some(role);
-                    authenticated_restricted_scope = Some(scope);
-                    raw_api_key_scope = Some(content.scope);
-                }
-                ScopeGrant::Invalid(reason) => {
-                    tracing::warn!(
-                        scope = %content.scope,
-                        reason = %reason,
-                        "API key has invalid or malformed scope grant — failing closed"
-                    );
-                    return Err(StatusCode::FORBIDDEN);
-                }
+                authenticated_subject = Some(format!("api_key:{}", key.id));
             }
-            authenticated_subject = Some(format!("api_key:{}", ci.id));
-            break;
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "api key store lookup failed — denying");
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            }
         }
     }
 
