@@ -113,6 +113,20 @@ async fn setup() -> TestBed {
 
 impl TestBed {
     async fn token(&self, user: &str, role: &str) -> String {
+        // AUTH-C2: src=local JWTs require a live local account — the
+        // middleware uses the stored role, not the token claim.
+        self.store
+            .auth_store
+            .upsert_user(&bonsai::auth_store::AuthUser {
+                username: user.to_string(),
+                password_hash: "test-verifier".to_string(),
+                role: role.to_string(),
+                enabled: true,
+                last_login_ns: 0,
+                created_at_ns: 0,
+                updated_at_ns: 0,
+            })
+            .expect("upsert user");
         mint_jwt(user, role, &self.store).await.expect("mint jwt")
     }
 

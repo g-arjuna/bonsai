@@ -161,6 +161,21 @@ async fn admin_http_inventory_and_audit_do_not_change_authorization() {
         )
         .unwrap(),
     );
+    // AUTH-C2: src=local JWTs require live local accounts.
+    for (u, r) in [("alice", "admin"), ("bob", "viewer"), ("charlie", "operator")] {
+        store
+            .auth_store
+            .upsert_user(&bonsai::auth_store::AuthUser {
+                username: u.into(),
+                password_hash: "test-verifier".into(),
+                role: r.into(),
+                enabled: true,
+                last_login_ns: 0,
+                created_at_ns: 0,
+                updated_at_ns: 0,
+            })
+            .unwrap();
+    }
     let admin = mint_jwt("alice", "admin", &store).await.unwrap();
     let viewer = mint_jwt("bob", "viewer", &store).await.unwrap();
     let operator = mint_jwt("charlie", "operator", &store).await.unwrap();

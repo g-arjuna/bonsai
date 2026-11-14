@@ -161,6 +161,21 @@ async fn live_native_collection_enters_operator_api_and_mcp() {
             ..Default::default()
         })
         .unwrap();
+    // AUTH-C2: src=local JWTs require live local accounts.
+    for (u, r) in [("bn006-operator", "operator"), ("bn006-viewer", "viewer")] {
+        store
+            .auth_store
+            .upsert_user(&bonsai::auth_store::AuthUser {
+                username: u.into(),
+                password_hash: "test-verifier".into(),
+                role: r.into(),
+                enabled: true,
+                last_login_ns: 0,
+                created_at_ns: 0,
+                updated_at_ns: 0,
+            })
+            .unwrap();
+    }
     let operator = mint_jwt("bn006-operator", "operator", &store)
         .await
         .unwrap();

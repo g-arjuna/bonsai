@@ -236,6 +236,19 @@ async fn test_bn005_fail_closed_public_web_auth() {
     assert_eq!(invs_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     // With valid JWT, request is authenticated
+    // AUTH-C2: src=local JWTs require a live local account.
+    store
+        .auth_store
+        .upsert_user(&bonsai::auth_store::AuthUser {
+            username: "operator-user".into(),
+            password_hash: "test-verifier".into(),
+            role: "operator".into(),
+            enabled: true,
+            last_login_ns: 0,
+            created_at_ns: 0,
+            updated_at_ns: 0,
+        })
+        .unwrap();
     let token = mint_jwt("operator-user", "operator", &store).await.unwrap();
     let auth_invs = client
         .get(format!("{base}/api/investigations"))

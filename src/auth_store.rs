@@ -50,11 +50,24 @@ const JWT_SECRET_ENV: &str = "BONSAI_JWT_SECRET";
 ///      against a local attacker who already owns the runtime dir.
 const VAULT_PASSPHRASE_ENV: &str = "BONSAI_VAULT_PASSPHRASE";
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
-/// Schema versions this build can open. v1 → v2 is additive only (the
-/// `auth_quarantine` table); no credential data changes shape.
-const SUPPORTED_SCHEMA_VERSIONS: &[i64] = &[1, 2];
+/// Schema versions this build can open. v1 → v2 added `auth_quarantine`;
+/// v2 → v3 seals quarantined record content (AUTH-C4) — additive only,
+/// existing plaintext quarantine rows are re-encrypted in place on open.
+const SUPPORTED_SCHEMA_VERSIONS: &[i64] = &[1, 2, 3];
+
+/// Bounded number of retired JWT verification keys retained per store
+/// (AUTH-C3). Oldest retired keys beyond this count are dropped even if
+/// their overlap window has not closed — rotation churn cannot grow the
+/// key table without bound.
+const JWT_MAX_RETIRED_KEYS: i64 = 8;
+
+/// Migration tombstone/manifest marker identifying records scrubbed by
+/// this migration contract. `is_migration_tombstone` validates the full
+/// structured record — an arbitrary substring match is never enough
+/// (AUTH-C4).
+pub const MIGRATION_MARKER: &str = "bn022-auth-migration-v1";
 
 // ── Record types (typed API — no generic row access) ────────────────────────
 
@@ -132,6 +145,11 @@ struct JwtSecretCache {
     /// separate from `secrets` because `jwt_secret()` must mint with the
     /// active key — never a retired verification-only key.
     active: Option<String>,
+    /// Earliest `verify_until_ns` among the retired keys in `secrets`
+    /// (`i64::MAX` when none). The cache is only authoritative until this
+    /// deadline — an expired retired key must stop authorizing without
+    /// waiting for another rotation or restart (AUTH-C3).
+    verify_deadline_ns: i64,
 }
 
 impl AuthStore {
@@ -239,16 +257,21 @@ impl AuthStore {
                outcome TEXT NOT NULL
              );
              CREATE INDEX IF NOT EXISTS auth_audit_ts ON auth_audit(ts_ns);
-             -- AUTH-R2: recoverable quarantine for legacy credential
-             -- records that cannot be safely imported (malformed or
-             -- conflicting). Content is preserved inside the protected
-             -- store so the graph row can be scrubbed without losing the
-             -- only copy. Never exposed through graph or auth APIs.
+             -- AUTH-R2/AUTH-C4: recoverable quarantine for legacy
+             -- credential records that cannot be safely imported
+             -- (malformed or conflicting). Original content is sealed
+             -- with the same age/passphrase mechanism as JWT secrets —
+             -- content_json holds only non-secret metadata, content_enc
+             -- the ciphertext, content_sha256 the integrity binding used
+             -- for idempotent-retry/conflict detection. Never exposed
+             -- through graph or auth APIs.
              CREATE TABLE IF NOT EXISTS auth_quarantine (
                id INTEGER PRIMARY KEY AUTOINCREMENT,
                record_class TEXT NOT NULL,
                item_id TEXT NOT NULL,
                content_json TEXT NOT NULL,
+               content_sha256 TEXT NOT NULL DEFAULT '',
+               content_enc BLOB,
                reason TEXT NOT NULL,
                quarantined_at_ns INTEGER NOT NULL,
                UNIQUE(record_class, item_id)
@@ -301,6 +324,23 @@ impl AuthStore {
             }
         }
 
+        // v2 → v3 upgrade: seal quarantine content columns on databases
+        // created before AUTH-C4. CREATE TABLE IF NOT EXISTS does not add
+        // columns to an existing table, so ALTER explicitly.
+        let has_sha_col: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('auth_quarantine') \
+             WHERE name = 'content_sha256')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_sha_col {
+            conn.execute_batch(
+                "ALTER TABLE auth_quarantine ADD COLUMN content_sha256 TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE auth_quarantine ADD COLUMN content_enc BLOB;",
+            )
+            .context("failed to upgrade auth_quarantine to sealed-content schema")?;
+        }
+
         restrict_permissions(path)?;
 
         // AUTH-R4: a freshly created keyfile beside a database that already
@@ -325,6 +365,11 @@ impl AuthStore {
                 );
             }
         }
+
+        // AUTH-C4: any quarantine rows written before sealed content
+        // (schema v2, content_enc NULL) are re-encrypted in place now that
+        // the at-rest key is resolved. Idempotent — sealed rows are skipped.
+        seal_legacy_quarantine_plaintext(&conn, &secret_key)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -420,7 +465,8 @@ impl AuthStore {
     }
 
     /// Ensure the process-local JWT secret cache is fresh for the current
-    /// key generation, refreshing it under the store mutex when stale.
+    /// key generation AND the current verification deadline, refreshing it
+    /// under the store mutex when either is stale (AUTH-C3).
     fn ensure_jwt_cache(&self) -> Result<()> {
         let generation = self.jwt_generation.load(Ordering::Acquire);
         {
@@ -429,7 +475,11 @@ impl AuthStore {
                 .lock()
                 .map_err(|_| anyhow!("jwt cache lock poisoned"))?;
             if let Some(entry) = cache.as_ref() {
-                if entry.generation == generation {
+                // Fresh only while the generation matches AND no cached
+                // retired key has passed its verification deadline. An
+                // expired deadline forces a refresh even though no
+                // rotation bumped the generation.
+                if entry.generation == generation && now_ns() < entry.verify_deadline_ns {
                     return Ok(());
                 }
             }
@@ -441,15 +491,23 @@ impl AuthStore {
         let conn = self.lock()?;
         let generation = self.jwt_generation.load(Ordering::Acquire);
         let now = now_ns();
-        // Bound retired-key accumulation (AUTH-R5): drop retired keys whose
-        // verification window has closed — they can never verify again.
+        // Bound retired-key accumulation (AUTH-R5/AUTH-C3): drop retired
+        // keys whose verification window has closed, then cap the total
+        // retired count — oldest beyond JWT_MAX_RETIRED_KEYS are dropped
+        // even inside their window so rotation churn stays bounded.
         conn.execute(
             "DELETE FROM jwt_keys WHERE is_active = 0 AND \
              (verify_until_ns IS NULL OR verify_until_ns <= ?1)",
             params![now],
         )?;
+        conn.execute(
+            "DELETE FROM jwt_keys WHERE is_active = 0 AND kid NOT IN (\
+             SELECT kid FROM jwt_keys WHERE is_active = 0 \
+             ORDER BY created_at_ns DESC, kid DESC LIMIT ?1)",
+            params![JWT_MAX_RETIRED_KEYS],
+        )?;
         let mut stmt = conn.prepare(
-            "SELECT kid, is_active, secret_enc, source FROM jwt_keys \
+            "SELECT kid, is_active, secret_enc, source, verify_until_ns FROM jwt_keys \
              WHERE is_active = 1 \
                 OR (verify_until_ns IS NOT NULL AND verify_until_ns > ?1) \
              ORDER BY is_active DESC, created_at_ns DESC",
@@ -460,15 +518,22 @@ impl AuthStore {
                 r.get::<_, i64>(1)?,
                 r.get::<_, Vec<u8>>(2)?,
                 r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?,
             ))
         })?;
         let mut secrets = Vec::new();
         let mut active = None;
+        let mut verify_deadline_ns = i64::MAX;
         for row in rows {
-            let (kid, is_active, enc, source) = row?;
+            let (kid, is_active, enc, source, verify_until) = row?;
             let plain = self.decrypt_jwt_secret(&kid, &enc, &source)?;
             if is_active == 1 && active.is_none() {
                 active = Some(plain.clone());
+            }
+            if is_active == 0 {
+                if let Some(until) = verify_until {
+                    verify_deadline_ns = verify_deadline_ns.min(until);
+                }
             }
             secrets.push(plain);
         }
@@ -480,6 +545,7 @@ impl AuthStore {
             generation,
             secrets,
             active,
+            verify_deadline_ns,
         });
         Ok(())
     }
@@ -514,6 +580,14 @@ impl AuthStore {
     /// install the new key atomically.
     pub fn rotate_jwt_key(&self) -> Result<()> {
         self.rotate_jwt_key_with_overlap(JWT_KEY_OVERLAP_NS)
+    }
+
+    /// Rotate with an explicit retired-key verification overlap
+    /// (`overlap_ns`). Production callers use `rotate_jwt_key`
+    /// (`JWT_KEY_OVERLAP_NS`); the parameter exists for operator tooling
+    /// and tests that need a short synthetic overlap window (AUTH-C3).
+    pub fn rotate_jwt_key_with_overlap_ns(&self, overlap_ns: i64) -> Result<()> {
+        self.rotate_jwt_key_with_overlap(overlap_ns)
     }
 
     /// Emergency rotation for a suspected-compromised signing key
@@ -846,6 +920,48 @@ impl AuthStore {
             params![enabled as i64, now_ns(), username],
         )?;
         Ok(n > 0)
+    }
+
+    /// Record a successful local login using field-scoped conditional
+    /// updates (AUTH-C2). Unlike `upsert_user` with a stale snapshot, this
+    /// can never undo a concurrent disablement, deletion, role reduction
+    /// or password reset:
+    ///
+    /// - `last_login_ns`/`updated_at_ns` are written only while the
+    ///   account is still enabled (0 rows affected after a concurrent
+    ///   disable/delete — which is correct, the token is denied anyway).
+    /// - `new_password_hash` is applied only when `expected_password_hash`
+    ///   still matches the stored verifier — i.e. the exact legacy hash
+    ///   that was just verified. A concurrent password reset wins; the
+    ///   rehash is skipped rather than overwriting the newer verifier.
+    /// - `role` and `enabled` are never written here.
+    ///
+    /// `expected_password_hash`/`new_password_hash` are `Some` together
+    /// only for a legacy (non-Argon2) verifier upgrade; pass `None` for
+    /// a plain last-login update.
+    pub fn record_login(
+        &self,
+        username: &str,
+        expected_password_hash: Option<&str>,
+        new_password_hash: Option<&str>,
+    ) -> Result<()> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let now = now_ns();
+        tx.execute(
+            "UPDATE users SET last_login_ns = ?1, updated_at_ns = ?1 \
+             WHERE username = ?2 AND enabled = 1",
+            params![now, username],
+        )?;
+        if let (Some(expected), Some(new_hash)) = (expected_password_hash, new_password_hash) {
+            tx.execute(
+                "UPDATE users SET password_hash = ?1, updated_at_ns = ?2 \
+                 WHERE username = ?3 AND password_hash = ?4 AND enabled = 1",
+                params![new_hash, now, username, expected],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     // ── API keys ───────────────────────────────────────────────────────────
@@ -1247,6 +1363,14 @@ impl AuthStore {
         // Malformed credential-bearing records: preserved for quarantine,
         // never imported, never silently dropped.
         let mut malformed: Vec<(String, ConfigItemRecord, &'static str)> = Vec::new();
+        // AUTH-C4: per-record disposition for the durable migration
+        // manifest — every original record must end up provably "imported"
+        // (verified in AuthStore), "quarantined" (sealed in
+        // auth_quarantine) or explicitly "retired"/"skipped". Tombstones
+        // from an interrupted earlier run contribute their recorded
+        // dispositions so the manifest covers the whole original set.
+        let mut dispositions: Vec<(String, String, String)> = Vec::new();
+        let env_jwt_override = std::env::var(JWT_SECRET_ENV).is_ok();
         for class in classes {
             let items = store
                 .list_config_items(Some(class.to_string()))
@@ -1254,22 +1378,52 @@ impl AuthStore {
                 .with_context(|| format!("migration: failed to list legacy '{class}' items"))?;
             for item in items {
                 // Skip rows already tombstoned by an earlier (interrupted)
-                // run — they are audit markers, not original records.
+                // run — they are audit markers, not original records. A
+                // *validated* migration tombstone also contributes its
+                // recorded disposition to the manifest; anything else
+                // that merely looks disabled is treated as a record.
                 if is_migration_tombstone(&item) {
+                    if let Some((c, id, d)) = tombstone_disposition(&item) {
+                        dispositions.push((c, id, d));
+                    }
                     continue;
                 }
                 match class {
                     "user" => match parse_legacy_user(&item) {
-                        Ok(u) => legacy_users.push((item, u)),
+                        Ok(u) => {
+                            dispositions.push((
+                                class.to_string(),
+                                item.id.clone(),
+                                "imported".to_string(),
+                            ));
+                            legacy_users.push((item, u));
+                        }
                         Err(_) => {
                             report.malformed_records += 1;
+                            dispositions.push((
+                                class.to_string(),
+                                item.id.clone(),
+                                "quarantined".to_string(),
+                            ));
                             malformed.push((class.to_string(), item, "unparseable user record"));
                         }
                     },
                     "api_key" => match parse_legacy_api_key(&item) {
-                        Ok(k) => legacy_keys.push((item, k)),
+                        Ok(k) => {
+                            dispositions.push((
+                                class.to_string(),
+                                item.id.clone(),
+                                "imported".to_string(),
+                            ));
+                            legacy_keys.push((item, k));
+                        }
                         Err(_) => {
                             report.malformed_records += 1;
+                            dispositions.push((
+                                class.to_string(),
+                                item.id.clone(),
+                                "quarantined".to_string(),
+                            ));
                             malformed.push((
                                 class.to_string(),
                                 item,
@@ -1281,23 +1435,44 @@ impl AuthStore {
                         if item.id == "jwt-secret-v1" && item.enabled {
                             if item.content_json.len() >= 32 {
                                 legacy_jwt_secret = Some(item.content_json.clone());
+                                dispositions.push((
+                                    class.to_string(),
+                                    item.id.clone(),
+                                    if env_jwt_override {
+                                        "skipped_env_override".to_string()
+                                    } else {
+                                        "imported".to_string()
+                                    },
+                                ));
                             } else {
                                 report.malformed_records += 1;
+                                dispositions.push((
+                                    class.to_string(),
+                                    item.id.clone(),
+                                    "quarantined".to_string(),
+                                ));
                                 malformed.push((
                                     class.to_string(),
                                     item,
                                     "jwt_secret record too short",
                                 ));
                             }
-                        } else if item.enabled {
-                            // Any other enabled jwt_secret row is
-                            // credential-bearing but not the canonical
-                            // record — quarantine, don't guess.
+                        } else {
+                            // Any other jwt_secret row — non-canonical id
+                            // or disabled — is credential-bearing but not
+                            // importable: quarantine it (sealed) rather
+                            // than silently destroying recoverable
+                            // secret material during the scrub (AUTH-C4).
                             report.malformed_records += 1;
+                            dispositions.push((
+                                class.to_string(),
+                                item.id.clone(),
+                                "quarantined".to_string(),
+                            ));
                             malformed.push((
                                 class.to_string(),
                                 item,
-                                "non-canonical jwt_secret record",
+                                "non-canonical or disabled jwt_secret record",
                             ));
                         }
                     }
@@ -1316,8 +1491,18 @@ impl AuthStore {
                                     .map(|s| s.saturating_mul(1_000_000_000))
                                     .unwrap_or(i64::MAX);
                             legacy_revocations.push((jti.to_string(), exp_ns));
+                            dispositions.push((
+                                class.to_string(),
+                                item.id.clone(),
+                                "imported".to_string(),
+                            ));
                         } else {
                             report.malformed_records += 1;
+                            dispositions.push((
+                                class.to_string(),
+                                item.id.clone(),
+                                "quarantined".to_string(),
+                            ));
                             malformed.push((
                                 class.to_string(),
                                 item,
@@ -1325,7 +1510,14 @@ impl AuthStore {
                             ));
                         }
                     }
-                    "session" => report.legacy_sessions_seen += 1,
+                    "session" => {
+                        report.legacy_sessions_seen += 1;
+                        dispositions.push((
+                            class.to_string(),
+                            item.id.clone(),
+                            "retired".to_string(),
+                        ));
+                    }
                     _ => {}
                 }
             }
@@ -1419,19 +1611,21 @@ impl AuthStore {
             legacy_jwt_secret.as_deref(),
         )?;
 
-        // ── quarantine: preserve malformed records inside the protected
-        // store BEFORE scrubbing their graph rows (AUTH-R2). Idempotent
-        // via UNIQUE(record_class, item_id).
+        // ── quarantine: seal every unresolved credential-bearing record
+        // inside the protected store BEFORE scrubbing its graph row
+        // (AUTH-R2/AUTH-C4). Content is age-encrypted under the at-rest
+        // key — never stored as unrestricted plaintext. Conflicting
+        // quarantine records abort the migration; they are never
+        // silently accepted via INSERT OR IGNORE.
         self.set_auth_config("migration_stage", "quarantine")?;
         for (class, item, reason) in &malformed {
-            let conn = self.lock()?;
-            conn.execute(
-                "INSERT OR IGNORE INTO auth_quarantine(record_class, item_id, content_json, \
-                 reason, quarantined_at_ns) VALUES(?1, ?2, ?3, ?4, ?5)",
-                params![class, item.id, item.content_json, reason, now_ns()],
-            )?;
+            self.quarantine_legacy_record(class, &item.id, &item.content_json, reason)?;
             report.quarantined_records += 1;
         }
+        // Verify BEFORE scrubbing: every quarantined record must have a
+        // sealed, content-bound row. Scrubbing first would risk losing
+        // the only copy of a recoverable secret.
+        self.verify_quarantine_complete(&malformed)?;
 
         // ── scrub legacy graph rows (disable + tombstone, never delete) ──
         // Runs BEFORE the completion marker so a crash mid-scrub re-runs
@@ -1439,8 +1633,17 @@ impl AuthStore {
         // legacy row — no enabled credential row is left behind, and no
         // credential material remains queryable through generic graph
         // APIs. Verified-equivalent records live authoritatively in
-        // AuthStore; malformed records are recoverable from
-        // auth_quarantine. The graph row becomes an audit tombstone.
+        // AuthStore; malformed records are recoverable (sealed) from
+        // auth_quarantine. The graph row becomes a *validated* migration
+        // tombstone carrying its disposition for manifest reconstruction.
+        let disposition_of = |class: &str, id: &str| -> String {
+            dispositions
+                .iter()
+                .rev()
+                .find(|(c, i, _)| c == class && i == id)
+                .map(|(_, _, d)| d.clone())
+                .unwrap_or_else(|| "scrubbed".to_string())
+        };
         for class in ["user", "api_key", "jwt_secret", "jwt_revoked", "session"] {
             let items = store
                 .list_config_items(Some(class.to_string()))
@@ -1453,6 +1656,10 @@ impl AuthStore {
                 item.enabled = false;
                 item.content_json = serde_json::json!({
                     "migrated_to": "auth_store",
+                    "migration": MIGRATION_MARKER,
+                    "record_class": class,
+                    "item_id": item.id,
+                    "disposition": disposition_of(class, &item.id),
                     "quarantined_at_ns": now_ns(),
                 })
                 .to_string();
@@ -1464,23 +1671,134 @@ impl AuthStore {
             }
         }
         self.set_auth_config("migration_stage", "done")?;
-        // ── switch: auth authority is AuthStore from this point on ───────
-        self.set_auth_config("migration_state", "complete")?;
-        // Durable manifest of the completed migration (counts + stage
-        // history only — never credential material).
-        self.set_auth_config(
-            "migration_report",
-            &serde_json::json!({
-                "users_imported": report.users_imported,
-                "api_keys_imported": report.api_keys_imported,
-                "jwt_secrets_imported": report.jwt_secrets_imported,
-                "jwt_revocations_imported": report.jwt_revocations_imported,
-                "malformed_records": report.malformed_records,
-                "quarantined_rows": report.quarantined_rows,
+
+        // ── switch: durable per-record manifest + completion marker in
+        // ONE transaction (AUTH-C4). The manifest proves every original
+        // record was imported (verified), quarantined (sealed) or
+        // explicitly retired/skipped — counts alone are not evidence.
+        // Writing both atomically means an interruption can never leave
+        // "complete" without its manifest (or vice versa).
+        let mut seen = std::collections::HashSet::new();
+        let records: Vec<serde_json::Value> = dispositions
+            .iter()
+            .filter(|(c, i, _)| seen.insert((c.clone(), i.clone())))
+            .map(|(c, i, d)| {
+                serde_json::json!({"class": c, "id": i, "disposition": d})
             })
-            .to_string(),
-        )?;
+            .collect();
+        let manifest_json = serde_json::json!({
+            "format": "bonsai-auth-migration-v1",
+            "migration": MIGRATION_MARKER,
+            "completed_at_ns": now_ns(),
+            "users_imported": report.users_imported,
+            "api_keys_imported": report.api_keys_imported,
+            "jwt_secrets_imported": report.jwt_secrets_imported,
+            "jwt_revocations_imported": report.jwt_revocations_imported,
+            "legacy_sessions_seen": report.legacy_sessions_seen,
+            "malformed_records": report.malformed_records,
+            "quarantined_records": report.quarantined_records,
+            "quarantined_rows": report.quarantined_rows,
+            "records": records,
+        })
+        .to_string();
+        {
+            let mut conn = self.lock()?;
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT OR REPLACE INTO auth_config(key, value) \
+                 VALUES('migration_report', ?1)",
+                params![manifest_json],
+            )?;
+            tx.execute(
+                "INSERT OR REPLACE INTO auth_config(key, value) \
+                 VALUES('migration_state', 'complete')",
+                [],
+            )?;
+            tx.commit()?;
+        }
         Ok(report)
+    }
+
+    /// AUTH-C4: seal one unresolved legacy record into `auth_quarantine`.
+    /// The original `content_json` is age-encrypted under the at-rest key;
+    /// `content_json` stores only a non-secret descriptor and
+    /// `content_sha256` binds the original bytes for idempotent-retry and
+    /// conflict detection. A same-identity row with DIFFERENT content is a
+    /// hard conflict — never silently accepted.
+    fn quarantine_legacy_record(
+        &self,
+        class: &str,
+        item_id: &str,
+        content_json: &str,
+        reason: &str,
+    ) -> Result<()> {
+        let sha = hex::encode(Sha256::digest(content_json.as_bytes()));
+        let enc = self.seal_content(content_json)?;
+        let descriptor = serde_json::json!({
+            "sealed": "age-encrypted; operator recovery via AuthStore::decrypt_quarantine_content",
+            "original_sha256": sha,
+        })
+        .to_string();
+        let conn = self.lock()?;
+        match conn.execute(
+            "INSERT INTO auth_quarantine(record_class, item_id, content_json, \
+             content_sha256, content_enc, reason, quarantined_at_ns) \
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![class, item_id, descriptor, sha, enc, reason, now_ns()],
+        ) {
+            Ok(_) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                // UNIQUE(record_class, item_id) conflict: acceptable only
+                // when the existing row binds the SAME original content
+                // and reason (idempotent resume). Anything else is a
+                // conflicting quarantine record — fail closed.
+                let (existing_sha, existing_reason): (String, String) = conn.query_row(
+                    "SELECT content_sha256, reason FROM auth_quarantine \
+                     WHERE record_class = ?1 AND item_id = ?2",
+                    params![class, item_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                if existing_sha == sha && existing_reason == reason {
+                    Ok(())
+                } else {
+                    bail!(
+                        "migration conflict: quarantine record ({class}, '{item_id}') \
+                         already exists with different content — resolve manually"
+                    )
+                }
+            }
+            Err(e) => Err(anyhow!("quarantine insert failed for ({class}, '{item_id}'): {e}")),
+        }
+    }
+
+    /// AUTH-C4: prove every malformed record detected this run has a
+    /// sealed quarantine row bound to the same original content — before
+    /// any graph row may be scrubbed.
+    fn verify_quarantine_complete(
+        &self,
+        malformed: &[(String, ConfigItemRecord, &'static str)],
+    ) -> Result<()> {
+        let conn = self.lock()?;
+        for (class, item, _) in malformed {
+            let sha = hex::encode(Sha256::digest(item.content_json.as_bytes()));
+            let n: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM auth_quarantine \
+                 WHERE record_class = ?1 AND item_id = ?2 AND content_sha256 = ?3 \
+                   AND content_enc IS NOT NULL",
+                params![class, item.id, sha],
+                |r| r.get(0),
+            )?;
+            if n == 0 {
+                bail!(
+                    "migration verify failed: quarantined record ({class}, '{}') \
+                     missing or content mismatch before graph scrub",
+                    item.id
+                );
+            }
+        }
+        Ok(())
     }
 
     /// AUTH-R1: reject the migration when any legacy record conflicts
@@ -1653,15 +1971,49 @@ impl AuthStore {
     }
 }
 
-/// True when a graph ConfigItem is already a migration tombstone
-/// (disabled + scrubbed content). Such rows are audit markers, never
-/// original credential records — skipping them is what makes an
-/// interrupted scrub safe to resume (AUTH-R2).
+/// True when a graph ConfigItem is a *validated* migration tombstone:
+/// disabled, and its `content_json` parses as a JSON object carrying the
+/// exact `migrated_to`/`migration` markers written by
+/// `migrate_from_graph` (AUTH-C4). An arbitrary substring — or a
+/// lookalike record that merely contains the marker text — is NOT a
+/// tombstone and will be treated as an original record (fail-safe: it
+/// gets re-validated and re-scrubbed, never silently skipped).
 fn is_migration_tombstone(item: &ConfigItemRecord) -> bool {
-    !item.enabled
-        && item
-            .content_json
-            .contains("\"migrated_to\":\"auth_store\"")
+    if item.enabled {
+        return false;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&item.content_json) else {
+        return false;
+    };
+    v.get("migrated_to").and_then(|m| m.as_str()) == Some("auth_store")
+        && v.get("migration").and_then(|m| m.as_str()) == Some(MIGRATION_MARKER)
+}
+
+/// Extract `(record_class, item_id, disposition)` from a validated
+/// migration tombstone for manifest reconstruction. Returns `None` for
+/// non-tombstone or incomplete records.
+fn tombstone_disposition(item: &ConfigItemRecord) -> Option<(String, String, String)> {
+    if !is_migration_tombstone(item) {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(&item.content_json).ok()?;
+    let class = v.get("record_class")?.as_str()?.to_string();
+    let id = v.get("item_id")?.as_str()?.to_string();
+    let disposition = v.get("disposition")?.as_str()?.to_string();
+    Some((class, id, disposition))
+}
+
+/// Non-secret metadata for one `auth_quarantine` row (AUTH-C4).
+#[derive(Debug, Clone, Serialize)]
+pub struct QuarantineRecordInfo {
+    pub id: i64,
+    pub record_class: String,
+    pub item_id: String,
+    /// SHA-256 of the original `content_json` — integrity binding for
+    /// idempotent retry and conflict detection, not reversible content.
+    pub content_sha256: String,
+    pub reason: String,
+    pub quarantined_at_ns: i64,
 }
 
 // ── Protected backup / recovery (WP4) ────────────────────────────────────────
@@ -1696,8 +2048,22 @@ impl AuthStore {
     /// separately. A graph `/api/db/backup` alone is NOT a complete
     /// disaster-recovery backup — see docs/auth_storage.md §5.
     ///
-    /// `dest_path` must not already exist. The snapshot is created
-    /// owner-only (0600).
+    /// Guarantees (AUTH-C1):
+    /// - `dest_path` must not already exist; installation is an atomic
+    ///   `hard_link` that fails rather than overwrite a destination that
+    ///   appeared after the initial check.
+    /// - The snapshot is staged in an owner-only (0600) file created
+    ///   *before* `VACUUM INTO` runs — the database is never observable
+    ///   with permissive permissions at any point.
+    /// - The manifest is computed by reading the SNAPSHOT file, not the
+    ///   live connection — it describes exactly what was backed up, even
+    ///   if the live store changes during the backup.
+    /// - No store mutex is held while calling other `AuthStore` methods
+    ///   (no nested-lock deadlock); the live connection is used for
+    ///   `VACUUM INTO` only.
+    /// - On any failure after staging, partial artifacts are removed —
+    ///   a failed backup never leaves a half-written snapshot presented
+    ///   as complete.
     pub fn backup_to(&self, dest_path: &Path) -> Result<AuthBackupManifest> {
         if dest_path.exists() {
             bail!(
@@ -1710,58 +2076,121 @@ impl AuthStore {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        {
-            let conn = self.lock()?;
-            // VACUUM INTO cannot bind the path as a parameter on all
-            // SQLite versions; quote it safely.
-            let quoted = dest_path.to_string_lossy().replace('\'', "''");
-            conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))
-                .with_context(|| {
-                    format!("auth backup VACUUM INTO '{}' failed", dest_path.display())
-                })?;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if dest_path.exists() {
-                std::fs::set_permissions(dest_path, std::fs::Permissions::from_mode(0o600))?;
+
+        // Stage into a uniquely-named owner-only file. Pre-creating it
+        // with mode 0600 means VACUUM INTO writes into an already
+        // protected file — the snapshot is never world-readable, even
+        // transiently.
+        let staging = unique_backup_staging(dest_path)?;
+        create_owner_only_file(&staging)?;
+        let result = (|| -> Result<AuthBackupManifest> {
+            {
+                let conn = self.lock()?;
+                // VACUUM INTO accepts a path to an existing EMPTY file;
+                // it writes the consistent snapshot into it.
+                let quoted = staging.to_string_lossy().replace('\'', "''");
+                conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))
+                    .with_context(|| {
+                        format!("auth backup VACUUM INTO '{}' failed", staging.display())
+                    })?;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o600))?;
+            }
+
+            // Manifest describes the SNAPSHOT, read from the staged file
+            // itself — immune to concurrent live-store mutation and to
+            // the nested-lock deadlock of reading via `self`.
+            let snap = Connection::open_with_flags(
+                &staging,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .with_context(|| {
+                format!("failed to open auth backup snapshot '{}'", staging.display())
+            })?;
+            let count = |sql: &str| -> Result<usize> {
+                snap.query_row(sql, [], |r| r.get::<_, i64>(0))
+                    .map(|n| n as usize)
+                    .with_context(|| format!("backup manifest count failed: {sql}"))
+            };
+            let migration_state: Option<String> = snap
+                .query_row(
+                    "SELECT value FROM auth_config WHERE key = 'migration_state'",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let manifest = AuthBackupManifest {
+                format: "bonsai-auth-backup-v1".to_string(),
+                schema_version: SCHEMA_VERSION,
+                created_at_ns: now_ns(),
+                key_source: if std::env::var(VAULT_PASSPHRASE_ENV)
+                    .is_ok_and(|v| !v.is_empty())
+                {
+                    "env:BONSAI_VAULT_PASSPHRASE".to_string()
+                } else {
+                    "keyfile".to_string()
+                },
+                migration_state,
+                user_count: count("SELECT COUNT(*) FROM users")?,
+                api_key_count: count("SELECT COUNT(*) FROM api_keys")?,
+                jwt_key_count: count("SELECT COUNT(*) FROM jwt_keys")?,
+                jwt_revoked_count: count("SELECT COUNT(*) FROM jwt_revoked")?,
+                quarantined_record_count: count("SELECT COUNT(*) FROM auth_quarantine")?,
+            };
+            drop(snap);
+
+            // Atomic no-overwrite install: hard_link fails with EEXIST
+            // if the destination appeared since the initial check.
+            std::fs::hard_link(&staging, dest_path).with_context(|| {
+                format!(
+                    "failed to install auth backup at '{}' (destination must not exist)",
+                    dest_path.display()
+                )
+            })?;
+            let _ = std::fs::remove_file(&staging);
+
+            // Manifest sidecar, written only after the snapshot is
+            // installed. Failure here removes both artifacts — a backup
+            // without its manifest is not a valid backup.
+            let manifest_path = dest_path.with_extension("manifest.json");
+            let json = serde_json::to_string_pretty(&manifest)?;
+            let write_result = (|| -> Result<()> {
+                create_owner_only_file(&manifest_path)?;
+                std::fs::write(&manifest_path, format!("{json}\n"))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(
+                        &manifest_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    )?;
+                }
+                Ok(())
+            })();
+            if let Err(e) = write_result {
+                let _ = std::fs::remove_file(dest_path);
+                let _ = std::fs::remove_file(&manifest_path);
+                return Err(e).context("auth backup manifest write failed; snapshot removed");
+            }
+            Ok(manifest)
+        })();
+        if result.is_err() {
+            // Never leave a partial snapshot or staging file behind.
+            let _ = std::fs::remove_file(&staging);
+            if !dest_path.exists() {
+                // dest was never installed; nothing else to clean.
             }
         }
-
-        let conn = self.lock()?;
-        let count = |sql: &str| -> Result<usize> {
-            conn.query_row(sql, [], |r| r.get::<_, i64>(0))
-                .map(|n| n as usize)
-                .with_context(|| format!("backup manifest count failed: {sql}"))
-        };
-        let manifest = AuthBackupManifest {
-            format: "bonsai-auth-backup-v1".to_string(),
-            schema_version: SCHEMA_VERSION,
-            created_at_ns: now_ns(),
-            key_source: if std::env::var(VAULT_PASSPHRASE_ENV).is_ok_and(|v| !v.is_empty()) {
-                "env:BONSAI_VAULT_PASSPHRASE".to_string()
-            } else {
-                "keyfile".to_string()
-            },
-            migration_state: self.get_auth_config("migration_state")?,
-            user_count: count("SELECT COUNT(*) FROM users")?,
-            api_key_count: count("SELECT COUNT(*) FROM api_keys")?,
-            jwt_key_count: count("SELECT COUNT(*) FROM jwt_keys")?,
-            jwt_revoked_count: count("SELECT COUNT(*) FROM jwt_revoked")?,
-            quarantined_record_count: count("SELECT COUNT(*) FROM auth_quarantine")?,
-        };
-        drop(conn);
-
-        let manifest_path = dest_path.with_extension("manifest.json");
-        let json = serde_json::to_string_pretty(&manifest)?;
-        create_owner_only_file(&manifest_path)?;
-        std::fs::write(&manifest_path, format!("{json}\n"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&manifest_path, std::fs::Permissions::from_mode(0o600))?;
-        }
-        self.audit("system", "auth_backup", dest_path.to_string_lossy().as_ref(), "success");
+        let manifest = result?;
+        self.audit(
+            "system",
+            "auth_backup",
+            dest_path.to_string_lossy().as_ref(),
+            "success",
+        );
         Ok(manifest)
     }
 
@@ -1774,6 +2203,58 @@ impl AuthStore {
         })
         .map(|n| n as usize)
         .map_err(|e| anyhow!("auth_quarantine count failed: {e}"))
+    }
+
+    /// Metadata for every quarantined record — identifiers and integrity
+    /// hashes only, never content (AUTH-C4).
+    pub fn list_quarantine_records(&self) -> Result<Vec<QuarantineRecordInfo>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, record_class, item_id, content_sha256, reason, quarantined_at_ns \
+             FROM auth_quarantine ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(QuarantineRecordInfo {
+                id: r.get(0)?,
+                record_class: r.get(1)?,
+                item_id: r.get(2)?,
+                content_sha256: r.get(3)?,
+                reason: r.get(4)?,
+                quarantined_at_ns: r.get(5)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("auth_quarantine list failed: {e}"))
+    }
+
+    /// Operator recovery path (AUTH-C4): decrypt the sealed original
+    /// `content_json` of a quarantined record. Requires the same at-rest
+    /// key material as the store itself — anyone holding it already has
+    /// full credential access, so this exposes nothing new. Returns
+    /// `Ok(None)` when the record has no sealed content.
+    ///
+    /// Quarantined credentials are NEVER reactivated automatically;
+    /// recovery is a deliberate operator act documented in
+    /// docs/auth_storage.md.
+    pub fn decrypt_quarantine_content(&self, id: i64) -> Result<Option<String>> {
+        let conn = self.lock()?;
+        let enc: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT content_enc FROM auth_quarantine WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match enc {
+            Some(bytes) => Ok(Some(age_open(&self.secret_key, &bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Seal arbitrary content under the at-rest key (migration
+    /// quarantine). Internal.
+    fn seal_content(&self, plaintext: &str) -> Result<Vec<u8>> {
+        age_seal(&self.secret_key, plaintext)
     }
 }
 
@@ -1869,6 +2350,83 @@ fn generate_secret_hex() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+/// Age-encrypt (scrypt passphrase) arbitrary UTF-8 content under the
+/// at-rest key. Shared by JWT secret storage and quarantine sealing.
+fn age_seal(key: &age::secrecy::SecretString, plaintext: &str) -> Result<Vec<u8>> {
+    let encryptor = age::Encryptor::with_user_passphrase(key.clone());
+    let mut ciphertext = Vec::new();
+    let mut writer = encryptor
+        .wrap_output(&mut ciphertext)
+        .context("failed to start content encryption")?;
+    use std::io::Write;
+    writer
+        .write_all(plaintext.as_bytes())
+        .context("failed to encrypt content")?;
+    writer
+        .finish()
+        .context("failed to finish content encryption")?;
+    Ok(ciphertext)
+}
+
+/// Age-decrypt scrypt-passphrase ciphertext. Decryption failure is
+/// fatal — never fall back to plaintext or a default.
+fn age_open(key: &age::secrecy::SecretString, ciphertext: &[u8]) -> Result<String> {
+    let decryptor = age::Decryptor::new_buffered(std::io::BufReader::new(ciphertext))
+        .context("invalid stored ciphertext")?;
+    if !decryptor.is_scrypt() {
+        bail!("stored content is not passphrase-encrypted");
+    }
+    let identity = age::scrypt::Identity::new(key.clone());
+    let mut reader = decryptor
+        .decrypt(std::iter::once(&identity as _))
+        .context("stored content passphrase rejected")?;
+    let mut plaintext = String::new();
+    use std::io::Read;
+    reader
+        .read_to_string(&mut plaintext)
+        .context("failed to read decrypted content")?;
+    Ok(plaintext)
+}
+
+/// Re-encrypt any `auth_quarantine` rows that still hold plaintext
+/// `content_json` with `content_enc IS NULL` (schema v2 leftovers,
+/// AUTH-C4). Runs at `AuthStore::open` once the at-rest key is resolved.
+/// Idempotent: sealed rows are skipped.
+fn seal_legacy_quarantine_plaintext(
+    conn: &Connection,
+    key: &age::secrecy::SecretString,
+) -> Result<()> {
+    let rows: Vec<(i64, String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, content_json, content_sha256 FROM auth_quarantine \
+             WHERE content_enc IS NULL",
+        )?;
+        let mapped = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        mapped.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (id, content_json, sha) in rows {
+        let enc = age_seal(key, &content_json)?;
+        let sha = if sha.is_empty() {
+            hex::encode(Sha256::digest(content_json.as_bytes()))
+        } else {
+            sha
+        };
+        let descriptor = serde_json::json!({
+            "sealed": "age-encrypted; operator recovery via AuthStore::decrypt_quarantine_content",
+            "original_sha256": sha,
+        })
+        .to_string();
+        conn.execute(
+            "UPDATE auth_quarantine SET content_json = ?1, content_sha256 = ?2, \
+             content_enc = ?3 WHERE id = ?4",
+            params![descriptor, sha, enc, id],
+        )?;
+    }
+    Ok(())
 }
 
 fn now_ns() -> i64 {
@@ -2007,6 +2565,21 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
             })
         }
     }
+}
+
+/// Unique staging path for `backup_to`, sibling of the destination.
+fn unique_backup_staging(dest_path: &Path) -> Result<PathBuf> {
+    for i in 0..100u32 {
+        let candidate = dest_path.with_extension(format!(
+            "partial.{}.{}",
+            std::process::id(),
+            i
+        ));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    bail!("could not allocate auth backup staging path")
 }
 
 /// Unique temp path for keyfile staging, created with O_EXCL semantics

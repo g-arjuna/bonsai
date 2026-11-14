@@ -298,6 +298,19 @@ async fn http_compatibility_and_admin_policy_switch_retain_speaker_and_supported
         "routing:read:speaker=192.0.2.1,vrf_rd=0:0,tenant_id=acme",
     )
     .await;
+    // AUTH-C2: src=local JWTs require a live local account.
+    store
+        .auth_store
+        .upsert_user(&bonsai::auth_store::AuthUser {
+            username: "admin".into(),
+            password_hash: "test-verifier".into(),
+            role: "admin".into(),
+            enabled: true,
+            last_login_ns: 0,
+            created_at_ns: 0,
+            updated_at_ns: 0,
+        })
+        .unwrap();
     let admin = mint_jwt("admin", "admin", &store).await.unwrap();
     let web_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", web_listener.local_addr().unwrap());

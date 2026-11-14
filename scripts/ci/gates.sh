@@ -210,6 +210,7 @@ L2_INTEGRATION_TESTS="
   bn021g_collector_trust_foundation
   bn022_graph_read_boundary
   bn022_auth_storage
+  bn022_auth_closure
 "
 
 gate_l2() {

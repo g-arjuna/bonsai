@@ -309,6 +309,21 @@ async fn b12_security_rbac_scoped_reads_and_secret_redaction() {
     assert_eq!(unauth.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     // 2. Viewer JWT can GET /api/routing/v1/routes (200) but CANNOT POST /api/routing/v1/ingest-bmp (403)
+    // AUTH-C2: src=local JWTs require live local accounts.
+    for (u, r) in [("alice-viewer", "viewer"), ("bob-operator", "operator")] {
+        store
+            .auth_store
+            .upsert_user(&bonsai::auth_store::AuthUser {
+                username: u.into(),
+                password_hash: "test-verifier".into(),
+                role: r.into(),
+                enabled: true,
+                last_login_ns: 0,
+                created_at_ns: 0,
+                updated_at_ns: 0,
+            })
+            .unwrap();
+    }
     let viewer_jwt = mint_jwt("alice-viewer", "viewer", &store).await.unwrap();
     let viewer_get = client
         .get(format!("{base}/api/routing/v1/routes"))

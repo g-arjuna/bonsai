@@ -1135,7 +1135,8 @@ impl axum::extract::FromRef<AppState> for Arc<GraphStore> {
 }
 
 pub use auth::{
-    TlsConnection, hash_password, mint_jwt, redact_secrets_in_json, verify_jwt, verify_password,
+    TlsConnection, hash_password, mint_jwt, mint_jwt_for_source, redact_secrets_in_json,
+    verify_jwt, verify_password,
 };
 
 /// Build a standalone Bonsai public router mounting `/health` and `/api/routing/v1/*`

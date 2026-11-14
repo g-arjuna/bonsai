@@ -566,7 +566,14 @@ pub(super) async fn login_handler(
         .auth_store
         .get_user(&username)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-    let user_item = user_record.filter(|u| u.enabled);
+    // AUTH-C2: keep the full local record (enabled or not) — a disabled
+    // local account is authoritative for the local/LDAP paths and must
+    // deny rather than fall through to LDAP. The env-bootstrap admin
+    // check below still runs first: it is explicit operator configuration
+    // independent of the users table.
+    let local_record = user_record;
+    let disabled_local = local_record.as_ref().is_some_and(|u| !u.enabled);
+    let user_item = local_record.filter(|u| u.enabled);
 
     // Check bootstrap admin — vault-first, then env var fallback (D4-7 T5).
     let admin_user =
@@ -601,6 +608,19 @@ pub(super) async fn login_handler(
             .into_response());
         }
         (user.role.clone(), false, "local")
+    } else if disabled_local {
+        // A local account record exists but is disabled: deny. It must
+        // NOT fall through to LDAP — a same-named external identity
+        // cannot resurrect a disabled local account (AUTH-C2).
+        rate_limit_check(&username, false);
+        return Ok(Json(LoginResponse {
+            success: false,
+            token: String::new(),
+            username,
+            role: String::new(),
+            error: "invalid credentials".into(),
+        })
+        .into_response());
     } else if state.ldap_config.enabled && !state.ldap_config.server_url.is_empty() {
         match ldap_authenticate(&state.ldap_config, &username, &req.password).await {
             Ok(role) => (role, false, "ldap"),
@@ -640,18 +660,32 @@ pub(super) async fn login_handler(
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
     };
 
-    // Update last_login_ns on the user record (skip for env admin).
-    // Re-hash from legacy SHA-256 to Argon2id on next login.
+    // Update last_login_ns on the user record (skip for env admin and
+    // LDAP identities — they have no local row). AUTH-C2: use
+    // field-scoped conditional updates, never a stale full-record
+    // upsert — a concurrent disable/delete/role-reduction/password-reset
+    // must not be undone by this bookkeeping write. Legacy SHA-256
+    // verifiers are upgraded to Argon2id via a compare-and-swap on the
+    // exact hash that was verified: if the stored verifier changed
+    // concurrently (password reset), the rehash is skipped.
     if !is_env_admin {
         if let Some(user) = user_item {
-            let mut updated = user.clone();
-            if !updated.password_hash.starts_with("$argon2") {
-                if let Ok(new_hash) = hash_password(&req.password) {
-                    updated.password_hash = new_hash;
-                }
-            }
-            updated.last_login_ns = super::now_ns();
-            if let Err(e) = state.store.auth_store.upsert_user(&updated) {
+            let needs_rehash = !user.password_hash.starts_with("$argon2");
+            let new_hash = if needs_rehash {
+                hash_password(&req.password).ok()
+            } else {
+                None
+            };
+            let expected = if needs_rehash {
+                Some(user.password_hash.as_str())
+            } else {
+                None
+            };
+            if let Err(e) = state.store.auth_store.record_login(
+                &username,
+                expected,
+                new_hash.as_deref(),
+            ) {
                 tracing::warn!(username = %username, error = %e, "failed to update last_login");
             }
         }
@@ -1230,44 +1264,66 @@ pub async fn auth_middleware(
             match store.auth_store.is_jwt_revoked(&claims.jti) {
                 Ok(true) => {}
                 Ok(false) => {
-                    // AUTH-R3: authentication ≠ authorization. A valid
-                    // signature only proves the token was minted; the
-                    // *current* account state decides authority.
+                    // AUTH-C2: authentication ≠ authorization, and the
+                    // identity SOURCE decides which authority applies.
                     //   - "env" bootstrap identities are explicit
-                    //     operator configuration — preserved as-is.
-                    //   - Every other source: if a local AuthStore user
-                    //     record exists for `sub`, it is authoritative —
-                    //     disabled/deleted ⇒ deny, and the LIVE role is
-                    //     used so Admin→Viewer reductions take effect
-                    //     immediately. No local record ⇒ external
-                    //     identity (LDAP/bootstrap-less) ⇒ token role.
-                    //   - Storage failure ⇒ deny (503), never fall back
-                    //     to token claims.
+                    //     operator configuration — token role preserved.
+                    //   - "local" | "ldap" (and legacy tokens with no
+                    //     `src`, treated as "local"): a local AuthStore
+                    //     user record is authoritative for EVERY
+                    //     non-env source — this is the collision policy
+                    //     for shared usernames. Enabled ⇒ the LIVE role
+                    //     is used (Admin→Viewer reductions take effect
+                    //     immediately); disabled ⇒ deny, including for
+                    //     LDAP-minted tokens (a local disable must not be
+                    //     bypassed by an external identity).
+                    //   - No local record: "local" ⇒ deny (missing or
+                    //     deleted account — the token's embedded role is
+                    //     never trusted); "ldap" ⇒ pure external
+                    //     identity, token role stands.
+                    //   - Any other `src` value ⇒ fail closed.
+                    //   - Storage failure ⇒ 503, never fall back to
+                    //     token claims.
                     let src = claims.src.as_deref().unwrap_or("local");
-                    if src == "env" {
-                        authenticated_role = Some(Role::from_str(&claims.role));
-                        authenticated_subject = Some(format!("user:{}", claims.sub));
-                    } else {
-                        match store.auth_store.get_user(&claims.sub) {
-                            Ok(Some(user)) => {
-                                if user.enabled {
-                                    authenticated_role =
-                                        Some(Role::from_str(&user.role));
-                                    authenticated_subject =
-                                        Some(format!("user:{}", claims.sub));
+                    match src {
+                        "env" => {
+                            authenticated_role = Some(Role::from_str(&claims.role));
+                            authenticated_subject = Some(format!("user:{}", claims.sub));
+                        }
+                        "local" | "ldap" => {
+                            match store.auth_store.get_user(&claims.sub) {
+                                Ok(Some(user)) => {
+                                    if user.enabled {
+                                        authenticated_role =
+                                            Some(Role::from_str(&user.role));
+                                        authenticated_subject =
+                                            Some(format!("user:{}", claims.sub));
+                                    }
+                                    // Disabled local account: deny for
+                                    // every non-env source.
                                 }
-                                // Disabled local account: fall through
-                                // to UNAUTHORIZED below.
+                                Ok(None) => {
+                                    if src == "ldap" {
+                                        authenticated_role =
+                                            Some(Role::from_str(&claims.role));
+                                        authenticated_subject =
+                                            Some(format!("user:{}", claims.sub));
+                                    }
+                                    // src == "local" with no local
+                                    // account: deleted/never-provisioned
+                                    // ⇒ deny. Falls through to 401.
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = %e, "account state lookup failed — denying");
+                                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+                                }
                             }
-                            Ok(None) => {
-                                authenticated_role = Some(Role::from_str(&claims.role));
-                                authenticated_subject =
-                                    Some(format!("user:{}", claims.sub));
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "account state lookup failed — denying");
-                                return Err(StatusCode::SERVICE_UNAVAILABLE);
-                            }
+                        }
+                        other => {
+                            tracing::warn!(
+                                src = other,
+                                "JWT with unknown identity source denied"
+                            );
                         }
                     }
                 }

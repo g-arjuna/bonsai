@@ -107,21 +107,38 @@ explicitly staged, guarded by `auth_config.migration_state`:
    migrated; content conflict = error, not overwrite).
 4. `verify` — row counts re-validated; a smaller auth-store count than
    the imported count means import loss ⇒ bail before switching.
-5. `quarantine` — legacy graph rows for `user`, `api_key`, `jwt_secret`,
+5. `quarantine` — every unresolved credential-bearing record (malformed
+   users/API keys, non-canonical or disabled `jwt_secret` rows, bad
+   `jwt_revoked` ids) is sealed into `auth_quarantine`: the original
+   `content_json` is age-encrypted under the at-rest key into
+   `content_enc`, `content_sha256` binds the original bytes, and
+   `content_json` retains only a non-secret descriptor (AUTH-C4 —
+   recoverable secrets are never stored as unrestricted plaintext).
+   A same-identity row with different content is a hard conflict, never
+   `INSERT OR IGNORE`-accepted; every quarantined record is verified
+   present and content-bound BEFORE any graph row is scrubbed.
+   Verified-equivalent records live authoritatively in `AuthStore`.
+6. `scrub` — legacy graph rows for `user`, `api_key`, `jwt_secret`,
    `jwt_revoked` **and** `session` are disabled AND their `content_json`
-   is replaced with an audit tombstone (`{"migrated_to":"auth_store",…}`).
+   is replaced with a *validated* migration tombstone
+   (`{"migrated_to":"auth_store","migration":"bn022-auth-migration-v1",
+   "record_class":…, "item_id":…, "disposition":…}`). Tombstones are
+   recognized only by full JSON validation — an arbitrary substring or
+   lookalike record is treated as an original record (fail-safe).
    Credential material is scrubbed from the live graph so it is not
    queryable through any graph API, including admin queries. Rows are
    never deleted; pre-migration backups/WAL remnants are unaffected
    (see §5 historical exposure).
-6. `switch` — `migration_state = 'complete'` is written **last**, after
-   quarantine succeeds. A crash mid-quarantine re-runs the whole
-   idempotent migration and finishes scrubbing; no enabled credential
-   row is ever left behind with the marker set. From this point auth
-   reads **only** `AuthStore`. There is no fallback to graph records.
-7. `verify_inert` — post-condition checked by tests: migrated graph rows
-   cannot authorize (auth code contains no graph credential reads) and
-   contain no credential material.
+7. `switch` — the durable per-record migration manifest
+   (`auth_config.migration_report`: counts + every record's
+   class/id/disposition — imported, quarantined, retired or
+   env-skipped) and `migration_state = 'complete'` are committed in ONE
+   transaction, so an interruption can never leave a completion marker
+   without its manifest. A crash mid-scrub re-runs the whole idempotent
+   migration: validated tombstones contribute their recorded
+   dispositions, remaining rows are re-validated and finished. From this
+   point auth reads **only** `AuthStore`. There is no fallback to graph
+   records.
 
 The marker makes re-runs no-ops; interruption at any stage resumes from
 the marker. Real credential values never appear in migration evidence —
@@ -134,13 +151,28 @@ only counts, classes and record IDs.
   against missing protected storage). JWT-secret decryption needs either
   `BONSAI_VAULT_PASSPHRASE` or the auto-generated `bonsai_auth.db.key`
   keyfile; `BONSAI_JWT_SECRET` overrides the stored key entirely.
-- **Backup:** `bonsai_auth.db` contains only verifiers + encrypted secret;
-  it must be backed up **together with** its at-rest key — either the
-  `BONSAI_VAULT_PASSPHRASE` (kept in the operator secret store) or the
-  `bonsai_auth.db.key` keyfile. A backup of `bonsai_auth.db` alone cannot
-  decrypt the JWT signing secret. `/api/db/backup` currently exports the
-  graph DB only; including the auth DB in operator backup runbooks is
-  required for recoverability (tracked as a residual item).
+- **Backup (AUTH-C1):** `AuthStore::backup_to(dest)` produces a
+  consistent `VACUUM INTO` snapshot staged in an owner-only file
+  (0600 from creation), installs it atomically without overwriting an
+  existing destination, and writes a `<dest>.manifest.json` computed
+  from the snapshot itself (users/keys/JWT keys/revocations/quarantine
+  counts + migration state — never secret material). The at-rest key is
+  NOT included: recovery needs `BONSAI_VAULT_PASSPHRASE` or the
+  `bonsai_auth.db.key` keyfile backed up separately. `/api/db/backup`
+  exports the graph DB only and is NOT complete disaster recovery.
+- **Restore (offline/privileged — WP3):** stop the service, place the
+  snapshot as `bonsai_auth.db` in the runtime data directory together
+  with the matching keyfile (or set `BONSAI_VAULT_PASSPHRASE`), then
+  start. `AuthStore::open` fails closed on wrong/missing key material.
+  **Rollback caveat:** an older backup cannot know revocations or
+  account changes made after it was taken — restoring it revives that
+  older state. After any restore from a backup older than the incident
+  window, run an emergency JWT rotation
+  (`rotate_jwt_key_emergency`) to invalidate all pre-restore tokens,
+  and re-check `jwt_revoked`/`users` state before declaring recovery.
+  Quarantined records are never reactivated automatically; operator
+  recovery uses `AuthStore::decrypt_quarantine_content(id)` with the
+  same at-rest key, per the runbook in `docs/operations/`.
 - **HA:** single-writer SQLite; cross-process HA is not claimed. Revocation
   and key state are per-node until a replication design exists.
 - **Recovery:** losing `bonsai_auth.db` while keeping the vault passphrase
@@ -154,17 +186,38 @@ only counts, classes and record IDs.
   re-issue credentials on upgraded deployments; this milestone does not
   perform production rotation.
 
-## 6. Revocation guarantee (actual, not aspirational)
+## 6. Revocation and account-authority guarantee (actual, not aspirational)
 
 - **Logout:** the presented JWT's `jti` is inserted into `jwt_revoked`
   with the token's `exp`; verification denies it immediately on this
   node. Revocation lookup errors deny the request (fail closed).
 - **Restart:** `jwt_revoked` is durable in `bonsai_auth.db` — revocations
   survive restarts.
-- **Disabled/deleted users:** disabling a user blocks *new* logins, but
-  already-issued JWTs remain valid until their 24 h `exp` — there is no
-  per-user token invalidation. This is an explicit limitation; a
-  `not_before`/`user_epoch` claim is future work.
+- **Disabled/deleted users and role changes (AUTH-C2):** every JWT
+  carries a `src` claim (`local` | `ldap` | `env`; absent ⇒ `local`).
+  The middleware re-reads the `users` row on EVERY request:
+  - `env` bootstrap identities keep their token role (explicit operator
+    configuration, independent of the users table).
+  - `local` and `ldap` tokens: a local `users` row is authoritative for
+    BOTH sources (the collision policy for shared usernames) — enabled
+    ⇒ the LIVE role is enforced (Admin→Viewer reductions take effect
+    immediately), disabled ⇒ deny. With NO local row, `local` tokens are
+    denied (missing/deleted account) while `ldap` tokens keep their
+    bind-time role (pure external identity).
+  - Unknown `src` values fail closed.
+  - Login bookkeeping uses field-scoped conditional writes
+    (`AuthStore::record_login`): `last_login` updates only while the
+    account is enabled, and a legacy-verifier rehash applies only via
+    compare-and-swap on the exact hash verified — it cannot undo a
+    concurrent disable, delete, role reduction or password reset.
+  - A disabled local account cannot fall through to LDAP at login.
+- **JWT key cache expiry (AUTH-C3):** the process-local decrypted-secret
+  cache is valid only until the earliest retired key's
+  `verify_until_ns`; expiry forces a refresh without rotation or
+  restart. Retired keys are bounded (at most 8 retained). Emergency
+  rotation clears the cache and zeroes every retired verification
+  window. The cache is per-process; cross-process consistency is NOT
+  claimed (single-writer SQLite authority).
 - **API keys:** disable/rotate take effect on the next request (the key
   hash lookup is per-request). Rotation is a single transaction — the
   old key can never remain active after a successful rotation.
