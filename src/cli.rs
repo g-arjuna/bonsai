@@ -1127,3 +1127,299 @@ pub(super) async fn run_self_test() -> Result<()> {
     }
     Ok(())
 }
+
+// ── AuthCliCommand (BN-022 / AUTH-AF1: offline backup & recovery) ─────────
+//
+// Narrow, privileged, OFFLINE operational commands — run on the host with
+// filesystem access while the service is stopped or quiesced. There is
+// deliberately no HTTP endpoint for auth-database backup/restore.
+
+pub(super) enum AuthCliCommand {
+    Help,
+    Backup {
+        db: String,
+        dest: String,
+    },
+    VerifyBackup {
+        snapshot: String,
+        keyfile: Option<String>,
+        manifest: Option<String>,
+    },
+    RotateEmergency {
+        db: String,
+    },
+    SetServiceToken {
+        db: String,
+        name: String,
+    },
+    ListServiceTokens {
+        db: String,
+    },
+}
+
+impl AuthCliCommand {
+    pub(super) fn parse() -> Result<Option<Self>> {
+        let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+        if args.first().map(String::as_str) != Some("auth") {
+            return Ok(None);
+        }
+        args.remove(0);
+        let Some(action) = args.first().cloned() else {
+            return Ok(Some(Self::Help));
+        };
+        args.remove(0);
+
+        fn take(args: &mut std::vec::IntoIter<String>, flag: &str) -> Result<String> {
+            require_flag_value(flag, args.next())
+        }
+
+        match action.as_str() {
+            "backup" => {
+                let mut db = None;
+                let mut dest = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--db" => db = Some(take(&mut iter, "--db")?),
+                        "--dest" => dest = Some(take(&mut iter, "--dest")?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => anyhow::bail!("unknown auth backup argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::Backup {
+                    db: db.ok_or_else(|| anyhow::anyhow!("auth backup requires --db"))?,
+                    dest: dest.ok_or_else(|| anyhow::anyhow!("auth backup requires --dest"))?,
+                }))
+            }
+            "verify-backup" => {
+                let mut snapshot = None;
+                let mut keyfile = None;
+                let mut manifest = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--snapshot" => snapshot = Some(take(&mut iter, "--snapshot")?),
+                        "--keyfile" => keyfile = Some(take(&mut iter, "--keyfile")?),
+                        "--manifest" => manifest = Some(take(&mut iter, "--manifest")?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => anyhow::bail!("unknown auth verify-backup argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::VerifyBackup {
+                    snapshot: snapshot
+                        .ok_or_else(|| anyhow::anyhow!("auth verify-backup requires --snapshot"))?,
+                    keyfile,
+                    manifest,
+                }))
+            }
+            "rotate-emergency" => {
+                let mut db = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--db" => db = Some(take(&mut iter, "--db")?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => {
+                            anyhow::bail!("unknown auth rotate-emergency argument '{other}'")
+                        }
+                    }
+                }
+                Ok(Some(Self::RotateEmergency {
+                    db: db.ok_or_else(|| anyhow::anyhow!("auth rotate-emergency requires --db"))?,
+                }))
+            }
+            "set-service-token" => {
+                let mut db = None;
+                let mut name = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--db" => db = Some(take(&mut iter, "--db")?),
+                        "--name" => name = Some(take(&mut iter, "--name")?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => anyhow::bail!("unknown auth set-service-token argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::SetServiceToken {
+                    db: db.ok_or_else(|| anyhow::anyhow!("auth set-service-token requires --db"))?,
+                    name: name.ok_or_else(|| anyhow::anyhow!("auth set-service-token requires --name"))?,
+                }))
+            }
+            "list-service-tokens" => {
+                let mut db = None;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--db" => db = Some(take(&mut iter, "--db")?),
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => anyhow::bail!("unknown auth list-service-tokens argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::ListServiceTokens {
+                    db: db.ok_or_else(|| anyhow::anyhow!("auth list-service-tokens requires --db"))?,
+                }))
+            }
+            "help" | "--help" | "-h" => Ok(Some(Self::Help)),
+            other => anyhow::bail!("unknown auth command '{other}'"),
+        }
+    }
+}
+
+/// SHA-256 (hex) + size of a file — used to prove verify-backup leaves
+/// the original artifact byte-identical.
+fn digest_file(path: &std::path::Path) -> Result<(String, u64)> {
+    use sha2::Digest;
+    let mut f = std::fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut total = 0u64;
+    use std::io::Read;
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+        total += n as u64;
+    }
+    Ok((hex::encode(hasher.finalize()), total))
+}
+
+pub(super) async fn run_auth_cli(command: AuthCliCommand) -> Result<()> {
+    use bonsai::auth_store::AuthStore;
+
+    match command {
+        AuthCliCommand::Help => {
+            println!("usage: bonsai auth <backup|verify-backup|rotate-emergency|set-service-token|list-service-tokens>");
+            println!("  backup --db <bonsai_auth.db> --dest <backup-path>");
+            println!(
+                "  verify-backup --snapshot <bonsai_auth.db> [--manifest <path>] [--keyfile <bonsai_auth.db.key>]"
+            );
+            println!("  rotate-emergency --db <bonsai_auth.db>");
+            println!("  set-service-token --db <bonsai_auth.db> --name <token-name>   (token read from stdin)");
+            println!("  list-service-tokens --db <bonsai_auth.db>   (names only, never values)");
+        }
+        AuthCliCommand::Backup { db, dest } => {
+            let store = AuthStore::open(std::path::Path::new(&db))?;
+            let manifest = store.backup_to(std::path::Path::new(&dest))?;
+            println!("auth backup complete: {}", dest);
+            println!(
+                "  users={} api_keys={} jwt_keys={} jwt_revoked={} quarantined={} migration_state={:?} key_source={}",
+                manifest.user_count,
+                manifest.api_key_count,
+                manifest.jwt_key_count,
+                manifest.jwt_revoked_count,
+                manifest.quarantined_record_count,
+                manifest.migration_state,
+                manifest.key_source,
+            );
+            println!(
+                "  manifest: {}",
+                std::path::Path::new(&dest)
+                    .with_extension("manifest.json")
+                    .display()
+            );
+            println!(
+                "  NOTE: back up the at-rest key material separately (keyfile or BONSAI_VAULT_PASSPHRASE)."
+            );
+        }
+        AuthCliCommand::VerifyBackup {
+            snapshot,
+            keyfile,
+            manifest,
+        } => {
+            // F3: genuine non-initializing verification. The snapshot is
+            // opened READ-ONLY with NOFOLLOW — no schema DDL runs, no key
+            // material is generated, no file is mutated. The manifest is
+            // mandatory and must be a supported version with a matching
+            // snapshot digest. Original artifacts are hashed before and
+            // after to prove byte-identical preservation.
+            let snapshot_path = std::path::Path::new(&snapshot);
+            let manifest_path = manifest
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| snapshot_path.with_extension("manifest.json"));
+            let keyfile_path = keyfile.as_deref().map(std::path::Path::new);
+
+            let (sha_before, size_before) = digest_file(snapshot_path)?;
+            let report = AuthStore::verify_backup(
+                snapshot_path,
+                &manifest_path,
+                keyfile_path,
+            )?;
+            let (sha_after, size_after) = digest_file(snapshot_path)?;
+            if sha_before != sha_after || size_before != size_after {
+                anyhow::bail!("verification mutated the snapshot artifact");
+            }
+
+            println!("backup verification OK: {}", snapshot);
+            println!("  manifest: {}", manifest_path.display());
+            println!(
+                "  sha256={} size={} schema_version={} migration_state={:?}",
+                report.snapshot_sha256, report.size_bytes, report.schema_version, report.migration_state
+            );
+            println!(
+                "  users={} api_keys={} jwt_keys={} (active={} retired={}) jwt_revoked={} quarantined={}",
+                report.user_count, report.api_key_count, report.jwt_key_count,
+                report.active_jwt_keys, report.retired_jwt_keys,
+                report.jwt_revoked_count, report.quarantined_record_count
+            );
+            println!(
+                "  integrity_check={} foreign_key_violations={}",
+                report.integrity_check, report.foreign_key_violations
+            );
+            if report.key_material_verified {
+                println!("  jwt key material: all {} record(s) decrypt OK (secret not printed)", report.jwt_key_count);
+            } else {
+                println!("  jwt key material: no keys present to verify");
+            }
+            if report.jwt_env_override_active {
+                println!("  WARNING: BONSAI_JWT_SECRET env override is set — runtime JWT verification uses the env secret, not necessarily the verified DB keys");
+            }
+            for w in &report.warnings {
+                println!("  WARNING: {w}");
+            }
+        }
+        AuthCliCommand::RotateEmergency { db } => {
+            let store = AuthStore::open(std::path::Path::new(&db))?;
+            store.rotate_jwt_key_emergency()?;
+            println!("emergency JWT rotation complete: {}", db);
+            if std::env::var("BONSAI_JWT_SECRET")
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false)
+            {
+                println!(
+                    "  WARNING: BONSAI_JWT_SECRET env override is set and remains authoritative — \
+                     tokens signed with it are NOT invalidated by this rotation. Unset it or \
+                     rotate the env secret to invalidate all outstanding tokens."
+                );
+            } else {
+                println!("  every token minted before this rotation is now invalid");
+            }
+        }
+        AuthCliCommand::SetServiceToken { db, name } => {
+            // Token material is read from stdin — never from argv, where
+            // it would be visible in process listings and shell history.
+            use std::io::Read;
+            let mut token = String::new();
+            std::io::stdin().read_to_string(&mut token)?;
+            let token = token.trim();
+            if token.is_empty() {
+                anyhow::bail!("no token supplied on stdin");
+            }
+            let store = AuthStore::open(std::path::Path::new(&db))?;
+            store.set_service_token(&name, token)?;
+            store.audit("cli", "service_token_set", &name, "success");
+            println!("service token '{name}' stored (sealed) in {db}");
+        }
+        AuthCliCommand::ListServiceTokens { db } => {
+            let store = AuthStore::open(std::path::Path::new(&db))?;
+            let names = store.service_token_names()?;
+            if names.is_empty() {
+                println!("no service tokens stored");
+            } else {
+                for n in names {
+                    println!("{n}");
+                }
+            }
+        }
+    }
+    Ok(())
+}

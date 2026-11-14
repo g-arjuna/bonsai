@@ -5,9 +5,9 @@
 //! config_class `change_state_snapshot`. No device writes.
 
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 use lbug::{Connection, Value};
 use serde::Deserialize;
@@ -27,11 +27,8 @@ pub(super) struct CaptureBody {
     phase: String,
 }
 
-async fn routing_get(
-    state: &AppState,
-    path: &str,
-) -> Result<serde_json::Value, String> {
-    let (base, token) = super::resolve_routing_service_endpoint(&state.store).await;
+async fn routing_get(state: &AppState, path: &str) -> Result<serde_json::Value, String> {
+    let (base, token) = super::resolve_routing_service_endpoint(&state.store).await?;
     if base.is_empty() {
         return Err("routing service URL not configured".to_string());
     }
@@ -78,38 +75,32 @@ async fn read_change_cis(
 ) -> Result<(String, String, Vec<String>), (StatusCode, String)> {
     let db = state.store.db();
     let cid = change_id.to_string();
-    let row = tokio::task::spawn_blocking(move || -> Result<
-        (String, String, Vec<String>),
-        String,
-    > {
-        let conn = Connection::new(&db).map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare(
-                "MATCH (c:ChangeRequest {id: $cid}) \
+    let row =
+        tokio::task::spawn_blocking(move || -> Result<(String, String, Vec<String>), String> {
+            let conn = Connection::new(&db).map_err(|e| e.to_string())?;
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (c:ChangeRequest {id: $cid}) \
                  RETURN c.number, c.state, c.affected_cis_json",
-            )
-            .map_err(|e| e.to_string())?;
-        let mut result = conn
-            .execute(
-                &mut stmt,
-                vec![("cid", Value::String(cid.clone()))],
-            )
-            .map_err(|e| e.to_string())?;
-        match result.next() {
-            Some(row) => {
-                let number = crate::graph::common::read_str(&row[0]);
-                let st = crate::graph::common::read_str(&row[1]);
-                let cis_json = crate::graph::common::read_str(&row[2]);
-                let cis: Vec<String> =
-                    serde_json::from_str(&cis_json).unwrap_or_default();
-                Ok((number, st, cis))
+                )
+                .map_err(|e| e.to_string())?;
+            let mut result = conn
+                .execute(&mut stmt, vec![("cid", Value::String(cid.clone()))])
+                .map_err(|e| e.to_string())?;
+            match result.next() {
+                Some(row) => {
+                    let number = crate::graph::common::read_str(&row[0]);
+                    let st = crate::graph::common::read_str(&row[1]);
+                    let cis_json = crate::graph::common::read_str(&row[2]);
+                    let cis: Vec<String> = serde_json::from_str(&cis_json).unwrap_or_default();
+                    Ok((number, st, cis))
+                }
+                _ => Err(format!("change request {cid} not found")),
             }
-            _ => Err(format!("change request {cid} not found")),
-        }
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
     Ok(row)
 }
 
@@ -155,20 +146,18 @@ pub(super) async fn capture_change_snapshot_handler(
         let (route_count, prefixes, routes_ok, routes_err) = match &routes {
             Ok(v) => {
                 let rs = extract_routes(v);
-                let prefs: Vec<String> = rs
-                    .iter()
-                    .filter_map(prefix_of)
-                    .take(MAX_PREFIXES)
-                    .collect();
+                let prefs: Vec<String> =
+                    rs.iter().filter_map(prefix_of).take(MAX_PREFIXES).collect();
                 (rs.len(), prefs, true, None)
             }
             Err(e) => (0, Vec::new(), false, Some(e.clone())),
         };
         let (peer_count, peer_states, peers_ok, peers_err) = match &peers {
             Ok(v) => {
-                let arr = v["peers"].as_array().cloned().unwrap_or_else(|| {
-                    v.as_array().cloned().unwrap_or_default()
-                });
+                let arr = v["peers"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_else(|| v.as_array().cloned().unwrap_or_default());
                 let mut states: std::collections::BTreeMap<String, usize> =
                     std::collections::BTreeMap::new();
                 for p in &arr {
@@ -181,12 +170,7 @@ pub(super) async fn capture_change_snapshot_handler(
                 }
                 (arr.len(), states, true, None)
             }
-            Err(e) => (
-                0,
-                std::collections::BTreeMap::new(),
-                false,
-                Some(e.clone()),
-            ),
+            Err(e) => (0, std::collections::BTreeMap::new(), false, Some(e.clone())),
         };
 
         let captured_at = std::time::SystemTime::now()
@@ -210,7 +194,13 @@ pub(super) async fn capture_change_snapshot_handler(
         });
         let safe_dev: String = dev
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == ':' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == ':' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         // Append-only: each capture gets a unique id so a later capture
         // (e.g. post-recovery) never overwrites an earlier one.
@@ -305,11 +295,13 @@ pub(super) async fn list_change_snapshots_handler(
     for s in &snaps {
         let dev = s["device"].as_str().unwrap_or("").to_string();
         let phase = s["phase"].as_str().unwrap_or("").to_string();
-        let entry = devices.entry(dev.clone()).or_insert_with(|| {
-            serde_json::json!({"device": dev, "baseline": null, "candidate": null})
-        });
+        let entry = devices.entry(dev.clone()).or_insert_with(
+            || serde_json::json!({"device": dev, "baseline": null, "candidate": null}),
+        );
         // Keep the newest snapshot per phase (append-only history).
-        let cur_ts = entry[phase.as_str()]["captured_at_ns"].as_i64().unwrap_or(0);
+        let cur_ts = entry[phase.as_str()]["captured_at_ns"]
+            .as_i64()
+            .unwrap_or(0);
         if entry[phase.as_str()].is_null() || cur_ts < s["captured_at_ns"].as_i64().unwrap_or(0) {
             entry[phase.as_str()] = s.clone();
         }
@@ -419,15 +411,21 @@ fn evaluate_device_invariants(
         && candidate["routes_ok"].as_bool().unwrap_or(false)
         && candidate["peers_ok"].as_bool().unwrap_or(false);
     out.push(if complete {
-        verdict("capture_complete", "pass", "routes and peers captured ok in both phases".into())
+        verdict(
+            "capture_complete",
+            "pass",
+            "routes and peers captured ok in both phases".into(),
+        )
     } else {
         verdict(
             "capture_complete",
             "fail",
             format!(
                 "baseline routes_ok={} peers_ok={}, candidate routes_ok={} peers_ok={}",
-                baseline["routes_ok"], baseline["peers_ok"],
-                candidate["routes_ok"], candidate["peers_ok"]
+                baseline["routes_ok"],
+                baseline["peers_ok"],
+                candidate["routes_ok"],
+                candidate["peers_ok"]
             ),
         )
     });
@@ -464,7 +462,11 @@ fn evaluate_device_invariants(
         verdict(
             "prefix_retention",
             "fail",
-            format!("{} baseline prefixes missing in candidate: {}", removed.len(), shown.join(", ")),
+            format!(
+                "{} baseline prefixes missing in candidate: {}",
+                removed.len(),
+                shown.join(", ")
+            ),
         )
     });
 
@@ -491,7 +493,11 @@ fn evaluate_device_invariants(
             verdict(
                 "expected_prefixes_present",
                 "fail",
-                format!("{} expected prefixes missing: {}", missing.len(), shown.join(", ")),
+                format!(
+                    "{} expected prefixes missing: {}",
+                    missing.len(),
+                    shown.join(", ")
+                ),
             )
         });
     }
@@ -532,9 +538,7 @@ pub(super) async fn verify_change_invariants_handler(
     Path(id): Path<String>,
     body: Option<Json<VerifyBody>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let expected = body
-        .map(|Json(b)| b.expected_prefixes)
-        .unwrap_or_default();
+    let expected = body.map(|Json(b)| b.expected_prefixes).unwrap_or_default();
     let snaps = load_change_snapshots(&state, &id).await?;
     if snaps.is_empty() {
         return Err((
@@ -549,11 +553,13 @@ pub(super) async fn verify_change_invariants_handler(
     for s in &snaps {
         let dev = s["device"].as_str().unwrap_or("").to_string();
         let phase = s["phase"].as_str().unwrap_or("").to_string();
-        let entry = devices.entry(dev.clone()).or_insert_with(|| {
-            serde_json::json!({"device": dev, "baseline": null, "candidate": null})
-        });
+        let entry = devices.entry(dev.clone()).or_insert_with(
+            || serde_json::json!({"device": dev, "baseline": null, "candidate": null}),
+        );
         // Keep the newest snapshot per phase (append-only history).
-        let cur_ts = entry[phase.as_str()]["captured_at_ns"].as_i64().unwrap_or(0);
+        let cur_ts = entry[phase.as_str()]["captured_at_ns"]
+            .as_i64()
+            .unwrap_or(0);
         if entry[phase.as_str()].is_null() || cur_ts < s["captured_at_ns"].as_i64().unwrap_or(0) {
             entry[phase.as_str()] = s.clone();
         }
@@ -664,7 +670,13 @@ pub(super) async fn list_change_invariants_handler(
 mod tests {
     use super::*;
 
-    fn snap(phase: &str, routes_ok: bool, peers_ok: bool, prefixes: &[&str], peer_states: &[(&str, u64)]) -> serde_json::Value {
+    fn snap(
+        phase: &str,
+        routes_ok: bool,
+        peers_ok: bool,
+        prefixes: &[&str],
+        peer_states: &[(&str, u64)],
+    ) -> serde_json::Value {
         serde_json::json!({
             "phase": phase,
             "device": "10.0.0.1",
@@ -703,8 +715,20 @@ mod tests {
 
     #[test]
     fn prefix_loss_and_new_down_fail() {
-        let b = snap("baseline", true, true, &["10.0.0.0/24", "10.1.0.0/24"], &[("up", 2)]);
-        let c = snap("candidate", true, true, &["10.0.0.0/24"], &[("up", 1), ("down", 1)]);
+        let b = snap(
+            "baseline",
+            true,
+            true,
+            &["10.0.0.0/24", "10.1.0.0/24"],
+            &[("up", 2)],
+        );
+        let c = snap(
+            "candidate",
+            true,
+            true,
+            &["10.0.0.0/24"],
+            &[("up", 1), ("down", 1)],
+        );
         let v = evaluate_device_invariants(&b, &c, &["10.9.9.0/24".to_string()]);
         let m = verdicts_map(&v);
         assert_eq!(m["prefix_retention"], "fail");

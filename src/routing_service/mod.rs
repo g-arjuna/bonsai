@@ -3150,9 +3150,16 @@ pub async fn load_projection_checkpoint(
 }
 
 /// Resolve the private routing service `(base_url, token, has_explicit_db_url)` from `GraphStore` (`app_config`) or environment (`R05`/`R06`).
+///
+/// SEC-02 fail-closed contract: a service token that EXISTS in AuthStore
+/// but cannot be decrypted — wrong at-rest key, corrupted ciphertext,
+/// unavailable store — is a hard error, never a fallback to another
+/// credential or to `BONSAI_ROUTING_SERVICE_TOKEN`. The env fallback is
+/// permitted ONLY when no stored credential exists at all (genuine
+/// absence = explicit operator configuration).
 pub async fn resolve_routing_service_endpoint_config(
     store: &crate::graph::GraphStore,
-) -> (String, Option<String>, bool) {
+) -> anyhow::Result<(String, Option<String>, bool)> {
     let items = store
         .list_config_items(Some("app_config".to_string()))
         .await
@@ -3167,23 +3174,38 @@ pub async fn resolve_routing_service_endpoint_config(
         std::env::var("BONSAI_ROUTING_SERVICE_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8081".to_string())
     });
-    let token = items
-        .iter()
-        .find(|i| {
-            (i.name == "routing_service_token" || i.name == "internal_service_token") && i.enabled
-        })
-        .map(|i| i.content_json.trim().trim_matches('"').to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::env::var("BONSAI_ROUTING_SERVICE_TOKEN")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-        });
-    (
+    // F7/F8: service tokens live sealed in AuthStore (`service_tokens`),
+    // never in graph ConfigItems — post-migration graph rows are audit
+    // tombstones whose content must not be mistaken for credentials.
+    // A stored credential that fails to decrypt is FATAL: falling back
+    // to another name or the env var would silently change the
+    // authentication identity (SEC-02).
+    let mut token = None;
+    for name in ["routing_service_token", "internal_service_token"] {
+        match store.auth_store.get_service_token(name) {
+            Ok(Some(t)) if !t.trim().is_empty() => {
+                token = Some(t);
+                break;
+            }
+            Ok(_) => continue,
+            Err(e) => {
+                return Err(e.context(format!(
+                    "service token '{name}' exists in the auth store but \
+                     cannot be decrypted; refusing credential fallback"
+                )));
+            }
+        }
+    }
+    let token = token.or_else(|| {
+        std::env::var("BONSAI_ROUTING_SERVICE_TOKEN")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+    });
+    Ok((
         url.trim_end_matches('/').to_string(),
         token,
         has_explicit_db_url,
-    )
+    ))
 }
 
 /// Project new durable `RibEvent`s after `checkpoint.last_applied_sequence` into `GraphStore`.
@@ -3211,7 +3233,7 @@ pub async fn project_remote_routing_events_to_graph(
     batch_limit: usize,
 ) -> anyhow::Result<ProjectionStepReport> {
     let (base_url, token, has_explicit_db_url) =
-        resolve_routing_service_endpoint_config(store).await;
+        resolve_routing_service_endpoint_config(store).await?;
     if !has_explicit_db_url {
         if let Some(in_proc) = default_routing_service() {
             if !in_proc.projection_semantics_ready {

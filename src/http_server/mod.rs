@@ -1134,7 +1134,10 @@ impl axum::extract::FromRef<AppState> for Arc<GraphStore> {
     }
 }
 
-pub use auth::{mint_jwt, redact_secrets_in_json};
+pub use auth::{
+    TlsConnection, hash_password, mint_jwt, mint_jwt_for_source, redact_secrets_in_json,
+    verify_jwt, verify_password,
+};
 
 /// Build a standalone Bonsai public router mounting `/health` and `/api/routing/v1/*`
 /// with full Bonsai JWT/API-key RBAC middleware (`auth::auth_middleware`) backed by `GraphStore`.
@@ -1217,10 +1220,13 @@ where
         )
 }
 
-async fn resolve_routing_service_endpoint(store: &GraphStore) -> (String, Option<String>) {
-    let (url, token, _) =
-        crate::routing_service::resolve_routing_service_endpoint_config(store).await;
-    (url, token)
+async fn resolve_routing_service_endpoint(
+    store: &GraphStore,
+) -> Result<(String, Option<String>), String> {
+    let (url, token, _) = crate::routing_service::resolve_routing_service_endpoint_config(store)
+        .await
+        .map_err(|e| format!("routing credential resolution failed: {e:#}"))?;
+    Ok((url, token))
 }
 
 fn apply_routing_access_scope_to_query(
@@ -1314,7 +1320,10 @@ async fn routing_v1_proxy_get_handler(
             ));
         }
     }
-    let (base_url, token) = resolve_routing_service_endpoint(&store).await;
+    let (base_url, token) = match resolve_routing_service_endpoint(&store).await {
+        Ok(v) => v,
+        Err(e) => return routing_unavailable_response(&e),
+    };
     let internal_path = uri
         .path()
         .replacen("/api/routing/v1/", "/internal/routing/v1/", 1);
@@ -1533,7 +1542,10 @@ async fn routing_v1_proxy_post_handler(
             ));
         }
     }
-    let (base_url, token) = resolve_routing_service_endpoint(&store).await;
+    let (base_url, token) = match resolve_routing_service_endpoint(&store).await {
+        Ok(v) => v,
+        Err(e) => return routing_unavailable_response(&e),
+    };
     let internal_path = uri
         .path()
         .replacen("/api/routing/v1/", "/internal/routing/v1/", 1);

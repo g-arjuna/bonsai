@@ -113,6 +113,20 @@ async fn setup() -> TestBed {
 
 impl TestBed {
     async fn token(&self, user: &str, role: &str) -> String {
+        // AUTH-C2: src=local JWTs require a live local account — the
+        // middleware uses the stored role, not the token claim.
+        self.store
+            .auth_store
+            .upsert_user(&bonsai::auth_store::AuthUser {
+                username: user.to_string(),
+                password_hash: "test-verifier".to_string(),
+                role: role.to_string(),
+                enabled: true,
+                last_login_ns: 0,
+                created_at_ns: 0,
+                updated_at_ns: 0,
+            })
+            .expect("upsert user");
         mint_jwt(user, role, &self.store).await.expect("mint jwt")
     }
 
@@ -221,11 +235,21 @@ async fn bn022_operator_cannot_query_configitem_via_explorer() {
     assert!(text.contains("bn022-leaf"));
 }
 
-/// 3. Admin retains full read access through Explorer (still mutation-safe).
+/// 3. Admin retains Explorer access, but post-migration the seeded
+/// legacy credential rows have been imported into AuthStore and scrubbed
+/// to tombstones — even an admin graph query cannot recover credential
+/// material. Mutation remains rejected even for admin.
 #[tokio::test]
 async fn bn022_admin_explorer_access_preserved() {
     let bed = setup().await;
     let admin = bed.token("admin-user", "admin").await;
+
+    // First request triggers ensure_migrated → legacy rows quarantined
+    // and scrubbed. A benign query confirms the surface works.
+    let resp = bed
+        .explorer_query(Some(&admin), "MATCH (d:Device) RETURN d.hostname")
+        .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
     let resp = bed
         .explorer_query(
@@ -236,8 +260,12 @@ async fn bn022_admin_explorer_access_preserved() {
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let text = resp.text().await.unwrap();
     assert!(
-        text.contains(SYNTHETIC_SECRET),
-        "admin should still read ConfigItem for diagnostics: {text}"
+        !text.contains(SYNTHETIC_SECRET),
+        "credential material must not survive migration even for admin: {text}"
+    );
+    assert!(
+        text.contains("migrated_to"),
+        "scrubbed row should remain as an audit tombstone: {text}"
     );
 
     // Mutation remains rejected even for admin.
@@ -313,6 +341,33 @@ async fn bn022_config_items_endpoint_filters_sensitive_classes() {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // Admin writing a retired credential class → 410 GONE: auth material
+    // is managed exclusively through /api/auth/* + AuthStore.
+    let admin = bed.token("admin-user", "admin").await;
+    let resp = bed
+        .client
+        .post(format!("http://{}/api/config-items", bed.addr))
+        .bearer_auth(&admin)
+        .json(&serde_json::json!({
+            "id": "bn022-forged-admin",
+            "config_class": "api_key",
+            "vendor": "",
+            "name": "forged",
+            "version": "1",
+            "content_json": "{\"key_hash\":\"forged\"}",
+            "enabled": true,
+            "created_by": "attacker"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::GONE,
+        "admin credential-class write must be retired: {}",
+        resp.status()
+    );
 
     // Operator writing a benign class still works.
     let resp = bed

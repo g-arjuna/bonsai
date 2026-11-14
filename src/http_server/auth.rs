@@ -3,10 +3,14 @@
 //! Security standards applied:
 //! - Passwords: Argon2id (OWASP recommended), 19 MiB memory, 2 iterations, 1 thread.
 //! - Session tokens: signed JWT (HS256), standard claims (sub, role, exp, iat, jti).
-//!   JWT secret loaded from `BONSAI_JWT_SECRET` env var; auto-generated + persisted
-//!   to ConfigItem if not set.
-//! - API key storage: SHA-256 hash of raw key (keys are high-entropy random, not
-//!   passwords — SHA-256 is appropriate here; Argon2 is for low-entropy passwords).
+//!   JWT secret managed by `AuthStore` (protected SQLite + age encryption);
+//!   `BONSAI_JWT_SECRET` env var is an explicit override (>= 32 bytes).
+//! - API key storage: SHA-256 hash of raw key in `AuthStore` (keys are
+//!   high-entropy random, not passwords — SHA-256 is appropriate here;
+//!   Argon2 is for low-entropy passwords). Raw keys are never persisted.
+//! - Users, API keys, JWT keys and revocations live in `bonsai_auth.db`
+//!   (see `docs/auth_storage.md`); the operational graph holds no
+//!   credential material after migration.
 //! - All comparisons: constant-time via `subtle::ConstantTimeEq`.
 //! - Login: rate-limited per username (3 attempts / 5 min, 30 min lockout).
 //! - Password policy: ≥16 chars, ≥1 uppercase, ≥1 lowercase, ≥1 digit, ≥1 special char.
@@ -30,6 +34,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -38,7 +43,7 @@ use super::AppState;
 // ── JWT claims ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct JwtClaims {
+pub struct JwtClaims {
     /// Subject: username
     pub sub: String,
     /// Bonsai role string
@@ -49,70 +54,38 @@ pub(crate) struct JwtClaims {
     pub exp: i64,
     /// JWT ID — unique per token for revocation tracking
     pub jti: String,
+    /// Identity source at mint time: "local" | "env" | "ldap".
+    /// Missing on pre-BN-022 tokens → treated as "local" (fail closed:
+    /// a same-named disabled local account still denies the token).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub src: Option<String>,
 }
 
-/// Return the JWT secret, loading from `BONSAI_JWT_SECRET` or auto-generating.
-/// Auto-generated secret is persisted as a ConfigItem so it survives restarts.
-pub(super) async fn get_or_init_jwt_secret(store: &crate::graph::GraphStore) -> String {
-    // Prefer explicit env override
-    if let Ok(secret) = std::env::var("BONSAI_JWT_SECRET") {
-        if secret.len() >= 32 {
-            return secret;
-        }
-        tracing::warn!("BONSAI_JWT_SECRET is set but shorter than 32 bytes — ignoring");
-    }
-
-    // Try persisted auto-generated secret
-    let items = store
-        .list_config_items(Some("jwt_secret".to_string()))
-        .await
-        .unwrap_or_default();
-    if let Some(ci) = items
-        .into_iter()
-        .find(|ci| ci.id == "jwt-secret-v1" && ci.enabled)
-    {
-        if ci.content_json.len() >= 32 {
-            return ci.content_json;
-        }
-    }
-
-    // Generate a new 64-byte hex secret and persist it
-    let secret = hex::encode({
-        use sha2::Sha256;
-        // Combine UUID entropy + current time for seeding
-        let seed = format!("{}{}", uuid::Uuid::new_v4(), super::now_ns());
-        Sha256::digest(seed.as_bytes()).to_vec()
-    });
-    let secret2 = format!(
-        "{}{}",
-        hex::encode(Sha256::digest(format!("{}A", &secret).as_bytes())),
-        hex::encode(Sha256::digest(format!("{}B", &secret).as_bytes()))
-    );
-
-    let ci = crate::graph::ConfigItemRecord {
-        id: "jwt-secret-v1".to_string(),
-        config_class: "jwt_secret".to_string(),
-        vendor: String::new(),
-        name: "jwt-secret-v1".to_string(),
-        version: String::new(),
-        content_json: secret2.clone(),
-        enabled: true,
-        created_by: "auto".to_string(),
-    };
-    let _ = store.upsert_config_item(ci).await;
-    tracing::info!(
-        "JWT secret auto-generated and persisted. Set BONSAI_JWT_SECRET env var for explicit control."
-    );
-    secret2
+/// Return the JWT signing secret from protected storage.
+///
+/// `BONSAI_JWT_SECRET` (>= 32 bytes) is an explicit override; otherwise the
+/// active key is read from `AuthStore` — CSPRNG-generated on first use,
+/// age-encrypted under the vault passphrase, stable across restarts.
+/// All failure modes (short env key, missing vault passphrase, storage
+/// error) are hard errors — never a transient or default key.
+async fn get_or_init_jwt_secret(store: &crate::graph::GraphStore) -> Result<String, String> {
+    store
+        .auth_store
+        .jwt_secret()
+        .map_err(|e| format!("jwt secret unavailable: {e:#}"))
 }
 
 /// Mint a signed JWT for a user. `store` is needed to resolve the secret.
-pub async fn mint_jwt(
+/// `src` records the identity source ("local" | "env" | "ldap") so the
+/// middleware can distinguish bootstrap/env identities from local
+/// accounts (AUTH-R3).
+pub async fn mint_jwt_for_source(
     username: &str,
     role: &str,
     store: &crate::graph::GraphStore,
+    src: &str,
 ) -> Result<String, String> {
-    let secret = get_or_init_jwt_secret(store).await;
+    let secret = get_or_init_jwt_secret(store).await?;
     let now = super::now_ns() / 1_000_000_000; // seconds
     let exp = now + 24 * 3600; // 24h
     let jti = uuid::Uuid::new_v4().to_string();
@@ -122,6 +95,7 @@ pub async fn mint_jwt(
         iat: now,
         exp,
         jti,
+        src: Some(src.to_string()),
     };
     encode(
         &Header::new(Algorithm::HS256),
@@ -131,26 +105,76 @@ pub async fn mint_jwt(
     .map_err(|e| format!("JWT mint failed: {e}"))
 }
 
-/// Verify a JWT and return claims. Validates signature, expiry, algorithm.
-pub(crate) async fn verify_jwt(
+/// Mint a JWT without an explicit source marker (treated as "local" by
+/// the middleware's account-authority check).
+pub async fn mint_jwt(
+    username: &str,
+    role: &str,
+    store: &crate::graph::GraphStore,
+) -> Result<String, String> {
+    mint_jwt_for_source(username, role, store, "local").await
+}
+
+/// Verify a JWT and return claims. Validates signature against every
+/// currently-valid signing key (active + in-overlap retired), expiry and
+/// algorithm. Storage failure while listing candidates is an error.
+pub async fn verify_jwt(
     token: &str,
     store: &crate::graph::GraphStore,
 ) -> Result<JwtClaims, String> {
-    let secret = get_or_init_jwt_secret(store).await;
+    let candidates = store
+        .auth_store
+        .jwt_verify_candidates()
+        .map_err(|e| format!("jwt key lookup failed: {e:#}"))?;
+    if candidates.is_empty() {
+        return Err("no JWT signing keys available".to_string());
+    }
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
-    decode::<JwtClaims>(
-        token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
-    )
-    .map(|td| td.claims)
-    .map_err(|e| format!("JWT invalid: {e}"))
+    let mut last_err = String::new();
+    for secret in &candidates {
+        match decode::<JwtClaims>(
+            token,
+            &DecodingKey::from_secret(secret.as_bytes()),
+            &validation,
+        ) {
+            Ok(td) => return Ok(td.claims),
+            Err(e) => last_err = format!("JWT invalid: {e}"),
+        }
+    }
+    Err(last_err)
 }
 
 // ── Rate limiting (brute-force lockout) ───────────────────────────────────────
 
-/// Per-username login attempt tracking.
+const RATE_LIMIT_MAX_ATTEMPTS: u32 = 3;
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
+const RATE_LIMIT_LOCKOUT: Duration = Duration::from_secs(1800); // 30 minutes
+/// Bound on tracked usernames — a password-spray of distinct names must
+/// not grow the map without limit. Inactive entries are evicted FIFO.
+const LOGIN_TRACK_MAX_ENTRIES: usize = 8192;
+/// Bound on tracked source IPs for the supplementary per-source limiter.
+const SOURCE_TRACK_MAX_ENTRIES: usize = 4096;
+/// Per-source failure threshold: more lenient than the per-account limit
+/// because many legitimate users can share one NAT/proxy address.
+const SOURCE_RATE_LIMIT_MAX_ATTEMPTS: u32 = 20;
+/// Global bound on failures that can be attributed to NO tracker (the
+/// per-username tracker is saturated with live entries). Once exceeded,
+/// untracked usernames are rejected until the window/lockout expires —
+/// closing the saturation gap without unbounded allocation.
+const OVERFLOW_RATE_LIMIT_MAX_ATTEMPTS: u32 = 10;
+/// Hard bound on the insertion-order queue's length (SEC-07). The queue
+/// may accumulate stale references — `record_login_success` removes map
+/// entries without touching `order` — so it is compacted once it exceeds
+/// this bound. After compaction `order.len() <= map.len()`, keeping the
+/// whole tracker memory-bounded.
+const LOGIN_ORDER_HARD_CAP: usize = LOGIN_TRACK_MAX_ENTRIES * 2;
+/// Bounds concurrent expensive credential verification (Argon2id
+/// ~19 MiB per attempt; LDAP binds are network operations). Without it,
+/// many parallel logins all pass `login_is_locked` before any failure is
+/// recorded, giving unbounded concurrent verification work (SEC-07A).
+const LOGIN_VERIFY_MAX_INFLIGHT: usize = 8;
+
 #[derive(Default)]
 struct LoginAttempts {
     count: u32,
@@ -158,59 +182,384 @@ struct LoginAttempts {
     locked_until: Option<Instant>,
 }
 
-const RATE_LIMIT_MAX_ATTEMPTS: u32 = 3;
-const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
-const RATE_LIMIT_LOCKOUT: Duration = Duration::from_secs(1800); // 30 minutes
-
-lazy_static::lazy_static! {
-    static ref LOGIN_ATTEMPTS: Mutex<HashMap<String, LoginAttempts>> = Mutex::new(HashMap::new());
+#[derive(Default)]
+struct LoginAttemptTracker {
+    map: HashMap<String, LoginAttempts>,
+    /// Insertion order for bounded FIFO eviction of inactive usernames.
+    order: std::collections::VecDeque<String>,
 }
 
-/// Returns `true` if the username is currently rate-limited (locked out).
-/// Records a failed attempt if `success` is false; clears state if `success` is true.
-fn rate_limit_check(username: &str, success: bool) -> bool {
-    let mut map = match LOGIN_ATTEMPTS.lock() {
-        Ok(m) => m,
-        Err(_) => return false, // Don't block on poisoned mutex
-    };
-    let entry = map.entry(username.to_lowercase()).or_default();
-    let now = Instant::now();
+lazy_static::lazy_static! {
+    static ref LOGIN_ATTEMPTS: Mutex<LoginAttemptTracker> = Mutex::new(LoginAttemptTracker::default());
+    /// Supplementary per-source-IP tracker. Counts EVERY failed login
+    /// regardless of whether the username could be tracked, so saturating
+    /// the per-username map cannot leave an attacker unlimited attempts.
+    /// Keyed by TCP peer address only — forwarded headers are never
+    /// trusted for identity.
+    static ref LOGIN_SOURCE_ATTEMPTS: Mutex<SourceAttemptTracker> =
+        Mutex::new(SourceAttemptTracker::default());
+    /// Single bounded bucket for failures that fit no tracker: reached
+    /// only when the per-username map is saturated with live entries.
+    /// O(1) memory.
+    static ref LOGIN_OVERFLOW_ATTEMPTS: Mutex<LoginAttempts> =
+        Mutex::new(LoginAttempts::default());
+    /// Bounds concurrent expensive credential verification — see
+    /// `LOGIN_VERIFY_MAX_INFLIGHT`.
+    static ref LOGIN_VERIFY_PERMITS: tokio::sync::Semaphore =
+        tokio::sync::Semaphore::new(LOGIN_VERIFY_MAX_INFLIGHT);
+}
 
-    // Clear if lockout has expired
-    if let Some(locked_until) = entry.locked_until {
-        if now >= locked_until {
-            entry.locked_until = None;
-            entry.count = 0;
-            entry.window_start = None;
-        } else if !success {
-            return true; // Still locked
+#[derive(Default)]
+struct SourceAttemptTracker {
+    map: HashMap<IpAddr, LoginAttempts>,
+    /// Insertion order for bounded stale-only eviction.
+    order: std::collections::VecDeque<IpAddr>,
+}
+
+/// Lock the tracker, recovering from poisoning instead of failing open.
+/// A poisoned mutex previously returned `false` ("not locked") which
+/// disabled rate limiting entirely; recovering the guard keeps
+/// enforcement active with at worst slightly stale counters.
+fn attempts_guard() -> std::sync::MutexGuard<'static, LoginAttemptTracker> {
+    match LOGIN_ATTEMPTS.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!(
+                "login rate-limit mutex poisoned — recovering guard; enforcement continues"
+            );
+            e.into_inner()
         }
     }
+}
 
-    if success {
+fn source_attempts_guard() -> std::sync::MutexGuard<'static, SourceAttemptTracker> {
+    match LOGIN_SOURCE_ATTEMPTS.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!(
+                "login source rate-limit mutex poisoned — recovering guard; enforcement continues"
+            );
+            e.into_inner()
+        }
+    }
+}
+
+fn overflow_attempts_guard() -> std::sync::MutexGuard<'static, LoginAttempts> {
+    match LOGIN_OVERFLOW_ATTEMPTS.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!(
+                "login overflow rate-limit mutex poisoned — recovering guard; enforcement continues"
+            );
+            e.into_inner()
+        }
+    }
+}
+
+/// An entry is stale — safe to evict — only when neither an active
+/// lockout nor a live rate-limit window protects it.
+fn entry_is_stale(e: &LoginAttempts, now: Instant) -> bool {
+    let locked = e.locked_until.is_some_and(|l| now < l);
+    let window_live = e
+        .window_start
+        .is_some_and(|ws| now.duration_since(ws) < RATE_LIMIT_WINDOW);
+    !locked && !window_live
+}
+
+/// Read-side lockout check: returns true while `entry` is inside an
+/// active lockout; an expired lockout resets the entry to a fresh state.
+fn entry_is_locked(entry: &mut LoginAttempts) -> bool {
+    let now = Instant::now();
+    if let Some(locked_until) = entry.locked_until {
+        if now < locked_until {
+            return true;
+        }
+        entry.locked_until = None;
         entry.count = 0;
         entry.window_start = None;
-        entry.locked_until = None;
-        return false;
     }
+    false
+}
 
+#[derive(Debug, PartialEq, Eq)]
+enum AttemptCount {
+    /// Inside an active lockout: not counted, lockout not extended.
+    AlreadyLocked,
+    /// Failure counted within the window.
+    Counted,
+    /// This failure reached the threshold and armed the lockout.
+    Locked,
+}
+
+/// Count one failure against `entry` under the shared window/lockout
+/// policy. Lockouts are never extended by further failures.
+fn count_attempt(entry: &mut LoginAttempts, max_attempts: u32) -> AttemptCount {
+    let now = Instant::now();
+    if entry_is_locked(entry) {
+        return AttemptCount::AlreadyLocked;
+    }
     // Roll the window if older than RATE_LIMIT_WINDOW
-    if let Some(ws) = entry.window_start {
-        if now.duration_since(ws) >= RATE_LIMIT_WINDOW {
+    match entry.window_start {
+        Some(ws) if now.duration_since(ws) >= RATE_LIMIT_WINDOW => {
             entry.count = 0;
             entry.window_start = Some(now);
         }
-    } else {
-        entry.window_start = Some(now);
+        Some(_) => {}
+        None => entry.window_start = Some(now),
     }
-
     entry.count += 1;
-    if entry.count >= RATE_LIMIT_MAX_ATTEMPTS {
+    if entry.count >= max_attempts {
         entry.locked_until = Some(now + RATE_LIMIT_LOCKOUT);
-        tracing::warn!(username = %username, "Login account locked: too many failed attempts");
-        return true;
+        return AttemptCount::Locked;
+    }
+    AttemptCount::Counted
+}
+
+/// Compact the insertion-order queue (SEC-07): drop references whose
+/// map entry no longer exists (removed by `record_login_success` or
+/// eviction) and duplicate references to the same live key. After this
+/// runs `order.len() <= map.len()`, so repeated fail/success cycles
+/// cannot grow the auxiliary queue without bound. Amortized O(len) —
+/// invoked only when the queue exceeds `LOGIN_ORDER_HARD_CAP`.
+fn compact_login_order(tracker: &mut LoginAttemptTracker) {
+    let mut seen = std::collections::HashSet::with_capacity(tracker.map.len());
+    let mut kept = std::collections::VecDeque::with_capacity(tracker.map.len());
+    while let Some(k) = tracker.order.pop_front() {
+        if tracker.map.contains_key(&k) && seen.insert(k.clone()) {
+            kept.push_back(k);
+        }
+    }
+    tracker.order = kept;
+}
+
+/// Make room for one new tracked username under the cardinality bound.
+///
+/// F6-hardening: eviction targets ONLY stale entries — a username whose
+/// rate-limit window has fully expired and which holds no active
+/// lockout. Entries with a live window or an active lockout are
+/// protected, so an attacker cannot flush a victim's lockout (or its
+/// pre-lockout failure count) by flooding distinct usernames. If every
+/// tracked entry is live, the new username is simply not tracked
+/// (bounded memory preserved; the overflow bucket bounds those
+/// failures — see `record_overflow_failure`).
+fn ensure_tracking_capacity(tracker: &mut LoginAttemptTracker, username: &str) {
+    if tracker.map.contains_key(username) || tracker.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+        return;
+    }
+    let now = Instant::now();
+    let is_evictable = |e: &LoginAttempts| entry_is_stale(e, now);
+    // Walk insertion order oldest→newest; set aside protected entries
+    // and requeue them so their relative order is preserved.
+    let mut skipped: Vec<String> = Vec::new();
+    let mut evicted = false;
+    while let Some(old) = tracker.order.pop_front() {
+        match tracker.map.get(&old) {
+            // Stale order reference (entry removed by success/eviction).
+            None => continue,
+            Some(entry) if is_evictable(entry) => {
+                tracker.map.remove(&old);
+                evicted = true;
+                break;
+            }
+            Some(_) => skipped.push(old),
+        }
+    }
+    for key in skipped {
+        tracker.order.push_back(key);
+    }
+    if !evicted {
+        // Order drained or every entry is live: do not track this
+        // username rather than grow unboundedly or evict live state.
+        tracing::warn!(
+            "login rate-limit tracker at capacity with live entries; not tracking new username"
+        );
+    }
+}
+
+/// Returns `true` when the login attempt must be rejected: the username
+/// is inside a lockout window, the source IP is locked, or the username
+/// is untracked while the per-username tracker is saturated and the
+/// global overflow bucket is locked.
+/// Read-only with respect to failure counting: never records an attempt
+/// (F6 — the old combined check+record counted every login request as a
+/// failure before authentication ran).
+fn login_is_locked(username: &str, peer: Option<IpAddr>) -> bool {
+    // Per-source limit applies to every login from that address,
+    // tracked username or not.
+    if let Some(ip) = peer {
+        if source_is_locked(ip) {
+            return true;
+        }
+    }
+    let key = username.to_lowercase();
+    {
+        let mut tracker = attempts_guard();
+        if let Some(entry) = tracker.map.get_mut(&key) {
+            return entry_is_locked(entry);
+        }
+        // Untracked username: the overflow bucket only applies while the
+        // per-username map is full — the exact condition under which the
+        // next failure could not be tracked either. O(1) check; precise
+        // eviction-ability is not worth an O(n) scan per login attempt.
+        if tracker.map.len() >= LOGIN_TRACK_MAX_ENTRIES {
+            drop(tracker);
+            return overflow_is_locked();
+        }
     }
     false
+}
+
+/// Record ONE failed authentication attempt for `username`.
+/// Called exactly once per failed login — never speculatively.
+#[cfg(test)]
+fn record_login_failure(username: &str) {
+    record_login_failure_from(username, None);
+}
+
+/// Record ONE failed authentication attempt, attributing it to the
+/// per-username tracker, the per-source tracker (when the TCP peer is
+/// known) and — only when the username cannot be tracked — the bounded
+/// global overflow bucket.
+fn record_login_failure_from(username: &str, peer: Option<IpAddr>) {
+    if let Some(ip) = peer {
+        record_source_failure(ip);
+    }
+    let mut tracker = attempts_guard();
+    let key = username.to_lowercase();
+    ensure_tracking_capacity(&mut tracker, &key);
+    let is_new = !tracker.map.contains_key(&key);
+    if is_new && tracker.map.len() >= LOGIN_TRACK_MAX_ENTRIES {
+        // Saturated with live entries: this username cannot be tracked.
+        // Its failure still counts — against the bounded overflow bucket
+        // — so untracked names never get unlimited attempts.
+        drop(tracker);
+        record_overflow_failure();
+        return;
+    }
+    // Order refs are pushed only for NEW map entries: pushing on every
+    // failure let the queue grow without bound under repeated attempts.
+    // Success removes map entries without consuming order refs, so the
+    // queue is compacted once it exceeds the hard cap (SEC-07).
+    if tracker.order.len() >= LOGIN_ORDER_HARD_CAP {
+        compact_login_order(&mut tracker);
+    }
+    if is_new {
+        tracker.order.push_back(key.clone());
+    }
+    let entry = tracker.map.entry(key).or_default();
+    if count_attempt(entry, RATE_LIMIT_MAX_ATTEMPTS) == AttemptCount::Locked {
+        tracing::warn!(username = %username, "Login account locked: too many failed attempts");
+    }
+}
+
+// ── Supplementary per-source and overflow limiting ────────────────────────────
+//
+// The per-username tracker alone has a saturation gap: when all
+// LOGIN_TRACK_MAX_ENTRIES slots hold live entries, new usernames cannot
+// be tracked and would otherwise get unlimited attempts. Two bounded
+// supplements close it:
+//
+//   * Per-source-IP: every failure is also counted against the TCP peer
+//     address (never forwarded headers). A source that exceeds
+//     SOURCE_RATE_LIMIT_MAX_ATTEMPTS in the window is locked out for all
+//     usernames, so one attacker cannot spray past the per-account limit.
+//     Threshold is higher than the per-account limit to tolerate shared
+//     NAT/proxy addresses.
+//   * Global overflow: failures for usernames that fit NO tracker (map
+//     saturated with live entries) count against a single O(1) bucket —
+//     regardless of whether the source IP itself is tracked. Once it
+//     locks, untracked usernames are rejected until expiry. Tracked
+//     accounts are unaffected. (SEC-07/WP5.4: the trigger is username
+//     tracker saturation, NOT source-IP saturation.)
+//
+// Residual, documented: an attacker controlling >SOURCE_TRACK_MAX_ENTRIES
+// distinct source addresses AND keeping the username map saturated can
+// still force untracked logins into the overflow bucket — which then
+// rejects ALL untracked usernames (fail closed) rather than allowing
+// unlimited guessing. Process-local state is an accepted limitation of
+// the deployment model (see docs/auth_storage.md § HA note).
+
+/// Make room for one new tracked source under the cardinality bound.
+/// Same stale-only eviction policy as the username tracker.
+fn ensure_source_capacity(tracker: &mut SourceAttemptTracker, ip: IpAddr) {
+    if tracker.map.contains_key(&ip) || tracker.map.len() < SOURCE_TRACK_MAX_ENTRIES {
+        return;
+    }
+    let now = Instant::now();
+    let is_evictable = |e: &LoginAttempts| entry_is_stale(e, now);
+    let mut skipped: Vec<IpAddr> = Vec::new();
+    let mut evicted = false;
+    while let Some(old) = tracker.order.pop_front() {
+        match tracker.map.get(&old) {
+            None => continue,
+            Some(entry) if is_evictable(entry) => {
+                tracker.map.remove(&old);
+                evicted = true;
+                break;
+            }
+            Some(_) => skipped.push(old),
+        }
+    }
+    for key in skipped {
+        tracker.order.push_back(key);
+    }
+    if !evicted {
+        tracing::warn!(
+            "login source rate-limit tracker at capacity with live entries; source untracked"
+        );
+    }
+}
+
+/// Returns `true` when `ip` is currently inside a source lockout window.
+fn source_is_locked(ip: IpAddr) -> bool {
+    let mut tracker = source_attempts_guard();
+    let Some(entry) = tracker.map.get_mut(&ip) else {
+        return false;
+    };
+    entry_is_locked(entry)
+}
+
+/// Record ONE failed login against the source-IP tracker.
+fn record_source_failure(ip: IpAddr) {
+    let mut tracker = source_attempts_guard();
+    ensure_source_capacity(&mut tracker, ip);
+    let is_new = !tracker.map.contains_key(&ip);
+    if is_new && tracker.map.len() >= SOURCE_TRACK_MAX_ENTRIES {
+        return; // saturated — untracked (bounded memory preserved)
+    }
+    if is_new {
+        tracker.order.push_back(ip);
+    }
+    let entry = tracker.map.entry(ip).or_default();
+    if count_attempt(entry, SOURCE_RATE_LIMIT_MAX_ATTEMPTS) == AttemptCount::Locked {
+        tracing::warn!(%ip, "Login source locked: too many failed attempts");
+    }
+}
+
+/// Returns `true` while the global overflow bucket is locked. Applies
+/// only to usernames that cannot be tracked (see `login_is_locked`).
+fn overflow_is_locked() -> bool {
+    let mut overflow = overflow_attempts_guard();
+    entry_is_locked(&mut overflow)
+}
+
+/// Record ONE failure that fit no tracker. Bounded: a single entry.
+fn record_overflow_failure() {
+    let mut overflow = overflow_attempts_guard();
+    if count_attempt(&mut overflow, OVERFLOW_RATE_LIMIT_MAX_ATTEMPTS) == AttemptCount::Locked {
+        tracing::warn!("login overflow bucket locked: untracked usernames rejected until expiry");
+    }
+}
+
+/// Clear all rate-limit state for `username` after a successful login.
+fn record_login_success(username: &str) {
+    let mut tracker = attempts_guard();
+    tracker.map.remove(&username.to_lowercase());
+    // The order ref is left behind deliberately (O(1) removal is not
+    // possible); bound the queue's stale-ref accumulation instead.
+    if tracker.order.len() >= LOGIN_ORDER_HARD_CAP {
+        compact_login_order(&mut tracker);
+    }
 }
 
 // ── Password policy ───────────────────────────────────────────────────────────
@@ -251,7 +600,7 @@ fn check_password_policy(password: &str) -> Result<(), &'static str> {
 
 /// Hash a password with Argon2id (OWASP recommended parameters).
 /// Returns the full PHC string (includes salt + params).
-fn hash_password(password: &str) -> Result<String, String> {
+pub fn hash_password(password: &str) -> Result<String, String> {
     // OWASP minimum: m=19456 (19 MiB), t=2, p=1
     let params = Params::new(19456, 2, 1, None).map_err(|e| format!("argon2 params: {e}"))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
@@ -265,7 +614,7 @@ fn hash_password(password: &str) -> Result<String, String> {
 /// Verify a password against a stored Argon2 PHC hash string.
 /// Also handles legacy SHA-256 hex hashes (migration path).
 /// Returns `Ok(true)` for match, `Ok(false)` for mismatch.
-pub(crate) fn verify_password(password: &str, stored_hash: &str) -> bool {
+pub fn verify_password(password: &str, stored_hash: &str) -> bool {
     if stored_hash.starts_with("$argon2") {
         // Argon2 PHC format
         let Ok(parsed) = PasswordHash::new(stored_hash) else {
@@ -325,13 +674,9 @@ pub(super) struct CreateApiKeyResponse {
     pub error: String,
 }
 
-#[derive(Serialize, Deserialize)]
-struct ApiKeyContent {
-    key_hash: String,
-    scope: String,
-    expires_at_ns: i64,
-    last_used_at_ns: i64,
-}
+// ApiKeyContent / UserContent records now live in `AuthStore`
+// (`crate::auth_store`); legacy graph JSON shapes are parsed only by the
+// migration code there.
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -339,25 +684,22 @@ struct ApiKeyContent {
 pub(super) async fn list_api_keys_handler(
     State(state): State<AppState>,
 ) -> Result<Json<ApiKeyListResponse>, (StatusCode, String)> {
-    let items = state
+    let keys = state
         .store
-        .list_config_items(Some("api_key".to_string()))
-        .await
+        .auth_store
+        .list_api_keys()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
-    let keys: Vec<ApiKeySummary> = items
-        .iter()
-        .filter_map(|ci| {
-            let content: ApiKeyContent = serde_json::from_str(&ci.content_json).ok()?;
-            Some(ApiKeySummary {
-                id: ci.id.clone(),
-                alias: ci.name.clone(),
-                scope: content.scope,
-                created_at_ns: 0, // DB timestamps handled by upsert
-                last_used_at_ns: content.last_used_at_ns,
-                expires_at_ns: content.expires_at_ns,
-                enabled: ci.enabled,
-            })
+    let keys: Vec<ApiKeySummary> = keys
+        .into_iter()
+        .map(|k| ApiKeySummary {
+            id: k.id,
+            alias: k.alias,
+            scope: k.scope,
+            created_at_ns: k.created_at_ns,
+            last_used_at_ns: k.last_used_at_ns,
+            expires_at_ns: k.expires_at_ns,
+            enabled: k.enabled,
         })
         .collect();
 
@@ -380,45 +722,23 @@ pub(super) async fn create_api_key_handler(
         }));
     }
 
-    // Generate a random key from two UUIDs (256 bits of entropy)
-    let raw_key = format!(
-        "bsk_{}_{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    );
-    // SHA-256 is appropriate for high-entropy random API keys (not passwords)
-    let key_hash = hex::encode(Sha256::digest(raw_key.as_bytes()));
+    // F2: reject malformed, unknown and ambiguous scope strings at
+    // creation time — an invalid scope must never be stored where it
+    // would only fail closed later at authentication time.
+    if let ScopeGrant::Invalid(reason) = parse_scope_grant(&req.scope) {
+        return Ok(Json(CreateApiKeyResponse {
+            success: false,
+            api_key: String::new(),
+            alias,
+            id: String::new(),
+            error: format!("invalid scope: {reason}"),
+        }));
+    }
 
-    let now_ns = super::now_ns();
-    let expires_at_ns = if req.expires_in_secs > 0 {
-        now_ns + (req.expires_in_secs * 1_000_000_000)
-    } else {
-        0 // no expiry
-    };
-
-    let id = format!("apikey-{}", &key_hash[..16]);
-    let content = ApiKeyContent {
-        key_hash,
-        scope: req.scope.clone(),
-        expires_at_ns,
-        last_used_at_ns: 0,
-    };
-
-    let item = crate::graph::ConfigItemRecord {
-        id: id.clone(),
-        config_class: "api_key".to_string(),
-        vendor: String::new(),
-        name: alias.clone(),
-        version: String::new(),
-        content_json: serde_json::to_string(&content).unwrap_or_default(),
-        enabled: true,
-        created_by: "ui".to_string(),
-    };
-
-    state
+    let (id, raw_key) = state
         .store
-        .upsert_config_item(item)
-        .await
+        .auth_store
+        .create_api_key(&alias, &req.scope, req.expires_in_secs)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
     Ok(Json(CreateApiKeyResponse {
@@ -436,95 +756,38 @@ pub(super) async fn delete_api_key_handler(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     // Disable rather than hard-delete so audit trail is preserved
-    let items = state
+    match state
         .store
-        .list_config_items(Some("api_key".to_string()))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-
-    let existing = items.into_iter().find(|ci| ci.id == id);
-    match existing {
-        Some(mut item) => {
-            item.enabled = false;
-            state
-                .store
-                .upsert_config_item(item)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-            Ok(StatusCode::NO_CONTENT)
-        }
-        None => Err((StatusCode::NOT_FOUND, format!("API key '{id}' not found"))),
+        .auth_store
+        .disable_api_key(&id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+    {
+        true => Ok(StatusCode::NO_CONTENT),
+        false => Err((StatusCode::NOT_FOUND, format!("API key '{id}' not found"))),
     }
 }
 
 /// POST /api/auth/apikeys/{id}/rotate — rotate an existing key (generates
-/// new secret, preserves alias + scope).
+/// new secret, preserves alias + scope). The disable+create is atomic in
+/// `AuthStore::rotate_api_key`: the old key can never remain active after
+/// a successful rotation.
 pub(super) async fn rotate_api_key_handler(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<CreateApiKeyResponse>, (StatusCode, String)> {
-    let items = state
+    match state
         .store
-        .list_config_items(Some("api_key".to_string()))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-
-    let existing = items.into_iter().find(|ci| ci.id == id);
-    match existing {
-        Some(item) => {
-            let old_content: ApiKeyContent =
-                serde_json::from_str(&item.content_json).unwrap_or(ApiKeyContent {
-                    key_hash: String::new(),
-                    scope: "read".to_string(),
-                    expires_at_ns: 0,
-                    last_used_at_ns: 0,
-                });
-
-            let raw_key = format!(
-                "bsk_{}_{}",
-                uuid::Uuid::new_v4().simple(),
-                uuid::Uuid::new_v4().simple()
-            );
-            let key_hash = hex::encode(Sha256::digest(raw_key.as_bytes()));
-
-            let new_id = format!("apikey-{}", &key_hash[..16]);
-            let content = ApiKeyContent {
-                key_hash,
-                scope: old_content.scope,
-                expires_at_ns: old_content.expires_at_ns,
-                last_used_at_ns: 0,
-            };
-
-            // Disable old key
-            let mut old = item.clone();
-            old.enabled = false;
-            let _ = state.store.upsert_config_item(old).await;
-
-            // Create new key
-            let new_item = crate::graph::ConfigItemRecord {
-                id: new_id.clone(),
-                config_class: "api_key".to_string(),
-                vendor: String::new(),
-                name: item.name.clone(),
-                version: String::new(),
-                content_json: serde_json::to_string(&content).unwrap_or_default(),
-                enabled: true,
-                created_by: "ui".to_string(),
-            };
-            state
-                .store
-                .upsert_config_item(new_item)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-
-            Ok(Json(CreateApiKeyResponse {
-                success: true,
-                api_key: raw_key,
-                alias: item.name,
-                id: new_id,
-                error: String::new(),
-            }))
-        }
+        .auth_store
+        .rotate_api_key(&id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+    {
+        Some((new_id, raw_key, alias)) => Ok(Json(CreateApiKeyResponse {
+            success: true,
+            api_key: raw_key,
+            alias,
+            id: new_id,
+            error: String::new(),
+        })),
         None => Ok(Json(CreateApiKeyResponse {
             success: false,
             api_key: String::new(),
@@ -538,8 +801,10 @@ pub(super) async fn rotate_api_key_handler(
 // ── D4-3 T2: RBAC model ─────────────────────────────────────────────────────
 //
 // Roles: admin, operator, viewer, api_readonly.
-// Users stored as ConfigItem (config_class = "user").
-// Sessions stored as ConfigItem (config_class = "session").
+// Users and their verifiers live in `AuthStore` (see below); legacy graph
+// `ConfigItem` rows are imported then quarantined by `ensure_migrated`.
+// Sessions are JWT-based (see JwtClaims above); legacy `bst_` session rows
+// are ignored by the middleware.
 
 /// Roles from least to most privileged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -571,12 +836,10 @@ impl Role {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-struct UserContent {
-    password_hash: String,
-    role: String,
-    last_login_ns: i64,
-}
+// User records live in `AuthStore` as `AuthUser`; legacy graph JSON shapes
+// are parsed only by the migration code in `crate::auth_store`.
+// Sessions are JWT-based (see JwtClaims above); legacy `bst_` session rows
+// are ignored by the middleware.
 
 #[derive(Serialize)]
 pub(super) struct UserSummary {
@@ -627,9 +890,19 @@ pub(crate) struct LoginResponse {
 /// POST /api/auth/login — authenticate and issue a signed JWT.
 pub(super) async fn login_handler(
     State(state): State<AppState>,
+    tls: Option<axum::Extension<TlsConnection>>,
+    connect_info: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, (StatusCode, String)> {
     let username = req.username.trim().to_string();
+    // TCP peer address for the supplementary source rate limit. Taken
+    // only from the connection itself (ConnectInfo) — never from
+    // client-supplied forwarding headers. Absent in tests and exotic
+    // serving setups; the per-username and overflow limits still apply.
+    let peer_ip = connect_info.map(|e| {
+        let axum::extract::ConnectInfo(addr) = e.0;
+        addr.ip()
+    });
     if username.is_empty() || req.password.is_empty() {
         return Ok(Json(LoginResponse {
             success: false,
@@ -642,7 +915,7 @@ pub(super) async fn login_handler(
     }
 
     // Rate-limit check — must be before any DB access to prevent user enumeration
-    if rate_limit_check(&username, false) {
+    if login_is_locked(&username, peer_ip) {
         return Ok(Json(LoginResponse {
             success: false,
             token: String::new(),
@@ -653,13 +926,29 @@ pub(super) async fn login_handler(
         .into_response());
     }
 
-    // Look up user in ConfigItem DB
-    let users = state
+    // Migration must complete before auth decisions on upgraded installs.
+    if let Err(e) = state.store.auth_store.ensure_migrated(&state.store).await {
+        tracing::error!(error = %e, "auth storage migration failed — denying login");
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("auth storage unavailable: {e}"),
+        ));
+    }
+
+    // Look up user in protected auth storage (fail closed on storage error)
+    let user_record = state
         .store
-        .list_config_items(Some("user".to_string()))
-        .await
-        .unwrap_or_default();
-    let user_item = users.iter().find(|ci| ci.name == username && ci.enabled);
+        .auth_store
+        .get_user(&username)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    // AUTH-C2: keep the full local record (enabled or not) — a disabled
+    // local account is authoritative for the local/LDAP paths and must
+    // deny rather than fall through to LDAP. The env-bootstrap admin
+    // check below still runs first: it is explicit operator configuration
+    // independent of the users table.
+    let local_record = user_record;
+    let disabled_local = local_record.as_ref().is_some_and(|u| !u.enabled);
+    let user_item = local_record.filter(|u| u.enabled);
 
     // Check bootstrap admin — vault-first, then env var fallback (D4-7 T5).
     let admin_user =
@@ -669,19 +958,41 @@ pub(super) async fn login_handler(
         crate::config::resolve_secret(&state.credentials, "bonsai-admin-pass", "BONSAI_ADMIN_PASS")
             .unwrap_or_default();
 
-    let (role_str, is_env_admin) = if !admin_user.is_empty()
+    let (role_str, is_env_admin, auth_source) = if !admin_user.is_empty()
         && bool::from(username.as_bytes().ct_eq(admin_user.as_bytes()))
         && bool::from(req.password.as_bytes().ct_eq(admin_pass.as_bytes()))
     {
-        ("admin".to_string(), true)
-    } else if let Some(ci) = user_item {
-        let content: UserContent = serde_json::from_str(&ci.content_json).unwrap_or(UserContent {
-            password_hash: String::new(),
-            role: "viewer".into(),
-            last_login_ns: 0,
-        });
-        if !verify_password(&req.password, &content.password_hash) {
-            rate_limit_check(&username, false);
+        ("admin".to_string(), true, "env")
+    } else if let Some(user) = user_item.as_ref() {
+        // SEC-07A: bound concurrent expensive verification — without a
+        // permit, parallel logins all pass the lockout check before any
+        // failure is recorded, giving unbounded Argon2 work. Re-check
+        // the lock after acquiring: it may have armed while queued.
+        let Ok(_verify_permit) = LOGIN_VERIFY_PERMITS.acquire().await else {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "login verifier unavailable".to_string(),
+            ));
+        };
+        if login_is_locked(&username, peer_ip) {
+            return Ok(Json(LoginResponse {
+                success: false,
+                token: String::new(),
+                username,
+                role: String::new(),
+                error: "too many failed attempts — account temporarily locked".into(),
+            })
+            .into_response());
+        }
+        // Argon2 verification is deliberately expensive — keep it off
+        // the async runtime's worker threads (AUTH-R6).
+        let pw = req.password.clone();
+        let stored = user.password_hash.clone();
+        let password_ok = tokio::task::spawn_blocking(move || verify_password(&pw, &stored))
+            .await
+            .unwrap_or(false);
+        if !password_ok {
+            record_login_failure_from(&username, peer_ip);
             return Ok(Json(LoginResponse {
                 success: false,
                 token: String::new(),
@@ -691,13 +1002,44 @@ pub(super) async fn login_handler(
             })
             .into_response());
         }
-        (content.role, false)
+        (user.role.clone(), false, "local")
+    } else if disabled_local {
+        // A local account record exists but is disabled: deny. It must
+        // NOT fall through to LDAP — a same-named external identity
+        // cannot resurrect a disabled local account (AUTH-C2).
+        record_login_failure_from(&username, peer_ip);
+        return Ok(Json(LoginResponse {
+            success: false,
+            token: String::new(),
+            username,
+            role: String::new(),
+            error: "invalid credentials".into(),
+        })
+        .into_response());
     } else if state.ldap_config.enabled && !state.ldap_config.server_url.is_empty() {
+        // Same bound as the local path: an LDAP bind is a network
+        // operation that must not be admitted without limit (SEC-07A).
+        let Ok(_verify_permit) = LOGIN_VERIFY_PERMITS.acquire().await else {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "login verifier unavailable".to_string(),
+            ));
+        };
+        if login_is_locked(&username, peer_ip) {
+            return Ok(Json(LoginResponse {
+                success: false,
+                token: String::new(),
+                username,
+                role: String::new(),
+                error: "too many failed attempts — account temporarily locked".into(),
+            })
+            .into_response());
+        }
         match ldap_authenticate(&state.ldap_config, &username, &req.password).await {
-            Ok(role) => (role, false),
+            Ok(role) => (role, false, "ldap"),
             Err(e) => {
                 tracing::warn!(username = %username, error = %e, "LDAP authentication failed");
-                rate_limit_check(&username, false);
+                record_login_failure_from(&username, peer_ip);
                 return Ok(Json(LoginResponse {
                     success: false,
                     token: String::new(),
@@ -709,7 +1051,7 @@ pub(super) async fn login_handler(
             }
         }
     } else {
-        rate_limit_check(&username, false);
+        record_login_failure_from(&username, peer_ip);
         return Ok(Json(LoginResponse {
             success: false,
             token: String::new(),
@@ -721,34 +1063,45 @@ pub(super) async fn login_handler(
     };
 
     // Auth success — clear rate-limit state
-    rate_limit_check(&username, true);
+    record_login_success(&username);
 
-    // Mint a signed JWT (HS256) — no DB row needed for session
-    let jwt = match mint_jwt(&username, &role_str, &state.store).await {
+    // Mint a signed JWT (HS256) — no DB row needed for session. The
+    // source marker lets the middleware apply local-account authority
+    // (disable/role-change) only where it applies (AUTH-R3).
+    let jwt = match mint_jwt_for_source(&username, &role_str, &state.store, auth_source).await {
         Ok(t) => t,
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
     };
 
-    // Update last_login_ns on the user record (skip for env admin)
+    // Update last_login_ns on the user record (skip for env admin and
+    // LDAP identities — they have no local row). AUTH-C2: use
+    // field-scoped conditional updates, never a stale full-record
+    // upsert — a concurrent disable/delete/role-reduction/password-reset
+    // must not be undone by this bookkeeping write. Legacy SHA-256
+    // verifiers are upgraded to Argon2id via a compare-and-swap on the
+    // exact hash that was verified: if the stored verifier changed
+    // concurrently (password reset), the rehash is skipped.
     if !is_env_admin {
-        let now_ns = super::now_ns();
-        if let Some(ci) = user_item {
-            let mut content: UserContent =
-                serde_json::from_str(&ci.content_json).unwrap_or(UserContent {
-                    password_hash: String::new(),
-                    role: "viewer".into(),
-                    last_login_ns: 0,
-                });
-            // Re-hash from legacy SHA-256 to Argon2id on next login
-            if !content.password_hash.starts_with("$argon2") {
-                if let Ok(new_hash) = hash_password(&req.password) {
-                    content.password_hash = new_hash;
-                }
+        if let Some(user) = user_item {
+            let needs_rehash = !user.password_hash.starts_with("$argon2");
+            let new_hash = if needs_rehash {
+                hash_password(&req.password).ok()
+            } else {
+                None
+            };
+            let expected = if needs_rehash {
+                Some(user.password_hash.as_str())
+            } else {
+                None
+            };
+            if let Err(e) =
+                state
+                    .store
+                    .auth_store
+                    .record_login(&username, expected, new_hash.as_deref())
+            {
+                tracing::warn!(username = %username, error = %e, "failed to update last_login");
             }
-            content.last_login_ns = now_ns;
-            let mut updated = ci.clone();
-            updated.content_json = serde_json::to_string(&content).unwrap_or_default();
-            let _ = state.store.upsert_config_item(updated).await;
         }
     }
 
@@ -760,13 +1113,22 @@ pub(super) async fn login_handler(
         error: String::new(),
     })
     .into_response();
-    if let Ok(cookie_val) = axum::http::HeaderValue::from_str(&format!(
-        "bonsai_token={jwt}; Path=/; SameSite=Lax; HttpOnly"
-    )) {
+    // `Secure` is set only for requests that arrived over the verified
+    // TLS listener (TlsConnection extension); on plain HTTP the flag
+    // would cause browsers to drop the cookie.
+    let cookie = session_cookie_value(&jwt, tls.is_some());
+    if let Ok(cookie_val) = axum::http::HeaderValue::from_str(&cookie) {
         resp.headers_mut()
             .insert(axum::http::header::SET_COOKIE, cookie_val);
     }
     Ok(resp)
+}
+
+/// Session cookie value for `bonsai_token`. `Secure` is included only
+/// when the request arrived over verified TLS — never on plain HTTP.
+fn session_cookie_value(jwt: &str, tls: bool) -> String {
+    let secure = if tls { "; Secure" } else { "" };
+    format!("bonsai_token={jwt}; Path=/; SameSite=Lax; HttpOnly{secure}")
 }
 
 /// POST /api/auth/logout — revoke the JWT by persisting its `jti` as a denylist entry.
@@ -802,25 +1164,31 @@ pub(super) async fn logout_handler(
     }
 
     if let Some(bearer) = bearer_token {
-        // Verify and extract claims to get jti for denylist
+        // Verify and extract claims to get jti for denylist. A revocation
+        // storage failure must surface as an error — never silently skip
+        // denylisting.
         if let Ok(claims) = verify_jwt(&bearer, &state.store).await {
-            let item = crate::graph::ConfigItemRecord {
-                id: format!("jwt-revoked-{}", claims.jti),
-                config_class: "jwt_revoked".to_string(),
-                vendor: String::new(),
-                name: claims.sub,
-                version: String::new(),
-                content_json: serde_json::json!({"exp": claims.exp}).to_string(),
-                enabled: true,
-                created_by: "logout".to_string(),
-            };
-            let _ = state.store.upsert_config_item(item).await;
+            state
+                .store
+                .auth_store
+                .revoke_jwt(&claims.jti, claims.exp.saturating_mul(1_000_000_000))
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("revocation store unavailable: {e:#}"),
+                    )
+                })?;
         }
     }
+    let secure = if request.extensions().get::<TlsConnection>().is_some() {
+        "; Secure"
+    } else {
+        ""
+    };
     let mut resp = StatusCode::NO_CONTENT.into_response();
-    if let Ok(cookie_val) = axum::http::HeaderValue::from_str(
-        "bonsai_token=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly",
-    ) {
+    if let Ok(cookie_val) = axum::http::HeaderValue::from_str(&format!(
+        "bonsai_token=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly{secure}"
+    )) {
         resp.headers_mut()
             .insert(axum::http::header::SET_COOKIE, cookie_val);
     }
@@ -831,22 +1199,18 @@ pub(super) async fn logout_handler(
 pub(super) async fn list_users_handler(
     State(state): State<AppState>,
 ) -> Result<Json<UserListResponse>, (StatusCode, String)> {
-    let items = state
+    let users = state
         .store
-        .list_config_items(Some("user".to_string()))
-        .await
-        .unwrap_or_default();
-    let users = items
-        .iter()
-        .filter_map(|ci| {
-            let content: UserContent = serde_json::from_str(&ci.content_json).ok()?;
-            Some(UserSummary {
-                id: ci.id.clone(),
-                username: ci.name.clone(),
-                role: content.role,
-                enabled: ci.enabled,
-                last_login_ns: content.last_login_ns,
-            })
+        .auth_store
+        .list_users()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+        .into_iter()
+        .map(|u| UserSummary {
+            id: format!("user-{}", u.username.to_lowercase().replace(' ', "-")),
+            username: u.username,
+            role: u.role,
+            enabled: u.enabled,
+            last_login_ns: u.last_login_ns,
         })
         .collect();
     Ok(Json(UserListResponse { users }))
@@ -879,26 +1243,19 @@ pub(super) async fn create_user_handler(
     // Hash with Argon2id
     let pw_hash =
         hash_password(&req.password).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let content = UserContent {
+    let user = crate::auth_store::AuthUser {
+        username: username.clone(),
         password_hash: pw_hash,
         role: role.clone(),
-        last_login_ns: 0,
-    };
-    let id = format!("user-{}", username.to_lowercase().replace(' ', "-"));
-    let item = crate::graph::ConfigItemRecord {
-        id,
-        config_class: "user".to_string(),
-        vendor: String::new(),
-        name: username.clone(),
-        version: String::new(),
-        content_json: serde_json::to_string(&content).unwrap_or_default(),
         enabled: true,
-        created_by: "admin".to_string(),
+        last_login_ns: 0,
+        created_at_ns: 0,
+        updated_at_ns: 0,
     };
     state
         .store
-        .upsert_config_item(item)
-        .await
+        .auth_store
+        .upsert_user(&user)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
 
     Ok(Json(
@@ -906,23 +1263,30 @@ pub(super) async fn create_user_handler(
     ))
 }
 
-/// DELETE /api/auth/users/{id} — disable a user.
+/// DELETE /api/auth/users/{id} — disable a user. Accepts either the
+/// `user-<name>` record id (as returned by list_users) or the bare username.
 pub(super) async fn delete_user_handler(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let items = state
+    let users = state
         .store
-        .list_config_items(Some("user".to_string()))
-        .await
-        .unwrap_or_default();
-    match items.into_iter().find(|ci| ci.id == id) {
-        Some(mut item) => {
-            item.enabled = false;
+        .auth_store
+        .list_users()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let username = users
+        .iter()
+        .find(|u| {
+            u.username == id
+                || format!("user-{}", u.username.to_lowercase().replace(' ', "-")) == id
+        })
+        .map(|u| u.username.clone());
+    match username {
+        Some(name) => {
             state
                 .store
-                .upsert_config_item(item)
-                .await
+                .auth_store
+                .set_user_enabled(&name, false)
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
             Ok(StatusCode::NO_CONTENT)
         }
@@ -937,6 +1301,8 @@ fn required_role(method: &str, path: &str) -> Role {
     if path == "/api/ownership"
         || path.starts_with("/api/ownership/")
         || path.starts_with("/api/auth/users")
+        || path.starts_with("/api/auth/apikeys")
+        || path.starts_with("/api/auth/ldap/")
         || path.starts_with("/api/vault")
         || path == "/api/db/purge"
         || path == "/api/db/backup"
@@ -1078,6 +1444,14 @@ impl RoutingAccessScope {
     }
 }
 
+/// Marker extension inserted by the TLS accept loop for requests that
+/// arrived over a verified TLS connection. Auth handlers use it to set
+/// the `Secure` cookie attribute; plaintext-served requests never carry
+/// it, so cookies are not marked Secure on plain HTTP (which would make
+/// browsers drop them).
+#[derive(Debug, Clone, Copy)]
+pub struct TlsConnection;
+
 /// Authenticated subject for server-attributed administrative records, never a credential.
 #[derive(Debug, Clone)]
 pub struct AuthenticatedSubject(pub String);
@@ -1211,32 +1585,14 @@ pub async fn auth_middleware(
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // D4-7 T5 / BN-005: Check DB for require_auth setting, fallback to env var. Fail closed by default.
-    let require_auth = {
-        let db_val = store
-            .list_config_items(Some("app_config".to_string()))
-            .await
-            .unwrap_or_default()
-            .iter()
-            .find(|i| i.name == "require_auth" && i.enabled)
-            .map(|i| i.content_json.trim().trim_matches('"').to_string());
-        match db_val.as_deref() {
-            Some("1") | Some("true") => true,
-            Some("0") | Some("false") => false,
-            _ => {
-                let env_val = std::env::var("BONSAI_REQUIRE_AUTH").unwrap_or_default();
-                let allow_insecure = std::env::var("BONSAI_ALLOW_INSECURE_NO_AUTH")
-                    .or_else(|_| std::env::var("BONSAI_ALLOW_INSECURE_DEV"))
-                    .map(|v| v == "1" || v == "true")
-                    .unwrap_or(false);
-                if allow_insecure || env_val == "0" || env_val.eq_ignore_ascii_case("false") {
-                    false
-                } else {
-                    true
-                }
-            }
-        }
-    };
+    // F1: authentication enforcement is a DEPLOYMENT-level decision resolved
+    // from environment configuration (with a per-store test override). It is
+    // NEVER read from graph ConfigItems — `app_config.require_auth` and every
+    // other graph-writable record are ignored here, so no HTTP API, Explorer,
+    // MCP tool or graph query can disable production authentication. An
+    // existing `require_auth=false` record does not weaken a secure
+    // deployment; insecure no-auth mode requires the explicit env opt-in.
+    let require_auth = store.auth_required();
 
     if !require_auth {
         return Ok(next.run(request).await);
@@ -1290,6 +1646,14 @@ pub async fn auth_middleware(
         _ => return Err(StatusCode::UNAUTHORIZED),
     };
 
+    // Migration must complete before auth decisions on upgraded installs.
+    // A failure here denies the request — never fall back to legacy graph
+    // credential records.
+    if let Err(e) = store.auth_store.ensure_migrated(&store).await {
+        tracing::error!(error = %e, "auth storage migration failed — denying request");
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     let mut authenticated_role: Option<Role> = None;
     let mut authenticated_subject = None;
     let mut authenticated_restricted_scope: Option<RoutingAccessScope> = None;
@@ -1298,65 +1662,108 @@ pub async fn auth_middleware(
     // --- Path 1: JWT (bst_ prefix is legacy; JWTs are opaque base64url strings) ---
     if !bearer.starts_with("bsk_") {
         if let Ok(claims) = verify_jwt(&bearer, &store).await {
-            let revoked = store
-                .list_config_items(Some("jwt_revoked".to_string()))
-                .await
-                .unwrap_or_default();
-            let is_revoked = revoked
-                .iter()
-                .any(|ci| ci.id == format!("jwt-revoked-{}", claims.jti) && ci.enabled);
-            if !is_revoked {
-                authenticated_role = Some(Role::from_str(&claims.role));
-                authenticated_subject = Some(format!("user:{}", claims.sub));
+            // Revocation lookup failure must deny — an errored lookup is
+            // not proof the token is still valid.
+            match store.auth_store.is_jwt_revoked(&claims.jti) {
+                Ok(true) => {}
+                Ok(false) => {
+                    // AUTH-C2: authentication ≠ authorization, and the
+                    // identity SOURCE decides which authority applies.
+                    //   - "env" bootstrap identities are explicit
+                    //     operator configuration — token role preserved.
+                    //   - "local" | "ldap" (and legacy tokens with no
+                    //     `src`, treated as "local"): a local AuthStore
+                    //     user record is authoritative for EVERY
+                    //     non-env source — this is the collision policy
+                    //     for shared usernames. Enabled ⇒ the LIVE role
+                    //     is used (Admin→Viewer reductions take effect
+                    //     immediately); disabled ⇒ deny, including for
+                    //     LDAP-minted tokens (a local disable must not be
+                    //     bypassed by an external identity).
+                    //   - No local record: "local" ⇒ deny (missing or
+                    //     deleted account — the token's embedded role is
+                    //     never trusted); "ldap" ⇒ pure external
+                    //     identity, token role stands.
+                    //   - Any other `src` value ⇒ fail closed.
+                    //   - Storage failure ⇒ 503, never fall back to
+                    //     token claims.
+                    let src = claims.src.as_deref().unwrap_or("local");
+                    match src {
+                        "env" => {
+                            authenticated_role = Some(Role::from_str(&claims.role));
+                            authenticated_subject = Some(format!("user:{}", claims.sub));
+                        }
+                        "local" | "ldap" => {
+                            match store.auth_store.get_user(&claims.sub) {
+                                Ok(Some(user)) => {
+                                    if user.enabled {
+                                        authenticated_role = Some(Role::from_str(&user.role));
+                                        authenticated_subject =
+                                            Some(format!("user:{}", claims.sub));
+                                    }
+                                    // Disabled local account: deny for
+                                    // every non-env source.
+                                }
+                                Ok(None) => {
+                                    if src == "ldap" {
+                                        authenticated_role = Some(Role::from_str(&claims.role));
+                                        authenticated_subject =
+                                            Some(format!("user:{}", claims.sub));
+                                    }
+                                    // src == "local" with no local
+                                    // account: deleted/never-provisioned
+                                    // ⇒ deny. Falls through to 401.
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = %e, "account state lookup failed — denying");
+                                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+                                }
+                            }
+                        }
+                        other => {
+                            tracing::warn!(src = other, "JWT with unknown identity source denied");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "jwt revocation lookup failed — denying");
+                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+                }
             }
         }
     }
 
     // --- Path 2: API key (bsk_ prefix) — constant-time hash comparison ---
     if authenticated_role.is_none() && bearer.starts_with("bsk_") {
-        let presented_hash = hex::encode(Sha256::digest(bearer.as_bytes()));
-        let items = store
-            .list_config_items(Some("api_key".to_string()))
-            .await
-            .unwrap_or_default();
-        for ci in &items {
-            if !ci.enabled {
-                continue;
-            }
-            let Ok(content) = serde_json::from_str::<ApiKeyContent>(&ci.content_json) else {
-                continue;
-            };
-            let hashes_match =
-                bool::from(content.key_hash.as_bytes().ct_eq(presented_hash.as_bytes()));
-            if !hashes_match {
-                continue;
-            }
-            if content.expires_at_ns > 0 && super::now_ns() > content.expires_at_ns {
-                continue;
-            }
-
-            match parse_scope_grant(&content.scope) {
-                ScopeGrant::Global(role) => {
-                    authenticated_role = Some(role);
-                    authenticated_restricted_scope = None;
-                    raw_api_key_scope = Some(content.scope);
+        match store.auth_store.authenticate_api_key(&bearer) {
+            Ok(Some(key)) => {
+                match parse_scope_grant(&key.scope) {
+                    ScopeGrant::Global(role) => {
+                        authenticated_role = Some(role);
+                        authenticated_restricted_scope = None;
+                        raw_api_key_scope = Some(key.scope.clone());
+                    }
+                    ScopeGrant::Restricted { role, scope } => {
+                        authenticated_role = Some(role);
+                        authenticated_restricted_scope = Some(scope);
+                        raw_api_key_scope = Some(key.scope.clone());
+                    }
+                    ScopeGrant::Invalid(reason) => {
+                        tracing::warn!(
+                            scope = %key.scope,
+                            reason = %reason,
+                            "API key has invalid or malformed scope grant — failing closed"
+                        );
+                        return Err(StatusCode::FORBIDDEN);
+                    }
                 }
-                ScopeGrant::Restricted { role, scope } => {
-                    authenticated_role = Some(role);
-                    authenticated_restricted_scope = Some(scope);
-                    raw_api_key_scope = Some(content.scope);
-                }
-                ScopeGrant::Invalid(reason) => {
-                    tracing::warn!(
-                        scope = %content.scope,
-                        reason = %reason,
-                        "API key has invalid or malformed scope grant — failing closed"
-                    );
-                    return Err(StatusCode::FORBIDDEN);
-                }
+                authenticated_subject = Some(format!("api_key:{}", key.id));
             }
-            authenticated_subject = Some(format!("api_key:{}", ci.id));
-            break;
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "api key store lookup failed — denying");
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            }
         }
     }
 
@@ -2026,5 +2433,327 @@ pub(super) async fn ldap_test_handler(
             serde_json::json!({"success": true, "message": "LDAP bind successful"}),
         )),
         Err(e) => Ok(Json(serde_json::json!({"success": false, "error": e}))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    fn fresh_entry() -> LoginAttempts {
+        LoginAttempts {
+            count: 1,
+            window_start: Some(Instant::now()),
+            locked_until: None,
+        }
+    }
+
+    fn stale_entry() -> LoginAttempts {
+        LoginAttempts {
+            count: 1,
+            window_start: Instant::now().checked_sub(RATE_LIMIT_WINDOW + Duration::from_secs(1)),
+            locked_until: None,
+        }
+    }
+
+    fn locked_entry() -> LoginAttempts {
+        LoginAttempts {
+            count: RATE_LIMIT_MAX_ATTEMPTS,
+            window_start: Some(Instant::now()),
+            locked_until: Instant::now().checked_add(RATE_LIMIT_LOCKOUT),
+        }
+    }
+
+    /// Tests mutate the process-global tracker — serialize them and
+    /// always release the guard before resetting.
+    static TRACKER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn reset_tracker() {
+        let mut t = LOGIN_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner());
+        t.map.clear();
+        t.order = VecDeque::new();
+        drop(t);
+        let mut s = LOGIN_SOURCE_ATTEMPTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        s.map.clear();
+        s.order = VecDeque::new();
+        drop(s);
+        let mut o = LOGIN_OVERFLOW_ATTEMPTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *o = LoginAttempts::default();
+    }
+
+    /// Fill the per-username tracker with live entries so any new
+    /// username is untrackable (the saturation precondition).
+    fn saturate_username_tracker() {
+        let mut t = attempts_guard();
+        while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+            let name = format!("saturated-{}", t.map.len());
+            t.map.insert(name.clone(), fresh_entry());
+            t.order.push_back(name);
+        }
+    }
+
+    #[test]
+    fn eviction_preserves_locked_and_live_window_entries() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        {
+            let mut t = attempts_guard();
+            // One stale entry (evictable), one locked target, rest live.
+            t.map.insert("stale-user".into(), stale_entry());
+            t.order.push_back("stale-user".into());
+            t.map.insert("victim".into(), locked_entry());
+            t.order.push_back("victim".into());
+            while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+                let name = format!("filler-{}", t.map.len());
+                t.map.insert(name.clone(), fresh_entry());
+                t.order.push_back(name);
+            }
+            ensure_tracking_capacity(&mut t, "attacker-new-name");
+            assert!(
+                t.map.contains_key("victim"),
+                "locked entry must survive eviction"
+            );
+            assert!(
+                !t.map.contains_key("stale-user"),
+                "stale entry should be evicted"
+            );
+            // Exactly one slot was freed for the incoming username.
+            assert_eq!(t.map.len(), LOGIN_TRACK_MAX_ENTRIES - 1);
+        }
+        reset_tracker();
+    }
+
+    #[test]
+    fn eviction_preserves_pre_lockout_failure_counts() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        {
+            let mut t = attempts_guard();
+            // Victim has 2 recorded failures (below the 3-attempt lockout)
+            // with a live window — evicting it would let an attacker reset
+            // the count and never reach lockout.
+            t.map.insert(
+                "victim".into(),
+                LoginAttempts {
+                    count: RATE_LIMIT_MAX_ATTEMPTS - 1,
+                    window_start: Some(Instant::now()),
+                    locked_until: None,
+                },
+            );
+            t.order.push_back("victim".into());
+            t.map.insert("stale-user".into(), stale_entry());
+            t.order.push_back("stale-user".into());
+            while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+                let name = format!("filler-{}", t.map.len());
+                t.map.insert(name.clone(), fresh_entry());
+                t.order.push_back(name);
+            }
+            ensure_tracking_capacity(&mut t, "attacker-new-name");
+            assert_eq!(
+                t.map.get("victim").map(|e| e.count),
+                Some(RATE_LIMIT_MAX_ATTEMPTS - 1),
+                "live failure count must survive eviction"
+            );
+        }
+        reset_tracker();
+    }
+
+    #[test]
+    fn saturated_live_tracker_does_not_evict_or_grow() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        {
+            let mut t = attempts_guard();
+            while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+                let name = format!("filler-{}", t.map.len());
+                t.map.insert(name.clone(), fresh_entry());
+                t.order.push_back(name);
+            }
+            ensure_tracking_capacity(&mut t, "one-more");
+            assert_eq!(t.map.len(), LOGIN_TRACK_MAX_ENTRIES);
+            assert!(!t.map.contains_key("one-more"));
+        }
+        reset_tracker();
+    }
+
+    #[test]
+    fn repeated_failures_do_not_grow_order_queue() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        {
+            let mut t = attempts_guard();
+            for _ in 0..50 {
+                // Simulate the record path's order bookkeeping directly.
+                let key = "repeat-user".to_string();
+                if !t.map.contains_key(&key) {
+                    t.order.push_back(key.clone());
+                }
+                let entry = t.map.entry(key).or_insert_with(fresh_entry);
+                entry.count += 1;
+            }
+            assert_eq!(t.order.len(), 1, "order refs must be pushed once per user");
+        }
+        // And through the real API: failures on one user add one order ref.
+        record_login_failure("order-check-user");
+        record_login_failure("order-check-user");
+        let t = attempts_guard();
+        let refs = t
+            .order
+            .iter()
+            .filter(|k| k.as_str() == "order-check-user")
+            .count();
+        assert_eq!(refs, 1);
+        drop(t);
+        reset_tracker();
+    }
+
+    #[test]
+    fn session_cookie_secure_only_over_tls() {
+        let plain = session_cookie_value("tok", false);
+        assert!(plain.contains("bonsai_token=tok"));
+        assert!(plain.contains("HttpOnly"));
+        assert!(plain.contains("SameSite=Lax"));
+        assert!(!plain.contains("Secure"), "{plain}");
+        let tls = session_cookie_value("tok", true);
+        assert!(tls.contains("; Secure"), "{tls}");
+    }
+
+    // ── Saturation / supplementary limiter regression tests ──────────────
+
+    #[test]
+    fn saturated_tracker_bounds_untracked_usernames_via_overflow() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        saturate_username_tracker();
+        // Failures against an untracked username cannot be tracked per
+        // name — they must still count, against the bounded overflow
+        // bucket, until it locks.
+        for _ in 0..OVERFLOW_RATE_LIMIT_MAX_ATTEMPTS {
+            record_login_failure_from("untracked-victim", None);
+        }
+        assert!(
+            login_is_locked("another-untracked-name", None),
+            "overflow lockout must reject untracked usernames under saturation"
+        );
+        // Tracked accounts are unaffected by the overflow lockout and
+        // their own per-account limit still works.
+        assert!(!login_is_locked("saturated-0", None));
+        for _ in 0..RATE_LIMIT_MAX_ATTEMPTS - 1 {
+            record_login_failure_from("saturated-0", None);
+        }
+        assert!(
+            login_is_locked("saturated-0", None),
+            "per-account lockout must still engage under tracker saturation"
+        );
+        // Overflow failures beyond the threshold do not grow state.
+        for _ in 0..5 {
+            record_login_failure_from("yet-another-untracked", None);
+        }
+        {
+            let o = overflow_attempts_guard();
+            assert!(o.locked_until.is_some());
+            assert_eq!(o.count, OVERFLOW_RATE_LIMIT_MAX_ATTEMPTS);
+        }
+        reset_tracker();
+    }
+
+    #[test]
+    fn source_ip_lockout_rejects_all_usernames_from_source() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        let attacker: IpAddr = "192.0.2.10".parse().unwrap();
+        let bystander: IpAddr = "192.0.2.20".parse().unwrap();
+        for _ in 0..SOURCE_RATE_LIMIT_MAX_ATTEMPTS {
+            record_source_failure(attacker);
+        }
+        assert!(source_is_locked(attacker));
+        assert!(!source_is_locked(bystander));
+        // A locked source is rejected for ANY username — tracked or not.
+        assert!(login_is_locked("never-seen-user", Some(attacker)));
+        assert!(!login_is_locked("never-seen-user", Some(bystander)));
+        assert!(!login_is_locked("never-seen-user", None));
+        reset_tracker();
+    }
+
+    #[test]
+    fn expired_source_lockout_recovers() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        let ip: IpAddr = "192.0.2.30".parse().unwrap();
+        for _ in 0..SOURCE_RATE_LIMIT_MAX_ATTEMPTS {
+            record_source_failure(ip);
+        }
+        assert!(source_is_locked(ip));
+        // Age the lockout into the past: the next check must reset the
+        // entry and allow fresh attempts (recovery after expiry).
+        {
+            let mut t = source_attempts_guard();
+            let e = t.map.get_mut(&ip).unwrap();
+            e.locked_until = Instant::now().checked_sub(Duration::from_secs(1));
+        }
+        assert!(!source_is_locked(ip));
+        {
+            let t = source_attempts_guard();
+            let e = t.map.get(&ip).unwrap();
+            assert_eq!(e.count, 0);
+            assert!(e.locked_until.is_none());
+        }
+        reset_tracker();
+    }
+
+    #[test]
+    fn overflow_does_not_engage_without_saturation() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        // Plenty of capacity: distinct new usernames are tracked
+        // normally and the overflow bucket is never touched.
+        for i in 0..25 {
+            record_login_failure_from(&format!("fresh-{i}"), None);
+        }
+        {
+            let o = overflow_attempts_guard();
+            assert_eq!(
+                o.count, 0,
+                "overflow must stay untouched while usernames are trackable"
+            );
+            assert!(o.locked_until.is_none());
+        }
+        let t = attempts_guard();
+        assert_eq!(t.map.len(), 25);
+        drop(t);
+        reset_tracker();
+    }
+
+    #[test]
+    fn concurrent_failures_stay_bounded() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        let ip: IpAddr = "192.0.2.99".parse().unwrap();
+        let mut handles = Vec::new();
+        for t in 0..4 {
+            handles.push(std::thread::spawn(move || {
+                for i in 0..50 {
+                    record_login_failure_from(&format!("conc-{t}-{i}"), Some(ip));
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        {
+            let t = attempts_guard();
+            assert!(t.map.len() <= LOGIN_TRACK_MAX_ENTRIES);
+            assert!(t.order.len() <= LOGIN_TRACK_MAX_ENTRIES + 1);
+        }
+        {
+            let s = source_attempts_guard();
+            assert!(s.map.len() <= SOURCE_TRACK_MAX_ENTRIES);
+        }
+        reset_tracker();
     }
 }

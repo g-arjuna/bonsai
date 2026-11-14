@@ -1145,3 +1145,41 @@ Rust gates job requires a self-hosted `bonsai-ci` runner (>100 GB
 target/, >16 GB link RAM); hosted jobs cover L0/python/UI. CI configured
 but not yet executed end-to-end — no self-hosted runner registered.
 Evidence: [BN-019-B6](merger/evidence/2026-11-13-bn019-b6-fail-closed-ci/README.md).
+
+Secure-core milestone progress (14 November, stacked branches):
+
+- **WP1 CI closure (PR #16, `fix/bn019-b6-fail-closed-ci` @ 27cfa85):**
+  CI-R1–R6 implemented — `rust-gates` now `needs: ui-build`; all actions
+  pinned to commit SHAs; `gates.sh` emits distinct PASS/FAIL/
+  NOT_EXECUTED outcomes (l4 and unknown tiers exit nonzero); `make
+  test-ui` executes the real Playwright gate; `make test-all` runs the
+  actual suites; L0 rustfmt distinguishes new drift from pre-existing
+  base drift; L1/L3 resolve `.venv/bin/python` and validate
+  pytest/playwright; explicit L2 (22) / L3 (13) target manifests
+  verified before cargo runs. GitHub run 43515987209 was blocked by an
+  account billing lock before any job started — hosted-job failures are
+  infrastructure, not test results; Rust gates still await an isolated
+  `bonsai-ci` runner.
+- **WP2/WP3 BN-022 protected auth storage (PR #17,
+  `feat/bn022-auth-storage` @ 409aaba, stacked on PR #16):** new
+  `AuthStore` (`src/auth_store.rs`) owns users, API-key verifiers,
+  JWT signing keys (age-encrypted CSPRNG, 0600 `bonsai_auth.db`),
+  revocations, config and audit — credential material leaves the
+  queryable graph. Staged idempotent migration imports legacy records
+  then disables+scrubs graph rows to tombstones before the completion
+  marker; bounded 26h JWT rotation overlap; transactional API-key
+  rotation preserving disabled state; fail-closed revocation lookups.
+  Verified: 8 auth_store unit + 371 lib + 5 `bn022_auth_storage`
+  integration tests (real LadybugDB + SQLite). Design contract:
+  `docs/auth_storage.md`. **Not merged — pending independent review.**
+- **WP4 northbound hardening (same PR #17):** `/api/config-items`
+  rejects retired credential classes with 410 (auth material managed
+  only via `/api/auth/*`); `Secure` cookie attribute set on
+  verified-TLS requests via `TlsConnection` extension. Residual:
+  outstanding JWTs of disabled users live until `exp`; auth DB not yet
+  in `/api/db/backup` runbook; Swagger UI still loads assets from unpkg
+  CDN (page itself is auth-gated).
+- **WP5 BN-021g-2 contract (PR #18,
+  `docs/bn021g2-otlp-contract` @ 1dda9de):** verified OTLP
+  original-source implementation contract + 15-case acceptance matrix
+  at `docs/bn021g2-otlp-verified-source-contract.md`. Docs only.

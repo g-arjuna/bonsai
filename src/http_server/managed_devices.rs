@@ -2693,6 +2693,21 @@ mod tests {
 
         // Unauthenticated → 401; viewer → 403 (import is an Operator write).
         assert_eq!(status_of(post(None)).await, StatusCode::UNAUTHORIZED);
+        // AUTH-C2: src=local JWTs require live local accounts.
+        for (u, r) in [("inv-viewer", "viewer"), ("inv-operator", "operator")] {
+            store
+                .auth_store
+                .upsert_user(&crate::auth_store::AuthUser {
+                    username: u.into(),
+                    password_hash: "test-verifier".into(),
+                    role: r.into(),
+                    enabled: true,
+                    last_login_ns: 0,
+                    created_at_ns: 0,
+                    updated_at_ns: 0,
+                })
+                .expect("upsert user");
+        }
         let viewer = crate::http_server::mint_jwt("inv-viewer", "viewer", &store)
             .await
             .expect("viewer jwt");

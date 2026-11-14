@@ -261,6 +261,28 @@ pub fn is_sensitive_config_class(config_class: &str) -> bool {
     SENSITIVE_CONFIG_CLASSES.contains(&config_class)
 }
 
+/// Security-sensitive ConfigItem NAMES inside otherwise-allowed classes
+/// (`app_config`, `runtime_config`, ...). These carry credentials,
+/// tokens or authentication policy: writes are admin-only through the
+/// generic config API and non-admin reads see `content_json` redacted.
+/// The middleware never consults them for auth decisions (F1) — this
+/// list is a containment boundary for the remaining consumers.
+pub const PROTECTED_CONFIG_NAMES: &[&str] = &[
+    "require_auth",
+    "internal_service_token",
+    "routing_service_token",
+    "service_token",
+    "jwt_secret",
+    "admin_password",
+    "bind_password",
+];
+
+/// True when a ConfigItem (class + name) is protected from non-admin
+/// writes and redacted on non-admin reads.
+pub fn is_protected_config_item(config_class: &str, name: &str) -> bool {
+    is_sensitive_config_class(config_class) || PROTECTED_CONFIG_NAMES.contains(&name)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct EnvironmentWithCounts {
     pub id: String,
@@ -292,6 +314,46 @@ pub struct GraphStore {
     /// DS-5: Per-device / per-site / per-role signal feature gates.
     /// Refreshed from the SignalPolicy table every 30 s inside write().
     pub signal_filter: SignalFilter,
+    /// BN-022: Protected authentication storage (users, API keys, JWT
+    /// signing keys, revocations). Lives in `bonsai_auth.db` beside the
+    /// graph database — never inside the queryable graph.
+    pub auth_store: crate::auth_store::AuthStore,
+    /// F1: per-store auth enforcement override for isolated tests.
+    /// 0 = deployment env policy, 1 = force required, 2 = force disabled.
+    /// Never reachable through HTTP APIs — deployment policy comes from
+    /// `crate::auth_store::auth_required_by_deployment()`.
+    pub auth_enforcement_override: std::sync::atomic::AtomicU8,
+}
+
+impl GraphStore {
+    /// F1: test-only hook — override deployment auth policy for THIS
+    /// store instance. `Some(true)` forces auth on, `Some(false)` forces
+    /// the insecure no-auth mode, `None` restores env resolution.
+    /// Not reachable via any HTTP API.
+    pub fn set_auth_enforcement_override(&self, v: Option<bool>) {
+        self.auth_enforcement_override.store(
+            match v {
+                None => 0,
+                Some(true) => 1,
+                Some(false) => 2,
+            },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Whether HTTP auth is required for this store: explicit per-store
+    /// override (tests) wins, otherwise deployment env policy — never
+    /// graph ConfigItems.
+    pub fn auth_required(&self) -> bool {
+        match self
+            .auth_enforcement_override
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            1 => true,
+            2 => false,
+            _ => crate::auth_store::auth_required_by_deployment(),
+        }
+    }
 }
 
 impl GraphStore {
@@ -317,6 +379,12 @@ impl GraphStore {
             "LadybugDB opened"
         );
         let (event_tx, _) = broadcast::channel(1024);
+        // BN-022: open protected auth storage beside the graph database.
+        // Failure to open it fails GraphStore::open — auth must never run
+        // against missing protected storage.
+        let auth_path = crate::auth_store::AuthStore::path_for_graph(path);
+        let auth_store = crate::auth_store::AuthStore::open(&auth_path)
+            .with_context(|| format!("failed to open auth store at '{}'", auth_path.display()))?;
         let store = GraphStore {
             db: Arc::new(db),
             event_tx,
@@ -325,6 +393,8 @@ impl GraphStore {
             correlation_buffer: Arc::new(CorrelationBuffer::new(45)),
             ddos_config: Arc::new(DdosConfig::default()),
             signal_filter: SignalFilter::new(),
+            auth_store,
+            auth_enforcement_override: std::sync::atomic::AtomicU8::new(0),
         };
 
         let t = Instant::now();
@@ -596,9 +666,24 @@ impl GraphStore {
         // missing the columns the writers rely on.
         alter_add_column(&conn, "BgpNeighbor", "source", "STRING DEFAULT ''")?;
         alter_add_column(&conn, "BgpNeighbor", "resolved_device", "STRING DEFAULT ''")?;
-        alter_add_column(&conn, "BgpNeighbor", "resolution_status", "STRING DEFAULT ''")?;
-        alter_add_column(&conn, "BgpNeighbor", "resolution_reason", "STRING DEFAULT ''")?;
-        alter_add_column(&conn, "BgpNeighbor", "network_instance", "STRING DEFAULT ''")?;
+        alter_add_column(
+            &conn,
+            "BgpNeighbor",
+            "resolution_status",
+            "STRING DEFAULT ''",
+        )?;
+        alter_add_column(
+            &conn,
+            "BgpNeighbor",
+            "resolution_reason",
+            "STRING DEFAULT ''",
+        )?;
+        alter_add_column(
+            &conn,
+            "BgpNeighbor",
+            "network_instance",
+            "STRING DEFAULT ''",
+        )?;
         alter_add_column(&conn, "BgpNeighbor", "peer_type", "INT64 DEFAULT -1")?;
         alter_add_column(
             &conn,
@@ -606,7 +691,12 @@ impl GraphStore {
             "route_distinguisher",
             "STRING DEFAULT ''",
         )?;
-        alter_add_column(&conn, "BGP_SESSION_WITH", "peer_address", "STRING DEFAULT ''")?;
+        alter_add_column(
+            &conn,
+            "BGP_SESSION_WITH",
+            "peer_address",
+            "STRING DEFAULT ''",
+        )?;
         alter_add_column(&conn, "BGP_SESSION_WITH", "session_id", "STRING DEFAULT ''")?;
         alter_add_column(&conn, "BGP_SESSION_WITH", "peer_type", "INT64 DEFAULT -1")?;
         alter_add_column(
@@ -2790,8 +2880,7 @@ impl GraphStore {
                 let edge_source = read_str(&row[2]);
                 let peer = read_str(&row[3]);
 
-                let candidates =
-                    legacy_session_candidates(&conn, &src, &peer, &dst, &edge_source)?;
+                let candidates = legacy_session_candidates(&conn, &src, &peer, &dst, &edge_source)?;
 
                 let unique = if candidates.len() == 1 {
                     candidates.into_iter().next()
@@ -2861,7 +2950,10 @@ impl GraphStore {
                 }
             }
             if rekeyed > 0 || invalidated > 0 {
-                info!(rekeyed, invalidated, "migrated legacy BGP_SESSION_WITH edges");
+                info!(
+                    rekeyed,
+                    invalidated, "migrated legacy BGP_SESSION_WITH edges"
+                );
             }
             Ok(())
         })();
@@ -4256,36 +4348,79 @@ impl GraphStore {
     }
 
     /// D4-7 T1: Upsert a single ConfigItem (insert or update by id).
+    ///
+    /// F7/F8 + SEC-03 structural isolation: the MERGE matches on `id`
+    /// and ON MATCH retains the stored `name`/`config_class` — so the
+    /// guard must validate the EFFECTIVE PERSISTED identity (existing
+    /// row's name when the id already exists, incoming name only on
+    /// create), looked up inside the same write boundary as the
+    /// mutation. A caller-supplied harmless name can therefore never
+    /// select an existing protected record by id and rewrite its
+    /// content.
+    ///
+    /// A protected effective identity may only be written by a strictly
+    /// validated migration tombstone bound to that exact persisted
+    /// record (schema + identity + verified AuthStore counterpart —
+    /// SEC-04). Protected names can never be CREATED through this path.
     pub async fn upsert_config_item(&self, item: ConfigItemRecord) -> Result<()> {
+        // Counterpart evidence is verified before the write boundary:
+        // the AuthStore is reachable through &self only here, and
+        // counterpart rows are never deleted so the check cannot go
+        // stale before the guarded write commits.
+        let tombstone_counterpart_ok = crate::auth_store::is_migration_tombstone(&item)
+            && self.auth_store.verify_tombstone_counterpart(&item).is_ok();
         let db = Arc::clone(&self.db);
         let write_lock = Arc::clone(&self.write_lock);
         tokio::task::spawn_blocking(move || {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("upsert config item connection")?;
-            let now = ts(now_ns());
-            let mut stmt = conn.prepare(
-                "MERGE (c:ConfigItem {id: $id}) \
-                 ON CREATE SET c.config_class = $cls, c.vendor = $vendor, c.name = $name, \
-                   c.version = $ver, c.content_json = $content, c.enabled = $enabled, \
-                   c.created_by = $created_by, c.created_at = $ts, c.updated_at = $ts \
-                 ON MATCH SET c.content_json = $content, c.enabled = $enabled, \
-                   c.version = $ver, c.updated_at = $ts",
+            let mut lookup = conn.prepare(
+                "MATCH (c:ConfigItem {id: $id}) \
+                 RETURN c.name, c.config_class",
             )?;
-            conn.execute(
-                &mut stmt,
-                vec![
-                    ("id", Value::String(item.id)),
-                    ("cls", Value::String(item.config_class)),
-                    ("vendor", Value::String(item.vendor)),
-                    ("name", Value::String(item.name)),
-                    ("ver", Value::String(item.version)),
-                    ("content", Value::String(item.content_json)),
-                    ("enabled", Value::Bool(item.enabled)),
-                    ("created_by", Value::String(item.created_by)),
-                    ("ts", now),
-                ],
-            )?;
-            Ok(())
+            let existing: Option<(String, String)> = conn
+                .execute(&mut lookup, vec![("id", Value::String(item.id.clone()))])?
+                .next()
+                .map(|row| (read_str(&row[0]), read_str(&row[1])));
+            // Effective persisted identity after this write.
+            let (eff_name, _eff_class) = existing
+                .clone()
+                .unwrap_or_else(|| (item.name.clone(), item.config_class.clone()));
+            if crate::auth_store::protected_config_disposition(&eff_name).is_some() {
+                let strict_schema =
+                    crate::auth_store::validate_migration_tombstone_schema(&item).is_ok();
+                let identity_match = existing
+                    .as_ref()
+                    .is_some_and(|(n, c)| *n == item.name && *c == item.config_class);
+                if !(strict_schema && identity_match && tombstone_counterpart_ok) {
+                    anyhow::bail!(
+                        "config item id '{}' resolves to protected secret name \
+                         '{}'; only a verified migration tombstone bound to \
+                         that record may write it",
+                        item.id,
+                        eff_name
+                    );
+                }
+            }
+            merge_config_item(&conn, &item)
+        })
+        .await
+        .context("upsert_config_item task")?
+    }
+
+    /// Write a ConfigItem bypassing the protected-name guard.
+    ///
+    /// Intended ONLY for AuthStore migration fixtures/tests and audited
+    /// legacy-import tooling that must reproduce pre-migration graph
+    /// state. Never call from request-serving paths — the guarded
+    /// `upsert_config_item` is the only supported write entry point.
+    pub async fn upsert_config_item_unchecked(&self, item: ConfigItemRecord) -> Result<()> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("upsert config item connection")?;
+            merge_config_item(&conn, &item)
         })
         .await
         .context("upsert_config_item task")?
@@ -5145,7 +5280,9 @@ fn legacy_session_candidates(
          RETURN n.id, n.source, n.session_state, n.peer_as, n.resolved_device, \
                 n.peer_type, n.route_distinguisher, n.network_instance"
     };
-    let mut stmt = conn.prepare(cypher).context("prepare legacy session candidates")?;
+    let mut stmt = conn
+        .prepare(cypher)
+        .context("prepare legacy session candidates")?;
     let rows: Vec<Vec<Value>> = conn
         .execute(
             &mut stmt,
@@ -5257,8 +5394,7 @@ fn retry_update_individually(
             error = %single_error,
             "individual graph write failed after batch fallback"
         );
-        metrics::counter!("bonsai_graph_write_errors_total", "target" => target)
-            .increment(1);
+        metrics::counter!("bonsai_graph_write_errors_total", "target" => target).increment(1);
     }
 }
 
@@ -5865,15 +6001,22 @@ fn probe_otlp_candidate(conn: &Connection<'_>, update: &TelemetryUpdate) -> Resu
                 ],
             )
             .context("execute otlp device candidate probe")?;
-        collect_rows(rows, "device_address", &mut matches, &mut ambiguous_kinds, &mut truncated, |row| {
-            json!({
-                "kind": "device_address",
-                "matched": true,
-                "address": peer_address,
-                "hostname": read_str(&row[0]),
-                "site": read_str(&row[1]),
-            })
-        });
+        collect_rows(
+            rows,
+            "device_address",
+            &mut matches,
+            &mut ambiguous_kinds,
+            &mut truncated,
+            |row| {
+                json!({
+                    "kind": "device_address",
+                    "matched": true,
+                    "address": peer_address,
+                    "hostname": read_str(&row[0]),
+                    "site": read_str(&row[1]),
+                })
+            },
+        );
 
         // Exact HostEndpoint.ip match (table may not exist yet).
         match conn.prepare("MATCH (h:HostEndpoint {ip: $ip}) RETURN h.kind, h.site_id LIMIT $lim") {
@@ -5887,15 +6030,22 @@ fn probe_otlp_candidate(conn: &Connection<'_>, update: &TelemetryUpdate) -> Resu
                         ],
                     )
                     .context("execute otlp hostendpoint candidate probe")?;
-                collect_rows(rows, "host_endpoint", &mut matches, &mut ambiguous_kinds, &mut truncated, |row| {
-                    json!({
-                        "kind": "host_endpoint",
-                        "matched": true,
-                        "ip": peer_address,
-                        "endpoint_kind": read_str(&row[0]),
-                        "site_id": read_str(&row[1]),
-                    })
-                });
+                collect_rows(
+                    rows,
+                    "host_endpoint",
+                    &mut matches,
+                    &mut ambiguous_kinds,
+                    &mut truncated,
+                    |row| {
+                        json!({
+                            "kind": "host_endpoint",
+                            "matched": true,
+                            "ip": peer_address,
+                            "endpoint_kind": read_str(&row[0]),
+                            "site_id": read_str(&row[1]),
+                        })
+                    },
+                );
             }
             Err(e) if e.to_string().contains("does not exist") => {}
             Err(e) => return Err(e).context("prepare otlp hostendpoint candidate probe"),
@@ -5917,15 +6067,22 @@ fn probe_otlp_candidate(conn: &Connection<'_>, update: &TelemetryUpdate) -> Resu
                 ],
             )
             .context("execute otlp hostname candidate probe")?;
-        collect_rows(rows, "device_hostname", &mut matches, &mut ambiguous_kinds, &mut truncated, |row| {
-            json!({
-                "kind": "device_hostname",
-                "matched": true,
-                "hostname": host_name,
-                "address": read_str(&row[0]),
-                "site": read_str(&row[1]),
-            })
-        });
+        collect_rows(
+            rows,
+            "device_hostname",
+            &mut matches,
+            &mut ambiguous_kinds,
+            &mut truncated,
+            |row| {
+                json!({
+                    "kind": "device_hostname",
+                    "matched": true,
+                    "hostname": host_name,
+                    "address": read_str(&row[0]),
+                    "site": read_str(&row[1]),
+                })
+            },
+        );
     }
 
     // Ambiguity is explicit: more than one matched entity — whether
@@ -7234,18 +7391,21 @@ fn get_bgp_session_props(conn: &Connection<'_>, id: &str) -> Result<(Option<Stri
     let mut result = conn
         .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
         .context("execute BGP session props lookup")?;
-    Ok(result.next().map(|row| {
-        let state = match &row[0] {
-            Value::String(s) => Some(s.clone()),
-            _ => None,
-        };
-        let peer_as = match &row[1] {
-            Value::Int64(n) => *n,
-            Value::Int32(n) => *n as i64,
-            _ => 0,
-        };
-        (state, peer_as)
-    }).unwrap_or((None, 0)))
+    Ok(result
+        .next()
+        .map(|row| {
+            let state = match &row[0] {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            };
+            let peer_as = match &row[1] {
+                Value::Int64(n) => *n,
+                Value::Int32(n) => *n as i64,
+                _ => 0,
+            };
+            (state, peer_as)
+        })
+        .unwrap_or((None, 0)))
 }
 
 fn get_bfd_state(conn: &Connection<'_>, id: &str) -> Result<Option<String>> {
@@ -8287,9 +8447,7 @@ fn write_bmp_peer_state(
                 ("id", Value::String(bgp_id)),
                 (
                     "resolved",
-                    Value::String(
-                        resolution.device().unwrap_or_default().to_string(),
-                    ),
+                    Value::String(resolution.device().unwrap_or_default().to_string()),
                 ),
                 ("rs", Value::String(resolution.status().to_string())),
                 ("rr", Value::String(resolution_reason)),
@@ -10814,11 +10972,11 @@ mod tests {
                 created_by: String::new(),
                 updated_by: String::new(),
                 last_operator_action: String::new(),
-            external_id: None,
-            inventory_only: false,
-            inventory_platform: None,
-            inventory_status: None,
-            inventory_tenant: None,
+                external_id: None,
+                inventory_only: false,
+                inventory_platform: None,
+                inventory_status: None,
+                inventory_tenant: None,
             }])
             .await
             .expect("sync sites");
@@ -11804,8 +11962,7 @@ mod tests {
     }
 
     fn seed_device(conn: &Connection<'_>, address: &str) {
-        upsert_device(conn, address, "vendor", address, "", "", ts(1))
-            .expect("seed device");
+        upsert_device(conn, address, "vendor", address, "", "", ts(1)).expect("seed device");
     }
 
     fn claim_alias(conn: &Connection<'_>, ip: &str, device: &str) {
@@ -11847,7 +12004,9 @@ mod tests {
                         n.resolution_status, n.resolved_device",
             )
             .expect("prepare bgp neighbors");
-        let mut rows = conn.execute(&mut stmt, vec![]).expect("query bgp neighbors");
+        let mut rows = conn
+            .execute(&mut stmt, vec![])
+            .expect("query bgp neighbors");
         let mut out = Vec::new();
         while let Some(row) = rows.next() {
             out.push((
@@ -11879,15 +12038,33 @@ mod tests {
         }
         // Write in an order that must not matter: unknown first.
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.99", "idle", 65000, 10))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.99",
+                "idle",
+                65000,
+                10,
+            ))
             .await
             .expect("write unknown peer");
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 11))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                11,
+            ))
             .await
             .expect("write peer A");
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.10", "established", 65002, 12))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.10",
+                "established",
+                65002,
+                12,
+            ))
             .await
             .expect("write peer B");
 
@@ -11946,7 +12123,13 @@ mod tests {
             claim_alias(&conn, "10.9.9.9", "10.0.0.3");
         }
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                10,
+            ))
             .await
             .expect("write bgp neighbor");
 
@@ -11975,7 +12158,13 @@ mod tests {
             claim_alias(&conn, "10.9.9.9", "10.0.0.4");
         }
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                10,
+            ))
             .await
             .expect("write bgp neighbor");
 
@@ -12003,18 +12192,34 @@ mod tests {
             claim_alias(&conn, "10.9.9.10", "10.0.0.2");
         }
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                10,
+            ))
             .await
             .expect("write session 1");
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.10", "idle", 65001, 11))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.10",
+                "idle",
+                65001,
+                11,
+            ))
             .await
             .expect("write session 2");
 
         let conn = Connection::new(&store.db).expect("conn");
         let edges = bgp_edges(&conn);
         assert_eq!(edges.len(), 2, "two keyed session edges");
-        assert!(edges.iter().any(|e| e.3 == "10.9.9.9" && e.4 == "established"));
+        assert!(
+            edges
+                .iter()
+                .any(|e| e.3 == "10.9.9.9" && e.4 == "established")
+        );
         assert!(edges.iter().any(|e| e.3 == "10.9.9.10" && e.4 == "idle"));
     }
 
@@ -12031,17 +12236,33 @@ mod tests {
             claim_alias(&conn, "10.9.9.9", "10.0.0.2");
         }
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                10,
+            ))
             .await
             .expect("write gnmi neighbor");
         store
-            .write(bmp_peer_state_update("10.0.0.1", "10.9.9.9", "established", 65001, 11))
+            .write(bmp_peer_state_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                11,
+            ))
             .await
             .expect("write bmp peer state");
 
         let conn = Connection::new(&store.db).expect("conn");
         let neighbors = bgp_neighbors(&conn);
-        assert_eq!(neighbors.len(), 2, "gnmi and bmp session nodes are distinct");
+        assert_eq!(
+            neighbors.len(),
+            2,
+            "gnmi and bmp session nodes are distinct"
+        );
         assert!(neighbors.iter().any(|n| n.0 == "10.0.0.1:10.9.9.9"));
         assert!(neighbors.iter().any(|n| n.0 == "bmp:10.0.0.1:10.9.9.9"));
 
@@ -12064,7 +12285,13 @@ mod tests {
             claim_alias(&conn, "10.9.9.9", "10.0.0.2");
         }
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                10,
+            ))
             .await
             .expect("write resolved neighbor");
         {
@@ -12074,7 +12301,13 @@ mod tests {
                 .expect("remove alias ownership");
         }
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 11))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                11,
+            ))
             .await
             .expect("re-write after ownership loss");
 
@@ -12117,7 +12350,13 @@ mod tests {
         }
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("reopen store");
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 13))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                13,
+            ))
             .await
             .expect("post-restart write");
         let conn = Connection::new(&store.db).expect("conn");
@@ -12175,14 +12414,18 @@ mod tests {
     }
 
     /// (src, dst, source, peer_address, session_state, session_id) sorted.
-    fn bgp_session_edges(conn: &Connection<'_>) -> Vec<(String, String, String, String, String, String)> {
+    fn bgp_session_edges(
+        conn: &Connection<'_>,
+    ) -> Vec<(String, String, String, String, String, String)> {
         let mut stmt = conn
             .prepare(
                 "MATCH (a:Device)-[r:BGP_SESSION_WITH]->(b:Device) \
                  RETURN a.address, b.address, r.source, r.peer_address, r.session_state, r.session_id",
             )
             .expect("prepare bgp session edges");
-        let mut rows = conn.execute(&mut stmt, vec![]).expect("query bgp session edges");
+        let mut rows = conn
+            .execute(&mut stmt, vec![])
+            .expect("query bgp session edges");
         let mut out = Vec::new();
         while let Some(row) = rows.next() {
             out.push((
@@ -12229,7 +12472,11 @@ mod tests {
         let edges = bgp_edges(&conn);
         assert_eq!(edges.len(), 3, "gnmi x2 + bmp x1 session edges: {edges:?}");
         assert!(edges.iter().any(|e| e.1 == "10.0.0.2" && e.2 == "gnmi"));
-        assert!(edges.iter().any(|e| e.1 == "10.0.0.3" && e.2 == "gnmi" && e.4 == "idle"));
+        assert!(
+            edges
+                .iter()
+                .any(|e| e.1 == "10.0.0.3" && e.2 == "gnmi" && e.4 == "idle")
+        );
         assert!(edges.iter().any(|e| e.2 == "bmp"));
         // Interface write in the same batch committed too.
         let mut stmt = conn
@@ -12289,7 +12536,9 @@ mod tests {
         let conn = Connection::new(&store.db).expect("conn");
         assert_eq!(bgp_edges(&conn).len(), 1, "good update still committed");
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "idle", 65001, 12))
+            .write(bgp_neighbor_update(
+                "10.0.0.1", "10.9.9.9", "idle", 65001, 12,
+            ))
             .await
             .expect("subsequent single write");
         let conn = Connection::new(&store.db).expect("conn");
@@ -12309,18 +12558,32 @@ mod tests {
             claim_alias(&conn, "10.9.9.9", "10.0.0.2");
         }
         store
-            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "established", 65001, 1, 100, 10))
+            .write(bmp_peer_state_full(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                1,
+                100,
+                10,
+            ))
             .await
             .expect("bmp rd=100");
         store
-            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "idle", 65001, 1, 200, 11))
+            .write(bmp_peer_state_full(
+                "10.0.0.1", "10.9.9.9", "idle", 65001, 1, 200, 11,
+            ))
             .await
             .expect("bmp rd=200");
 
         let conn = Connection::new(&store.db).expect("conn");
         let edges = bgp_session_edges(&conn);
         let bmp_edges: Vec<_> = edges.iter().filter(|e| e.2 == "bmp").collect();
-        assert_eq!(bmp_edges.len(), 2, "distinct RDs -> distinct edges: {edges:?}");
+        assert_eq!(
+            bmp_edges.len(),
+            2,
+            "distinct RDs -> distinct edges: {edges:?}"
+        );
         assert_ne!(bmp_edges[0].5, bmp_edges[1].5, "session ids differ");
         assert!(bmp_edges.iter().any(|e| e.4 == "established"));
         assert!(bmp_edges.iter().any(|e| e.4 == "idle"));
@@ -12328,7 +12591,9 @@ mod tests {
         // not possible — peer still resolves); instead verify that a
         // THIRD session write does not disturb the other two.
         store
-            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "active", 65001, 1, 300, 12))
+            .write(bmp_peer_state_full(
+                "10.0.0.1", "10.9.9.9", "active", 65001, 1, 300, 12,
+            ))
             .await
             .expect("bmp rd=300");
         let conn = Connection::new(&store.db).expect("conn");
@@ -12351,16 +12616,36 @@ mod tests {
             claim_alias(&conn, "10.9.9.9", "10.0.0.2");
         }
         store
-            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "established", 65001, 0, 0, 10))
+            .write(bmp_peer_state_full(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                0,
+                0,
+                10,
+            ))
             .await
             .expect("global peer");
         store
-            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "established", 65001, 2, 0, 11))
+            .write(bmp_peer_state_full(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                2,
+                0,
+                11,
+            ))
             .await
             .expect("local peer");
         let conn = Connection::new(&store.db).expect("conn");
         let edges = bgp_session_edges(&conn);
-        assert_eq!(edges.len(), 2, "peer-type distinguishes sessions: {edges:?}");
+        assert_eq!(
+            edges.len(),
+            2,
+            "peer-type distinguishes sessions: {edges:?}"
+        );
     }
 
     #[tokio::test]
@@ -12416,7 +12701,13 @@ mod tests {
             claim_alias(&conn, "10.9.9.9", "10.0.0.2");
         }
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                10,
+            ))
             .await
             .expect("established with peer-as");
         // Down update omitting peer-as entirely.
@@ -12428,8 +12719,9 @@ mod tests {
                 role: "leaf".to_string(),
                 site: "dc-a".to_string(),
                 timestamp_ns: 11,
-                path: "network-instance[name=default]/protocols/bgp/neighbor[peer-address=10.9.9.9]"
-                    .to_string(),
+                path:
+                    "network-instance[name=default]/protocols/bgp/neighbor[peer-address=10.9.9.9]"
+                        .to_string(),
                 value: serde_json::json!({"session-state": "down"}),
             })
             .await
@@ -12460,7 +12752,13 @@ mod tests {
             claim_alias(&conn, "10.9.9.9", "10.0.0.2");
         }
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                10,
+            ))
             .await
             .expect("resolved write");
         {
@@ -12506,7 +12804,13 @@ mod tests {
             claim_alias(&conn, "10.9.9.9", "10.0.0.2");
         }
         store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                10,
+            ))
             .await
             .expect("resolved write");
         {
@@ -12550,7 +12854,13 @@ mod tests {
         // sub-write) — what matters is the recorded resolution is
         // fail-closed: no authoritative edge is created.
         let _ = store
-            .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+            .write(bgp_neighbor_update(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                10,
+            ))
             .await;
         let conn = Connection::new(&store.db).expect("conn");
         assert!(
@@ -12580,11 +12890,23 @@ mod tests {
                 claim_alias(&conn, "10.9.9.10", "10.0.0.3");
             }
             store
-                .write(bgp_neighbor_update("10.0.0.1", "10.9.9.9", "established", 65001, 10))
+                .write(bgp_neighbor_update(
+                    "10.0.0.1",
+                    "10.9.9.9",
+                    "established",
+                    65001,
+                    10,
+                ))
                 .await
                 .expect("write session A");
             store
-                .write(bgp_neighbor_update("10.0.0.1", "10.9.9.10", "idle", 65002, 11))
+                .write(bgp_neighbor_update(
+                    "10.0.0.1",
+                    "10.9.9.10",
+                    "idle",
+                    65002,
+                    11,
+                ))
                 .await
                 .expect("write session B");
             // Simulate pre-session_id edges: strip the key.
@@ -12620,18 +12942,26 @@ mod tests {
                 claim_alias(&conn, "10.9.9.9", "10.0.0.2");
             }
             store
-                .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "established", 65001, 1, 100, 10))
+                .write(bmp_peer_state_full(
+                    "10.0.0.1",
+                    "10.9.9.9",
+                    "established",
+                    65001,
+                    1,
+                    100,
+                    10,
+                ))
                 .await
                 .expect("bmp rd100");
             store
-                .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "idle", 65001, 1, 200, 11))
+                .write(bmp_peer_state_full(
+                    "10.0.0.1", "10.9.9.9", "idle", 65001, 1, 200, 11,
+                ))
                 .await
                 .expect("bmp rd200");
             let conn = Connection::new(&store.db).expect("conn");
-            conn.query(
-                "MATCH ()-[r:BGP_SESSION_WITH]->() SET r.session_id = ''",
-            )
-            .expect("strip session ids");
+            conn.query("MATCH ()-[r:BGP_SESSION_WITH]->() SET r.session_id = ''")
+                .expect("strip session ids");
         }
         let store = GraphStore::open(&path2, 256 * 1024 * 1024).expect("reopen store2");
         {
@@ -12646,7 +12976,15 @@ mod tests {
             assert_eq!(neighbors.len(), 2, "session nodes retained");
         }
         store
-            .write(bmp_peer_state_full("10.0.0.1", "10.9.9.9", "established", 65001, 1, 100, 12))
+            .write(bmp_peer_state_full(
+                "10.0.0.1",
+                "10.9.9.9",
+                "established",
+                65001,
+                1,
+                100,
+                12,
+            ))
             .await
             .expect("re-observe rd100");
         {
@@ -12834,5 +13172,36 @@ fn write_qos_policy_change(
         .context("create qos interface relationship")?;
     }
 
+    Ok(())
+}
+
+/// Raw ConfigItem MERGE shared by the guarded `upsert_config_item` and
+/// the fixture-only `upsert_config_item_unchecked`. Callers must have
+/// already enforced the protected-identity policy — this performs no
+/// authorization checks of its own.
+fn merge_config_item(conn: &Connection, item: &ConfigItemRecord) -> Result<()> {
+    let now = ts(now_ns());
+    let mut stmt = conn.prepare(
+        "MERGE (c:ConfigItem {id: $id}) \
+         ON CREATE SET c.config_class = $cls, c.vendor = $vendor, c.name = $name, \
+           c.version = $ver, c.content_json = $content, c.enabled = $enabled, \
+           c.created_by = $created_by, c.created_at = $ts, c.updated_at = $ts \
+         ON MATCH SET c.content_json = $content, c.enabled = $enabled, \
+           c.version = $ver, c.updated_at = $ts",
+    )?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(item.id.clone())),
+            ("cls", Value::String(item.config_class.clone())),
+            ("vendor", Value::String(item.vendor.clone())),
+            ("name", Value::String(item.name.clone())),
+            ("ver", Value::String(item.version.clone())),
+            ("content", Value::String(item.content_json.clone())),
+            ("enabled", Value::Bool(item.enabled)),
+            ("created_by", Value::String(item.created_by.clone())),
+            ("ts", now),
+        ],
+    )?;
     Ok(())
 }

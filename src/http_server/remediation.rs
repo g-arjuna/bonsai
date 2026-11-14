@@ -1626,6 +1626,13 @@ pub(super) async fn list_config_items_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     if !is_admin {
         items.retain(|i| !crate::graph::is_sensitive_config_class(&i.config_class));
+        // F1/F7: names carrying tokens or auth policy inside allowed
+        // classes are redacted for non-admin readers.
+        for i in items.iter_mut() {
+            if crate::graph::PROTECTED_CONFIG_NAMES.contains(&i.name.as_str()) {
+                i.content_json = "\"[REDACTED]\"".to_string();
+            }
+        }
     }
     Ok(Json(items))
 }
@@ -1642,10 +1649,6 @@ const ALLOWED_CONFIG_CLASSES: &[&str] = &[
     "gnmi_known_issues",
     "playbook",
     "runtime_config",
-    "api_key",
-    "user",
-    "jwt_revoked",
-    "jwt_secret",
     "app_config",
 ];
 
@@ -1660,10 +1663,42 @@ pub(super) async fn upsert_config_item_handler(
         role,
         Some(axum::Extension(crate::http_server::auth::Role::Admin))
     );
-    if !is_admin && crate::graph::is_sensitive_config_class(&item.config_class) {
+    if !is_admin
+        && (crate::graph::is_sensitive_config_class(&item.config_class)
+            || crate::graph::PROTECTED_CONFIG_NAMES.contains(&item.name.as_str()))
+    {
         return Err((
             StatusCode::FORBIDDEN,
-            "config class is restricted to admin principals".to_string(),
+            "config item is restricted to admin principals".to_string(),
+        ));
+    }
+    // BN-022: credential-bearing classes moved to AuthStore. Writing them
+    // through the generic config API would re-pollute the graph with
+    // inert credential-shaped rows; auth material is managed exclusively
+    // through the dedicated /api/auth/* endpoints. `cert_config` remains
+    // allowed (vault references, not key material).
+    const RETIRED_CREDENTIAL_CLASSES: &[&str] =
+        &["user", "session", "api_key", "jwt_secret", "jwt_revoked"];
+    if RETIRED_CREDENTIAL_CLASSES.contains(&item.config_class.as_str()) {
+        return Err((
+            StatusCode::GONE,
+            "credential classes are managed by the protected auth store; \
+             use /api/auth/* endpoints"
+                .to_string(),
+        ));
+    }
+    // F7/F8: secret-bearing names (service tokens, legacy passwords)
+    // migrated to AuthStore `service_tokens`. Writing them here would
+    // re-pollute the graph with plaintext credentials; operators set
+    // them via `bonsai auth set-service-token` or the documented env
+    // overrides. `require_auth` is unaffected (safe metadata).
+    if crate::auth_store::PROTECTED_SECRET_CONFIG_NAMES.contains(&item.name.as_str()) {
+        return Err((
+            StatusCode::GONE,
+            "secret-bearing config names are managed by the protected auth \
+             store; use `bonsai auth set-service-token` or the documented \
+             environment override"
+                .to_string(),
         ));
     }
     if item.id.is_empty() || item.id.len() > 256 {

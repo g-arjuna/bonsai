@@ -5,6 +5,7 @@ pub mod api;
 pub mod archive;
 pub mod assignment;
 pub mod audit;
+pub mod auth_store;
 pub mod catalogue;
 pub mod change_detection;
 pub mod collector;

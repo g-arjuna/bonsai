@@ -112,6 +112,13 @@ nonzero. Optional lab suites are reported as skipped, never as passed.
 Environment knobs: `GATE_BASE` (fmt-diff base ref, default `origin/main`),
 `CARGO_PROFILE` (default `ci`), `SKIP_UI_BUILD=1` (reuse `ui/dist`).
 
+Each tier executes in an independent `bash` process (`__tier` dispatch)
+so `errexit` is fully effective — a failing command can never be masked
+by a later success (CI-R7). `scripts/ci/gates_selftest.sh` is the
+failure-injection regression suite for the runner itself (stubbed
+toolchain, disposable worktree, no Rust compiled); run it after any
+`gates.sh` change.
+
 ### CI runners
 
 GitHub-hosted `ubuntu-latest` runners cannot build the full Bonsai test

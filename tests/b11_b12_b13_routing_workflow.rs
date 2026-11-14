@@ -23,6 +23,24 @@ use bonsai::routing_service::{
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
 
+/// BN-022: provision an API key through protected AuthStore. The legacy
+/// graph `api_key` ConfigItem path is retired — post-migration graph rows
+/// cannot authorize, so tests must seed the auth store directly.
+fn seed_api_key(store: &bonsai::graph::GraphStore, item: bonsai::graph::ConfigItemRecord) {
+    let v: serde_json::Value =
+        serde_json::from_str(&item.content_json).expect("api_key content_json");
+    store
+        .auth_store
+        .upsert_api_key_verifier(
+            &item.id,
+            &item.name,
+            v["key_hash"].as_str().expect("key_hash"),
+            v["scope"].as_str().unwrap_or("read"),
+            v["expires_at_ns"].as_i64().unwrap_or(0),
+        )
+        .expect("seed api key");
+}
+
 async fn set_app_config(store: &GraphStore, name: &str, value: &str) {
     store
         .upsert_config_item(ConfigItemRecord {
@@ -93,7 +111,9 @@ async fn b11_routing_api_contract_prefix_history_and_graceful_degradation() {
         "test-internal-routing-secret-token",
     )
     .await;
-    set_app_config(&store, "require_auth", "0").await;
+    // F1: auth policy is deployment-level, not a graph ConfigItem — use
+    // the per-store test override for this isolated no-auth workflow.
+    store.set_auth_enforcement_override(Some(false));
 
     let bonsai_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let bonsai_addr = bonsai_listener.local_addr().unwrap();
@@ -267,7 +287,10 @@ async fn b12_security_rbac_scoped_reads_and_secret_redaction() {
         &format!("http://{routing_addr}"),
     )
     .await;
-    set_app_config(&store, "routing_service_token", routing_token).await;
+    store
+        .auth_store
+        .set_service_token("routing_service_token", routing_token)
+        .expect("set routing service token");
     set_app_config(&store, "require_auth", "1").await;
 
     let bonsai_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -291,6 +314,21 @@ async fn b12_security_rbac_scoped_reads_and_secret_redaction() {
     assert_eq!(unauth.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     // 2. Viewer JWT can GET /api/routing/v1/routes (200) but CANNOT POST /api/routing/v1/ingest-bmp (403)
+    // AUTH-C2: src=local JWTs require live local accounts.
+    for (u, r) in [("alice-viewer", "viewer"), ("bob-operator", "operator")] {
+        store
+            .auth_store
+            .upsert_user(&bonsai::auth_store::AuthUser {
+                username: u.into(),
+                password_hash: "test-verifier".into(),
+                role: r.into(),
+                enabled: true,
+                last_login_ns: 0,
+                created_at_ns: 0,
+                updated_at_ns: 0,
+            })
+            .unwrap();
+    }
     let viewer_jwt = mint_jwt("alice-viewer", "viewer", &store).await.unwrap();
     let viewer_get = client
         .get(format!("{base}/api/routing/v1/routes"))
@@ -339,8 +377,9 @@ async fn b12_security_rbac_scoped_reads_and_secret_redaction() {
         ("key-routing", routing_key, "routing:read"),
     ] {
         let hash = hex::encode(Sha256::digest(raw_key.as_bytes()));
-        store
-            .upsert_config_item(ConfigItemRecord {
+        seed_api_key(
+            &store,
+            ConfigItemRecord {
                 id: id.to_string(),
                 config_class: "api_key".to_string(),
                 vendor: String::new(),
@@ -355,9 +394,8 @@ async fn b12_security_rbac_scoped_reads_and_secret_redaction() {
                 .to_string(),
                 enabled: true,
                 created_by: "test".to_string(),
-            })
-            .await
-            .unwrap();
+            },
+        );
     }
 
     let webhook_get = client
