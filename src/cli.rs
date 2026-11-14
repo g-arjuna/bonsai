@@ -1136,9 +1136,17 @@ pub(super) async fn run_self_test() -> Result<()> {
 
 pub(super) enum AuthCliCommand {
     Help,
-    Backup { db: String, dest: String },
-    VerifyBackup { snapshot: String, keyfile: Option<String> },
-    RotateEmergency { db: String },
+    Backup {
+        db: String,
+        dest: String,
+    },
+    VerifyBackup {
+        snapshot: String,
+        keyfile: Option<String>,
+    },
+    RotateEmergency {
+        db: String,
+    },
 }
 
 impl AuthCliCommand {
@@ -1181,18 +1189,15 @@ impl AuthCliCommand {
                 let mut iter = args.into_iter();
                 while let Some(arg) = iter.next() {
                     match arg.as_str() {
-                        "--snapshot" => {
-                            snapshot = Some(take(&mut iter, "--snapshot")?)
-                        }
+                        "--snapshot" => snapshot = Some(take(&mut iter, "--snapshot")?),
                         "--keyfile" => keyfile = Some(take(&mut iter, "--keyfile")?),
                         "--help" | "-h" => return Ok(Some(Self::Help)),
                         other => anyhow::bail!("unknown auth verify-backup argument '{other}'"),
                     }
                 }
                 Ok(Some(Self::VerifyBackup {
-                    snapshot: snapshot.ok_or_else(|| {
-                        anyhow::anyhow!("auth verify-backup requires --snapshot")
-                    })?,
+                    snapshot: snapshot
+                        .ok_or_else(|| anyhow::anyhow!("auth verify-backup requires --snapshot"))?,
                     keyfile,
                 }))
             }
@@ -1209,9 +1214,7 @@ impl AuthCliCommand {
                     }
                 }
                 Ok(Some(Self::RotateEmergency {
-                    db: db.ok_or_else(|| {
-                        anyhow::anyhow!("auth rotate-emergency requires --db")
-                    })?,
+                    db: db.ok_or_else(|| anyhow::anyhow!("auth rotate-emergency requires --db"))?,
                 }))
             }
             "help" | "--help" | "-h" => Ok(Some(Self::Help)),
@@ -1227,7 +1230,9 @@ pub(super) async fn run_auth_cli(command: AuthCliCommand) -> Result<()> {
         AuthCliCommand::Help => {
             println!("usage: bonsai auth <backup|verify-backup|rotate-emergency>");
             println!("  backup --db <bonsai_auth.db> --dest <backup-path>");
-            println!("  verify-backup --snapshot <bonsai_auth.db> [--keyfile <bonsai_auth.db.key>]");
+            println!(
+                "  verify-backup --snapshot <bonsai_auth.db> [--keyfile <bonsai_auth.db.key>]"
+            );
             println!("  rotate-emergency --db <bonsai_auth.db>");
         }
         AuthCliCommand::Backup { db, dest } => {
@@ -1250,7 +1255,9 @@ pub(super) async fn run_auth_cli(command: AuthCliCommand) -> Result<()> {
                     .with_extension("manifest.json")
                     .display()
             );
-            println!("  NOTE: back up the at-rest key material separately (keyfile or BONSAI_VAULT_PASSPHRASE).");
+            println!(
+                "  NOTE: back up the at-rest key material separately (keyfile or BONSAI_VAULT_PASSPHRASE)."
+            );
         }
         AuthCliCommand::VerifyBackup { snapshot, keyfile } => {
             // Restore rehearsal: open a COPY of the snapshot in a scratch
