@@ -149,11 +149,14 @@ run_gate l3
 check "L3 browser target failure" 1 l3 FAIL "$WORKTREE/last.log"
 
 # ══ 11. Missing required test target ═══════════════════════════════════
-rm -f "$WORKTREE/tests/bn022_auth_storage.rs"
+# Use a long-standing manifest target present on every branch — the
+# bn022_* entries differ between stacked branches and would make this
+# case depend on which PR head is under test.
+rm -f "$WORKTREE/tests/bmp_rfc_contract.rs"
 GATE_STUB_FAIL=""
 run_gate l2
 check "missing test target" 1 l2 FAIL "$WORKTREE/last.log"
-git -C "$WORKTREE" checkout HEAD -- tests/bn022_auth_storage.rs
+git -C "$WORKTREE" checkout HEAD -- tests/bmp_rfc_contract.rs
 
 # ══ 12. Missing required dependency (pytest not importable) ════════════
 # Simulate by making the python3 stub fail `-m pytest --version`.
