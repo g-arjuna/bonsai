@@ -98,6 +98,39 @@ pub(crate) fn protected_config_disposition(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Per-record migration disposition for a protected ConfigItem (SEC-01).
+///
+/// The name alone is NOT sufficient authority to activate a credential:
+/// the legacy routing resolver only consumed ENABLED records in the
+/// `app_config` class, and only `routing_service_token` /
+/// `internal_service_token` had an authoritative consumer. `service_token`,
+/// `admin_password` and `bind_password` never fed an auth decision — they
+/// were secrets-at-rest with no consumer contract.
+///
+/// Therefore ONLY an enabled `app_config` record named
+/// `routing_service_token`/`internal_service_token` may be imported as a
+/// live service token. Every other protected-name record — disabled,
+/// stored under a different class, or carrying a name with no consumer —
+/// is sealed into `auth_quarantine` instead: recoverable by the operator,
+/// but never silently activated. Migration must not be able to resurrect
+/// a credential the deployment had disabled or convert an ignored
+/// configuration value into an active bearer credential.
+pub(crate) fn protected_config_record_disposition(item: &ConfigItemRecord) -> Option<&'static str> {
+    match protected_config_disposition(&item.name)? {
+        "imported"
+            if item.config_class == "app_config"
+                && item.enabled
+                && matches!(
+                    item.name.as_str(),
+                    "routing_service_token" | "internal_service_token"
+                ) =>
+        {
+            Some("imported")
+        }
+        _ => Some("quarantined"),
+    }
+}
+
 // ── Record types (typed API — no generic row access) ────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +250,7 @@ impl AuthStore {
                 | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .with_context(|| format!("failed to open auth store '{}'", path.display()))?;
+        let mut conn = conn;
         conn.execute_batch(
             "PRAGMA busy_timeout=5000;
              PRAGMA foreign_keys=ON;",
@@ -244,7 +278,30 @@ impl AuthStore {
             }
         }
 
-        conn.execute_batch(
+        // WP4.4/SEC: the whole schema-init write set runs in ONE
+        // transaction. ~12 separate autocommitted writes per open
+        // serialized badly under concurrent first-open (observed
+        // SQLITE_BUSY); a single short write lock per opener keeps
+        // concurrent init correct without inflating timeouts.
+        // IMMEDIATE (not deferred): the write lock is acquired at BEGIN
+        // so contenders wait once on busy_timeout instead of failing a
+        // deferred read→write lock upgrade under concurrency. The whole
+        // init is idempotent (IF NOT EXISTS + INSERT OR REPLACE), so a
+        // bounded SQLITE_BUSY retry is safe and closes the residual
+        // concurrent-first-open race without inflating timeouts.
+        let mut init_done = false;
+        let mut init_err: Option<anyhow::Error> = None;
+        for _ in 0..100 {
+            let attempt = (|| -> Result<()> {
+                let tx = conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .with_context(|| {
+                        format!(
+                            "failed to begin auth store schema init at '{}'",
+                            path.display()
+                        )
+                    })?;
+                tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_meta (
                key TEXT PRIMARY KEY,
                value TEXT NOT NULL
@@ -338,13 +395,40 @@ impl AuthStore {
             )
         })?;
 
-        // Durable schema marker: write the current version unconditionally
-        // (v1 databases are upgraded in place — the v1→v2 delta is the
-        // additive auth_quarantine table created above).
-        conn.execute(
-            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', ?1)",
-            params![SCHEMA_VERSION.to_string()],
-        )?;
+                // Durable schema marker: write the current version
+                // unconditionally (v1 databases are upgraded in place —
+                // the v1→v2 delta is the additive auth_quarantine table
+                // created above).
+                tx.execute(
+                    "INSERT OR REPLACE INTO schema_meta(key, value) \
+                     VALUES('schema_version', ?1)",
+                    params![SCHEMA_VERSION.to_string()],
+                )?;
+                tx.commit().with_context(|| {
+                    format!(
+                        "failed to commit auth store schema init at '{}'",
+                        path.display()
+                    )
+                })?;
+                Ok(())
+            })();
+            match attempt {
+                Ok(()) => {
+                    init_done = true;
+                    break;
+                }
+                Err(e) if is_sqlite_busy(&e) => {
+                    init_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if !init_done {
+            return Err(init_err.unwrap_or_else(|| {
+                anyhow!("auth store schema init failed under concurrency")
+            }));
+        }
         // Post-condition: the marker must read back as the supported
         // version, and every required table must exist — a partially
         // initialized store must never appear usable.
@@ -398,30 +482,63 @@ impl AuthStore {
 
         restrict_permissions(path)?;
 
-        // AUTH-R4: a freshly created keyfile beside a database that already
-        // holds encrypted JWT keys means the original key material is lost
-        // (or was never this host's). Minting a new key here would produce
-        // a store that can never decrypt its signing keys — fail closed
-        // instead of silently establishing a divergent encryption identity.
+        // AUTH-R4/SEC-06: a freshly created keyfile beside a database that
+        // already holds encrypted credential material (JWT keys, service
+        // tokens or sealed quarantine content) means the original key
+        // material is lost (or was never this host's). Check BEFORE
+        // resolving the key so no unusable keyfile is generated at all.
+        let encrypted_material = has_encrypted_material(&conn)?;
+        let env_key = std::env::var(VAULT_PASSPHRASE_ENV)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let keyfile_path = path.with_extension("db.key");
+        let keyfile_exists = std::fs::symlink_metadata(&keyfile_path).is_ok();
+        if encrypted_material && !env_key && !keyfile_exists {
+            bail!(
+                "auth store '{}' contains encrypted credential material but its \
+                 keyfile is missing; refusing to generate a divergent key. \
+                 Restore the original keyfile or set {VAULT_PASSPHRASE_ENV} \
+                 before starting.",
+                path.display()
+            );
+        }
         let (secret_key, keyfile_created) = resolve_secret_key(path)?;
-        if keyfile_created {
-            let has_jwt_keys: bool =
-                conn.query_row("SELECT EXISTS(SELECT 1 FROM jwt_keys)", [], |r| r.get(0))?;
-            if has_jwt_keys {
-                bail!(
-                    "auth store '{}' contains encrypted JWT keys but its \
-                     keyfile was missing and a new one was generated; the \
-                     existing keys cannot be decrypted. Restore the original \
-                     keyfile or set {VAULT_PASSPHRASE_ENV} before starting.",
-                    path.display()
-                );
-            }
+        if keyfile_created && encrypted_material {
+            // A concurrent opener installed a keyfile between the
+            // pre-check and resolution, or the pre-check raced a restore.
+            // The new key cannot decrypt existing material — remove the
+            // keyfile this open created so the next start retries
+            // cleanly, then fail closed.
+            let _ = std::fs::remove_file(&keyfile_path);
+            bail!(
+                "auth store '{}' contains encrypted credential material but its \
+                 keyfile was missing and a new one was generated; the \
+                 existing material cannot be decrypted. Restore the original \
+                 keyfile or set {VAULT_PASSPHRASE_ENV} before starting.",
+                path.display()
+            );
         }
 
         // AUTH-C4: any quarantine rows written before sealed content
         // (schema v2, content_enc NULL) are re-encrypted in place now that
         // the at-rest key is resolved. Idempotent — sealed rows are skipped.
         seal_legacy_quarantine_plaintext(&conn, &secret_key)?;
+
+        // SEC-06: prove the resolved key actually decrypts every
+        // encrypted credential class present — a wrong or mismatched
+        // keyfile must fail closed at startup, not at first use.
+        if let Err(e) = verify_encrypted_material(&conn, &secret_key) {
+            if keyfile_created {
+                let _ = std::fs::remove_file(&keyfile_path);
+            }
+            return Err(e).with_context(|| {
+                format!(
+                    "auth store '{}' encrypted material does not verify under \
+                     the resolved at-rest key",
+                    path.display()
+                )
+            });
+        }
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -2153,13 +2270,12 @@ impl AuthStore {
     /// conflicting values abort before any scrub, quarantine rows are
     /// verified before their graph rows are tombstoned, and a post-scrub
     /// rescan fails closed if any protected secret remains.
-    pub async fn migrate_protected_config(&self, store: &GraphStore) -> Result<ProtectedConfigReport> {
+    pub async fn migrate_protected_config(
+        &self,
+        store: &GraphStore,
+    ) -> Result<ProtectedConfigReport> {
         let mut report = ProtectedConfigReport::default();
-        if self
-            .get_auth_config("protected_config_state")?
-            .as_deref()
-            == Some("complete")
-        {
+        if self.get_auth_config("protected_config_state")?.as_deref() == Some("complete") {
             report.already_complete = true;
             return Ok(report);
         }
@@ -2183,9 +2299,23 @@ impl AuthStore {
             std::collections::HashMap::new();
         for item in items {
             if is_migration_tombstone(&item) {
-                continue;
+                // SEC-04: only a STRICTLY validated tombstone whose
+                // protected counterpart verifiably exists may be skipped
+                // as prior-run evidence. A record that merely carries the
+                // marker fields — extra secret-bearing fields, wrong
+                // identity, missing counterpart — is NOT trusted: it
+                // falls through and is quarantined like any other
+                // unverified protected record.
+                let verified = validate_migration_tombstone_schema(&item).is_ok()
+                    && self
+                        .check_migration_tombstone(&item, &item.config_class)
+                        .map(|r| r.is_some())
+                        .unwrap_or(false);
+                if verified {
+                    continue;
+                }
             }
-            let Some(disposition) = protected_config_disposition(&item.name) else {
+            let Some(disposition) = protected_config_record_disposition(&item) else {
                 continue;
             };
             if disposition == "imported" {
@@ -2284,23 +2414,20 @@ impl AuthStore {
 
         // ── scrub: exact-snapshot check, then tombstone ────────────────
         self.set_auth_config("protected_config_state", "scrub")?;
-        let mut expected: std::collections::HashMap<(String, String), ConfigItemRecord> =
-            pending
-                .iter()
-                .map(|p| ((p.class.clone(), p.item.id.clone()), p.item.clone()))
-                .collect();
+        let mut expected: std::collections::HashMap<(String, String), ConfigItemRecord> = pending
+            .iter()
+            .map(|p| ((p.class.clone(), p.item.id.clone()), p.item.clone()))
+            .collect();
         for p in &pending {
             let items_now = store
                 .list_config_items(Some(p.class.clone()))
                 .await
-                .with_context(|| {
-                    format!("protected-config scrub: list '{}' failed", p.class)
-                })?;
-            let current = items_now
-                .iter()
-                .find(|i| i.id == p.item.id)
-                .cloned();
-            match (expected.remove(&(p.class.clone(), p.item.id.clone())), current) {
+                .with_context(|| format!("protected-config scrub: list '{}' failed", p.class))?;
+            let current = items_now.iter().find(|i| i.id == p.item.id).cloned();
+            match (
+                expected.remove(&(p.class.clone(), p.item.id.clone())),
+                current,
+            ) {
                 (Some(_), Some(cur))
                     if cur.name == p.item.name
                         && cur.version == p.item.version
@@ -2326,12 +2453,9 @@ impl AuthStore {
                 "quarantined_at_ns": now_ns(),
             })
             .to_string();
-            store
-                .upsert_config_item(tomb)
-                .await
-                .with_context(|| {
-                    format!("protected-config scrub '{}/{}' failed", p.class, p.item.id)
-                })?;
+            store.upsert_config_item(tomb).await.with_context(|| {
+                format!("protected-config scrub '{}/{}' failed", p.class, p.item.id)
+            })?;
             report.rows_scrubbed += 1;
         }
         if !expected.is_empty() {
@@ -2344,7 +2468,12 @@ impl AuthStore {
             .await
             .context("protected-config post-scrub rescan failed")?;
         if remaining.iter().any(|i| {
-            !is_migration_tombstone(i) && protected_config_disposition(&i.name).is_some()
+            protected_config_disposition(&i.name).is_some()
+                && !(validate_migration_tombstone_schema(i).is_ok()
+                    && self
+                        .check_migration_tombstone(i, &i.config_class)
+                        .map(|r| r.is_some())
+                        .unwrap_or(false))
         }) {
             bail!(
                 "protected-config migration incomplete: secret-bearing ConfigItems \
@@ -2416,6 +2545,80 @@ pub(crate) fn is_migration_tombstone(item: &ConfigItemRecord) -> bool {
         && v.get("migration").and_then(|m| m.as_str()) == Some(MIGRATION_MARKER)
 }
 
+/// Exact `content_json` key set written into every migration tombstone.
+/// SEC-04: a tombstone carrying ANY additional field — including
+/// secret-bearing ones — is not a tombstone.
+const TOMBSTONE_CONTENT_KEYS: &[&str] = &[
+    "migrated_to",
+    "migration",
+    "record_class",
+    "item_id",
+    "disposition",
+    "quarantined_at_ns",
+];
+
+/// Dispositions the migration may record. `imported`/`quarantined`
+/// require a verified protected counterpart; `retired`,
+/// `skipped_env_override` and `scrubbed` carry none by design.
+const TOMBSTONE_DISPOSITIONS: &[&str] = &[
+    "imported",
+    "quarantined",
+    "retired",
+    "skipped_env_override",
+    "scrubbed",
+];
+
+/// Strict validation of a migration tombstone (SEC-04).
+///
+/// `is_migration_tombstone` is only a cheap marker predicate. Trust
+/// requires ALL of: disabled row, `content_json` a JSON object with
+/// EXACTLY the migration's field set, correct marker values, identity
+/// binding (`record_class` == the row's `config_class`, `item_id` == the
+/// row's `id`), a known disposition and an integer timestamp. Anything
+/// else — extra fields, malformed disposition, identity mismatch — is
+/// rejected so generic graph writes cannot manufacture trusted
+/// tombstones or smuggle secret-bearing fields under tombstone markers.
+pub(crate) fn validate_migration_tombstone_schema(item: &ConfigItemRecord) -> Result<()> {
+    if item.enabled {
+        bail!("migration tombstone must be disabled");
+    }
+    if item.config_class.is_empty() {
+        bail!("migration tombstone row has empty config_class");
+    }
+    let v: serde_json::Value = serde_json::from_str(&item.content_json)
+        .context("migration tombstone content_json is not valid JSON")?;
+    let obj = v
+        .as_object()
+        .context("migration tombstone content must be a JSON object")?;
+    if obj.len() != TOMBSTONE_CONTENT_KEYS.len()
+        || !TOMBSTONE_CONTENT_KEYS.iter().all(|k| obj.contains_key(*k))
+    {
+        bail!("migration tombstone has missing or unexpected content fields");
+    }
+    if obj.get("migrated_to").and_then(|m| m.as_str()) != Some("auth_store")
+        || obj.get("migration").and_then(|m| m.as_str()) != Some(MIGRATION_MARKER)
+    {
+        bail!("migration tombstone markers do not match the migration contract");
+    }
+    if obj.get("record_class").and_then(|m| m.as_str()) != Some(item.config_class.as_str()) {
+        bail!("migration tombstone record_class does not match the row's config_class");
+    }
+    if obj.get("item_id").and_then(|m| m.as_str()) != Some(item.id.as_str()) {
+        bail!("migration tombstone item_id does not match the row id");
+    }
+    match obj.get("disposition").and_then(|m| m.as_str()) {
+        Some(d) if TOMBSTONE_DISPOSITIONS.contains(&d) => {}
+        _ => bail!("migration tombstone has missing or unknown disposition"),
+    }
+    if !obj
+        .get("quarantined_at_ns")
+        .is_some_and(|v| v.is_i64() || v.is_u64())
+    {
+        bail!("migration tombstone quarantined_at_ns must be an integer");
+    }
+    Ok(())
+}
+
 /// Extract `(record_class, item_id, disposition)` from a validated
 /// migration tombstone for manifest reconstruction. Returns `None` for
 /// non-tombstone or incomplete records.
@@ -2450,6 +2653,10 @@ impl AuthStore {
         if !is_migration_tombstone(item) {
             return Ok(None);
         }
+        // SEC-04: the weak marker predicate is not sufficient — the
+        // tombstone must also satisfy the strict content schema before
+        // its disposition is accepted as migration evidence.
+        validate_migration_tombstone_schema(item)?;
         let (tclass, tid, disposition) = tombstone_disposition(item)
             .context("migration tombstone is missing disposition fields")?;
         if tclass != class || tid != item.id {
@@ -2537,6 +2744,19 @@ impl AuthStore {
             );
         }
         Ok(())
+    }
+
+    /// Verify a migration tombstone end-to-end for the graph write
+    /// guard (SEC-03/SEC-04): strict content schema AND a verifiable
+    /// protected counterpart in this store. A generic graph write may
+    /// only tombstone a protected record when the migration evidence it
+    /// claims actually exists — fabricated tombstones are rejected.
+    pub(crate) fn verify_tombstone_counterpart(&self, item: &ConfigItemRecord) -> Result<()> {
+        validate_migration_tombstone_schema(item)?;
+        match self.check_migration_tombstone(item, &item.config_class)? {
+            Some(_) => Ok(()),
+            None => bail!("record is not a migration tombstone"),
+        }
     }
 }
 
@@ -2687,7 +2907,10 @@ impl AuthStore {
             std::fs::File::open(&staging)
                 .and_then(|f| f.sync_all())
                 .with_context(|| {
-                    format!("failed to fsync auth backup snapshot '{}'", staging.display())
+                    format!(
+                        "failed to fsync auth backup snapshot '{}'",
+                        staging.display()
+                    )
                 })?;
             let (snapshot_sha256, snapshot_size_bytes) = file_digest(&staging)?;
             let manifest = AuthBackupManifest {
@@ -2788,9 +3011,11 @@ impl AuthStore {
     /// manifest format/version, snapshot SHA-256 + size, SQLite
     /// `integrity_check` + `foreign_key_check`, schema version, all
     /// manifest counts vs actual rows, migration state, and — when key
-    /// material is available — that every persisted `jwt_keys.secret_enc`
-    /// actually decrypts under the at-rest key (env passphrase or the
-    /// supplied/original keyfile). Nothing is ever created: a missing
+    /// material is available — that every persisted encrypted credential
+    /// record (`jwt_keys.secret_enc`, `service_tokens.token_enc`, sealed
+    /// `auth_quarantine.content_enc`) actually decrypts under the
+    /// at-rest key (env passphrase or the supplied/original keyfile).
+    /// Nothing is ever created: a missing
     /// keyfile is an error, not a generation event.
     ///
     /// Limitations (documented in docs/auth_storage.md): the digest
@@ -2804,10 +3029,18 @@ impl AuthStore {
     ) -> Result<BackupVerification> {
         // ── Manifest: must exist, parse, and be a supported version ──
         let manifest_raw = std::fs::read_to_string(manifest_path).with_context(|| {
-            format!("backup manifest '{}' is missing or unreadable", manifest_path.display())
+            format!(
+                "backup manifest '{}' is missing or unreadable",
+                manifest_path.display()
+            )
         })?;
-        let manifest: AuthBackupManifest = serde_json::from_str(&manifest_raw)
-            .with_context(|| format!("backup manifest '{}' is not valid JSON", manifest_path.display()))?;
+        let manifest: AuthBackupManifest =
+            serde_json::from_str(&manifest_raw).with_context(|| {
+                format!(
+                    "backup manifest '{}' is not valid JSON",
+                    manifest_path.display()
+                )
+            })?;
         if manifest.format != "bonsai-auth-backup-v2" {
             bail!(
                 "unsupported backup manifest format '{}'; only bonsai-auth-backup-v2 \
@@ -2852,18 +3085,18 @@ impl AuthStore {
         if integrity != "ok" {
             bail!("snapshot failed SQLite integrity_check: {integrity}");
         }
-        let fk_violations: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_foreign_key_check",
-            [],
-            |r| r.get(0),
-        )?;
+        let fk_violations: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })?;
         if fk_violations != 0 {
             bail!("snapshot has {fk_violations} foreign-key violations");
         }
 
         // Must be an initialized auth store — never a bare/empty file.
-        let schema_version = read_schema_version(&conn)?
-            .ok_or_else(|| anyhow!("snapshot has no schema_meta — not an initialized auth store"))?;
+        let schema_version = read_schema_version(&conn)?.ok_or_else(|| {
+            anyhow!("snapshot has no schema_meta — not an initialized auth store")
+        })?;
         if !SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version) {
             bail!("snapshot schema_version {schema_version} unsupported");
         }
@@ -2890,12 +3123,14 @@ impl AuthStore {
             ("api_keys", api_key_count, manifest.api_key_count),
             ("jwt_keys", jwt_key_count, manifest.jwt_key_count),
             ("jwt_revoked", jwt_revoked_count, manifest.jwt_revoked_count),
-            ("auth_quarantine", quarantined, manifest.quarantined_record_count),
+            (
+                "auth_quarantine",
+                quarantined,
+                manifest.quarantined_record_count,
+            ),
         ] {
             if actual != expected {
-                bail!(
-                    "manifest count mismatch for {name}: manifest={expected} actual={actual}"
-                );
+                bail!("manifest count mismatch for {name}: manifest={expected} actual={actual}");
             }
         }
         // service_tokens (schema v4): snapshots predating the table have
@@ -2910,6 +3145,15 @@ impl AuthStore {
         } else {
             None
         };
+        // SEC-05: a schema-v4 store ALWAYS has the service_tokens table,
+        // so a manifest that omits its count cannot be a product of
+        // `backup_to` — reject rather than silently skip the comparison.
+        if has_service_tokens && manifest.service_token_count.is_none() {
+            bail!(
+                "manifest predates service_tokens accounting but the snapshot \
+                 has schema v4 service_tokens; re-create the backup"
+            );
+        }
         if let Some(expected) = manifest.service_token_count {
             let actual = service_token_count.unwrap_or(0);
             if actual != expected {
@@ -2933,9 +3177,12 @@ impl AuthStore {
             );
         }
 
-        // ── JWT key material: decrypt every persisted secret WITHOUT
-        //    generating anything. Missing key material is an error when
-        //    encrypted keys exist; absence of keys is reported, not hidden.
+        // ── Encrypted credential material (SEC-05): decrypt-verify
+        //    EVERY class — JWT signing keys, sealed service tokens and
+        //    sealed quarantine content — WITHOUT generating anything.
+        //    Missing key material is an error when encrypted records
+        //    exist; a store whose ciphertext cannot be recovered under
+        //    the resolved key is NOT a valid backup.
         let mut warnings = Vec::new();
         let mut active_jwt = 0usize;
         let mut retired_jwt = 0usize;
@@ -2944,28 +3191,67 @@ impl AuthStore {
                 "SELECT kid, is_active, secret_enc FROM jwt_keys ORDER BY created_at_ns",
             )?;
             let rows = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, Vec<u8>>(2)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)? != 0,
+                    r.get::<_, Vec<u8>>(2)?,
+                ))
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
         for (_, is_active, _enc) in &jwt_rows {
-            if *is_active { active_jwt += 1 } else { retired_jwt += 1 }
+            if *is_active {
+                active_jwt += 1
+            } else {
+                retired_jwt += 1
+            }
         }
+        let svc_token_rows: Vec<(String, Vec<u8>)> = if has_service_tokens {
+            let mut stmt = conn.prepare("SELECT name, token_enc FROM service_tokens")?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+        let quar_sealed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM auth_quarantine WHERE content_enc IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        let encrypted_present =
+            !jwt_rows.is_empty() || !svc_token_rows.is_empty() || quar_sealed > 0;
         let mut key_material_verified = false;
-        if !jwt_rows.is_empty() {
+        if encrypted_present {
             let secret_key = resolve_secret_key_readonly(snapshot, keyfile)
-                .context("cannot verify JWT key material: no usable at-rest key")?;
-            for (kid, _, enc) in &jwt_rows {
-                age_open(&secret_key, enc).with_context(|| {
-                    format!("JWT key '{kid}' secret_enc does not decrypt — wrong/missing key material")
-                })?;
+                .context("cannot verify encrypted credential material: no usable at-rest key")?;
+            let counts = verify_encrypted_material(&conn, &secret_key)?;
+            debug_assert_eq!(counts.jwt_keys, jwt_rows.len());
+            debug_assert_eq!(counts.service_tokens, svc_token_rows.len());
+            debug_assert_eq!(counts.quarantine_records as i64, quar_sealed);
+            if counts.quarantine_plaintext > 0 {
+                warnings.push(format!(
+                    "{} quarantine record(s) hold pre-seal plaintext content \
+                     (legacy format; sealed on next store open)",
+                    counts.quarantine_plaintext
+                ));
             }
             key_material_verified = true;
         } else {
+            warnings.push(
+                "no encrypted credential material present in snapshot \
+                 (no JWT keys, service tokens or sealed quarantine records)"
+                    .to_string(),
+            );
+        }
+        if jwt_rows.is_empty() {
             warnings.push("no JWT signing keys present in snapshot".to_string());
         }
         if user_count == 0 && api_key_count == 0 && jwt_key_count == 0 {
-            warnings.push("store is initialized but contains no users, keys, or JWT material".to_string());
+            warnings.push(
+                "store is initialized but contains no users, keys, or JWT material".to_string(),
+            );
         }
         let jwt_env_override_active = std::env::var("BONSAI_JWT_SECRET")
             .map(|v| !v.is_empty())
@@ -2997,7 +3283,7 @@ impl AuthStore {
         })
     }
 
-/// Number of records preserved in `auth_quarantine` (operator
+    /// Number of records preserved in `auth_quarantine` (operator
     /// disposition aid — contents are never exposed, only the count).
     pub fn quarantined_record_count(&self) -> Result<usize> {
         let conn = self.lock()?;
@@ -3081,10 +3367,12 @@ pub struct BackupVerification {
     pub service_token_count: Option<usize>,
     pub integrity_check: String,
     pub foreign_key_violations: usize,
-/// True only when every persisted `jwt_keys.secret_enc` decrypted.
+    /// True only when EVERY persisted encrypted credential record
+    /// (JWT keys, service tokens, sealed quarantine content) decrypted
+    /// under the resolved at-rest key.
     pub key_material_verified: bool,
-/// True when `BONSAI_JWT_SECRET` is set — runtime JWT verification
-/// then uses the env secret, which this check cannot validate.
+    /// True when `BONSAI_JWT_SECRET` is set — runtime JWT verification
+    /// then uses the env secret, which this check cannot validate.
     pub jwt_env_override_active: bool,
     pub warnings: Vec<String>,
 }
@@ -3138,7 +3426,9 @@ fn file_digest(path: &Path) -> Result<(String, u64)> {
     let mut total = 0u64;
     loop {
         let n = f.read(&mut buf)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
         total += n as u64;
     }
@@ -3168,7 +3458,10 @@ fn check_db_path_trust(path: &Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(md) => {
             if md.file_type().is_symlink() {
-                bail!("auth store path '{}' is a symlink; refusing to use it", path.display());
+                bail!(
+                    "auth store path '{}' is a symlink; refusing to use it",
+                    path.display()
+                );
             }
             if !md.file_type().is_file() {
                 bail!("auth store path '{}' is not a regular file", path.display());
@@ -3188,9 +3481,8 @@ fn check_db_path_trust(path: &Path) -> Result<()> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
-            return Err(e).with_context(|| {
-                format!("failed to stat auth store path '{}'", path.display())
-            });
+            return Err(e)
+                .with_context(|| format!("failed to stat auth store path '{}'", path.display()));
         }
     }
     if let Some(parent) = path.parent() {
@@ -3275,7 +3567,6 @@ fn resolve_secret_key_readonly(
     }
     Ok(age::secrecy::SecretString::new(trimmed.to_string().into()))
 }
-
 
 // ── Legacy record parsing ───────────────────────────────────────────────────
 
@@ -3452,6 +3743,133 @@ fn seal_legacy_quarantine_plaintext(
     Ok(())
 }
 
+/// True when the store holds ANY encrypted credential material that
+/// requires the original at-rest key: JWT signing keys, sealed service
+/// tokens, or sealed quarantine content (SEC-06). Used by `open` to
+/// refuse generating a divergent keyfile for an existing store.
+fn has_encrypted_material(conn: &Connection) -> Result<bool> {
+    let jwt: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM jwt_keys)", [], |r| r.get(0))?;
+    if jwt {
+        return Ok(true);
+    }
+    let has_svc_table: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='service_tokens')",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_svc_table {
+        let svc: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM service_tokens)", [], |r| {
+            r.get(0)
+        })?;
+        if svc {
+            return Ok(true);
+        }
+    }
+    let quar: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM auth_quarantine WHERE content_enc IS NOT NULL)",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(quar)
+}
+
+/// Counts of encrypted material verified by `verify_encrypted_material`.
+#[derive(Debug, Default)]
+pub(crate) struct EncryptedMaterialCounts {
+    pub jwt_keys: usize,
+    pub service_tokens: usize,
+    pub quarantine_records: usize,
+    /// Quarantine rows still holding pre-seal plaintext content
+    /// (`content_enc IS NULL`) — not key-protected, reported only.
+    pub quarantine_plaintext: usize,
+}
+
+/// Decrypt-verify EVERY encrypted credential class under `key`
+/// (SEC-05/SEC-06): JWT `secret_enc`, service-token `token_enc`, and
+/// sealed quarantine `content_enc` — the latter also checked against its
+/// `content_sha256` integrity binding when present. Fails on the first
+/// undecryptable or mismatched record; never generates key material.
+fn verify_encrypted_material(
+    conn: &Connection,
+    key: &age::secrecy::SecretString,
+) -> Result<EncryptedMaterialCounts> {
+    let mut counts = EncryptedMaterialCounts::default();
+    {
+        let mut stmt = conn.prepare("SELECT kid, secret_enc FROM jwt_keys")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (kid, enc) = row?;
+            age_open(key, &enc).with_context(|| {
+                format!("JWT key '{kid}' does not decrypt under the resolved key")
+            })?;
+            counts.jwt_keys += 1;
+        }
+    }
+    let has_service_tokens: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='service_tokens')",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_service_tokens {
+        let mut stmt = conn.prepare("SELECT name, token_enc FROM service_tokens")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (name, enc) = row?;
+            age_open(key, &enc).with_context(|| {
+                format!("service token '{name}' does not decrypt under the resolved key")
+            })?;
+            counts.service_tokens += 1;
+        }
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, content_enc, content_sha256 FROM auth_quarantine \
+         WHERE content_enc IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Vec<u8>>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (id, enc, sha) = row?;
+        let plain = age_open(key, &enc).with_context(|| {
+            format!("quarantine record {id} does not decrypt under the resolved key")
+        })?;
+        if !sha.is_empty() {
+            let actual = hex::encode(Sha256::digest(plain.as_bytes()));
+            if actual != sha {
+                bail!(
+                    "quarantine record {id} decrypted content fails its sha256 integrity binding"
+                );
+            }
+        }
+        counts.quarantine_records += 1;
+    }
+    counts.quarantine_plaintext = conn.query_row(
+        "SELECT COUNT(*) FROM auth_quarantine WHERE content_enc IS NULL",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? as usize;
+    Ok(counts)
+}
+
+/// True when an error chain contains SQLITE_BUSY (primary code 5,
+/// including extended busy codes) — safe to retry for idempotent init.
+fn is_sqlite_busy(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        matches!(
+            c.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(se, _)) if se.extended_code & 0xff == 5
+        )
+    })
+}
+
 fn now_ns() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3548,12 +3966,14 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
     // Staging file is created atomically (O_EXCL) inside the allocator —
     // concurrent openers can never be handed the same candidate path.
     let (tmp, mut f) = unique_keyfile_tmp(&key_path)?;
-    // Write + fsync-ish close, then set 0600 BEFORE the file becomes
-    // visible under its final name. OpenOptions mode applies at creation.
+    // Write + fsync BEFORE publication: ordinary close is not a
+    // durability guarantee for authentication key material (SEC-06).
     {
         use std::io::Write;
         f.write_all(format!("{key}\n").as_bytes())
             .with_context(|| format!("failed to write auth keyfile tmp '{}'", tmp.display()))?;
+        f.sync_all()
+            .with_context(|| format!("failed to fsync auth keyfile tmp '{}'", tmp.display()))?;
     }
     drop(f);
     // hard_link fails with EEXIST when another process won the race —
@@ -3561,6 +3981,13 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
     match std::fs::hard_link(&tmp, &key_path) {
         Ok(()) => {
             let _ = std::fs::remove_file(&tmp);
+            // Fsync the parent directory so the published directory
+            // entry itself is durable across a crash.
+            if let Some(parent) = key_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    fsync_dir(parent)?;
+                }
+            }
             Ok((age::secrecy::SecretString::new(key.into()), true))
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -3604,7 +4031,10 @@ fn unique_backup_staging(dest_path: &Path) -> Result<(PathBuf, std::fs::File)> {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(e).with_context(|| {
-                    format!("failed to create auth backup staging '{}'", candidate.display())
+                    format!(
+                        "failed to create auth backup staging '{}'",
+                        candidate.display()
+                    )
                 });
             }
         }
@@ -3625,7 +4055,10 @@ fn unique_keyfile_tmp(key_path: &Path) -> Result<(PathBuf, std::fs::File)> {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(e).with_context(|| {
-                    format!("failed to create auth keyfile temp '{}'", candidate.display())
+                    format!(
+                        "failed to create auth keyfile temp '{}'",
+                        candidate.display()
+                    )
                 });
             }
         }
@@ -3667,9 +4100,9 @@ fn create_owner_only_file(path: &Path) -> Result<()> {
     match open_owner_only_new_io(path) {
         Ok(_f) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e).with_context(|| {
-            format!("failed to create owner-only file '{}'", path.display())
-        }),
+        Err(e) => {
+            Err(e).with_context(|| format!("failed to create owner-only file '{}'", path.display()))
+        }
     }
 }
 

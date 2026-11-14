@@ -276,10 +276,25 @@ only counts, classes and record IDs.
   5 min → 30 min lockout, keyed by TCP peer address only — forwarded
   headers are never trusted) counts every failed login regardless of
   username tracking, and a single global overflow bucket (10 failures /
-  5 min → 30 min) counts failures for usernames that fit no tracker.
+  5 min → 30 min) counts failures for usernames that fit no tracker —
+  i.e. whenever the per-username map is saturated with live entries,
+  regardless of whether the source IP is itself tracked.
   While the overflow bucket is locked, untracked usernames are rejected;
   tracked accounts are unaffected. Residual: an attacker controlling
   more than 4096 source addresses can force untracked logins into the
   overflow bucket, which then fails closed for ALL untracked usernames
   until expiry — bounded availability impact, no unlimited guessing.
+  The insertion-order queue is compacted once it exceeds twice the
+  tracker bound, so fail/success cycles cannot grow it without limit.
+  Concurrent expensive verification (Argon2id, LDAP binds) is bounded
+  by a process-local semaphore (8 in flight); the lockout is re-checked
+  after a queued attempt acquires a permit.
+  **Deployment note (SEC-08):** the trusted source identity is the
+  observed TCP peer address. Deployments behind a reverse proxy, load
+  balancer, Kubernetes ingress or NAT share one peer address — 20
+  failures through that proxy can temporarily lock out ALL users behind
+  it. Forwarded headers (X-Forwarded-For etc.) are deliberately NOT
+  trusted. Supported model: terminate client traffic directly at
+  Bonsai, or accept the shared-peer lockout as the documented
+  trade-off; a trusted-proxy boundary is future work, not implemented.
   All rate-limit state is process-local — see §6 HA note.

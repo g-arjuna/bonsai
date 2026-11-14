@@ -278,7 +278,10 @@ async fn http_compatibility_and_admin_policy_switch_retain_speaker_and_supported
         &format!("http://{}", backend_listener.local_addr().unwrap()),
     )
     .await;
-    config(&store, "routing_service_token", "ownership-internal").await;
+    store
+        .auth_store
+        .set_service_token("routing_service_token", "ownership-internal")
+        .unwrap();
     let backend = tokio::spawn(
         axum::serve(backend_listener, build_internal_routing_router(routing)).into_future(),
     );

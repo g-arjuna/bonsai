@@ -159,11 +159,21 @@ const SOURCE_TRACK_MAX_ENTRIES: usize = 4096;
 /// because many legitimate users can share one NAT/proxy address.
 const SOURCE_RATE_LIMIT_MAX_ATTEMPTS: u32 = 20;
 /// Global bound on failures that can be attributed to NO tracker (the
-/// per-username tracker is saturated with live entries AND the source is
-/// untracked/unknown). Once exceeded, untracked usernames are rejected
-/// until the window/lockout expires — closing the saturation gap without
-/// unbounded allocation.
+/// per-username tracker is saturated with live entries). Once exceeded,
+/// untracked usernames are rejected until the window/lockout expires —
+/// closing the saturation gap without unbounded allocation.
 const OVERFLOW_RATE_LIMIT_MAX_ATTEMPTS: u32 = 10;
+/// Hard bound on the insertion-order queue's length (SEC-07). The queue
+/// may accumulate stale references — `record_login_success` removes map
+/// entries without touching `order` — so it is compacted once it exceeds
+/// this bound. After compaction `order.len() <= map.len()`, keeping the
+/// whole tracker memory-bounded.
+const LOGIN_ORDER_HARD_CAP: usize = LOGIN_TRACK_MAX_ENTRIES * 2;
+/// Bounds concurrent expensive credential verification (Argon2id
+/// ~19 MiB per attempt; LDAP binds are network operations). Without it,
+/// many parallel logins all pass `login_is_locked` before any failure is
+/// recorded, giving unbounded concurrent verification work (SEC-07A).
+const LOGIN_VERIFY_MAX_INFLIGHT: usize = 8;
 
 #[derive(Default)]
 struct LoginAttempts {
@@ -189,10 +199,14 @@ lazy_static::lazy_static! {
     static ref LOGIN_SOURCE_ATTEMPTS: Mutex<SourceAttemptTracker> =
         Mutex::new(SourceAttemptTracker::default());
     /// Single bounded bucket for failures that fit no tracker: reached
-    /// only when the per-username map is saturated with live entries and
-    /// the source IP is unavailable or itself untracked. O(1) memory.
+    /// only when the per-username map is saturated with live entries.
+    /// O(1) memory.
     static ref LOGIN_OVERFLOW_ATTEMPTS: Mutex<LoginAttempts> =
         Mutex::new(LoginAttempts::default());
+    /// Bounds concurrent expensive credential verification — see
+    /// `LOGIN_VERIFY_MAX_INFLIGHT`.
+    static ref LOGIN_VERIFY_PERMITS: tokio::sync::Semaphore =
+        tokio::sync::Semaphore::new(LOGIN_VERIFY_MAX_INFLIGHT);
 }
 
 #[derive(Default)]
@@ -210,7 +224,9 @@ fn attempts_guard() -> std::sync::MutexGuard<'static, LoginAttemptTracker> {
     match LOGIN_ATTEMPTS.lock() {
         Ok(g) => g,
         Err(e) => {
-            tracing::error!("login rate-limit mutex poisoned — recovering guard; enforcement continues");
+            tracing::error!(
+                "login rate-limit mutex poisoned — recovering guard; enforcement continues"
+            );
             e.into_inner()
         }
     }
@@ -220,7 +236,9 @@ fn source_attempts_guard() -> std::sync::MutexGuard<'static, SourceAttemptTracke
     match LOGIN_SOURCE_ATTEMPTS.lock() {
         Ok(g) => g,
         Err(e) => {
-            tracing::error!("login source rate-limit mutex poisoned — recovering guard; enforcement continues");
+            tracing::error!(
+                "login source rate-limit mutex poisoned — recovering guard; enforcement continues"
+            );
             e.into_inner()
         }
     }
@@ -230,7 +248,9 @@ fn overflow_attempts_guard() -> std::sync::MutexGuard<'static, LoginAttempts> {
     match LOGIN_OVERFLOW_ATTEMPTS.lock() {
         Ok(g) => g,
         Err(e) => {
-            tracing::error!("login overflow rate-limit mutex poisoned — recovering guard; enforcement continues");
+            tracing::error!(
+                "login overflow rate-limit mutex poisoned — recovering guard; enforcement continues"
+            );
             e.into_inner()
         }
     }
@@ -295,6 +315,23 @@ fn count_attempt(entry: &mut LoginAttempts, max_attempts: u32) -> AttemptCount {
     AttemptCount::Counted
 }
 
+/// Compact the insertion-order queue (SEC-07): drop references whose
+/// map entry no longer exists (removed by `record_login_success` or
+/// eviction) and duplicate references to the same live key. After this
+/// runs `order.len() <= map.len()`, so repeated fail/success cycles
+/// cannot grow the auxiliary queue without bound. Amortized O(len) —
+/// invoked only when the queue exceeds `LOGIN_ORDER_HARD_CAP`.
+fn compact_login_order(tracker: &mut LoginAttemptTracker) {
+    let mut seen = std::collections::HashSet::with_capacity(tracker.map.len());
+    let mut kept = std::collections::VecDeque::with_capacity(tracker.map.len());
+    while let Some(k) = tracker.order.pop_front() {
+        if tracker.map.contains_key(&k) && seen.insert(k.clone()) {
+            kept.push_back(k);
+        }
+    }
+    tracker.order = kept;
+}
+
 /// Make room for one new tracked username under the cardinality bound.
 ///
 /// F6-hardening: eviction targets ONLY stale entries — a username whose
@@ -333,7 +370,9 @@ fn ensure_tracking_capacity(tracker: &mut LoginAttemptTracker, username: &str) {
     if !evicted {
         // Order drained or every entry is live: do not track this
         // username rather than grow unboundedly or evict live state.
-        tracing::warn!("login rate-limit tracker at capacity with live entries; not tracking new username");
+        tracing::warn!(
+            "login rate-limit tracker at capacity with live entries; not tracking new username"
+        );
     }
 }
 
@@ -399,6 +438,11 @@ fn record_login_failure_from(username: &str, peer: Option<IpAddr>) {
     }
     // Order refs are pushed only for NEW map entries: pushing on every
     // failure let the queue grow without bound under repeated attempts.
+    // Success removes map entries without consuming order refs, so the
+    // queue is compacted once it exceeds the hard cap (SEC-07).
+    if tracker.order.len() >= LOGIN_ORDER_HARD_CAP {
+        compact_login_order(&mut tracker);
+    }
     if is_new {
         tracker.order.push_back(key.clone());
     }
@@ -422,9 +466,11 @@ fn record_login_failure_from(username: &str, peer: Option<IpAddr>) {
 //     Threshold is higher than the per-account limit to tolerate shared
 //     NAT/proxy addresses.
 //   * Global overflow: failures for usernames that fit NO tracker (map
-//     saturated, source unknown or itself saturated) count against a
-//     single O(1) bucket. Once it locks, untracked usernames are
-//     rejected until expiry. Tracked accounts are unaffected.
+//     saturated with live entries) count against a single O(1) bucket —
+//     regardless of whether the source IP itself is tracked. Once it
+//     locks, untracked usernames are rejected until expiry. Tracked
+//     accounts are unaffected. (SEC-07/WP5.4: the trigger is username
+//     tracker saturation, NOT source-IP saturation.)
 //
 // Residual, documented: an attacker controlling >SOURCE_TRACK_MAX_ENTRIES
 // distinct source addresses AND keeping the username map saturated can
@@ -458,7 +504,9 @@ fn ensure_source_capacity(tracker: &mut SourceAttemptTracker, ip: IpAddr) {
         tracker.order.push_back(key);
     }
     if !evicted {
-        tracing::warn!("login source rate-limit tracker at capacity with live entries; source untracked");
+        tracing::warn!(
+            "login source rate-limit tracker at capacity with live entries; source untracked"
+        );
     }
 }
 
@@ -507,6 +555,11 @@ fn record_overflow_failure() {
 fn record_login_success(username: &str) {
     let mut tracker = attempts_guard();
     tracker.map.remove(&username.to_lowercase());
+    // The order ref is left behind deliberately (O(1) removal is not
+    // possible); bound the queue's stale-ref accumulation instead.
+    if tracker.order.len() >= LOGIN_ORDER_HARD_CAP {
+        compact_login_order(&mut tracker);
+    }
 }
 
 // ── Password policy ───────────────────────────────────────────────────────────
@@ -911,6 +964,26 @@ pub(super) async fn login_handler(
     {
         ("admin".to_string(), true, "env")
     } else if let Some(user) = user_item.as_ref() {
+        // SEC-07A: bound concurrent expensive verification — without a
+        // permit, parallel logins all pass the lockout check before any
+        // failure is recorded, giving unbounded Argon2 work. Re-check
+        // the lock after acquiring: it may have armed while queued.
+        let Ok(_verify_permit) = LOGIN_VERIFY_PERMITS.acquire().await else {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "login verifier unavailable".to_string(),
+            ));
+        };
+        if login_is_locked(&username, peer_ip) {
+            return Ok(Json(LoginResponse {
+                success: false,
+                token: String::new(),
+                username,
+                role: String::new(),
+                error: "too many failed attempts — account temporarily locked".into(),
+            })
+            .into_response());
+        }
         // Argon2 verification is deliberately expensive — keep it off
         // the async runtime's worker threads (AUTH-R6).
         let pw = req.password.clone();
@@ -944,6 +1017,24 @@ pub(super) async fn login_handler(
         })
         .into_response());
     } else if state.ldap_config.enabled && !state.ldap_config.server_url.is_empty() {
+        // Same bound as the local path: an LDAP bind is a network
+        // operation that must not be admitted without limit (SEC-07A).
+        let Ok(_verify_permit) = LOGIN_VERIFY_PERMITS.acquire().await else {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "login verifier unavailable".to_string(),
+            ));
+        };
+        if login_is_locked(&username, peer_ip) {
+            return Ok(Json(LoginResponse {
+                success: false,
+                token: String::new(),
+                username,
+                role: String::new(),
+                error: "too many failed attempts — account temporarily locked".into(),
+            })
+            .into_response());
+        }
         match ldap_authenticate(&state.ldap_config, &username, &req.password).await {
             Ok(role) => (role, false, "ldap"),
             Err(e) => {
@@ -2383,11 +2474,15 @@ mod tests {
         t.map.clear();
         t.order = VecDeque::new();
         drop(t);
-        let mut s = LOGIN_SOURCE_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = LOGIN_SOURCE_ATTEMPTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         s.map.clear();
         s.order = VecDeque::new();
         drop(s);
-        let mut o = LOGIN_OVERFLOW_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut o = LOGIN_OVERFLOW_ATTEMPTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *o = LoginAttempts::default();
     }
 
@@ -2408,21 +2503,27 @@ mod tests {
         reset_tracker();
         {
             let mut t = attempts_guard();
-        // One stale entry (evictable), one locked target, rest live.
-        t.map.insert("stale-user".into(), stale_entry());
-        t.order.push_back("stale-user".into());
-        t.map.insert("victim".into(), locked_entry());
-        t.order.push_back("victim".into());
-        while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
-            let name = format!("filler-{}", t.map.len());
-            t.map.insert(name.clone(), fresh_entry());
-            t.order.push_back(name);
-        }
-        ensure_tracking_capacity(&mut t, "attacker-new-name");
-        assert!(t.map.contains_key("victim"), "locked entry must survive eviction");
-        assert!(!t.map.contains_key("stale-user"), "stale entry should be evicted");
-        // Exactly one slot was freed for the incoming username.
-        assert_eq!(t.map.len(), LOGIN_TRACK_MAX_ENTRIES - 1);
+            // One stale entry (evictable), one locked target, rest live.
+            t.map.insert("stale-user".into(), stale_entry());
+            t.order.push_back("stale-user".into());
+            t.map.insert("victim".into(), locked_entry());
+            t.order.push_back("victim".into());
+            while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+                let name = format!("filler-{}", t.map.len());
+                t.map.insert(name.clone(), fresh_entry());
+                t.order.push_back(name);
+            }
+            ensure_tracking_capacity(&mut t, "attacker-new-name");
+            assert!(
+                t.map.contains_key("victim"),
+                "locked entry must survive eviction"
+            );
+            assert!(
+                !t.map.contains_key("stale-user"),
+                "stale entry should be evicted"
+            );
+            // Exactly one slot was freed for the incoming username.
+            assert_eq!(t.map.len(), LOGIN_TRACK_MAX_ENTRIES - 1);
         }
         reset_tracker();
     }
@@ -2433,31 +2534,31 @@ mod tests {
         reset_tracker();
         {
             let mut t = attempts_guard();
-        // Victim has 2 recorded failures (below the 3-attempt lockout)
-        // with a live window — evicting it would let an attacker reset
-        // the count and never reach lockout.
-        t.map.insert(
-            "victim".into(),
-            LoginAttempts {
-                count: RATE_LIMIT_MAX_ATTEMPTS - 1,
-                window_start: Some(Instant::now()),
-                locked_until: None,
-            },
-        );
-        t.order.push_back("victim".into());
-        t.map.insert("stale-user".into(), stale_entry());
-        t.order.push_back("stale-user".into());
-        while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
-            let name = format!("filler-{}", t.map.len());
-            t.map.insert(name.clone(), fresh_entry());
-            t.order.push_back(name);
-        }
-        ensure_tracking_capacity(&mut t, "attacker-new-name");
-        assert_eq!(
-            t.map.get("victim").map(|e| e.count),
-            Some(RATE_LIMIT_MAX_ATTEMPTS - 1),
-            "live failure count must survive eviction"
-        );
+            // Victim has 2 recorded failures (below the 3-attempt lockout)
+            // with a live window — evicting it would let an attacker reset
+            // the count and never reach lockout.
+            t.map.insert(
+                "victim".into(),
+                LoginAttempts {
+                    count: RATE_LIMIT_MAX_ATTEMPTS - 1,
+                    window_start: Some(Instant::now()),
+                    locked_until: None,
+                },
+            );
+            t.order.push_back("victim".into());
+            t.map.insert("stale-user".into(), stale_entry());
+            t.order.push_back("stale-user".into());
+            while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+                let name = format!("filler-{}", t.map.len());
+                t.map.insert(name.clone(), fresh_entry());
+                t.order.push_back(name);
+            }
+            ensure_tracking_capacity(&mut t, "attacker-new-name");
+            assert_eq!(
+                t.map.get("victim").map(|e| e.count),
+                Some(RATE_LIMIT_MAX_ATTEMPTS - 1),
+                "live failure count must survive eviction"
+            );
         }
         reset_tracker();
     }
@@ -2468,14 +2569,14 @@ mod tests {
         reset_tracker();
         {
             let mut t = attempts_guard();
-        while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
-            let name = format!("filler-{}", t.map.len());
-            t.map.insert(name.clone(), fresh_entry());
-            t.order.push_back(name);
-        }
-        ensure_tracking_capacity(&mut t, "one-more");
-        assert_eq!(t.map.len(), LOGIN_TRACK_MAX_ENTRIES);
-        assert!(!t.map.contains_key("one-more"));
+            while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+                let name = format!("filler-{}", t.map.len());
+                t.map.insert(name.clone(), fresh_entry());
+                t.order.push_back(name);
+            }
+            ensure_tracking_capacity(&mut t, "one-more");
+            assert_eq!(t.map.len(), LOGIN_TRACK_MAX_ENTRIES);
+            assert!(!t.map.contains_key("one-more"));
         }
         reset_tracker();
     }
@@ -2501,7 +2602,11 @@ mod tests {
         record_login_failure("order-check-user");
         record_login_failure("order-check-user");
         let t = attempts_guard();
-        let refs = t.order.iter().filter(|k| k.as_str() == "order-check-user").count();
+        let refs = t
+            .order
+            .iter()
+            .filter(|k| k.as_str() == "order-check-user")
+            .count();
         assert_eq!(refs, 1);
         drop(t);
         reset_tracker();
@@ -2612,7 +2717,10 @@ mod tests {
         }
         {
             let o = overflow_attempts_guard();
-            assert_eq!(o.count, 0, "overflow must stay untouched while usernames are trackable");
+            assert_eq!(
+                o.count, 0,
+                "overflow must stay untouched while usernames are trackable"
+            );
             assert!(o.locked_until.is_none());
         }
         let t = attempts_guard();

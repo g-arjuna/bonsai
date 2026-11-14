@@ -954,16 +954,18 @@ async fn tool_get_changes_with_store(
 async fn resolve_in_process_routing_state(
     store: &crate::graph::GraphStore,
     explicit: Option<&std::sync::Arc<crate::routing_service::RoutingServiceState>>,
-) -> Option<std::sync::Arc<crate::routing_service::RoutingServiceState>> {
+) -> Result<Option<std::sync::Arc<crate::routing_service::RoutingServiceState>>, String> {
     if let Some(st) = explicit {
-        return Some(std::sync::Arc::clone(st));
+        return Ok(Some(std::sync::Arc::clone(st)));
     }
     let (_, _, has_explicit_db_url) =
-        crate::routing_service::resolve_routing_service_endpoint_config(store).await;
+        crate::routing_service::resolve_routing_service_endpoint_config(store)
+            .await
+            .map_err(|e| format!("routing credential resolution failed: {e:#}"))?;
     if has_explicit_db_url {
-        return None;
+        return Ok(None);
     }
-    crate::routing_service::default_routing_service()
+    Ok(crate::routing_service::default_routing_service())
 }
 
 async fn fetch_remote_routing_tool_json(
@@ -972,7 +974,9 @@ async fn fetch_remote_routing_tool_json(
     query_pairs: &[(&str, Option<String>)],
 ) -> Result<JsonValue, String> {
     let (base_url, token, _) =
-        crate::routing_service::resolve_routing_service_endpoint_config(store).await;
+        crate::routing_service::resolve_routing_service_endpoint_config(store)
+            .await
+            .map_err(|e| format!("routing credential resolution failed: {e:#}"))?;
     let url = format!("{base_url}/internal/routing/v1/{internal_subpath}");
     let client = reqwest::Client::builder()
         .timeout(TOOL_QUERY_TIMEOUT)
@@ -1137,7 +1141,7 @@ async fn dispatch_authorized_tool(
                 limit: args["limit"].as_u64().map(|v| v as usize),
                 tenant_id: args["tenant_id"].as_str().map(String::from),
             };
-            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await {
+            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await? {
                 let (_, v) = build_prefix_journey_json(&st, &q).await;
                 v
             } else {
@@ -1165,7 +1169,7 @@ async fn dispatch_authorized_tool(
                 limit: args["limit"].as_u64().map(|v| v as usize),
                 tenant_id: args["tenant_id"].as_str().map(String::from),
             };
-            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await {
+            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await? {
                 build_peer_timeline_json(&st, &q).await
             } else {
                 fetch_remote_routing_tool_json(
@@ -1190,7 +1194,7 @@ async fn dispatch_authorized_tool(
                 prefix: args["prefix"].as_str().map(String::from),
                 tenant_id: args["tenant_id"].as_str().map(String::from),
             };
-            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await {
+            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await? {
                 build_evidence_coverage_json(&st, &q).await
             } else {
                 fetch_remote_routing_tool_json(
@@ -1216,7 +1220,7 @@ async fn dispatch_authorized_tool(
                 prefix: args["prefix"].as_str().map(String::from),
                 limit: args["limit"].as_u64().map(|v| v as usize),
             };
-            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await {
+            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await? {
                 build_compare_snapshots_json(&st, &q).await
             } else {
                 fetch_remote_routing_tool_json(
@@ -1247,7 +1251,7 @@ async fn dispatch_authorized_tool(
                 speaker: args["speaker"].as_str().map(String::from),
                 tenant_id: args["tenant_id"].as_str().map(String::from),
             };
-            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await {
+            let val = if let Some(st) = resolve_in_process_routing_state(store, routing).await? {
                 let (_, v) = build_explain_prefix_json(&st, &q).await;
                 v
             } else {

@@ -795,8 +795,13 @@ fn protected_backup_restore_roundtrip() -> Result<()> {
         format!("{}\n", "0".repeat(64)),
     )?;
     std::fs::copy(&backup, wrong_dir.join("bonsai_auth.db"))?;
-    let wrong = AuthStore::open(&wrong_dir.join("bonsai_auth.db"))?;
-    assert!(wrong.jwt_secret().is_err(), "wrong key must fail closed");
+    // SEC-06: open itself verifies every encrypted credential class
+    // under the resolved key — a wrong keyfile fails closed at startup,
+    // not at first use.
+    assert!(
+        AuthStore::open(&wrong_dir.join("bonsai_auth.db")).is_err(),
+        "wrong key material must fail closed at open"
+    );
 
     // Missing key material → open must fail closed (encrypted keys exist).
     let nokey_dir = dir.path().join("nokey");
@@ -996,7 +1001,11 @@ async fn migration_tombstone_identity_mismatch_aborts() -> Result<()> {
         .migrate_from_graph(&store)
         .await
         .expect_err("identity-mismatched tombstone must abort");
-    assert!(format!("{err:#}").contains("identity mismatch"), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("does not match")
+            || format!("{err:#}").contains("identity mismatch"),
+        "{err:#}"
+    );
     Ok(())
 }
 
@@ -1189,7 +1198,11 @@ async fn non_admin_cannot_write_auth_policy_via_config_items() -> Result<()> {
         }))
         .send()
         .await?;
-    assert_eq!(resp.status().as_u16(), 403, "operator write of auth policy must be denied");
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "operator write of auth policy must be denied"
+    );
     // Even a Viewer cannot.
     add_user(&store, "f1-vw", "viewer", true);
     let vtoken = login(&client, &base, "f1-vw").await.expect("login");
@@ -1268,7 +1281,9 @@ async fn apikey_management_requires_admin() -> Result<()> {
     add_user(&store, "f2-view", "viewer", true);
     let (base, _h) = serve(Arc::clone(&store)).await;
     let client = reqwest::Client::new();
-    let at = login(&client, &base, "f2-admin").await.expect("admin login");
+    let at = login(&client, &base, "f2-admin")
+        .await
+        .expect("admin login");
     let ot = login(&client, &base, "f2-oper").await.expect("oper login");
     let vt = login(&client, &base, "f2-view").await.expect("view login");
 
@@ -1299,18 +1314,26 @@ async fn apikey_management_requires_admin() -> Result<()> {
 
     // Admin can create; invalid scopes rejected; wildcard/admin allowed for admin.
     let (s, j) = api_status(
-        &client, &base, reqwest::Method::POST, "/api/auth/apikeys",
+        &client,
+        &base,
+        reqwest::Method::POST,
+        "/api/auth/apikeys",
         Some(&at),
         Some(serde_json::json!({"alias":"bad","scope":"not-a-scope"})),
-    ).await;
+    )
+    .await;
     assert_eq!(s, 200);
     assert_eq!(j["success"], false, "invalid scope must be rejected: {j}");
 
     let (s, j) = api_status(
-        &client, &base, reqwest::Method::POST, "/api/auth/apikeys",
+        &client,
+        &base,
+        reqwest::Method::POST,
+        "/api/auth/apikeys",
         Some(&at),
         Some(serde_json::json!({"alias":"svc","scope":"routing:read:speaker=10.0.0.1"})),
-    ).await;
+    )
+    .await;
     assert_eq!(s, 200);
     assert_eq!(j["success"], true, "{j}");
     let key_id = j["id"].as_str().unwrap().to_string();
@@ -1318,22 +1341,40 @@ async fn apikey_management_requires_admin() -> Result<()> {
 
     // A scoped (non-admin) API key cannot manage keys.
     let (s, _) = api_status(
-        &client, &base, reqwest::Method::GET, "/api/auth/apikeys",
-        Some(&raw_key), None,
-    ).await;
-    assert!(s == 401 || s == 403, "scoped key must not list keys, got {s}");
+        &client,
+        &base,
+        reqwest::Method::GET,
+        "/api/auth/apikeys",
+        Some(&raw_key),
+        None,
+    )
+    .await;
+    assert!(
+        s == 401 || s == 403,
+        "scoped key must not list keys, got {s}"
+    );
 
     // Admin rotate + delete work.
     let (s, j) = api_status(
-        &client, &base, reqwest::Method::POST,
-        &format!("/api/auth/apikeys/{key_id}/rotate"), Some(&at), None,
-    ).await;
+        &client,
+        &base,
+        reqwest::Method::POST,
+        &format!("/api/auth/apikeys/{key_id}/rotate"),
+        Some(&at),
+        None,
+    )
+    .await;
     assert_eq!(s, 200);
     assert_eq!(j["success"], true, "{j}");
     let (s, _) = api_status(
-        &client, &base, reqwest::Method::DELETE,
-        &format!("/api/auth/apikeys/{key_id}"), Some(&at), None,
-    ).await;
+        &client,
+        &base,
+        reqwest::Method::DELETE,
+        &format!("/api/auth/apikeys/{key_id}"),
+        Some(&at),
+        None,
+    )
+    .await;
     assert_eq!(s, 204);
     Ok(())
 }
@@ -1356,7 +1397,9 @@ async fn login_lockout_triggers_at_threshold_boundary() -> Result<()> {
             client
                 .post(format!("{base}/api/auth/login"))
                 .json(&serde_json::json!({"username":"f6-user","password":pw}))
-                .send().await.unwrap()
+                .send()
+                .await
+                .unwrap()
         }
     };
 
@@ -1437,7 +1480,14 @@ fn verify_backup_rejects_tampered_missing_and_swapped_artifacts() -> Result<()> 
         let mut f = std::fs::OpenOptions::new().append(true).open(&tampered)?;
         f.write_all(b"x")?;
     }
-    assert!(AuthStore::verify_backup(&tampered, &tampered.with_extension("manifest.json"), Some(&keyfile)).is_err());
+    assert!(
+        AuthStore::verify_backup(
+            &tampered,
+            &tampered.with_extension("manifest.json"),
+            Some(&keyfile)
+        )
+        .is_err()
+    );
 
     // Swapped manifest from a different snapshot: counts/digest mismatch.
     let dir2 = TempDir::new()?;
@@ -1445,7 +1495,14 @@ fn verify_backup_rejects_tampered_missing_and_swapped_artifacts() -> Result<()> 
     let swapped = dir.path().join("swapped.db");
     std::fs::copy(&dest2, &swapped)?;
     std::fs::copy(&manifest, swapped.with_extension("manifest.json"))?;
-    assert!(AuthStore::verify_backup(&swapped, &swapped.with_extension("manifest.json"), Some(&keyfile)).is_err());
+    assert!(
+        AuthStore::verify_backup(
+            &swapped,
+            &swapped.with_extension("manifest.json"),
+            Some(&keyfile)
+        )
+        .is_err()
+    );
     Ok(())
 }
 
@@ -1493,12 +1550,18 @@ fn auth_store_rejects_symlink_and_foreign_paths() -> Result<()> {
     // Symlink to a valid db must be rejected.
     let link = dir.path().join("link.db");
     std::os::unix::fs::symlink(&real, &link)?;
-    assert!(AuthStore::open(&link).is_err(), "symlink path must be rejected");
+    assert!(
+        AuthStore::open(&link).is_err(),
+        "symlink path must be rejected"
+    );
     // Non-regular file must be rejected.
     let fifo = dir.path().join("fifo.db");
     let _ = std::process::Command::new("mkfifo").arg(&fifo).status();
     if fifo.exists() {
-        assert!(AuthStore::open(&fifo).is_err(), "non-regular file must be rejected");
+        assert!(
+            AuthStore::open(&fifo).is_err(),
+            "non-regular file must be rejected"
+        );
     }
     Ok(())
 }
@@ -1526,11 +1589,36 @@ async fn protected_service_tokens_migrate_out_of_graph() -> Result<()> {
     // Secret-bearing names in allowed classes + a safe auth-policy flag
     // that must remain in the graph untouched.
     for item in [
-        cfg_item("app-cfg-rtok", "app_config", "routing_service_token", "\"rtok-synthetic-1\""),
-        cfg_item("rt-cfg-itok", "runtime_config", "internal_service_token", "\"itok-synthetic-2\""),
-        cfg_item("app-cfg-stok", "app_config", "service_token", "stok-synthetic-3"),
-        cfg_item("app-cfg-apw", "app_config", "admin_password", "\"apw-synthetic-4\""),
-        cfg_item("app-cfg-jwt", "app_config", "jwt_secret", "\"stray-jwt-material\""),
+        cfg_item(
+            "app-cfg-rtok",
+            "app_config",
+            "routing_service_token",
+            "\"rtok-synthetic-1\"",
+        ),
+        cfg_item(
+            "rt-cfg-itok",
+            "runtime_config",
+            "internal_service_token",
+            "\"itok-synthetic-2\"",
+        ),
+        cfg_item(
+            "app-cfg-stok",
+            "app_config",
+            "service_token",
+            "stok-synthetic-3",
+        ),
+        cfg_item(
+            "app-cfg-apw",
+            "app_config",
+            "admin_password",
+            "\"apw-synthetic-4\"",
+        ),
+        cfg_item(
+            "app-cfg-jwt",
+            "app_config",
+            "jwt_secret",
+            "\"stray-jwt-material\"",
+        ),
         cfg_item("app-cfg-auth", "app_config", "require_auth", "\"1\""),
     ] {
         // Fixture reproduces pre-migration graph state — bypass the
@@ -1539,34 +1627,51 @@ async fn protected_service_tokens_migrate_out_of_graph() -> Result<()> {
     }
     store.auth_store.migrate_from_graph(&store).await?;
     let report = store.auth_store.migrate_protected_config(&store).await?;
-    assert_eq!(report.tokens_imported, 4, "{report:?}");
-    assert_eq!(report.records_quarantined, 1, "jwt_secret name must quarantine");
+    // SEC-01: ONLY the enabled app_config routing_service_token matches
+    // the legacy authoritative read (app_config + enabled + consumed
+    // name). runtime_config internal_service_token, service_token and
+    // admin_password have no consumer contract → quarantined, never
+    // activated; jwt_secret → quarantined.
+    assert_eq!(report.tokens_imported, 1, "{report:?}");
+    assert_eq!(report.records_quarantined, 4, "{report:?}");
     assert_eq!(report.rows_scrubbed, 5);
 
-    // Tokens are sealed in AuthStore and decrypt to exact values.
+    // The authoritative token is sealed in AuthStore and decrypts to
+    // the exact value; non-authoritative records are NOT active.
     assert_eq!(
-        store.auth_store.get_service_token("routing_service_token")?,
+        store
+            .auth_store
+            .get_service_token("routing_service_token")?,
         Some("rtok-synthetic-1".into())
     );
-    assert_eq!(
-        store.auth_store.get_service_token("internal_service_token")?,
-        Some("itok-synthetic-2".into())
-    );
-    assert_eq!(
-        store.auth_store.get_service_token("admin_password")?,
-        Some("apw-synthetic-4".into())
-    );
+    for name in ["internal_service_token", "service_token", "admin_password"] {
+        assert_eq!(
+            store.auth_store.get_service_token(name)?,
+            None,
+            "{name} must not be activated by migration"
+        );
+    }
     assert_eq!(store.auth_store.get_service_token("jwt_secret")?, None);
 
     // Graph rows are validated tombstones — no secret bytes remain.
     for class in ["app_config", "runtime_config"] {
         for item in store.list_config_items(Some(class.into())).await? {
-            if ["routing_service_token", "internal_service_token", "service_token",
-                "admin_password", "jwt_secret"].contains(&item.name.as_str()) {
+            if [
+                "routing_service_token",
+                "internal_service_token",
+                "service_token",
+                "admin_password",
+                "jwt_secret",
+            ]
+            .contains(&item.name.as_str())
+            {
                 assert!(!item.enabled, "{} must be disabled", item.name);
                 let v: serde_json::Value = serde_json::from_str(&item.content_json)?;
                 assert_eq!(v["migrated_to"], "auth_store", "{}", item.name);
-                assert!(!item.content_json.contains("synthetic"), "secret leaked in tombstone");
+                assert!(
+                    !item.content_json.contains("synthetic"),
+                    "secret leaked in tombstone"
+                );
             }
         }
     }
@@ -1582,13 +1687,18 @@ async fn protected_service_tokens_migrate_out_of_graph() -> Result<()> {
 
     // The routing-service resolver now reads AuthStore, not the graph.
     let (_url, token, _explicit) =
-        bonsai::routing_service::resolve_routing_service_endpoint_config(&store).await;
+        bonsai::routing_service::resolve_routing_service_endpoint_config(&store).await?;
     assert_eq!(token.as_deref(), Some("rtok-synthetic-1"));
 
     // Idempotent: second run is a no-op.
     let again = store.auth_store.migrate_protected_config(&store).await?;
     assert!(again.already_complete);
-    assert_eq!(store.auth_store.get_service_token("routing_service_token")?, Some("rtok-synthetic-1".into()));
+    assert_eq!(
+        store
+            .auth_store
+            .get_service_token("routing_service_token")?,
+        Some("rtok-synthetic-1".into())
+    );
     Ok(())
 }
 
@@ -1599,8 +1709,16 @@ async fn config_items_api_rejects_protected_secret_names() -> Result<()> {
     add_user(&store, "f78-admin", "admin", true);
     let (base, _h) = serve(Arc::clone(&store)).await;
     let client = reqwest::Client::new();
-    let token = login(&client, &base, "f78-admin").await.expect("admin login");
-    for name in ["routing_service_token", "internal_service_token", "service_token", "admin_password", "bind_password"] {
+    let token = login(&client, &base, "f78-admin")
+        .await
+        .expect("admin login");
+    for name in [
+        "routing_service_token",
+        "internal_service_token",
+        "service_token",
+        "admin_password",
+        "bind_password",
+    ] {
         let resp = client
             .post(format!("{base}/api/config-items"))
             .bearer_auth(&token)
@@ -1611,7 +1729,11 @@ async fn config_items_api_rejects_protected_secret_names() -> Result<()> {
             }))
             .send()
             .await?;
-        assert_eq!(resp.status().as_u16(), 410, "{name} must be retired from graph writes");
+        assert_eq!(
+            resp.status().as_u16(),
+            410,
+            "{name} must be retired from graph writes"
+        );
     }
     // require_auth remains writable by admin (safe metadata, F1-ignored).
     let resp = client
@@ -1680,7 +1802,21 @@ async fn protected_names_rejected_at_store_choke_point() -> Result<()> {
             "{name} must be rejected at the store choke point"
         );
     }
-    // A validated migration tombstone remains writable (migration needs it).
+    // A validated migration tombstone remains writable ONLY when bound
+    // to an existing protected record with a verified counterpart
+    // (SEC-03/SEC-04). First create the protected record via the
+    // fixture path and establish its AuthStore counterpart.
+    store
+        .upsert_config_item_unchecked(cfg_item(
+            "reintro-tomb",
+            "app_config",
+            "routing_service_token",
+            "\"rtok-tomb-counterpart\"",
+        ))
+        .await?;
+    store
+        .auth_store
+        .set_service_token("routing_service_token", "rtok-tomb-counterpart")?;
     let mut tomb = cfg_item(
         "reintro-tomb",
         "app_config",
@@ -1691,11 +1827,57 @@ async fn protected_names_rejected_at_store_choke_point() -> Result<()> {
             "record_class": "app_config",
             "item_id": "reintro-tomb",
             "disposition": "imported",
+            "quarantined_at_ns": 1,
         })
         .to_string(),
     );
     tomb.enabled = false;
     store.upsert_config_item(tomb).await?;
+
+    // SEC-03: a harmless incoming name must NOT be able to select the
+    // protected record by id and rewrite its content.
+    let mut bypass = cfg_item(
+        "reintro-tomb",
+        "app_config",
+        "harmless_name",
+        "{\"injected\":true}",
+    );
+    bypass.enabled = true;
+    assert!(
+        store.upsert_config_item(bypass).await.is_err(),
+        "id-based identity bypass must be rejected"
+    );
+
+    // SEC-04: a forged tombstone (no counterpart / extra fields) for a
+    // protected record must be rejected.
+    store
+        .upsert_config_item_unchecked(cfg_item(
+            "reintro-forged",
+            "app_config",
+            "admin_password",
+            "\"apw-forged\"",
+        ))
+        .await?;
+    let mut forged = cfg_item(
+        "reintro-forged",
+        "app_config",
+        "admin_password",
+        &serde_json::json!({
+            "migrated_to": "auth_store",
+            "migration": bonsai::auth_store::MIGRATION_MARKER,
+            "record_class": "app_config",
+            "item_id": "reintro-forged",
+            "disposition": "imported",
+            "quarantined_at_ns": 1,
+            "smuggled_secret": "x",
+        })
+        .to_string(),
+    );
+    forged.enabled = false;
+    assert!(
+        store.upsert_config_item(forged).await.is_err(),
+        "tombstone with extra fields must be rejected"
+    );
     Ok(())
 }
 
@@ -1716,7 +1898,9 @@ async fn protected_config_migration_resumes_and_rejects_conflicts() -> Result<()
     store.auth_store.migrate_from_graph(&store).await?;
     store.auth_store.migrate_protected_config(&store).await?;
     assert_eq!(
-        store.auth_store.get_service_token("routing_service_token")?,
+        store
+            .auth_store
+            .get_service_token("routing_service_token")?,
         Some("rtok-resume-A".into())
     );
     // Simulate interruption before completion: roll the marker back and
@@ -1724,6 +1908,8 @@ async fn protected_config_migration_resumes_and_rejects_conflicts() -> Result<()
     store
         .auth_store
         .set_auth_config("protected_config_state", "scrub")?;
+    // SEC-01: a runtime_config record is NOT the legacy authoritative
+    // source — it must be quarantined, never activated.
     store
         .upsert_config_item_unchecked(cfg_item(
             "pc-2",
@@ -1734,11 +1920,16 @@ async fn protected_config_migration_resumes_and_rejects_conflicts() -> Result<()
         .await?;
     store.auth_store.migrate_protected_config(&store).await?;
     assert_eq!(
-        store.auth_store.get_service_token("internal_service_token")?,
-        Some("itok-resume-B".into())
+        store
+            .auth_store
+            .get_service_token("internal_service_token")?,
+        None,
+        "runtime_config credential must be quarantined, not activated"
     );
     assert_eq!(
-        store.auth_store.get_service_token("routing_service_token")?,
+        store
+            .auth_store
+            .get_service_token("routing_service_token")?,
         Some("rtok-resume-A".into()),
         "resume must not lose the previously imported token"
     );
@@ -1747,18 +1938,19 @@ async fn protected_config_migration_resumes_and_rejects_conflicts() -> Result<()
         .upsert_config_item_unchecked(cfg_item(
             "pc-3",
             "app_config",
-            "service_token",
-            "\"stok-conflict\"",
+            "routing_service_token",
+            "\"rtok-conflict\"",
         ))
         .await?;
     store
         .auth_store
-        .set_service_token("service_token", "stok-different")?;
-    store
-        .auth_store
         .set_auth_config("protected_config_state", "detect")?;
     assert!(
-        store.auth_store.migrate_protected_config(&store).await.is_err(),
+        store
+            .auth_store
+            .migrate_protected_config(&store)
+            .await
+            .is_err(),
         "conflicting stored vs graph value must abort, never silently pick"
     );
     Ok(())

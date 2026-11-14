@@ -287,7 +287,10 @@ async fn b12_security_rbac_scoped_reads_and_secret_redaction() {
         &format!("http://{routing_addr}"),
     )
     .await;
-    set_app_config(&store, "routing_service_token", routing_token).await;
+    store
+        .auth_store
+        .set_service_token("routing_service_token", routing_token)
+        .expect("set routing service token");
     set_app_config(&store, "require_auth", "1").await;
 
     let bonsai_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

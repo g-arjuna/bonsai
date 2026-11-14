@@ -305,7 +305,10 @@ async fn test_bn005_identity_derived_tenant_and_exporter_scoping() {
         &format!("http://{routing_addr}"),
     )
     .await;
-    set_app_config(&store, "routing_service_token", internal_token).await;
+    store
+        .auth_store
+        .set_service_token("routing_service_token", internal_token)
+        .expect("set routing service token");
 
     // Ingest sample route into routing service
     let (init, _, _) =
@@ -786,7 +789,10 @@ async fn test_bn005_conflicting_speaker_aliases_are_rejected() {
     });
 
     set_app_config(&store, "routing_service_url", &format!("\"{backend_url}\"")).await;
-    set_app_config(&store, "routing_service_token", "\"audit-internal\"").await;
+    store
+        .auth_store
+        .set_service_token("routing_service_token", "audit-internal")
+        .expect("set routing service token");
 
     let key = "bsk_audit_alias_key";
     let key_hash = hex::encode(Sha256::digest(key.as_bytes()));
@@ -894,7 +900,10 @@ async fn test_bn005_decoded_bmp_vrf_mismatch_is_rejected() {
     });
 
     set_app_config(&store, "routing_service_url", &format!("\"{backend_url}\"")).await;
-    set_app_config(&store, "routing_service_token", "\"audit-internal\"").await;
+    store
+        .auth_store
+        .set_service_token("routing_service_token", "audit-internal")
+        .expect("set routing service token");
 
     let key = "bsk_audit_vrf_key";
     let key_hash = hex::encode(Sha256::digest(key.as_bytes()));
@@ -1935,7 +1944,10 @@ async fn test_bn005_http_scope_support_matrix_and_encoded_parameters() {
         &format!("http://{}", backend.local_addr().unwrap()),
     )
     .await;
-    set_app_config(&store, "routing_service_token", "matrix-token").await;
+    store
+        .auth_store
+        .set_service_token("routing_service_token", "matrix-token")
+        .expect("set routing service token");
     tokio::spawn(async move {
         axum::serve(backend, build_internal_routing_router(routing))
             .await

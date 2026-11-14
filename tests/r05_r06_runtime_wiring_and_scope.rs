@@ -308,7 +308,10 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
         &format!("http://{addr}"),
     )
     .await;
-    set_app_config(&graph_store, "routing_service_token", token).await;
+    graph_store
+        .auth_store
+        .set_service_token("routing_service_token", token)
+        .expect("set routing service token");
 
     // Remote MCP tool: get_prefix_journey (`routing` is `None`, forcing HTTP client execution)
     let journey_val = call_tool_with_store_and_routing(
