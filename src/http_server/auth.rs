@@ -53,6 +53,11 @@ pub struct JwtClaims {
     pub exp: i64,
     /// JWT ID — unique per token for revocation tracking
     pub jti: String,
+    /// Identity source at mint time: "local" | "env" | "ldap".
+    /// Missing on pre-BN-022 tokens → treated as "local" (fail closed:
+    /// a same-named disabled local account still denies the token).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub src: Option<String>,
 }
 
 /// Return the JWT signing secret from protected storage.
@@ -70,10 +75,14 @@ async fn get_or_init_jwt_secret(store: &crate::graph::GraphStore) -> Result<Stri
 }
 
 /// Mint a signed JWT for a user. `store` is needed to resolve the secret.
-pub async fn mint_jwt(
+/// `src` records the identity source ("local" | "env" | "ldap") so the
+/// middleware can distinguish bootstrap/env identities from local
+/// accounts (AUTH-R3).
+pub async fn mint_jwt_for_source(
     username: &str,
     role: &str,
     store: &crate::graph::GraphStore,
+    src: &str,
 ) -> Result<String, String> {
     let secret = get_or_init_jwt_secret(store).await?;
     let now = super::now_ns() / 1_000_000_000; // seconds
@@ -85,6 +94,7 @@ pub async fn mint_jwt(
         iat: now,
         exp,
         jti,
+        src: Some(src.to_string()),
     };
     encode(
         &Header::new(Algorithm::HS256),
@@ -92,6 +102,16 @@ pub async fn mint_jwt(
         &EncodingKey::from_secret(secret.as_bytes()),
     )
     .map_err(|e| format!("JWT mint failed: {e}"))
+}
+
+/// Mint a JWT without an explicit source marker (treated as "local" by
+/// the middleware's account-authority check).
+pub async fn mint_jwt(
+    username: &str,
+    role: &str,
+    store: &crate::graph::GraphStore,
+) -> Result<String, String> {
+    mint_jwt_for_source(username, role, store, "local").await
 }
 
 /// Verify a JWT and return claims. Validates signature against every
@@ -556,13 +576,20 @@ pub(super) async fn login_handler(
         crate::config::resolve_secret(&state.credentials, "bonsai-admin-pass", "BONSAI_ADMIN_PASS")
             .unwrap_or_default();
 
-    let (role_str, is_env_admin) = if !admin_user.is_empty()
+    let (role_str, is_env_admin, auth_source) = if !admin_user.is_empty()
         && bool::from(username.as_bytes().ct_eq(admin_user.as_bytes()))
         && bool::from(req.password.as_bytes().ct_eq(admin_pass.as_bytes()))
     {
-        ("admin".to_string(), true)
+        ("admin".to_string(), true, "env")
     } else if let Some(user) = user_item.as_ref() {
-        if !verify_password(&req.password, &user.password_hash) {
+        // Argon2 verification is deliberately expensive — keep it off
+        // the async runtime's worker threads (AUTH-R6).
+        let pw = req.password.clone();
+        let stored = user.password_hash.clone();
+        let password_ok = tokio::task::spawn_blocking(move || verify_password(&pw, &stored))
+            .await
+            .unwrap_or(false);
+        if !password_ok {
             rate_limit_check(&username, false);
             return Ok(Json(LoginResponse {
                 success: false,
@@ -573,10 +600,10 @@ pub(super) async fn login_handler(
             })
             .into_response());
         }
-        (user.role.clone(), false)
+        (user.role.clone(), false, "local")
     } else if state.ldap_config.enabled && !state.ldap_config.server_url.is_empty() {
         match ldap_authenticate(&state.ldap_config, &username, &req.password).await {
-            Ok(role) => (role, false),
+            Ok(role) => (role, false, "ldap"),
             Err(e) => {
                 tracing::warn!(username = %username, error = %e, "LDAP authentication failed");
                 rate_limit_check(&username, false);
@@ -605,8 +632,10 @@ pub(super) async fn login_handler(
     // Auth success — clear rate-limit state
     rate_limit_check(&username, true);
 
-    // Mint a signed JWT (HS256) — no DB row needed for session
-    let jwt = match mint_jwt(&username, &role_str, &state.store).await {
+    // Mint a signed JWT (HS256) — no DB row needed for session. The
+    // source marker lets the middleware apply local-account authority
+    // (disable/role-change) only where it applies (AUTH-R3).
+    let jwt = match mint_jwt_for_source(&username, &role_str, &state.store, auth_source).await {
         Ok(t) => t,
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
     };
@@ -1201,8 +1230,46 @@ pub async fn auth_middleware(
             match store.auth_store.is_jwt_revoked(&claims.jti) {
                 Ok(true) => {}
                 Ok(false) => {
-                    authenticated_role = Some(Role::from_str(&claims.role));
-                    authenticated_subject = Some(format!("user:{}", claims.sub));
+                    // AUTH-R3: authentication ≠ authorization. A valid
+                    // signature only proves the token was minted; the
+                    // *current* account state decides authority.
+                    //   - "env" bootstrap identities are explicit
+                    //     operator configuration — preserved as-is.
+                    //   - Every other source: if a local AuthStore user
+                    //     record exists for `sub`, it is authoritative —
+                    //     disabled/deleted ⇒ deny, and the LIVE role is
+                    //     used so Admin→Viewer reductions take effect
+                    //     immediately. No local record ⇒ external
+                    //     identity (LDAP/bootstrap-less) ⇒ token role.
+                    //   - Storage failure ⇒ deny (503), never fall back
+                    //     to token claims.
+                    let src = claims.src.as_deref().unwrap_or("local");
+                    if src == "env" {
+                        authenticated_role = Some(Role::from_str(&claims.role));
+                        authenticated_subject = Some(format!("user:{}", claims.sub));
+                    } else {
+                        match store.auth_store.get_user(&claims.sub) {
+                            Ok(Some(user)) => {
+                                if user.enabled {
+                                    authenticated_role =
+                                        Some(Role::from_str(&user.role));
+                                    authenticated_subject =
+                                        Some(format!("user:{}", claims.sub));
+                                }
+                                // Disabled local account: fall through
+                                // to UNAUTHORIZED below.
+                            }
+                            Ok(None) => {
+                                authenticated_role = Some(Role::from_str(&claims.role));
+                                authenticated_subject =
+                                    Some(format!("user:{}", claims.sub));
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "account state lookup failed — denying");
+                                return Err(StatusCode::SERVICE_UNAVAILABLE);
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "jwt revocation lookup failed — denying");

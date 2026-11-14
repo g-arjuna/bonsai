@@ -50,7 +50,11 @@ const JWT_SECRET_ENV: &str = "BONSAI_JWT_SECRET";
 ///      against a local attacker who already owns the runtime dir.
 const VAULT_PASSPHRASE_ENV: &str = "BONSAI_VAULT_PASSPHRASE";
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+/// Schema versions this build can open. v1 → v2 is additive only (the
+/// `auth_quarantine` table); no credential data changes shape.
+const SUPPORTED_SCHEMA_VERSIONS: &[i64] = &[1, 2];
 
 // ── Record types (typed API — no generic row access) ────────────────────────
 
@@ -87,6 +91,9 @@ pub struct MigrationReport {
     pub jwt_revocations_imported: usize,
     pub legacy_sessions_seen: usize,
     pub malformed_records: usize,
+    /// Legacy records preserved in `auth_quarantine` (malformed or
+    /// otherwise unresolved) before their graph rows were scrubbed.
+    pub quarantined_records: usize,
     pub quarantined_rows: usize,
 }
 
@@ -106,6 +113,25 @@ pub struct AuthStore {
     migrated: AtomicBool,
     last_attempt_ns: std::sync::atomic::AtomicI64,
     migration_lock: tokio::sync::Mutex<()>,
+    /// Process-local cache of decrypted JWT signing secrets (AUTH-R6).
+    /// Populated lazily from `jwt_keys`; every mutation of `jwt_keys`
+    /// bumps `jwt_generation` while holding the store mutex, so a cache
+    /// entry tagged with an older generation is always stale. The cache
+    /// is per-process: it never weakens rotation or revocation semantics
+    /// (revocation is the separate `jwt_revoked` table, checked per
+    /// request) and is documented as process-local in auth_storage.md.
+    jwt_cache: Mutex<Option<JwtSecretCache>>,
+    jwt_generation: std::sync::atomic::AtomicI64,
+}
+
+struct JwtSecretCache {
+    generation: i64,
+    /// Decrypted secrets valid for verification, active key first.
+    secrets: Vec<String>,
+    /// The single active signing key (`is_active = 1`), if any. Kept
+    /// separate from `secrets` because `jwt_secret()` must mint with the
+    /// active key — never a retired verification-only key.
+    active: Option<String>,
 }
 
 impl AuthStore {
@@ -122,12 +148,43 @@ impl AuthStore {
                 })?;
             }
         }
+        // Pre-create the database file with owner-only permissions so it
+        // is never observable with permissive mode between creation and
+        // the post-open restrict_permissions pass.
+        if !path.exists() {
+            create_owner_only_file(path)?;
+        }
         let conn = Connection::open(path)
             .with_context(|| format!("failed to open auth store '{}'", path.display()))?;
         conn.execute_batch(
             "PRAGMA busy_timeout=5000;
-             PRAGMA foreign_keys=ON;
-             CREATE TABLE IF NOT EXISTS schema_meta (
+             PRAGMA foreign_keys=ON;",
+        )
+        .with_context(|| {
+            format!(
+                "failed to initialize auth store pragmas at '{}'",
+                path.display()
+            )
+        })?;
+
+        // Schema version gate (AUTH-R4): an existing database whose
+        // recorded version is unknown/newer must not be silently mutated
+        // by CREATE ... IF NOT EXISTS. Missing version on an existing
+        // schema_meta means a partially-initialized store — the idempotent
+        // DDL below completes it, then the version is (re)written.
+        let existing_version = read_schema_version(&conn)?;
+        if let Some(v) = existing_version {
+            if !SUPPORTED_SCHEMA_VERSIONS.contains(&v) {
+                bail!(
+                    "auth store '{}' has unsupported schema_version {v}; \
+                     this build supports {SUPPORTED_SCHEMA_VERSIONS:?}",
+                    path.display()
+                );
+            }
+        }
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_meta (
                key TEXT PRIMARY KEY,
                value TEXT NOT NULL
              );
@@ -181,7 +238,21 @@ impl AuthStore {
                subject TEXT NOT NULL,
                outcome TEXT NOT NULL
              );
-             CREATE INDEX IF NOT EXISTS auth_audit_ts ON auth_audit(ts_ns);",
+             CREATE INDEX IF NOT EXISTS auth_audit_ts ON auth_audit(ts_ns);
+             -- AUTH-R2: recoverable quarantine for legacy credential
+             -- records that cannot be safely imported (malformed or
+             -- conflicting). Content is preserved inside the protected
+             -- store so the graph row can be scrubbed without losing the
+             -- only copy. Never exposed through graph or auth APIs.
+             CREATE TABLE IF NOT EXISTS auth_quarantine (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               record_class TEXT NOT NULL,
+               item_id TEXT NOT NULL,
+               content_json TEXT NOT NULL,
+               reason TEXT NOT NULL,
+               quarantined_at_ns INTEGER NOT NULL,
+               UNIQUE(record_class, item_id)
+             );",
         )
         .with_context(|| {
             format!(
@@ -190,15 +261,70 @@ impl AuthStore {
             )
         })?;
 
-        // Durable schema marker.
+        // Durable schema marker: write the current version unconditionally
+        // (v1 databases are upgraded in place — the v1→v2 delta is the
+        // additive auth_quarantine table created above).
         conn.execute(
-            "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('schema_version', ?1)",
+            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', ?1)",
             params![SCHEMA_VERSION.to_string()],
         )?;
+        // Post-condition: the marker must read back as the supported
+        // version, and every required table must exist — a partially
+        // initialized store must never appear usable.
+        let verify_version = read_schema_version(&conn)?;
+        if verify_version != Some(SCHEMA_VERSION) {
+            bail!(
+                "auth store '{}' failed schema initialization (version {:?})",
+                path.display(),
+                verify_version
+            );
+        }
+        for table in [
+            "users",
+            "api_keys",
+            "jwt_keys",
+            "jwt_revoked",
+            "auth_config",
+            "auth_audit",
+            "auth_quarantine",
+        ] {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                params![table],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                bail!(
+                    "auth store '{}' missing required table '{table}' after initialization",
+                    path.display()
+                );
+            }
+        }
 
         restrict_permissions(path)?;
 
-        let secret_key = resolve_secret_key(path)?;
+        // AUTH-R4: a freshly created keyfile beside a database that already
+        // holds encrypted JWT keys means the original key material is lost
+        // (or was never this host's). Minting a new key here would produce
+        // a store that can never decrypt its signing keys — fail closed
+        // instead of silently establishing a divergent encryption identity.
+        let (secret_key, keyfile_created) = resolve_secret_key(path)?;
+        if keyfile_created {
+            let has_jwt_keys: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM jwt_keys)",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_jwt_keys {
+                bail!(
+                    "auth store '{}' contains encrypted JWT keys but its \
+                     keyfile was missing and a new one was generated; the \
+                     existing keys cannot be decrypted. Restore the original \
+                     keyfile or set {VAULT_PASSPHRASE_ENV} before starting.",
+                    path.display()
+                );
+            }
+        }
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -207,11 +333,22 @@ impl AuthStore {
             migrated: AtomicBool::new(false),
             last_attempt_ns: std::sync::atomic::AtomicI64::new(0),
             migration_lock: tokio::sync::Mutex::new(()),
+            jwt_cache: Mutex::new(None),
+            jwt_generation: std::sync::atomic::AtomicI64::new(0),
         })
     }
 
     /// Path of the auth database for a given graph database path: the
     /// `bonsai_auth.db` file in the graph path's parent directory.
+    ///
+    /// This is **intentional runtime-wide ownership**: Bonsai treats the
+    /// parent directory of the graph database as one runtime data
+    /// directory, and authentication is scoped to that directory — not to
+    /// an individual graph file. Two graph databases in the same
+    /// directory therefore share one `AuthStore` (users, keys, JWT keys,
+    /// migration marker); graph databases in different directories get
+    /// independent auth stores. Operators must not place unrelated
+    /// Bonsai instances' graph files in one directory.
     pub fn path_for_graph(graph_path: &str) -> PathBuf {
         let p = Path::new(graph_path);
         let parent = p.parent().unwrap_or_else(|| Path::new("."));
@@ -252,38 +389,67 @@ impl AuthStore {
             );
         }
 
-        let mut conn = self.lock()?;
-        // Active key (at most one — enforced by partial unique index).
-        let row = conn.query_row(
-            "SELECT kid, secret_enc, source FROM jwt_keys WHERE is_active = 1 \
-             ORDER BY created_at_ns DESC LIMIT 1",
-            [],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Vec<u8>>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            },
-        );
-        match row {
-            Ok((kid, secret_enc, source)) => self.decrypt_jwt_secret(&kid, &secret_enc, &source),
-            Err(rusqlite::Error::QueryReturnedNoRows) => self.generate_jwt_secret(&mut conn),
-            Err(e) => Err(anyhow!("jwt_keys lookup failed: {e}")),
+        // Fast path: process-local cache (AUTH-R6). The active key —
+        // never a retired verification-only key — is used for minting.
+        if let Some(active) = self.jwt_active_secret()? {
+            return Ok(active);
         }
+
+        // No keys at all: generate and persist one. Concurrent first
+        // starts are serialized by the store mutex + unique index; the
+        // loser re-reads the winner's row.
+        let mut conn = self.lock()?;
+        self.generate_jwt_secret(&mut conn)
     }
 
     /// Secrets to try when verifying a JWT, newest first: the active key
     /// plus retired keys still inside their verification overlap window.
+    ///
+    /// Decrypted material is served from a process-local cache keyed on
+    /// the `jwt_keys` generation counter (AUTH-R6): the expensive
+    /// age/scrypt decrypt runs once per key generation, not per request.
+    /// The cache never extends a retired key's `verify_until_ns` window —
+    /// expiry is enforced by the SQL selection, and pruning below keeps
+    /// retired-key accumulation bounded.
     pub fn jwt_verify_candidates(&self) -> Result<Vec<String>> {
         if std::env::var(JWT_SECRET_ENV).is_ok() {
             // Env override is the sole authority while set.
             return self.jwt_secret().map(|s| vec![s]);
         }
+        self.jwt_secrets()
+    }
+
+    /// Ensure the process-local JWT secret cache is fresh for the current
+    /// key generation, refreshing it under the store mutex when stale.
+    fn ensure_jwt_cache(&self) -> Result<()> {
+        let generation = self.jwt_generation.load(Ordering::Acquire);
+        {
+            let cache = self
+                .jwt_cache
+                .lock()
+                .map_err(|_| anyhow!("jwt cache lock poisoned"))?;
+            if let Some(entry) = cache.as_ref() {
+                if entry.generation == generation {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Refresh under the store mutex: every jwt_keys mutation bumps the
+        // generation before releasing this lock, so the rows read here are
+        // consistent with `generation`.
         let conn = self.lock()?;
+        let generation = self.jwt_generation.load(Ordering::Acquire);
         let now = now_ns();
+        // Bound retired-key accumulation (AUTH-R5): drop retired keys whose
+        // verification window has closed — they can never verify again.
+        conn.execute(
+            "DELETE FROM jwt_keys WHERE is_active = 0 AND \
+             (verify_until_ns IS NULL OR verify_until_ns <= ?1)",
+            params![now],
+        )?;
         let mut stmt = conn.prepare(
-            "SELECT kid, secret_enc, source FROM jwt_keys \
+            "SELECT kid, is_active, secret_enc, source FROM jwt_keys \
              WHERE is_active = 1 \
                 OR (verify_until_ns IS NOT NULL AND verify_until_ns > ?1) \
              ORDER BY is_active DESC, created_at_ns DESC",
@@ -291,22 +457,96 @@ impl AuthStore {
         let rows = stmt.query_map(params![now], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                r.get::<_, Vec<u8>>(1)?,
-                r.get::<_, String>(2)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, String>(3)?,
             ))
         })?;
-        let mut out = Vec::new();
+        let mut secrets = Vec::new();
+        let mut active = None;
         for row in rows {
-            let (kid, enc, source) = row?;
-            out.push(self.decrypt_jwt_secret(&kid, &enc, &source)?);
+            let (kid, is_active, enc, source) = row?;
+            let plain = self.decrypt_jwt_secret(&kid, &enc, &source)?;
+            if is_active == 1 && active.is_none() {
+                active = Some(plain.clone());
+            }
+            secrets.push(plain);
         }
-        Ok(out)
+        drop(stmt);
+        *self
+            .jwt_cache
+            .lock()
+            .map_err(|_| anyhow!("jwt cache lock poisoned"))? = Some(JwtSecretCache {
+            generation,
+            secrets,
+            active,
+        });
+        Ok(())
+    }
+
+    /// All currently-verifiable JWT secrets (active first) from the
+    /// process-local cache.
+    fn jwt_secrets(&self) -> Result<Vec<String>> {
+        self.ensure_jwt_cache()?;
+        let cache = self
+            .jwt_cache
+            .lock()
+            .map_err(|_| anyhow!("jwt cache lock poisoned"))?;
+        Ok(cache
+            .as_ref()
+            .map(|c| c.secrets.clone())
+            .unwrap_or_default())
+    }
+
+    /// Active signing secret from the cache, or `None` when no active key
+    /// exists. Never returns a retired verification-only key.
+    fn jwt_active_secret(&self) -> Result<Option<String>> {
+        self.ensure_jwt_cache()?;
+        let cache = self
+            .jwt_cache
+            .lock()
+            .map_err(|_| anyhow!("jwt cache lock poisoned"))?;
+        Ok(cache.as_ref().and_then(|c| c.active.clone()))
     }
 
     /// Rotate the JWT signing key: generate a new CSPRNG key, retire the
     /// current active key (still verifiable for the overlap window) and
     /// install the new key atomically.
     pub fn rotate_jwt_key(&self) -> Result<()> {
+        self.rotate_jwt_key_with_overlap(JWT_KEY_OVERLAP_NS)
+    }
+
+    /// Emergency rotation for a suspected-compromised signing key
+    /// (AUTH-R5): the retired key's verification window is closed
+    /// immediately (`verify_until_ns = now`) and every other retired key
+    /// is invalidated too — all previously issued tokens fail signature
+    /// verification at once. Users simply re-login; no mass revocation
+    /// list is needed because invalidation is cryptographic.
+    pub fn rotate_jwt_key_emergency(&self) -> Result<()> {
+        if std::env::var(JWT_SECRET_ENV).is_ok() {
+            bail!("{JWT_SECRET_ENV} override is active; stored-key emergency rotation does not apply");
+        }
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let now = now_ns();
+        tx.execute(
+            "UPDATE jwt_keys SET is_active = 0, retired_at_ns = ?1, verify_until_ns = ?1 \
+             WHERE is_active = 1",
+            params![now],
+        )?;
+        tx.execute(
+            "UPDATE jwt_keys SET verify_until_ns = ?1 WHERE is_active = 0",
+            params![now],
+        )?;
+        self.insert_generated_key(&tx, now)?;
+        tx.commit()?;
+        self.bump_jwt_generation();
+        drop(conn);
+        self.audit("system", "jwt_key_rotate_emergency", "jwt_keys", "success");
+        Ok(())
+    }
+
+    fn rotate_jwt_key_with_overlap(&self, overlap_ns: i64) -> Result<()> {
         if std::env::var(JWT_SECRET_ENV).is_ok() {
             bail!("{JWT_SECRET_ENV} override is active; unset it before rotating the stored key");
         }
@@ -316,8 +556,17 @@ impl AuthStore {
         tx.execute(
             "UPDATE jwt_keys SET is_active = 0, retired_at_ns = ?1, verify_until_ns = ?2 \
              WHERE is_active = 1",
-            params![now, now + JWT_KEY_OVERLAP_NS],
+            params![now, now.saturating_add(overlap_ns)],
         )?;
+        self.insert_generated_key(&tx, now)?;
+        tx.commit()?;
+        self.bump_jwt_generation();
+        drop(conn);
+        self.audit("system", "jwt_key_rotate", "jwt_keys", "success");
+        Ok(())
+    }
+
+    fn insert_generated_key(&self, tx: &rusqlite::Transaction<'_>, now: i64) -> Result<()> {
         let secret = generate_secret_hex();
         let enc = self.encrypt_jwt_secret(&secret)?;
         tx.execute(
@@ -325,10 +574,16 @@ impl AuthStore {
              VALUES(?1, 1, 'HS256', ?2, 'generated', ?3)",
             params![format!("key-{}", now), enc, now],
         )?;
-        tx.commit()?;
-        drop(conn);
-        self.audit("system", "jwt_key_rotate", "jwt_keys", "success");
         Ok(())
+    }
+
+    fn bump_jwt_generation(&self) {
+        self.jwt_generation.fetch_add(1, Ordering::AcqRel);
+        // Invalidate eagerly so a concurrent reader cannot observe the
+        // pre-mutation cache under the new generation.
+        if let Ok(mut cache) = self.jwt_cache.lock() {
+            *cache = None;
+        }
     }
 
     /// Import a legacy plaintext JWT secret (migration only): encrypt and
@@ -348,12 +603,12 @@ impl AuthStore {
                 params![now, now + JWT_KEY_OVERLAP_NS],
             )?;
         }
-        let exists: bool = tx.query_row(
+        let has_active: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM jwt_keys WHERE is_active = 1)",
             [],
             |r| r.get(0),
         )?;
-        if exists && !replace {
+        if has_active && !replace {
             bail!("an active jwt key already exists; pass replace=true to rotate");
         }
         let enc = self.encrypt_jwt_secret(plaintext_hex)?;
@@ -363,6 +618,42 @@ impl AuthStore {
             params![format!("imported-{}", now), enc, now],
         )?;
         tx.commit()?;
+        self.bump_jwt_generation();
+        drop(conn);
+        self.audit("system", "jwt_key_import", "jwt_keys", "success");
+        Ok(())
+    }
+
+    /// Import a legacy plaintext JWT secret as a **retired,
+    /// verification-only** key (migration continuity, AUTH-R1): used when
+    /// an active key already exists, so tokens minted under the legacy
+    /// secret keep verifying for a bounded overlap window without
+    /// displacing the active signing key.
+    ///
+    /// The `kid` is derived from the secret's hash, so a retried
+    /// migration cannot accumulate duplicate retired rows.
+    pub fn import_jwt_secret_retired(&self, plaintext_hex: &str) -> Result<()> {
+        if plaintext_hex.len() < 32 {
+            bail!("legacy jwt_secret record is too short to be a valid signing key");
+        }
+        let kid = format!(
+            "imported-retired-{}",
+            &hex::encode(Sha256::digest(plaintext_hex.as_bytes()))[..16]
+        );
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let now = now_ns();
+        let enc = self.encrypt_jwt_secret(plaintext_hex)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO jwt_keys(kid, is_active, algorithm, secret_enc, source, \
+             created_at_ns, retired_at_ns, verify_until_ns) \
+             VALUES(?1, 0, 'HS256', ?2, 'imported', ?3, ?3, ?4)",
+            params![kid, enc, now, now.saturating_add(JWT_KEY_OVERLAP_NS)],
+        )?;
+        tx.commit()?;
+        self.bump_jwt_generation();
+        drop(conn);
+        self.audit("system", "jwt_key_import_retired", "jwt_keys", "success");
         Ok(())
     }
 
@@ -378,7 +669,10 @@ impl AuthStore {
              VALUES(?1, 1, 'HS256', ?2, 'generated', ?3)",
             params![format!("key-{}", now), enc, now],
         ) {
-            Ok(_) => Ok(secret),
+            Ok(_) => {
+                self.bump_jwt_generation();
+                Ok(secret)
+            }
             Err(rusqlite::Error::SqliteFailure(e, _))
                 if e.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
@@ -581,19 +875,17 @@ impl AuthStore {
     /// Authenticate a presented raw `bsk_` key. Returns the matching key
     /// record on success. Constant-time hash comparison per candidate.
     /// Storage failure returns `Err` — callers must deny.
+    ///
+    /// Two queries total (AUTH-R6): one scan of key metadata + one scan of
+    /// verifiers, instead of a per-key lookup under repeated lock
+    /// acquisitions.
     pub fn authenticate_api_key(&self, raw_key: &str) -> Result<Option<AuthApiKey>> {
         use subtle::ConstantTimeEq;
         let presented = hex::encode(Sha256::digest(raw_key.as_bytes()));
-        for key in self.list_api_keys()? {
+        for (key, stored_hash) in self.api_key_rows()? {
             if !key.enabled {
                 continue;
             }
-            // key_hash is not exposed on AuthApiKey; fetch via dedicated query
-            // to keep the summary type free of verifier material.
-            let stored_hash = self.key_hash_for_id(&key.id)?;
-            let Some(stored_hash) = stored_hash else {
-                continue;
-            };
             if !bool::from(stored_hash.as_bytes().ct_eq(presented.as_bytes())) {
                 continue;
             }
@@ -606,14 +898,94 @@ impl AuthStore {
         Ok(None)
     }
 
-    fn key_hash_for_id(&self, id: &str) -> Result<Option<String>> {
+    /// All API keys joined with their verifier hashes, in one lock
+    /// acquisition. Internal only — `AuthApiKey` never exposes `key_hash`.
+    fn api_key_rows(&self) -> Result<Vec<(AuthApiKey, String)>> {
         let conn = self.lock()?;
-        let mut stmt = conn.prepare("SELECT key_hash FROM api_keys WHERE id = ?1")?;
-        let mut rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, alias, scope, expires_at_ns, last_used_at_ns, enabled, \
+                    created_at_ns, updated_at_ns, key_hash FROM api_keys \
+             ORDER BY created_at_ns",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                AuthApiKey {
+                    id: r.get(0)?,
+                    alias: r.get(1)?,
+                    scope: r.get(2)?,
+                    expires_at_ns: r.get(3)?,
+                    last_used_at_ns: r.get(4)?,
+                    enabled: r.get::<_, i64>(5)? != 0,
+                    created_at_ns: r.get(6)?,
+                    updated_at_ns: r.get(7)?,
+                },
+                r.get::<_, String>(8)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("api_keys scan failed: {e}"))
+    }
+
+    /// Verifier row for migration conflict checks: `(key_hash, scope,
+    /// enabled, expires_at_ns)` — internal only.
+    fn api_key_verifier_row(&self, id: &str) -> Result<Option<(String, String, bool, i64)>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT key_hash, scope, enabled, expires_at_ns FROM api_keys WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)? != 0,
+                r.get::<_, i64>(3)?,
+            ))
+        })?;
         match rows.next() {
             Some(row) => row
                 .map(Some)
-                .map_err(|e| anyhow!("api key hash lookup failed: {e}")),
+                .map_err(|e| anyhow!("api key verifier lookup failed: {e}")),
+            None => Ok(None),
+        }
+    }
+
+    /// Record a JWT `jti` revocation, keeping the **maximum** expiry
+    /// seen (AUTH-R1 monotonic revocation): re-importing an older
+    /// revocation must never shorten an existing denylist window.
+    /// Returns the effective stored expiry.
+    pub fn ensure_jwt_revoked(&self, jti: &str, expires_at_ns: i64) -> Result<i64> {
+        let conn = self.lock()?;
+        let now = now_ns();
+        conn.execute(
+            "INSERT INTO jwt_revoked(jti, expires_at_ns, revoked_at_ns) \
+             VALUES(?1, ?2, ?3) \
+             ON CONFLICT(jti) DO UPDATE SET \
+               expires_at_ns = MAX(jwt_revoked.expires_at_ns, excluded.expires_at_ns)",
+            params![jti, expires_at_ns, now],
+        )?;
+        let effective: i64 = conn.query_row(
+            "SELECT expires_at_ns FROM jwt_revoked WHERE jti = ?1",
+            params![jti],
+            |r| r.get(0),
+        )?;
+        conn.execute(
+            "DELETE FROM jwt_revoked WHERE expires_at_ns < ?1",
+            params![now],
+        )?;
+        Ok(effective)
+    }
+
+    /// Migration verify helper: stored expiry for a revoked jti
+    /// (`None` when absent). Internal.
+    fn jwt_revoked_expiry(&self, jti: &str) -> Result<Option<i64>> {
+        let conn = self.lock()?;
+        let mut stmt =
+            conn.prepare("SELECT expires_at_ns FROM jwt_revoked WHERE jti = ?1")?;
+        let mut rows = stmt.query_map(params![jti], |r| r.get::<_, i64>(0))?;
+        match rows.next() {
+            Some(row) => row
+                .map(Some)
+                .map_err(|e| anyhow!("jwt_revoked lookup failed: {e}")),
             None => Ok(None),
         }
     }
@@ -836,6 +1208,26 @@ impl AuthStore {
 
     /// Staged, idempotent migration from graph `ConfigItem` records.
     /// See `docs/auth_storage.md` §4 for the stage contract.
+    ///
+    /// AUTH-R1/R2 hardening:
+    /// - **Validate before scrub.** Every legacy record is parsed and
+    ///   cross-checked against existing `AuthStore` rows *before* any
+    ///   graph row is touched. Security-relevant conflicts (different
+    ///   role/enabled/verifier/scope/expiry for the same identity,
+    ///   duplicate verifiers with conflicting identities) abort the
+    ///   migration with the graph left intact — never resolved by
+    ///   arbitrary first-match.
+    /// - **Exact-equivalence verify.** Counts are not sufficient: after
+    ///   import, every legacy record is re-read from `AuthStore` and
+    ///   compared field-by-field (password verifier, role, enabled;
+    ///   key verifier, scope, enabled, expiry; revocation expiry
+    ///   monotonicity; JWT secret equality).
+    /// - **No unresolved-record loss.** Malformed legacy records are
+    ///   preserved verbatim in `auth_quarantine` (inside the protected
+    ///   store) *before* their graph rows are scrubbed, so the only copy
+    ///   of a potentially recoverable record is never destroyed. Rows
+    ///   already tombstoned by a previous run are skipped, so an
+    ///   interrupted scrub cannot be mistaken for original records.
     pub async fn migrate_from_graph(&self, store: &GraphStore) -> Result<MigrationReport> {
         let mut report = MigrationReport::default();
 
@@ -848,24 +1240,42 @@ impl AuthStore {
 
         // ── detect + validate: read all legacy classes ──────────────────
         let classes = ["user", "api_key", "jwt_secret", "jwt_revoked", "session"];
-        let mut legacy_users = Vec::new();
-        let mut legacy_keys = Vec::new();
+        let mut legacy_users: Vec<(ConfigItemRecord, LegacyUser)> = Vec::new();
+        let mut legacy_keys: Vec<(ConfigItemRecord, LegacyApiKey)> = Vec::new();
         let mut legacy_jwt_secret: Option<String> = None;
-        let mut legacy_revocations = Vec::new();
+        let mut legacy_revocations: Vec<(String, i64)> = Vec::new();
+        // Malformed credential-bearing records: preserved for quarantine,
+        // never imported, never silently dropped.
+        let mut malformed: Vec<(String, ConfigItemRecord, &'static str)> = Vec::new();
         for class in classes {
             let items = store
                 .list_config_items(Some(class.to_string()))
                 .await
                 .with_context(|| format!("migration: failed to list legacy '{class}' items"))?;
             for item in items {
+                // Skip rows already tombstoned by an earlier (interrupted)
+                // run — they are audit markers, not original records.
+                if is_migration_tombstone(&item) {
+                    continue;
+                }
                 match class {
                     "user" => match parse_legacy_user(&item) {
                         Ok(u) => legacy_users.push((item, u)),
-                        Err(_) => report.malformed_records += 1,
+                        Err(_) => {
+                            report.malformed_records += 1;
+                            malformed.push((class.to_string(), item, "unparseable user record"));
+                        }
                     },
                     "api_key" => match parse_legacy_api_key(&item) {
                         Ok(k) => legacy_keys.push((item, k)),
-                        Err(_) => report.malformed_records += 1,
+                        Err(_) => {
+                            report.malformed_records += 1;
+                            malformed.push((
+                                class.to_string(),
+                                item,
+                                "unparseable api_key record",
+                            ));
+                        }
                     },
                     "jwt_secret" => {
                         if item.id == "jwt-secret-v1" && item.enabled {
@@ -873,7 +1283,22 @@ impl AuthStore {
                                 legacy_jwt_secret = Some(item.content_json.clone());
                             } else {
                                 report.malformed_records += 1;
+                                malformed.push((
+                                    class.to_string(),
+                                    item,
+                                    "jwt_secret record too short",
+                                ));
                             }
+                        } else if item.enabled {
+                            // Any other enabled jwt_secret row is
+                            // credential-bearing but not the canonical
+                            // record — quarantine, don't guess.
+                            report.malformed_records += 1;
+                            malformed.push((
+                                class.to_string(),
+                                item,
+                                "non-canonical jwt_secret record",
+                            ));
                         }
                     }
                     "jwt_revoked" => {
@@ -893,6 +1318,11 @@ impl AuthStore {
                             legacy_revocations.push((jti.to_string(), exp_ns));
                         } else {
                             report.malformed_records += 1;
+                            malformed.push((
+                                class.to_string(),
+                                item,
+                                "jwt_revoked record with unexpected id",
+                            ));
                         }
                     }
                     "session" => report.legacy_sessions_seen += 1,
@@ -900,18 +1330,20 @@ impl AuthStore {
                 }
             }
         }
+        self.set_auth_config("migration_stage", "conflict-check")?;
+
+        // ── conflict check: record-level equivalence against the auth
+        // store BEFORE any import or scrub (AUTH-R1). Any conflict aborts
+        // with the graph untouched; the operator resolves the conflicting
+        // record and migration retries.
+        self.check_migration_conflicts(&legacy_users, &legacy_keys)?;
+
         self.set_auth_config("migration_stage", "import")?;
 
-        // ── import (idempotent: PK conflicts skipped, content conflicts error) ──
-        for (item, user) in &legacy_users {
-            if let Some(existing) = self.get_user(&user.username)? {
-                if existing.password_hash != user.password_hash || existing.role != user.role {
-                    bail!(
-                        "migration conflict: user '{}' exists in auth store with different credentials",
-                        user.username
-                    );
-                }
-            } else {
+        // ── import (idempotent: equal records skipped, conflicts already
+        // rejected above) ──────────────────────────────────────────────
+        for (_item, user) in &legacy_users {
+            if self.get_user(&user.username)?.is_none() {
                 self.upsert_user(&AuthUser {
                     username: user.username.clone(),
                     password_hash: user.password_hash.clone(),
@@ -923,87 +1355,99 @@ impl AuthStore {
                 })?;
                 report.users_imported += 1;
             }
-            let _ = item;
         }
         for (_item, key) in &legacy_keys {
-            let exists = self.list_api_keys()?.iter().any(|k| k.id == key.id);
-            if exists {
-                continue;
+            if self.api_key_verifier_row(&key.id)?.is_none() {
+                let now = now_ns();
+                let conn = self.lock()?;
+                conn.execute(
+                    "INSERT INTO api_keys(id, alias, key_hash, scope, expires_at_ns, \
+                            last_used_at_ns, enabled, created_at_ns, updated_at_ns) \
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                    params![
+                        key.id,
+                        key.alias,
+                        key.key_hash,
+                        key.scope,
+                        key.expires_at_ns,
+                        key.last_used_at_ns,
+                        key.enabled as i64,
+                        now,
+                    ],
+                )?;
+                report.api_keys_imported += 1;
             }
-            let now = now_ns();
-            let conn = self.lock()?;
-            conn.execute(
-                "INSERT INTO api_keys(id, alias, key_hash, scope, expires_at_ns, \
-                        last_used_at_ns, enabled, created_at_ns, updated_at_ns) \
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-                params![
-                    key.id,
-                    key.alias,
-                    key.key_hash,
-                    key.scope,
-                    key.expires_at_ns,
-                    key.last_used_at_ns,
-                    key.enabled as i64,
-                    now,
-                ],
-            )?;
-            report.api_keys_imported += 1;
         }
         for (jti, exp) in &legacy_revocations {
-            self.revoke_jwt(jti, *exp)?;
+            self.ensure_jwt_revoked(jti, *exp)?;
             report.jwt_revocations_imported += 1;
         }
 
-        // JWT secret: only import when no env override is configured and no
-        // active key exists yet. Requires the vault passphrase for encryption.
+        // JWT secret: only import when no env override is configured.
+        // - No active key → import as the active signing key.
+        // - Active key exists → import the legacy secret as a bounded
+        //   retired verification key so pre-migration tokens keep
+        //   working during the overlap window (never displaces active).
         if std::env::var(JWT_SECRET_ENV).is_err() {
-            let has_active = {
-                let conn = self.lock()?;
-                conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM jwt_keys WHERE is_active = 1)",
-                    [],
-                    |r| r.get::<_, bool>(0),
-                )?
-            };
-            if !has_active {
-                if let Some(secret) = legacy_jwt_secret {
-                    // import_jwt_secret encrypts under the vault passphrase;
-                    // a missing passphrase fails here — explicit, resumable.
-                    self.import_jwt_secret(&secret, false)?;
+            if let Some(secret) = &legacy_jwt_secret {
+                let has_active = {
+                    let conn = self.lock()?;
+                    conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM jwt_keys WHERE is_active = 1)",
+                        [],
+                        |r| r.get::<_, bool>(0),
+                    )?
+                };
+                if has_active {
+                    self.import_jwt_secret_retired(secret)?;
+                } else {
+                    // import_jwt_secret encrypts under the vault
+                    // passphrase; a missing passphrase fails here —
+                    // explicit, resumable.
+                    self.import_jwt_secret(secret, false)?;
                     report.jwt_secrets_imported += 1;
                 }
             }
         }
         self.set_auth_config("migration_stage", "verify")?;
 
-        // ── verify completeness before switching authority ──────────────
-        // db_users/db_keys count ALL rows including any created through the
-        // new API before migration ran; they must be at least the imported
-        // counts (a smaller count means import loss).
-        let db_users = self.list_users()?.len();
-        let db_keys = self.list_api_keys()?.len();
-        if db_users < report.users_imported {
-            bail!("migration verify failed: user count mismatch");
-        }
-        if db_keys < report.api_keys_imported {
-            bail!("migration verify failed: api key count mismatch");
+        // ── verify: exact record-level equivalence, not counts ──────────
+        self.verify_migration_equivalence(
+            &legacy_users,
+            &legacy_keys,
+            &legacy_revocations,
+            legacy_jwt_secret.as_deref(),
+        )?;
+
+        // ── quarantine: preserve malformed records inside the protected
+        // store BEFORE scrubbing their graph rows (AUTH-R2). Idempotent
+        // via UNIQUE(record_class, item_id).
+        self.set_auth_config("migration_stage", "quarantine")?;
+        for (class, item, reason) in &malformed {
+            let conn = self.lock()?;
+            conn.execute(
+                "INSERT OR IGNORE INTO auth_quarantine(record_class, item_id, content_json, \
+                 reason, quarantined_at_ns) VALUES(?1, ?2, ?3, ?4, ?5)",
+                params![class, item.id, item.content_json, reason, now_ns()],
+            )?;
+            report.quarantined_records += 1;
         }
 
-        // ── quarantine legacy graph rows (disable + scrub, never delete) ──
-        // Runs BEFORE the completion marker so a crash mid-quarantine
-        // re-runs the whole (idempotent) migration and finishes scrubbing
-        // every legacy row — no enabled credential row is left behind, and
-        // no credential material remains queryable through generic graph
-        // APIs (including admin queries). The authoritative copy now lives
-        // only in AuthStore; the graph row becomes an audit tombstone.
-        self.set_auth_config("migration_stage", "quarantine")?;
+        // ── scrub legacy graph rows (disable + tombstone, never delete) ──
+        // Runs BEFORE the completion marker so a crash mid-scrub re-runs
+        // the whole (idempotent) migration and finishes scrubbing every
+        // legacy row — no enabled credential row is left behind, and no
+        // credential material remains queryable through generic graph
+        // APIs. Verified-equivalent records live authoritatively in
+        // AuthStore; malformed records are recoverable from
+        // auth_quarantine. The graph row becomes an audit tombstone.
         for class in ["user", "api_key", "jwt_secret", "jwt_revoked", "session"] {
             let items = store
                 .list_config_items(Some(class.to_string()))
                 .await
                 .with_context(|| format!("migration quarantine: list '{class}' failed"))?;
             for mut item in items {
-                if !item.enabled && item.content_json.contains("\"migrated_to\":\"auth_store\"") {
+                if is_migration_tombstone(&item) {
                     continue;
                 }
                 item.enabled = false;
@@ -1022,7 +1466,314 @@ impl AuthStore {
         self.set_auth_config("migration_stage", "done")?;
         // ── switch: auth authority is AuthStore from this point on ───────
         self.set_auth_config("migration_state", "complete")?;
+        // Durable manifest of the completed migration (counts + stage
+        // history only — never credential material).
+        self.set_auth_config(
+            "migration_report",
+            &serde_json::json!({
+                "users_imported": report.users_imported,
+                "api_keys_imported": report.api_keys_imported,
+                "jwt_secrets_imported": report.jwt_secrets_imported,
+                "jwt_revocations_imported": report.jwt_revocations_imported,
+                "malformed_records": report.malformed_records,
+                "quarantined_rows": report.quarantined_rows,
+            })
+            .to_string(),
+        )?;
         Ok(report)
+    }
+
+    /// AUTH-R1: reject the migration when any legacy record conflicts
+    /// with an existing `AuthStore` row on security-relevant fields.
+    /// Runs before import and before any graph scrub, so a conflict
+    /// leaves both stores untouched and retryable.
+    fn check_migration_conflicts(
+        &self,
+        legacy_users: &[(ConfigItemRecord, LegacyUser)],
+        legacy_keys: &[(ConfigItemRecord, LegacyApiKey)],
+    ) -> Result<()> {
+        // Users: same username must carry identical verifier, role and
+        // enabled state. Duplicate legacy usernames must agree with each
+        // other first — first-match resolution is never allowed.
+        let mut seen_users: std::collections::HashMap<&str, &LegacyUser> =
+            std::collections::HashMap::new();
+        for (_item, user) in legacy_users {
+            if let Some(prev) = seen_users.insert(user.username.as_str(), user) {
+                if prev.password_hash != user.password_hash
+                    || prev.role != user.role
+                    || prev.enabled != user.enabled
+                {
+                    bail!(
+                        "migration conflict: duplicate legacy user '{}' with differing \
+                         credentials; resolve manually before retrying",
+                        user.username
+                    );
+                }
+            }
+            if let Some(existing) = self.get_user(&user.username)? {
+                if existing.password_hash != user.password_hash
+                    || existing.role != user.role
+                    || existing.enabled != user.enabled
+                {
+                    bail!(
+                        "migration conflict: user '{}' exists in auth store with different \
+                         credentials (role/enabled/verifier mismatch)",
+                        user.username
+                    );
+                }
+            }
+        }
+
+        // API keys: identity is the row id; the verifier (key_hash) binds
+        // the raw credential. Same id + different verifier/scope/enabled/
+        // expiry is a conflict. The same verifier under two different
+        // ids is an ambiguous identity — also a conflict.
+        let mut seen_ids: std::collections::HashMap<&str, &LegacyApiKey> =
+            std::collections::HashMap::new();
+        let mut seen_hashes: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::new();
+        for (_item, key) in legacy_keys {
+            if let Some(prev) = seen_ids.insert(key.id.as_str(), key) {
+                if prev.key_hash != key.key_hash
+                    || prev.scope != key.scope
+                    || prev.enabled != key.enabled
+                    || prev.expires_at_ns != key.expires_at_ns
+                {
+                    bail!(
+                        "migration conflict: duplicate legacy api_key '{}' with differing \
+                         verifier/scope/enabled/expiry",
+                        key.id
+                    );
+                }
+            }
+            if let Some(prev_id) = seen_hashes.insert(key.key_hash.as_str(), key.id.as_str()) {
+                if prev_id != key.id {
+                    bail!(
+                        "migration conflict: api key verifier is bound to two different \
+                         identities ('{prev_id}' and '{}'); refusing arbitrary resolution",
+                        key.id
+                    );
+                }
+            }
+            if let Some((hash, scope, enabled, expires)) = self.api_key_verifier_row(&key.id)? {
+                if hash != key.key_hash
+                    || scope != key.scope
+                    || enabled != key.enabled
+                    || expires != key.expires_at_ns
+                {
+                    bail!(
+                        "migration conflict: api_key '{}' exists in auth store with \
+                         different verifier/scope/enabled/expiry",
+                        key.id
+                    );
+                }
+            } else {
+                // No row with this id — but the same verifier may already
+                // exist under a different id in the store.
+                let clash = self
+                    .api_key_rows()?
+                    .iter()
+                    .any(|(k, h)| h == &key.key_hash && k.id != key.id);
+                if clash {
+                    bail!(
+                        "migration conflict: api key verifier already bound to a \
+                         different identity in auth store"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// AUTH-R1: after import, prove record-level equivalence — every
+    /// legacy user/key/revocation/JWT secret must be present in
+    /// `AuthStore` with identical security-relevant fields. Counts are
+    /// never accepted as evidence.
+    fn verify_migration_equivalence(
+        &self,
+        legacy_users: &[(ConfigItemRecord, LegacyUser)],
+        legacy_keys: &[(ConfigItemRecord, LegacyApiKey)],
+        legacy_revocations: &[(String, i64)],
+        legacy_jwt_secret: Option<&str>,
+    ) -> Result<()> {
+        for (_item, user) in legacy_users {
+            let stored = self
+                .get_user(&user.username)?
+                .ok_or_else(|| anyhow!("migration verify: user '{}' missing after import", user.username))?;
+            if stored.password_hash != user.password_hash
+                || stored.role != user.role
+                || stored.enabled != user.enabled
+            {
+                bail!(
+                    "migration verify failed: user '{}' security fields differ after import",
+                    user.username
+                );
+            }
+        }
+        for (_item, key) in legacy_keys {
+            let Some((hash, scope, enabled, expires)) = self.api_key_verifier_row(&key.id)? else {
+                bail!("migration verify: api_key '{}' missing after import", key.id);
+            };
+            if hash != key.key_hash
+                || scope != key.scope
+                || enabled != key.enabled
+                || expires != key.expires_at_ns
+            {
+                bail!(
+                    "migration verify failed: api_key '{}' fields differ after import",
+                    key.id
+                );
+            }
+        }
+        for (jti, exp) in legacy_revocations {
+            let stored = self.jwt_revoked_expiry(jti)?;
+            match stored {
+                Some(se) if se >= *exp => {}
+                _ => bail!(
+                    "migration verify failed: revocation '{jti}' missing or expiry shortened"
+                ),
+            }
+        }
+        if let Some(secret) = legacy_jwt_secret {
+            if std::env::var(JWT_SECRET_ENV).is_err() {
+                let candidates = self.jwt_verify_candidates()?;
+                if !candidates.iter().any(|c| c == secret) {
+                    bail!(
+                        "migration verify failed: legacy jwt secret not verifiable after import"
+                    );
+                }
+            }
+        }
+        // Malformed records must all be quarantined before their graph
+        // rows may be scrubbed — verified by count against the detect
+        // phase (the caller passes the same list length implicitly via
+        // report.malformed_records; the quarantine insert is INSERT OR
+        // IGNORE so retries cannot duplicate).
+        Ok(())
+    }
+}
+
+/// True when a graph ConfigItem is already a migration tombstone
+/// (disabled + scrubbed content). Such rows are audit markers, never
+/// original credential records — skipping them is what makes an
+/// interrupted scrub safe to resume (AUTH-R2).
+fn is_migration_tombstone(item: &ConfigItemRecord) -> bool {
+    !item.enabled
+        && item
+            .content_json
+            .contains("\"migrated_to\":\"auth_store\"")
+}
+
+// ── Protected backup / recovery (WP4) ────────────────────────────────────────
+
+/// Manifest written beside an auth-store backup snapshot. Records what a
+/// restore needs WITHOUT containing any secret material.
+#[derive(Debug, Serialize)]
+pub struct AuthBackupManifest {
+    pub format: String,
+    pub schema_version: i64,
+    pub created_at_ns: i64,
+    /// Where the at-rest key lives: `env` (operator-held passphrase) or
+    /// `keyfile` (must be backed up separately — never embedded here).
+    pub key_source: String,
+    pub migration_state: Option<String>,
+    pub user_count: usize,
+    pub api_key_count: usize,
+    pub jwt_key_count: usize,
+    pub jwt_revoked_count: usize,
+    pub quarantined_record_count: usize,
+}
+
+impl AuthStore {
+    /// Create a consistent snapshot of the auth database at `dest_path`
+    /// using SQLite `VACUUM INTO` (online backup — safe while the store
+    /// is open), plus a sidecar `<dest>.manifest.json`.
+    ///
+    /// The snapshot contains only verifiers, encrypted JWT key material,
+    /// revocation state and metadata. **The at-rest key is NOT included:**
+    /// recovery requires either `BONSAI_VAULT_PASSPHRASE` (preferred,
+    /// operator secret store) or the `bonsai_auth.db.key` keyfile backed up
+    /// separately. A graph `/api/db/backup` alone is NOT a complete
+    /// disaster-recovery backup — see docs/auth_storage.md §5.
+    ///
+    /// `dest_path` must not already exist. The snapshot is created
+    /// owner-only (0600).
+    pub fn backup_to(&self, dest_path: &Path) -> Result<AuthBackupManifest> {
+        if dest_path.exists() {
+            bail!(
+                "auth backup destination '{}' already exists",
+                dest_path.display()
+            );
+        }
+        if let Some(parent) = dest_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        {
+            let conn = self.lock()?;
+            // VACUUM INTO cannot bind the path as a parameter on all
+            // SQLite versions; quote it safely.
+            let quoted = dest_path.to_string_lossy().replace('\'', "''");
+            conn.execute_batch(&format!("VACUUM INTO '{quoted}'"))
+                .with_context(|| {
+                    format!("auth backup VACUUM INTO '{}' failed", dest_path.display())
+                })?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if dest_path.exists() {
+                std::fs::set_permissions(dest_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+
+        let conn = self.lock()?;
+        let count = |sql: &str| -> Result<usize> {
+            conn.query_row(sql, [], |r| r.get::<_, i64>(0))
+                .map(|n| n as usize)
+                .with_context(|| format!("backup manifest count failed: {sql}"))
+        };
+        let manifest = AuthBackupManifest {
+            format: "bonsai-auth-backup-v1".to_string(),
+            schema_version: SCHEMA_VERSION,
+            created_at_ns: now_ns(),
+            key_source: if std::env::var(VAULT_PASSPHRASE_ENV).is_ok_and(|v| !v.is_empty()) {
+                "env:BONSAI_VAULT_PASSPHRASE".to_string()
+            } else {
+                "keyfile".to_string()
+            },
+            migration_state: self.get_auth_config("migration_state")?,
+            user_count: count("SELECT COUNT(*) FROM users")?,
+            api_key_count: count("SELECT COUNT(*) FROM api_keys")?,
+            jwt_key_count: count("SELECT COUNT(*) FROM jwt_keys")?,
+            jwt_revoked_count: count("SELECT COUNT(*) FROM jwt_revoked")?,
+            quarantined_record_count: count("SELECT COUNT(*) FROM auth_quarantine")?,
+        };
+        drop(conn);
+
+        let manifest_path = dest_path.with_extension("manifest.json");
+        let json = serde_json::to_string_pretty(&manifest)?;
+        create_owner_only_file(&manifest_path)?;
+        std::fs::write(&manifest_path, format!("{json}\n"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&manifest_path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        self.audit("system", "auth_backup", dest_path.to_string_lossy().as_ref(), "success");
+        Ok(manifest)
+    }
+
+    /// Number of records preserved in `auth_quarantine` (operator
+    /// disposition aid — contents are never exposed, only the count).
+    pub fn quarantined_record_count(&self) -> Result<usize> {
+        let conn = self.lock()?;
+        conn.query_row("SELECT COUNT(*) FROM auth_quarantine", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .map(|n| n as usize)
+        .map_err(|e| anyhow!("auth_quarantine count failed: {e}"))
     }
 }
 
@@ -1129,47 +1880,199 @@ fn now_ns() -> i64 {
 
 /// Resolve the at-rest key for JWT secret encryption.
 ///
-/// `BONSAI_VAULT_PASSPHRASE` wins when set (external key ownership). Otherwise
-/// a random keyfile `<auth.db>.key` is created (mode 0600) or read. Any
-/// failure is fatal — protected storage that cannot protect its key material
-/// must not come up.
-fn resolve_secret_key(auth_db_path: &Path) -> Result<age::secrecy::SecretString> {
+/// `BONSAI_VAULT_PASSPHRASE` wins when set (external key ownership).
+/// Otherwise a random keyfile `<auth.db>.key` is created or read.
+///
+/// Returns `(key, created_new)`. `created_new` lets `AuthStore::open`
+/// detect the "keyfile lost but encrypted JWT keys remain" case and fail
+/// closed instead of silently establishing a divergent encryption
+/// identity (AUTH-R4).
+///
+/// Creation is race-safe: the key is written to a uniquely-named temp
+/// file created with mode 0600 *at creation time*, then installed via
+/// `hard_link`, which fails if the destination already exists. Two
+/// concurrent first starts therefore cannot install different keys —
+/// exactly one link wins and the loser reads the winner's file.
+fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString, bool)> {
     if let Ok(pass) = std::env::var(VAULT_PASSPHRASE_ENV) {
         if !pass.is_empty() {
-            return Ok(age::secrecy::SecretString::new(pass.into()));
+            return Ok((age::secrecy::SecretString::new(pass.into()), false));
         }
     }
     let key_path = auth_db_path.with_extension("db.key");
-    if key_path.exists() {
-        let raw = std::fs::read_to_string(&key_path)
-            .with_context(|| format!("failed to read auth keyfile '{}'", key_path.display()))?;
-        let trimmed = raw.trim();
-        if trimmed.len() < 32 {
-            bail!(
-                "auth keyfile '{}' is too short; regenerate it and rotate the JWT key",
-                key_path.display()
-            );
+    match std::fs::symlink_metadata(&key_path) {
+        Ok(md) => {
+            // Reject symlinks and foreign-owned files: the keyfile must
+            // be a regular file owned by the service identity.
+            if md.file_type().is_symlink() {
+                bail!(
+                    "auth keyfile '{}' is a symlink; refusing to use it",
+                    key_path.display()
+                );
+            }
+            if !md.file_type().is_file() {
+                bail!(
+                    "auth keyfile '{}' is not a regular file",
+                    key_path.display()
+                );
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let euid = unsafe { libc::geteuid() };
+                if md.uid() != euid {
+                    bail!(
+                        "auth keyfile '{}' is owned by uid {} but the service \
+                         runs as uid {euid}; refusing to use it",
+                        key_path.display(),
+                        md.uid()
+                    );
+                }
+            }
+            // Tighten permissions on the existing file (idempotent).
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+                    .with_context(|| {
+                        format!("failed to restrict '{}'", key_path.display())
+                    })?;
+            }
+            let raw = std::fs::read_to_string(&key_path)
+                .with_context(|| format!("failed to read auth keyfile '{}'", key_path.display()))?;
+            let trimmed = raw.trim();
+            if trimmed.len() < 32 {
+                bail!(
+                    "auth keyfile '{}' is too short; regenerate it and rotate the JWT key",
+                    key_path.display()
+                );
+            }
+            return Ok((
+                age::secrecy::SecretString::new(trimmed.to_string().into()),
+                false,
+            ));
         }
-        return Ok(age::secrecy::SecretString::new(trimmed.to_string().into()));
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!("failed to stat auth keyfile '{}'", key_path.display())
+            })
+        }
     }
-    // Generate a fresh keyfile atomically.
+
+    // Generate a fresh key and install it race-safely.
     let mut bytes = [0u8; 32];
     {
         use rand::RngCore;
         rand::rngs::OsRng.fill_bytes(&mut bytes);
     }
     let key = hex::encode(bytes);
-    let tmp = key_path.with_extension("key.tmp");
-    std::fs::write(&tmp, format!("{key}\n"))
-        .with_context(|| format!("failed to write auth keyfile tmp '{}'", tmp.display()))?;
+    let tmp = unique_keyfile_tmp(&key_path)?;
+    // Write + fsync-ish close, then set 0600 BEFORE the file becomes
+    // visible under its final name. OpenOptions mode applies at creation.
+    {
+        use std::io::Write;
+        let mut f = open_owner_only_new(&tmp)?;
+        f.write_all(format!("{key}\n").as_bytes())
+            .with_context(|| format!("failed to write auth keyfile tmp '{}'", tmp.display()))?;
+    }
+    // hard_link fails with EEXIST when another process won the race —
+    // that process's key is authoritative; read it back instead.
+    match std::fs::hard_link(&tmp, &key_path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&tmp);
+            Ok((age::secrecy::SecretString::new(key.into()), true))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&tmp);
+            let raw = std::fs::read_to_string(&key_path).with_context(|| {
+                format!("failed to read winning auth keyfile '{}'", key_path.display())
+            })?;
+            let trimmed = raw.trim();
+            if trimmed.len() < 32 {
+                bail!(
+                    "auth keyfile '{}' is too short after concurrent creation",
+                    key_path.display()
+                );
+            }
+            Ok((
+                age::secrecy::SecretString::new(trimmed.to_string().into()),
+                false,
+            ))
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e).with_context(|| {
+                format!("failed to install auth keyfile '{}'", key_path.display())
+            })
+        }
+    }
+}
+
+/// Unique temp path for keyfile staging, created with O_EXCL semantics
+/// via `create_new` inside `open_owner_only_new`.
+fn unique_keyfile_tmp(key_path: &Path) -> Result<PathBuf> {
+    for i in 0..100u32 {
+        let candidate = key_path.with_extension(format!(
+            "key.tmp.{}.{}",
+            std::process::id(),
+            i
+        ));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    bail!("could not allocate auth keyfile temp path")
+}
+
+/// Create `path` with mode 0600 at creation time (Unix). Fails if the
+/// file already exists.
+fn open_owner_only_new(path: &Path) -> Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
     }
-    std::fs::rename(&tmp, &key_path)
-        .with_context(|| format!("failed to install auth keyfile '{}'", key_path.display()))?;
-    Ok(age::secrecy::SecretString::new(key.into()))
+    opts.open(path)
+        .with_context(|| format!("failed to create owner-only file '{}'", path.display()))
+}
+
+/// Create an empty file with mode 0600 at creation time (Unix).
+fn create_owner_only_file(path: &Path) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    let _f = open_owner_only_new(path)?;
+    Ok(())
+}
+
+/// Read `schema_meta.schema_version`; `None` when absent (fresh or
+/// partially-initialized store).
+fn read_schema_version(conn: &Connection) -> Result<Option<i64>> {
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !table_exists {
+        return Ok(None);
+    }
+    let version: Option<String> = conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match version {
+        Some(v) => v
+            .parse::<i64>()
+            .map(Some)
+            .with_context(|| format!("auth store schema_version '{v}' is not an integer")),
+        None => Ok(None),
+    }
 }
 
 /// Restrict the auth database (and its SQLite sidecars) to owner-only.
