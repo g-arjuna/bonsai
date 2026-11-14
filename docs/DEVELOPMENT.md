@@ -188,6 +188,58 @@ your account is locked due to a billing issue."* This is an account-level
 billing lock, not a workflow or test failure — owner action required. The
 self-hosted job remains queued (no `bonsai-ci` runner registered).
 
+### Local containerized CI (GitHub-billing workaround)
+
+While hosted runners are unavailable, `scripts/ci/run-local.sh` executes
+the SAME canonical `scripts/ci/gates.sh` tiers inside the development-only
+image `docker/ci/Dockerfile` (`bonsai-ci:local`):
+
+```bash
+scripts/ci/run-local.sh l0 l1 l2 l3   # or: scripts/ci/run-local.sh --build l0
+```
+
+The runner creates a **self-contained committed-source snapshot** of the
+exact HEAD via `git clone` of the repository's common git dir plus a
+detached checkout (unlike `git worktree`, the `.git` metadata travels
+inside the container mount, so L0 diff-base resolution works
+deterministically). Uncommitted changes and protected soak evidence are
+excluded. The image `docker/ci/Dockerfile` (`bonsai-ci:local`) contains
+the pinned Rust toolchain (rust-toolchain.toml channel), rustfmt and
+sccache installed at build time — no host `~/.cargo`, `~/.rustup`,
+rustup proxies, registry credentials or developer configuration is ever
+mounted.
+
+Execution is two-phase: **provision** (networked) populates dedicated
+cache dirs — cargo registry, Python venv, npm, Playwright browsers, and
+the UI build — then **gates** run under `docker run --network none`, so
+test execution is network-isolated. Containers run non-root with
+`--memory=24g --cpus=4`, `CARGO_BUILD_JOBS=2`, no docker socket and no
+privileged mode.
+
+Trust modes:
+
+- `--trusted` (default): warm dedicated caches under
+  `~/.cache/bonsai-ci`. `--shared-target` additionally bind-mounts the
+  invoking checkout's Cargo `target/` — a writable shared target cache
+  permitted **only** under this explicit trusted-local-development
+  policy, to avoid a second ~140 GB target tree.
+- `--untrusted`: fresh per-run cache root, cold sccache, ephemeral
+  target inside the snapshot — for validating untrusted PR code with no
+  shared executable caches or target state.
+
+```bash
+scripts/ci/run-local.sh l0 l1 l2 l3   # trusted, network-isolated gates
+scripts/ci/run-local.sh --untrusted l0 l1   # cold-cache PR validation
+scripts/ci/run-local.sh --build --shared-target l0 l1 l2 l3
+```
+
+This validates the gate commands and code, NOT GitHub billing, runner
+registration, hosted permissions or branch protection — remote CI status
+must still be reported truthfully. It also does not replace L4 lab
+acceptance. `actionlint` (or equivalent) should be run against
+`.github/workflows/ci.yml` before relying on workflow changes; the
+workflow itself is unchanged by this path.
+
 ## Canonical Local Helpers
 
 Use these scripts instead of ad hoc PATH-dependent commands:
