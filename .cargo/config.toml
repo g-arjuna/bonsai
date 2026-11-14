@@ -8,6 +8,13 @@
 # LBUG_SHARED = "1"
 
 [build]
+# Cap parallel rustc/link jobs. On the 8-core/46GB dev host, default
+# jobs=8 plus codegen-units=16 per crate produced ~10 concurrent
+# heavyweight compiles/links (~2GB peak each) and triggered the kernel
+# OOM killer (devin-desktop scope oom-kill, 2026-11-14). 6 jobs leaves
+# headroom for the desktop/IDE on the same host; CI runners should set
+# their own cap via CARGO_BUILD_JOBS if they have more RAM.
+jobs = 6
 # sccache: caches compiled crate artifacts across clean builds.
 # Massive speedup after `cargo clean` or on CI — deps are never recompiled
 # as long as the cache is warm.

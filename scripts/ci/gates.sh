@@ -68,17 +68,19 @@ require_test_files() {
 
 # Run one tier in a subshell and record its outcome.
 # Exit codes inside the subshell: 0 = PASS, 3 = NOT_EXECUTED, anything else = FAIL.
+#
+# FAIL-CLOSED EXECUTION (CI-R7): each tier runs in a *separate bash
+# process* via the `__tier` dispatch below. This is required because
+# `( gate_lN ) || rc=$?` puts the subshell in an OR-list context, which
+# disables `errexit` for everything inside it — a failing cargo/pytest
+# command could then be masked by a later successful command and the
+# tier would falsely report PASS. In the child process the tier
+# function executes at top level with `set -euo pipefail` fully active,
+# so the first failing command aborts the tier with its real status.
+GATE_SCRIPT="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 run_tier() {
-  local tier="$1"; shift
-  local rc=0
-  case "$tier" in
-    l0) ( gate_l0 ) || rc=$? ;;
-    l1) ( gate_l1 ) || rc=$? ;;
-    l2) ( gate_l2 ) || rc=$? ;;
-    l3) ( gate_l3 ) || rc=$? ;;
-    l4) ( gate_l4 ) || rc=$? ;;
-    *)  die "unknown tier: $tier" ;;
-  esac
+  local tier="$1" rc=0
+  bash "$GATE_SCRIPT" __tier "$tier" || rc=$?
   case "$rc" in
     0) TIER_RESULT[$tier]="PASS" ;;
     3) TIER_RESULT[$tier]="NOT_EXECUTED" ;;
@@ -207,6 +209,7 @@ L2_INTEGRATION_TESTS="
   bn021f_hardening
   bn021g_collector_trust_foundation
   bn022_graph_read_boundary
+  bn022_auth_storage
 "
 
 gate_l2() {
@@ -218,7 +221,7 @@ gate_l2() {
   require_test_files l2 $L2_INTEGRATION_TESTS
   echo "L2: $(echo "$L2_INTEGRATION_TESTS" | wc -w) integration targets + bonsai lib + rbmp crates"
 
-  # Library unit tests (363 tests at BN-019-B6 baseline).
+  # Library unit tests (371 tests at BN-022 baseline).
   cargo test -p bonsai --lib --profile "$PROFILE" --offline
 
   # RustyBMP crates.
@@ -317,6 +320,21 @@ gate_manifest() {
 }
 
 # ---------------------------------------------------------------- main
+# Internal dispatch: `gates.sh __tier <lN>` runs exactly one tier function
+# at top level (errexit active, no OR-list masking) and exits with its
+# status. Used by run_tier above; not part of the public interface.
+if [ "${1:-}" = "__tier" ]; then
+  case "${2:-}" in
+    l0) gate_l0 ;;
+    l1) gate_l1 ;;
+    l2) gate_l2 ;;
+    l3) gate_l3 ;;
+    l4) gate_l4 ;;
+    *) echo "unknown tier: ${2:-}" >&2; exit 2 ;;
+  esac
+  exit 0
+fi
+
 if [ "$#" -eq 0 ]; then
   echo "usage: $0 <l0|l1|l2|l3|l4|manifest> [...]" >&2; exit 2
 fi
