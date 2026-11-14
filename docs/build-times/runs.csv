@@ -189,3 +189,4 @@ date,command,scope,wall_seconds,result,notes
 2026-11-14,cargo test --test ownership_mapping --test ownership_compatibility --profile ci --offline,ownership auth regressions,~15.0,pass,3/3 + 3/3; warm ci target
 2026-11-14,scripts/ci/gates_selftest.sh,gate-runner failure-injection selftest,~20.0,pass,16/16 cases; stubbed toolchain, no compilation
 2026-11-14,scripts/ci/gates.sh l0 l1 l2 l3 (v1),consolidated gate attempt 1,~60.0,fail,L0 rustfmt drift on changed files -> fixed in 9bc91da; L1-L3 NOT_EXECUTED
+2026-11-14,scripts/ci/gates.sh l0 l1 l2 l3 (v2, systemd MemoryHigh=32G MemoryMax=40G, CARGO_BUILD_JOBS=2),consolidated milestone gate @432b62f-era worktree,n/a,pass,"ALL REQUESTED GATES PASSED: l0/l1/l2/l3; 47 test-result lines, 805 tests passed 0 failed; warm ci target after focused runs; ~75min wall; no OOM events; peak host mem ~37G avail maintained"
