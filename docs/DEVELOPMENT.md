@@ -191,19 +191,47 @@ image `docker/ci/Dockerfile` (`bonsai-ci:local`):
 scripts/ci/run-local.sh l0 l1 l2 l3   # or: scripts/ci/run-local.sh --build l0
 ```
 
-The runner snapshots the exact committed HEAD via `git worktree`
-(uncommitted changes and protected soak evidence are excluded), then runs
-the container with `--memory=24g --cpus=4`, `CARGO_BUILD_JOBS=2`, non-root,
-no docker socket and no home-directory mounts. Host toolchain caches
-(`~/.cargo`, `~/.rustup`, sccache, Playwright browsers, `target/`) are
-bind-mounted at identical paths so fingerprints stay valid and no second
-~140 GB target tree is created — verify `df -h` first. Resource metrics and
-per-tier results are written under `target/ci/`. This validates the gate
-commands and code, NOT GitHub billing, runner registration, hosted
-permissions or branch protection — remote CI status must still be reported
-truthfully. `actionlint` (or equivalent) should be run against
-`.github/workflows/ci.yml` before relying on workflow changes; the workflow
-itself is unchanged by this path.
+The runner creates a **self-contained committed-source snapshot** of the
+exact HEAD via `git clone` of the repository's common git dir plus a
+detached checkout (unlike `git worktree`, the `.git` metadata travels
+inside the container mount, so L0 diff-base resolution works
+deterministically). Uncommitted changes and protected soak evidence are
+excluded. The image `docker/ci/Dockerfile` (`bonsai-ci:local`) contains
+the pinned Rust toolchain (rust-toolchain.toml channel), rustfmt and
+sccache installed at build time — no host `~/.cargo`, `~/.rustup`,
+rustup proxies, registry credentials or developer configuration is ever
+mounted.
+
+Execution is two-phase: **provision** (networked) populates dedicated
+cache dirs — cargo registry, Python venv, npm, Playwright browsers, and
+the UI build — then **gates** run under `docker run --network none`, so
+test execution is network-isolated. Containers run non-root with
+`--memory=24g --cpus=4`, `CARGO_BUILD_JOBS=2`, no docker socket and no
+privileged mode.
+
+Trust modes:
+
+- `--trusted` (default): warm dedicated caches under
+  `~/.cache/bonsai-ci`. `--shared-target` additionally bind-mounts the
+  invoking checkout's Cargo `target/` — a writable shared target cache
+  permitted **only** under this explicit trusted-local-development
+  policy, to avoid a second ~140 GB target tree.
+- `--untrusted`: fresh per-run cache root, cold sccache, ephemeral
+  target inside the snapshot — for validating untrusted PR code with no
+  shared executable caches or target state.
+
+```bash
+scripts/ci/run-local.sh l0 l1 l2 l3   # trusted, network-isolated gates
+scripts/ci/run-local.sh --untrusted l0 l1   # cold-cache PR validation
+scripts/ci/run-local.sh --build --shared-target l0 l1 l2 l3
+```
+
+This validates the gate commands and code, NOT GitHub billing, runner
+registration, hosted permissions or branch protection — remote CI status
+must still be reported truthfully. It also does not replace L4 lab
+acceptance. `actionlint` (or equivalent) should be run against
+`.github/workflows/ci.yml` before relying on workflow changes; the
+workflow itself is unchanged by this path.
 
 ## Canonical Local Helpers
 
