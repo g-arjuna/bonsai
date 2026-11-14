@@ -19,7 +19,7 @@ import pytest
 
 def test_default_feature_names_count():
     from bonsai_ml.gnn.data_loader import DEFAULT_FEATURE_NAMES
-    assert len(DEFAULT_FEATURE_NAMES) == 23
+    assert len(DEFAULT_FEATURE_NAMES) == 36
 
 
 def test_vendor_features_are_minority():
@@ -291,7 +291,7 @@ def test_bonsai_gnn_config_defaults():
     from bonsai_ml.gnn.model import BonsaiGnnConfig
     cfg = BonsaiGnnConfig()
     assert cfg.hidden_channels == 64
-    assert cfg.num_heads == 4
+    assert cfg.num_heads == 8
     assert cfg.num_layers == 2
     assert cfg.output_classes == 2
 

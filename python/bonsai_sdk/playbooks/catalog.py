@@ -36,7 +36,17 @@ class PlaybookCatalog:
                 continue
             rule_id = doc.get("detection_rule_id")
             if rule_id:
-                self._by_rule[rule_id] = doc
+                # Multiple library files may contribute playbooks for the
+                # same detection rule (e.g. bgp_session_down.yaml and
+                # frr_bgp_session_down.yaml). Merge their playbook lists —
+                # last-write-wins would silently shadow earlier vendors.
+                entry = self._by_rule.setdefault(
+                    rule_id,
+                    {"detection_rule_id": rule_id, "description": "", "playbooks": []},
+                )
+                entry["playbooks"].extend(doc.get("playbooks", []))
+                if not entry["description"] and doc.get("description"):
+                    entry["description"] = doc["description"]
                 loaded += 1
         print(f"[catalog] loaded {loaded} playbooks from {self._dir}")
 

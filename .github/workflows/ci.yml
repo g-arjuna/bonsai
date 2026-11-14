@@ -1,0 +1,149 @@
+name: ci
+
+# BN-019-B6 fail-closed CI.
+#
+# Every job runs explicit, exit-code-checked commands via scripts/ci/gates.sh.
+# There is no `|| true`, no runner fallback and no "skip = pass": a missing
+# tool, missing test target or failing test fails the job.
+#
+# Runner strategy:
+#   - source / python / ui jobs run on GitHub-hosted ubuntu-latest (cheap).
+#   - rust-gates runs on a SELF-HOSTED runner labelled `bonsai-ci`: a full
+#     Bonsai test build needs ~100+ GB of target/ space and >16 GB RAM for
+#     parallel links, which exceeds GitHub-hosted runner limits. Until an
+#     ISOLATED self-hosted runner is registered (see docs/DEVELOPMENT.md
+#     "CI runners" — disposable VM, no production credentials or network
+#     access), this job stays queued — it must NOT be marked successful by
+#     omission. Runner provisioning requires owner approval.
+#
+# All actions are pinned to immutable commit SHAs (CI-R6); update deliberately.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+
+jobs:
+  source-checks:
+    name: L0 source checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust toolchain (rustfmt + cargo)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-11
+        with:
+          components: rustfmt
+      - name: Determine diff base
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          else
+            # push to main: diff against the previous head, not main itself
+            echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: L0 gate (scoped rustfmt + python compile + cargo metadata)
+        env:
+          GATE_BASE: ${{ steps.base.outputs.ref }}
+        run: scripts/ci/gates.sh l0
+
+  python-tests:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Create venv and install SDK + test deps
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          # ml extra required: SDK test modules import joblib/pandas/etc.
+          .venv/bin/pip install -e "python[dev,ml]"
+      - name: Root python tests (tests/test_*.py)
+        run: PYTHONPATH=.:python .venv/bin/python -m pytest tests/ -q
+      - name: SDK python tests (python/tests, integration marker auto-skips)
+        run: cd python && PYTHONPATH=. ../.venv/bin/python -m pytest tests/ -q
+
+  ui-build:
+    name: UI build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build UI
+        run: |
+          cd ui
+          npm ci --no-audit --no-fund
+          npm run build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ui-dist
+          path: ui/dist
+          retention-days: 7
+
+  rust-gates:
+    name: Rust L1-L3 gates (self-hosted)
+    needs: ui-build # CI-R1: ui-dist artifact must exist before download
+    runs-on: [self-hosted, linux, x64, bonsai-ci]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Verify toolchain prerequisites (fail closed if missing)
+        run: |
+          command -v cargo rustc rustfmt sccache mold node npm npx python3 cmake || {
+            echo "::error::self-hosted runner missing required toolchain"; exit 1; }
+          cargo --version; rustc --version; rustfmt --version; sccache --version; mold --version
+          node --version; python3 --version
+      - name: Verify pinned Rust toolchain
+        run: |
+          # rust-toolchain.toml pins the channel; rustup must honour it.
+          expected="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          actual="$(rustc --version | awk '{print $2}')"
+          [ "$actual" = "$expected" ] || {
+            echo "::error::rustc $actual != pinned $expected"; exit 1; }
+          echo "toolchain OK: rustc $actual"
+      - name: Fetch locked cargo dependencies (then gates run --offline)
+        run: cargo fetch --locked
+      - name: Restore sccache (compiler cache)
+        uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
+      - name: Download UI build artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ui-dist
+          path: ui/dist
+      - name: Install UI driver deps (playwright)
+        run: (cd tests/ui_driver && npm ci --no-audit --no-fund && npx playwright install chromium)
+      - name: Rust L1-L3 gates
+        env:
+          CARGO_PROFILE: ci
+          SCCACHE_GHA_ENABLED: "true"
+          # ui/dist comes from the ui-build job artifact of THIS run/commit.
+          SKIP_UI_BUILD: "1"
+        run: scripts/ci/gates.sh l1 l2 l3
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-gate-logs
+          path: |
+            target/ci/**/*.log
+            runtime/driver_results/
+          if-no-files-found: ignore
+          retention-days: 14

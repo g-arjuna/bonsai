@@ -100,7 +100,6 @@ graphify-out/
 
 # UI test driver dependencies and generated files
 tests/ui_driver/node_modules/
-tests/ui_driver/package-lock.json
 test-results/
 tests/ui_driver/test-results/
 

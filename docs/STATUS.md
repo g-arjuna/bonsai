@@ -1130,3 +1130,18 @@ tests; `bn015_u1_inventory_browser` Playwright/Chromium acceptance
 against the real router + mocked paginated NetBox (duplicate-address
 candidates, ineligible rows, per-object conflict, inventory-only
 badge). U3/U4/U6 remain open.
+
+BN-019-B6 fail-closed CI (13 November, branch
+`fix/bn019-b6-fail-closed-ci`): canonical tiered gates landed in
+`scripts/ci/gates.sh` (L0 source / L1 compile / L2 required behavioral /
+L3 cross-component / L4 lab-manual), wrapped by `just gate` and consumed
+by the new `.github/workflows/ci.yml`. Makefile false-green paths
+(`|| cargo test` runner fallback, `|| echo` on integration failures,
+`|| true` on pytest, fake UI-smoke success) removed. Baseline failures
+root-caused and fixed: archive test i64 overflow, subscription-status
+edge keyed on raw host:port vs port-stripped Device node (real defect),
+service-pattern space-separated descriptions. Lib suite now 363/363.
+Rust gates job requires a self-hosted `bonsai-ci` runner (>100 GB
+target/, >16 GB link RAM); hosted jobs cover L0/python/UI. CI configured
+but not yet executed end-to-end — no self-hosted runner registered.
+Evidence: [BN-019-B6](merger/evidence/2026-11-13-bn019-b6-fail-closed-ci/README.md).

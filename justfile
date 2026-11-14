@@ -66,3 +66,13 @@ verify-release:
     cd ui && npm run build
     BONSAI_VAULT_PASSPHRASE=verify-passphrase DOCKER_HOST=unix:///var/run/docker.sock docker compose --profile standalone config -q
 
+
+# Canonical fail-closed validation gates (BN-019-B6). Thin wrappers around
+# scripts/ci/gates.sh so local runs and GitHub Actions share one definition.
+# l0 source checks | l1 compile/static | l2 required behavioral | l3 cross-component | l4 lab (manual)
+gate tier:
+    scripts/ci/gates.sh {{tier}}
+
+# Run all CI-executable gates (l4 lab acceptance is never implied by these)
+gate-all:
+    scripts/ci/gates.sh l0 l1 l2 l3

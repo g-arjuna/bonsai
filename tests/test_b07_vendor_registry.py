@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import pathlib
 import sys
 import unittest
@@ -14,7 +15,13 @@ def _load_module(name: str, path: pathlib.Path):
 
 
 BONSAI_ROOT = pathlib.Path(__file__).resolve().parents[1]
-RUSTYBMP_ROOT = pathlib.Path("/home/arjuna/rustybmp-b01")
+# The policy_fetcher checks exercise the sibling RustyBMP checkout, which is
+# an external-repo dependency: BONSAI_RUSTYBMP_ROOT selects it explicitly and
+# the test skips (rather than fails or silently passes) when it is absent.
+RUSTYBMP_ROOT = pathlib.Path(
+    os.environ.get("BONSAI_RUSTYBMP_ROOT", "/home/arjuna/rustybmp-b01")
+)
+RUSTYBMP_POLICY_FETCHER = RUSTYBMP_ROOT / "bmppy" / "policy_fetcher.py"
 
 
 class TestB07VendorRegistry(unittest.TestCase):
@@ -51,8 +58,12 @@ class TestB07VendorRegistry(unittest.TestCase):
         self.assertEqual(bootstrap._ensure_gnmi_address("[2001:db8::1]:57400", 57400), "[2001:db8::1]:57400")
         self.assertEqual(bootstrap._ensure_gnmi_address("edge-a", 57400), "edge-a:57400")
 
+    @unittest.skipUnless(
+        RUSTYBMP_POLICY_FETCHER.exists(),
+        "requires sibling RustyBMP checkout (set BONSAI_RUSTYBMP_ROOT)",
+    )
     def test_policy_fetcher_rejects_unknown_vendor_and_parses_ipv6_and_hostname(self):
-        pf = _load_module("policy_fetcher", RUSTYBMP_ROOT / "bmppy" / "policy_fetcher.py")
+        pf = _load_module("policy_fetcher", RUSTYBMP_POLICY_FETCHER)
         with self.assertRaisesRegex(ValueError, "no default/Cisco fallback is permitted"):
             pf.normalize_vendor("unknown")
         with self.assertRaisesRegex(ValueError, "no default/Cisco fallback is permitted"):
