@@ -17,6 +17,23 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{future::IntoFuture, net::Ipv4Addr, sync::Arc};
 
+/// BN-022: provision an API key through protected AuthStore. The legacy
+/// graph `api_key` ConfigItem path is retired — post-migration graph rows
+/// cannot authorize, so tests must seed the auth store directly.
+fn seed_api_key(store: &bonsai::graph::GraphStore, item: bonsai::graph::ConfigItemRecord) {
+    let v: serde_json::Value = serde_json::from_str(&item.content_json).expect("api_key content_json");
+    store
+        .auth_store
+        .upsert_api_key_verifier(
+            &item.id,
+            &item.name,
+            v["key_hash"].as_str().expect("key_hash"),
+            v["scope"].as_str().unwrap_or("read"),
+            v["expires_at_ns"].as_i64().unwrap_or(0),
+        )
+        .expect("seed api key");
+}
+
 async fn config(store: &GraphStore, name: &str, value: &str) {
     store
         .upsert_config_item(ConfigItemRecord {
@@ -38,8 +55,7 @@ async fn config(store: &GraphStore, name: &str, value: &str) {
 }
 async fn key(store: &GraphStore, id: &str, grant: &str) -> String {
     let key = format!("bsk_ownership_compat_{id}");
-    store
-        .upsert_config_item(ConfigItemRecord {
+    seed_api_key(&store, ConfigItemRecord {
             id: id.into(),
             config_class: "api_key".into(),
             vendor: String::new(),
@@ -51,9 +67,7 @@ async fn key(store: &GraphStore, id: &str, grant: &str) -> String {
                 .to_string(),
             enabled: true,
             created_by: "test".into(),
-        })
-        .await
-        .unwrap();
+        });
     key
 }
 

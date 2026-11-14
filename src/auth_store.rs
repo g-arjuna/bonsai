@@ -661,6 +661,38 @@ impl AuthStore {
         Ok((id, raw_key))
     }
 
+    /// Provision an API key from a pre-computed SHA-256 hex verifier.
+    ///
+    /// Used by operator tooling and tests that must pin a known raw key;
+    /// the raw key itself is never accepted or stored. `key_hash` must be
+    /// 64 lowercase/uppercase hex chars. Upserts on `id` conflict.
+    pub fn upsert_api_key_verifier(
+        &self,
+        id: &str,
+        alias: &str,
+        key_hash: &str,
+        scope: &str,
+        expires_at_ns: i64,
+    ) -> Result<()> {
+        if key_hash.len() != 64 || !key_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            bail!("api key verifier must be a 64-char hex SHA-256 digest");
+        }
+        let now = now_ns();
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO api_keys(id, alias, key_hash, scope, expires_at_ns, \
+                    last_used_at_ns, enabled, created_at_ns, updated_at_ns) \
+             VALUES(?1, ?2, ?3, ?4, ?5, 0, 1, ?6, ?6) \
+             ON CONFLICT(id) DO UPDATE SET \
+               alias = excluded.alias, key_hash = excluded.key_hash, \
+               scope = excluded.scope, expires_at_ns = excluded.expires_at_ns, \
+               enabled = 1, updated_at_ns = excluded.updated_at_ns",
+            params![id, alias, key_hash, scope, expires_at_ns, now],
+        )
+        .map_err(|e| anyhow!("api key verifier upsert failed: {e}"))?;
+        Ok(())
+    }
+
     /// Rotate an API key atomically: disable the old key and create its
     /// replacement (new id/hash, same alias+scope+expiry) in one transaction.
     /// Returns `(new_id, raw_key, alias)` or `None` if the key does not exist.

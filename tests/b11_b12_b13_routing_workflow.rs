@@ -23,6 +23,23 @@ use bonsai::routing_service::{
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
 
+/// BN-022: provision an API key through protected AuthStore. The legacy
+/// graph `api_key` ConfigItem path is retired — post-migration graph rows
+/// cannot authorize, so tests must seed the auth store directly.
+fn seed_api_key(store: &bonsai::graph::GraphStore, item: bonsai::graph::ConfigItemRecord) {
+    let v: serde_json::Value = serde_json::from_str(&item.content_json).expect("api_key content_json");
+    store
+        .auth_store
+        .upsert_api_key_verifier(
+            &item.id,
+            &item.name,
+            v["key_hash"].as_str().expect("key_hash"),
+            v["scope"].as_str().unwrap_or("read"),
+            v["expires_at_ns"].as_i64().unwrap_or(0),
+        )
+        .expect("seed api key");
+}
+
 async fn set_app_config(store: &GraphStore, name: &str, value: &str) {
     store
         .upsert_config_item(ConfigItemRecord {
@@ -339,8 +356,7 @@ async fn b12_security_rbac_scoped_reads_and_secret_redaction() {
         ("key-routing", routing_key, "routing:read"),
     ] {
         let hash = hex::encode(Sha256::digest(raw_key.as_bytes()));
-        store
-            .upsert_config_item(ConfigItemRecord {
+        seed_api_key(&store, ConfigItemRecord {
                 id: id.to_string(),
                 config_class: "api_key".to_string(),
                 vendor: String::new(),
@@ -355,9 +371,7 @@ async fn b12_security_rbac_scoped_reads_and_secret_redaction() {
                 .to_string(),
                 enabled: true,
                 created_by: "test".to_string(),
-            })
-            .await
-            .unwrap();
+            });
     }
 
     let webhook_get = client
