@@ -1414,36 +1414,42 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         tokio::spawn(async move {
             match store_for_api {
                 Store::Core(s) => {
-                    let svc = BonsaiGraphServer::new(CoreService::new(
-                        s,
-                        registry_for_api,
-                        credentials_for_api,
-                        bus_for_api,
-                        Some(std::sync::Arc::clone(&debouncer)),
-                        collector_manager_for_api,
-                        sidecar_registry_for_api,
-                        sqlite_for_api.clone(),
-                        None,
-                        coordinator.clone(),
-                    ).with_auth_policy(auth_policy))
+                    let svc = BonsaiGraphServer::new(
+                        CoreService::new(
+                            s,
+                            registry_for_api,
+                            credentials_for_api,
+                            bus_for_api,
+                            Some(std::sync::Arc::clone(&debouncer)),
+                            collector_manager_for_api,
+                            sidecar_registry_for_api,
+                            sqlite_for_api.clone(),
+                            None,
+                            coordinator.clone(),
+                        )
+                        .with_auth_policy(auth_policy),
+                    )
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
                         warn!(%error, "gRPC core server error");
                     }
                 }
                 Store::Collector(s) => {
-                    let svc = BonsaiGraphServer::new(CollectorService::new(
-                        s,
-                        registry_for_api,
-                        credentials_for_api,
-                        bus_for_api,
-                        Some(std::sync::Arc::clone(&debouncer)),
-                        None,
-                        sidecar_registry_for_api,
-                        sqlite_for_api,
-                        None,
-                        None,
-                    ).with_auth_policy(auth_policy))
+                    let svc = BonsaiGraphServer::new(
+                        CollectorService::new(
+                            s,
+                            registry_for_api,
+                            credentials_for_api,
+                            bus_for_api,
+                            Some(std::sync::Arc::clone(&debouncer)),
+                            None,
+                            sidecar_registry_for_api,
+                            sqlite_for_api,
+                            None,
+                            None,
+                        )
+                        .with_auth_policy(auth_policy),
+                    )
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
                         warn!(%error, "gRPC collector server error");

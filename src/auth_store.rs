@@ -172,8 +172,22 @@ impl AuthStore {
         if !path.exists() {
             create_owner_only_file(path)?;
         }
-        let conn = Connection::open(path)
-            .with_context(|| format!("failed to open auth store '{}'", path.display()))?;
+        // F5: refuse symlink/non-regular/foreign-owned database files and
+        // untrusted (world-writable, non-sticky) parent directories before
+        // SQLite ever sees the path. The final-component symlink race is
+        // additionally closed by SQLITE_OPEN_NOFOLLOW below; intermediate
+        // directory substitution remains bounded by the documented
+        // trusted-directory assumption (see docs/auth_storage.md).
+        check_db_path_trust(path)?;
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+                | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | rusqlite::OpenFlags::SQLITE_OPEN_URI
+                | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .with_context(|| format!("failed to open auth store '{}'", path.display()))?;
         conn.execute_batch(
             "PRAGMA busy_timeout=5000;
              PRAGMA foreign_keys=ON;",
@@ -2168,11 +2182,18 @@ pub struct QuarantineRecordInfo {
 
 /// Manifest written beside an auth-store backup snapshot. Records what a
 /// restore needs WITHOUT containing any secret material.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AuthBackupManifest {
+    /// Manifest format. `bonsai-auth-backup-v2` binds the snapshot bytes
+    /// via SHA-256 + size; v1 manifests carry no digest and are rejected
+    /// by `verify_backup` (explicit legacy handling, never silent accept).
     pub format: String,
     pub schema_version: i64,
     pub created_at_ns: i64,
+    /// SHA-256 (hex) of the snapshot file at backup time.
+    pub snapshot_sha256: String,
+    /// Snapshot size in bytes at backup time.
+    pub snapshot_size_bytes: u64,
     /// Where the at-rest key lives: `env` (operator-held passphrase) or
     /// `keyfile` (must be backed up separately — never embedded here).
     pub key_source: String,
@@ -2283,10 +2304,20 @@ impl AuthStore {
                     |r| r.get(0),
                 )
                 .optional()?;
+            // F4: fsync the staged snapshot before it is published so a
+            // crash cannot leave a manifest pointing at unflushed bytes.
+            std::fs::File::open(&staging)
+                .and_then(|f| f.sync_all())
+                .with_context(|| {
+                    format!("failed to fsync auth backup snapshot '{}'", staging.display())
+                })?;
+            let (snapshot_sha256, snapshot_size_bytes) = file_digest(&staging)?;
             let manifest = AuthBackupManifest {
-                format: "bonsai-auth-backup-v1".to_string(),
+                format: "bonsai-auth-backup-v2".to_string(),
                 schema_version: SCHEMA_VERSION,
                 created_at_ns: now_ns(),
+                snapshot_sha256,
+                snapshot_size_bytes,
                 key_source: if std::env::var(VAULT_PASSPHRASE_ENV).is_ok_and(|v| !v.is_empty()) {
                     "env:BONSAI_VAULT_PASSPHRASE".to_string()
                 } else {
@@ -2343,6 +2374,15 @@ impl AuthStore {
                 }
                 return Err(e).context("auth backup manifest write failed; snapshot removed");
             }
+            // F4: directory fsync publishes both directory entries
+            // (snapshot hard link + manifest) durably. A crash before
+            // this point may leave an incomplete pair — verify_backup
+            // rejects pairs whose manifest is missing or mismatched.
+            if let Some(parent) = dest_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    fsync_dir(parent)?;
+                }
+            }
             Ok(manifest)
         })();
         if result.is_err() {
@@ -2362,7 +2402,202 @@ impl AuthStore {
         Ok(manifest)
     }
 
-    /// Number of records preserved in `auth_quarantine` (operator
+    /// Non-initializing backup verification (F3).
+    ///
+    /// Validates a `backup_to` artifact pair WITHOUT running any schema
+    /// DDL, generating key material, or mutating the snapshot:
+    /// manifest format/version, snapshot SHA-256 + size, SQLite
+    /// `integrity_check` + `foreign_key_check`, schema version, all
+    /// manifest counts vs actual rows, migration state, and — when key
+    /// material is available — that every persisted `jwt_keys.secret_enc`
+    /// actually decrypts under the at-rest key (env passphrase or the
+    /// supplied/original keyfile). Nothing is ever created: a missing
+    /// keyfile is an error, not a generation event.
+    ///
+    /// Limitations (documented in docs/auth_storage.md): the digest
+    /// proves integrity against corruption and manifest/snapshot
+    /// mismatch, NOT authenticity against an attacker who can rewrite
+    /// both files; authenticated manifests are future work.
+    pub fn verify_backup(
+        snapshot: &Path,
+        manifest_path: &Path,
+        keyfile: Option<&Path>,
+    ) -> Result<BackupVerification> {
+        // ── Manifest: must exist, parse, and be a supported version ──
+        let manifest_raw = std::fs::read_to_string(manifest_path).with_context(|| {
+            format!("backup manifest '{}' is missing or unreadable", manifest_path.display())
+        })?;
+        let manifest: AuthBackupManifest = serde_json::from_str(&manifest_raw)
+            .with_context(|| format!("backup manifest '{}' is not valid JSON", manifest_path.display()))?;
+        if manifest.format != "bonsai-auth-backup-v2" {
+            bail!(
+                "unsupported backup manifest format '{}'; only bonsai-auth-backup-v2 \
+                 is verifiable (legacy v1 manifests carry no snapshot digest — re-create the backup)",
+                manifest.format
+            );
+        }
+        if !SUPPORTED_SCHEMA_VERSIONS.contains(&manifest.schema_version) {
+            bail!(
+                "backup manifest schema_version {} is not supported by this build {:?}",
+                manifest.schema_version,
+                SUPPORTED_SCHEMA_VERSIONS
+            );
+        }
+
+        // ── Snapshot digest + size must match the manifest ──
+        let (digest, size) = file_digest(snapshot)?;
+        if digest != manifest.snapshot_sha256 || size != manifest.snapshot_size_bytes {
+            bail!(
+                "snapshot digest/size mismatch: manifest claims sha256={} size={}, actual sha256={} size={}",
+                manifest.snapshot_sha256,
+                manifest.snapshot_size_bytes,
+                digest,
+                size
+            );
+        }
+
+        // ── Open READ-ONLY + NOFOLLOW: verification never initializes,
+        //    migrates, seals, or writes schema_meta. ──
+        let conn = Connection::open_with_flags(
+            snapshot,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | rusqlite::OpenFlags::SQLITE_OPEN_URI
+                | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .with_context(|| format!("failed to open backup snapshot '{}'", snapshot.display()))?;
+
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .context("integrity_check failed")?;
+        if integrity != "ok" {
+            bail!("snapshot failed SQLite integrity_check: {integrity}");
+        }
+        let fk_violations: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_check",
+            [],
+            |r| r.get(0),
+        )?;
+        if fk_violations != 0 {
+            bail!("snapshot has {fk_violations} foreign-key violations");
+        }
+
+        // Must be an initialized auth store — never a bare/empty file.
+        let schema_version = read_schema_version(&conn)?
+            .ok_or_else(|| anyhow!("snapshot has no schema_meta — not an initialized auth store"))?;
+        if !SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version) {
+            bail!("snapshot schema_version {schema_version} unsupported");
+        }
+        if schema_version != manifest.schema_version {
+            bail!(
+                "manifest schema_version {} does not match snapshot {}",
+                manifest.schema_version,
+                schema_version
+            );
+        }
+
+        let count = |sql: &str| -> Result<usize> {
+            conn.query_row(sql, [], |r| r.get::<_, i64>(0))
+                .map(|n| n as usize)
+                .with_context(|| format!("verification count failed: {sql}"))
+        };
+        let user_count = count("SELECT COUNT(*) FROM users")?;
+        let api_key_count = count("SELECT COUNT(*) FROM api_keys")?;
+        let jwt_key_count = count("SELECT COUNT(*) FROM jwt_keys")?;
+        let jwt_revoked_count = count("SELECT COUNT(*) FROM jwt_revoked")?;
+        let quarantined = count("SELECT COUNT(*) FROM auth_quarantine")?;
+        for (name, actual, expected) in [
+            ("users", user_count, manifest.user_count),
+            ("api_keys", api_key_count, manifest.api_key_count),
+            ("jwt_keys", jwt_key_count, manifest.jwt_key_count),
+            ("jwt_revoked", jwt_revoked_count, manifest.jwt_revoked_count),
+            ("auth_quarantine", quarantined, manifest.quarantined_record_count),
+        ] {
+            if actual != expected {
+                bail!(
+                    "manifest count mismatch for {name}: manifest={expected} actual={actual}"
+                );
+            }
+        }
+        let migration_state: Option<String> = conn
+            .query_row(
+                "SELECT value FROM auth_config WHERE key = 'migration_state'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if migration_state != manifest.migration_state {
+            bail!(
+                "manifest migration_state {:?} does not match snapshot {:?}",
+                manifest.migration_state,
+                migration_state
+            );
+        }
+
+        // ── JWT key material: decrypt every persisted secret WITHOUT
+        //    generating anything. Missing key material is an error when
+        //    encrypted keys exist; absence of keys is reported, not hidden.
+        let mut warnings = Vec::new();
+        let mut active_jwt = 0usize;
+        let mut retired_jwt = 0usize;
+        let jwt_rows: Vec<(String, bool, Vec<u8>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT kid, is_active, secret_enc FROM jwt_keys ORDER BY created_at_ns",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, Vec<u8>>(2)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (_, is_active, _enc) in &jwt_rows {
+            if *is_active { active_jwt += 1 } else { retired_jwt += 1 }
+        }
+        let mut key_material_verified = false;
+        if !jwt_rows.is_empty() {
+            let secret_key = resolve_secret_key_readonly(snapshot, keyfile)
+                .context("cannot verify JWT key material: no usable at-rest key")?;
+            for (kid, _, enc) in &jwt_rows {
+                age_open(&secret_key, enc).with_context(|| {
+                    format!("JWT key '{kid}' secret_enc does not decrypt — wrong/missing key material")
+                })?;
+            }
+            key_material_verified = true;
+        } else {
+            warnings.push("no JWT signing keys present in snapshot".to_string());
+        }
+        if user_count == 0 && api_key_count == 0 && jwt_key_count == 0 {
+            warnings.push("store is initialized but contains no users, keys, or JWT material".to_string());
+        }
+        let jwt_env_override_active = std::env::var("BONSAI_JWT_SECRET")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        if jwt_env_override_active {
+            warnings.push(
+                "BONSAI_JWT_SECRET env override is set: runtime JWT verification uses the env secret, not necessarily the verified DB keys".to_string(),
+            );
+        }
+
+        Ok(BackupVerification {
+            snapshot_sha256: digest,
+            size_bytes: size,
+            schema_version,
+            migration_state,
+            user_count,
+            api_key_count,
+            jwt_key_count,
+            active_jwt_keys: active_jwt,
+            retired_jwt_keys: retired_jwt,
+            jwt_revoked_count,
+            quarantined_record_count: quarantined,
+            integrity_check: integrity,
+            foreign_key_violations: fk_violations as usize,
+            key_material_verified,
+            jwt_env_override_active,
+            warnings,
+        })
+    }
+
+/// Number of records preserved in `auth_quarantine` (operator
     /// disposition aid — contents are never exposed, only the count).
     pub fn quarantined_record_count(&self) -> Result<usize> {
         let conn = self.lock()?;
@@ -2425,6 +2660,219 @@ impl AuthStore {
         age_seal(&self.secret_key, plaintext)
     }
 }
+
+/// Result of `AuthStore::verify_backup` — counts and verdicts only,
+/// never secret material.
+#[derive(Debug)]
+pub struct BackupVerification {
+    pub snapshot_sha256: String,
+    pub size_bytes: u64,
+    pub schema_version: i64,
+    pub migration_state: Option<String>,
+    pub user_count: usize,
+    pub api_key_count: usize,
+    pub jwt_key_count: usize,
+    pub active_jwt_keys: usize,
+    pub retired_jwt_keys: usize,
+    pub jwt_revoked_count: usize,
+    pub quarantined_record_count: usize,
+    pub integrity_check: String,
+    pub foreign_key_violations: usize,
+/// True only when every persisted `jwt_keys.secret_enc` decrypted.
+    pub key_material_verified: bool,
+/// True when `BONSAI_JWT_SECRET` is set — runtime JWT verification
+/// then uses the env secret, which this check cannot validate.
+    pub jwt_env_override_active: bool,
+    pub warnings: Vec<String>,
+}
+
+/// Deployment-level authentication policy (F1).
+///
+/// Authentication is REQUIRED by default and can only be disabled by an
+/// explicit deployment-level opt-in — never through HTTP APIs, graph
+/// ConfigItems, Explorer, MCP or graph queries.
+///
+/// - `BONSAI_REQUIRE_AUTH=1|true`  → auth required (explicit production
+///   setting; cannot be weakened by the insecure flags).
+/// - `BONSAI_REQUIRE_AUTH=0|false` → request for no-auth; honored ONLY
+///   together with an insecure opt-in, otherwise ignored (fail closed).
+/// - unset → required unless an insecure opt-in is set.
+/// - `BONSAI_ALLOW_INSECURE_NO_AUTH=1|true` or
+///   `BONSAI_ALLOW_INSECURE_DEV=1|true` → explicit insecure opt-in.
+pub fn auth_required_by_deployment() -> bool {
+    let req = std::env::var("BONSAI_REQUIRE_AUTH").unwrap_or_default();
+    let req = req.trim();
+    let allow_insecure = std::env::var("BONSAI_ALLOW_INSECURE_NO_AUTH")
+        .or_else(|_| std::env::var("BONSAI_ALLOW_INSECURE_DEV"))
+        .map(|v| {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false);
+    if req == "1" || req.eq_ignore_ascii_case("true") {
+        return true;
+    }
+    if req == "0" || req.eq_ignore_ascii_case("false") {
+        if allow_insecure {
+            return false;
+        }
+        tracing::warn!(
+            "BONSAI_REQUIRE_AUTH=0 ignored: unauthenticated operation requires \
+             BONSAI_ALLOW_INSECURE_NO_AUTH=1 or BONSAI_ALLOW_INSECURE_DEV=1"
+        );
+        return true;
+    }
+    !allow_insecure
+}
+
+/// SHA-256 (hex) and byte size of a file, streamed.
+fn file_digest(path: &Path) -> Result<(String, u64)> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)
+        .with_context(|| format!("failed to open '{}' for digest", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+        total += n as u64;
+    }
+    Ok((hex::encode(hasher.finalize()), total))
+}
+
+/// fsync a directory so newly created/renamed entries are durable.
+fn fsync_dir(dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(dir)
+            .and_then(|f| f.sync_all())
+            .with_context(|| format!("failed to fsync directory '{}'", dir.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+    Ok(())
+}
+
+/// F5: validate the auth database path before SQLite opens it.
+/// Rejects symlinks, non-regular files and foreign-owned files; rejects
+/// world-writable non-sticky parent directories. The OS-level final
+/// component check is backed by SQLITE_OPEN_NOFOLLOW at open time.
+fn check_db_path_trust(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(md) => {
+            if md.file_type().is_symlink() {
+                bail!("auth store path '{}' is a symlink; refusing to use it", path.display());
+            }
+            if !md.file_type().is_file() {
+                bail!("auth store path '{}' is not a regular file", path.display());
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let euid = unsafe { libc::geteuid() };
+                if md.uid() != euid {
+                    bail!(
+                        "auth store '{}' is owned by uid {} but the service runs as uid {euid}; refusing to use it",
+                        path.display(),
+                        md.uid()
+                    );
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!("failed to stat auth store path '{}'", path.display())
+            });
+        }
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            check_parent_dir_trusted(parent)?;
+        }
+    }
+    Ok(())
+}
+
+/// A parent directory is trusted when it is a real directory that is
+/// not world-writable, unless it is world-writable AND sticky (e.g.
+/// /tmp) — sticky prevents renaming/deleting files owned by others.
+fn check_parent_dir_trusted(parent: &Path) -> Result<()> {
+    let md = std::fs::symlink_metadata(parent)
+        .with_context(|| format!("failed to stat auth store parent '{}'", parent.display()))?;
+    if md.file_type().is_symlink() || !md.file_type().is_dir() {
+        bail!(
+            "auth store parent '{}' is not a real directory; refusing to use it",
+            parent.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mode = md.mode();
+        let world_writable = mode & 0o002 != 0;
+        let sticky = mode & 0o1000 != 0;
+        if world_writable && !sticky {
+            bail!(
+                "auth store parent '{}' is world-writable without the sticky bit; \
+                 refusing to use it (trusted-directory requirement)",
+                parent.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Read-only variant of `resolve_secret_key` for backup verification:
+/// identical key selection, but NEVER creates a keyfile — a missing
+/// keyfile is an error, not a generation event.
+fn resolve_secret_key_readonly(
+    auth_db_path: &Path,
+    keyfile_override: Option<&Path>,
+) -> Result<age::secrecy::SecretString> {
+    if let Ok(pass) = std::env::var(VAULT_PASSPHRASE_ENV) {
+        if !pass.is_empty() {
+            return Ok(age::secrecy::SecretString::new(pass.into()));
+        }
+    }
+    let key_path = keyfile_override
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| auth_db_path.with_extension("db.key"));
+    let md = std::fs::symlink_metadata(&key_path).with_context(|| {
+        format!(
+            "cannot verify JWT key material: keyfile '{}' is missing \
+             (pass --keyfile or set {VAULT_PASSPHRASE_ENV})",
+            key_path.display()
+        )
+    })?;
+    if md.file_type().is_symlink() || !md.file_type().is_file() {
+        bail!("keyfile '{}' is not a regular file", key_path.display());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let euid = unsafe { libc::geteuid() };
+        if md.uid() != euid {
+            bail!(
+                "keyfile '{}' is owned by uid {} but the service runs as uid {euid}",
+                key_path.display(),
+                md.uid()
+            );
+        }
+    }
+    let raw = std::fs::read_to_string(&key_path)
+        .with_context(|| format!("failed to read keyfile '{}'", key_path.display()))?;
+    let trimmed = raw.trim();
+    if trimmed.len() < 32 {
+        bail!("keyfile '{}' is too short", key_path.display());
+    }
+    Ok(age::secrecy::SecretString::new(trimmed.to_string().into()))
+}
+
 
 // ── Legacy record parsing ───────────────────────────────────────────────────
 

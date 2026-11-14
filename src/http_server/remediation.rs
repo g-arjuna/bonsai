@@ -1626,6 +1626,13 @@ pub(super) async fn list_config_items_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     if !is_admin {
         items.retain(|i| !crate::graph::is_sensitive_config_class(&i.config_class));
+        // F1/F7: names carrying tokens or auth policy inside allowed
+        // classes are redacted for non-admin readers.
+        for i in items.iter_mut() {
+            if crate::graph::PROTECTED_CONFIG_NAMES.contains(&i.name.as_str()) {
+                i.content_json = "\"[REDACTED]\"".to_string();
+            }
+        }
     }
     Ok(Json(items))
 }
@@ -1656,10 +1663,13 @@ pub(super) async fn upsert_config_item_handler(
         role,
         Some(axum::Extension(crate::http_server::auth::Role::Admin))
     );
-    if !is_admin && crate::graph::is_sensitive_config_class(&item.config_class) {
+    if !is_admin
+        && (crate::graph::is_sensitive_config_class(&item.config_class)
+            || crate::graph::PROTECTED_CONFIG_NAMES.contains(&item.name.as_str()))
+    {
         return Err((
             StatusCode::FORBIDDEN,
-            "config class is restricted to admin principals".to_string(),
+            "config item is restricted to admin principals".to_string(),
         ));
     }
     // BN-022: credential-bearing classes moved to AuthStore. Writing them

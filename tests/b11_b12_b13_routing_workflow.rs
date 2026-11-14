@@ -111,7 +111,9 @@ async fn b11_routing_api_contract_prefix_history_and_graceful_degradation() {
         "test-internal-routing-secret-token",
     )
     .await;
-    set_app_config(&store, "require_auth", "0").await;
+    // F1: auth policy is deployment-level, not a graph ConfigItem — use
+    // the per-store test override for this isolated no-auth workflow.
+    store.set_auth_enforcement_override(Some(false));
 
     let bonsai_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let bonsai_addr = bonsai_listener.local_addr().unwrap();

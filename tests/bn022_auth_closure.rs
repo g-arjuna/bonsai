@@ -1089,3 +1089,377 @@ fn now_ns_test() -> i64 {
         .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or_default()
 }
+
+// ── F1: runtime auth bypass is impossible ─────────────────────────────
+
+async fn status_no_auth(client: &reqwest::Client, base: &str) -> u16 {
+    client
+        .get(format!("{base}/api/config-items"))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[tokio::test]
+async fn graph_require_auth_record_cannot_disable_production_auth() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    // Existing insecure graph record must NOT disable auth (F1).
+    store
+        .upsert_config_item(ConfigItemRecord {
+            id: "app-cfg-auth-off".into(),
+            config_class: "app_config".into(),
+            vendor: String::new(),
+            name: "require_auth".into(),
+            version: "1".into(),
+            content_json: "\"0\"".into(),
+            enabled: true,
+            created_by: "test".into(),
+        })
+        .await?;
+    let (base, _h) = serve(Arc::clone(&store)).await;
+    let client = reqwest::Client::new();
+    assert_eq!(
+        status_no_auth(&client, &base).await,
+        401,
+        "graph require_auth=false must not disable authentication"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn non_admin_cannot_write_auth_policy_via_config_items() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    add_user(&store, "f1-op", "operator", true);
+    let (base, _h) = serve(Arc::clone(&store)).await;
+    let client = reqwest::Client::new();
+    let token = login(&client, &base, "f1-op").await.expect("login");
+    // Operator attempts to write require_auth=false → 403 (protected name).
+    let resp = client
+        .post(format!("{base}/api/config-items"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "id": "app-cfg-auth-x", "config_class": "app_config",
+            "name": "require_auth", "version": "1",
+            "content_json": "\"0\"", "enabled": true, "created_by": "t"
+        }))
+        .send()
+        .await?;
+    assert_eq!(resp.status().as_u16(), 403, "operator write of auth policy must be denied");
+    // Even a Viewer cannot.
+    add_user(&store, "f1-vw", "viewer", true);
+    let vtoken = login(&client, &base, "f1-vw").await.expect("login");
+    let resp = client
+        .post(format!("{base}/api/config-items"))
+        .bearer_auth(&vtoken)
+        .json(&serde_json::json!({
+            "id": "app-cfg-auth-y", "config_class": "app_config",
+            "name": "require_auth", "version": "1",
+            "content_json": "\"0\"", "enabled": true, "created_by": "t"
+        }))
+        .send()
+        .await?;
+    assert_eq!(resp.status().as_u16(), 403);
+    // Anonymous cannot either.
+    let resp = client
+        .post(format!("{base}/api/config-items"))
+        .json(&serde_json::json!({
+            "id": "app-cfg-auth-z", "config_class": "app_config",
+            "name": "require_auth", "version": "1",
+            "content_json": "\"0\"", "enabled": true, "created_by": "t"
+        }))
+        .send()
+        .await?;
+    assert_eq!(resp.status().as_u16(), 401);
+    // Auth still required afterwards.
+    assert_eq!(status_no_auth(&client, &base).await, 401);
+    Ok(())
+}
+
+#[tokio::test]
+async fn isolated_dev_mode_override_allows_anonymous() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    // Explicit deployment/test opt-in: per-store override (same code path
+    // as the BONSAI_ALLOW_INSECURE_* env resolution).
+    store.set_auth_enforcement_override(Some(false));
+    let (base, _h) = serve(Arc::clone(&store)).await;
+    let client = reqwest::Client::new();
+    assert_eq!(status_no_auth(&client, &base).await, 200);
+    // Restoring the override re-enables enforcement immediately.
+    store.set_auth_enforcement_override(None);
+    assert_eq!(status_no_auth(&client, &base).await, 401);
+    Ok(())
+}
+
+// ── F2: API-key management is Administrator-only ──────────────────────
+
+async fn api_status(
+    client: &reqwest::Client,
+    base: &str,
+    method: reqwest::Method,
+    path: &str,
+    token: Option<&str>,
+    body: Option<serde_json::Value>,
+) -> (u16, serde_json::Value) {
+    let mut req = client.request(method, format!("{base}{path}"));
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    let resp = req.send().await.unwrap();
+    let status = resp.status().as_u16();
+    let json = resp.json().await.unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+#[tokio::test]
+async fn apikey_management_requires_admin() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    add_user(&store, "f2-admin", "admin", true);
+    add_user(&store, "f2-oper", "operator", true);
+    add_user(&store, "f2-view", "viewer", true);
+    let (base, _h) = serve(Arc::clone(&store)).await;
+    let client = reqwest::Client::new();
+    let at = login(&client, &base, "f2-admin").await.expect("admin login");
+    let ot = login(&client, &base, "f2-oper").await.expect("oper login");
+    let vt = login(&client, &base, "f2-view").await.expect("view login");
+
+    // Anonymous / viewer / operator all denied on every apikey route.
+    for (m, p, tok) in [
+        (reqwest::Method::GET, "/api/auth/apikeys", None),
+        (reqwest::Method::GET, "/api/auth/apikeys", Some(vt.as_str())),
+        (reqwest::Method::GET, "/api/auth/apikeys", Some(ot.as_str())),
+        (
+            reqwest::Method::POST,
+            "/api/auth/apikeys",
+            Some(ot.as_str()),
+        ),
+        (
+            reqwest::Method::DELETE,
+            "/api/auth/apikeys/whatever",
+            Some(ot.as_str()),
+        ),
+        (
+            reqwest::Method::POST,
+            "/api/auth/apikeys/whatever/rotate",
+            Some(vt.as_str()),
+        ),
+    ] {
+        let (s, _) = api_status(&client, &base, m, p, tok, None).await;
+        assert!(s == 401 || s == 403, "expected deny, got {s} for {p}");
+    }
+
+    // Admin can create; invalid scopes rejected; wildcard/admin allowed for admin.
+    let (s, j) = api_status(
+        &client, &base, reqwest::Method::POST, "/api/auth/apikeys",
+        Some(&at),
+        Some(serde_json::json!({"alias":"bad","scope":"not-a-scope"})),
+    ).await;
+    assert_eq!(s, 200);
+    assert_eq!(j["success"], false, "invalid scope must be rejected: {j}");
+
+    let (s, j) = api_status(
+        &client, &base, reqwest::Method::POST, "/api/auth/apikeys",
+        Some(&at),
+        Some(serde_json::json!({"alias":"svc","scope":"routing:read:speaker=10.0.0.1"})),
+    ).await;
+    assert_eq!(s, 200);
+    assert_eq!(j["success"], true, "{j}");
+    let key_id = j["id"].as_str().unwrap().to_string();
+    let raw_key = j["api_key"].as_str().unwrap().to_string();
+
+    // A scoped (non-admin) API key cannot manage keys.
+    let (s, _) = api_status(
+        &client, &base, reqwest::Method::GET, "/api/auth/apikeys",
+        Some(&raw_key), None,
+    ).await;
+    assert!(s == 401 || s == 403, "scoped key must not list keys, got {s}");
+
+    // Admin rotate + delete work.
+    let (s, j) = api_status(
+        &client, &base, reqwest::Method::POST,
+        &format!("/api/auth/apikeys/{key_id}/rotate"), Some(&at), None,
+    ).await;
+    assert_eq!(s, 200);
+    assert_eq!(j["success"], true, "{j}");
+    let (s, _) = api_status(
+        &client, &base, reqwest::Method::DELETE,
+        &format!("/api/auth/apikeys/{key_id}"), Some(&at), None,
+    ).await;
+    assert_eq!(s, 204);
+    Ok(())
+}
+
+// ── F6: login rate limiting counts each failure exactly once ─────────
+
+#[tokio::test]
+async fn login_lockout_triggers_at_threshold_boundary() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    add_user(&store, "f6-user", "viewer", true);
+    let (base, _h) = serve(Arc::clone(&store)).await;
+    let client = reqwest::Client::new();
+
+    let attempt = |pw: &str| {
+        let client = client.clone();
+        let base = base.clone();
+        let pw = pw.to_string();
+        async move {
+            client
+                .post(format!("{base}/api/auth/login"))
+                .json(&serde_json::json!({"username":"f6-user","password":pw}))
+                .send().await.unwrap()
+        }
+    };
+
+    // Two failures: still "invalid credentials", not locked.
+    for _ in 0..2 {
+        let r = attempt("WrongPassw0rd!!").await;
+        let j: serde_json::Value = r.json().await?;
+        assert_eq!(j["success"], false);
+        assert_eq!(j["error"], "invalid credentials");
+    }
+    // Third failure reaches threshold → this response is still
+    // "invalid credentials" but the account is now locked.
+    let r = attempt("WrongPassw0rd!!").await;
+    let j: serde_json::Value = r.json().await?;
+    assert_eq!(j["error"], "invalid credentials");
+    // Fourth attempt — even with the CORRECT password — is locked out.
+    let r = attempt("ClosurePassw0rd!1").await;
+    let j: serde_json::Value = r.json().await?;
+    assert_eq!(j["success"], false);
+    assert!(
+        j["error"].as_str().unwrap_or("").contains("locked"),
+        "expected lockout error, got {j}"
+    );
+    Ok(())
+}
+
+// ── F3: genuine backup verification ──────────────────────────────────
+
+fn verify_ok(dir: &TempDir) -> Result<(AuthStore, std::path::PathBuf, std::path::PathBuf)> {
+    clear_auth_env();
+    let auth_path = dir.path().join("bonsai_auth.db");
+    let store = AuthStore::open(&auth_path)?;
+    store.upsert_user(&AuthUser {
+        username: "vf-user".into(),
+        password_hash: "verifier".into(),
+        role: "viewer".into(),
+        enabled: true,
+        last_login_ns: 0,
+        created_at_ns: 0,
+        updated_at_ns: 0,
+    })?;
+    let _ = store.jwt_secret()?;
+    let dest = dir.path().join("bk.db");
+    store.backup_to(&dest)?;
+    let manifest = dest.with_extension("manifest.json");
+    let keyfile = auth_path.with_extension("db.key");
+    Ok((store, dest, manifest))
+}
+
+#[test]
+fn verify_backup_accepts_valid_snapshot_and_verifies_key_material() -> Result<()> {
+    let dir = TempDir::new()?;
+    let (_s, dest, manifest) = verify_ok(&dir)?;
+    let keyfile = dir.path().join("bonsai_auth.db.key");
+    let report = AuthStore::verify_backup(&dest, &manifest, Some(&keyfile))?;
+    assert_eq!(report.user_count, 1);
+    assert!(report.jwt_key_count >= 1);
+    assert!(report.key_material_verified);
+    assert_eq!(report.integrity_check, "ok");
+    Ok(())
+}
+
+#[test]
+fn verify_backup_rejects_tampered_missing_and_swapped_artifacts() -> Result<()> {
+    let dir = TempDir::new()?;
+    let (_s, dest, manifest) = verify_ok(&dir)?;
+    let keyfile = dir.path().join("bonsai_auth.db.key");
+
+    // Missing manifest.
+    let missing = dir.path().join("nope.manifest.json");
+    assert!(AuthStore::verify_backup(&dest, &missing, Some(&keyfile)).is_err());
+
+    // Tampered snapshot (append a byte → digest mismatch).
+    let tampered = dir.path().join("tampered.db");
+    std::fs::copy(&dest, &tampered)?;
+    std::fs::copy(&manifest, tampered.with_extension("manifest.json"))?;
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&tampered)?;
+        f.write_all(b"x")?;
+    }
+    assert!(AuthStore::verify_backup(&tampered, &tampered.with_extension("manifest.json"), Some(&keyfile)).is_err());
+
+    // Swapped manifest from a different snapshot: counts/digest mismatch.
+    let dir2 = TempDir::new()?;
+    let (_s2, dest2, _m2) = verify_ok(&dir2)?;
+    let swapped = dir.path().join("swapped.db");
+    std::fs::copy(&dest2, &swapped)?;
+    std::fs::copy(&manifest, swapped.with_extension("manifest.json"))?;
+    assert!(AuthStore::verify_backup(&swapped, &swapped.with_extension("manifest.json"), Some(&keyfile)).is_err());
+    Ok(())
+}
+
+#[test]
+fn verify_backup_rejects_legacy_v1_manifest() -> Result<()> {
+    let dir = TempDir::new()?;
+    let (_s, dest, manifest) = verify_ok(&dir)?;
+    // Rewrite manifest as legacy v1 (no digest fields) — must be rejected
+    // explicitly, not silently accepted.
+    let raw = std::fs::read_to_string(&manifest)?;
+    let mut v: serde_json::Value = serde_json::from_str(&raw)?;
+    v["format"] = serde_json::json!("bonsai-auth-backup-v1");
+    v.as_object_mut().unwrap().remove("snapshot_sha256");
+    v.as_object_mut().unwrap().remove("snapshot_size_bytes");
+    std::fs::write(&manifest, serde_json::to_string_pretty(&v)?)?;
+    let keyfile = dir.path().join("bonsai_auth.db.key");
+    let err = AuthStore::verify_backup(&dest, &manifest, Some(&keyfile)).unwrap_err();
+    assert!(err.to_string().contains("v2") || err.to_string().contains("unsupported"));
+    Ok(())
+}
+
+#[test]
+fn verify_backup_detects_wrong_key_material() -> Result<()> {
+    let dir = TempDir::new()?;
+    let (_s, dest, manifest) = verify_ok(&dir)?;
+    // A different valid-length keyfile cannot decrypt the sealed secrets.
+    let wrong = dir.path().join("wrong.key");
+    std::fs::write(&wrong, "0".repeat(64))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrong, std::fs::Permissions::from_mode(0o600))?;
+    }
+    assert!(AuthStore::verify_backup(&dest, &manifest, Some(&wrong)).is_err());
+    Ok(())
+}
+
+// ── F5: auth store filesystem safety ─────────────────────────────────
+
+#[test]
+fn auth_store_rejects_symlink_and_foreign_paths() -> Result<()> {
+    let dir = TempDir::new()?;
+    let real = dir.path().join("real.db");
+    let store = AuthStore::open(&real)?;
+    drop(store);
+    // Symlink to a valid db must be rejected.
+    let link = dir.path().join("link.db");
+    std::os::unix::fs::symlink(&real, &link)?;
+    assert!(AuthStore::open(&link).is_err(), "symlink path must be rejected");
+    // Non-regular file must be rejected.
+    let fifo = dir.path().join("fifo.db");
+    let _ = std::process::Command::new("mkfifo").arg(&fifo).status();
+    if fifo.exists() {
+        assert!(AuthStore::open(&fifo).is_err(), "non-regular file must be rejected");
+    }
+    Ok(())
+}

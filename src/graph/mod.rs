@@ -261,6 +261,28 @@ pub fn is_sensitive_config_class(config_class: &str) -> bool {
     SENSITIVE_CONFIG_CLASSES.contains(&config_class)
 }
 
+/// Security-sensitive ConfigItem NAMES inside otherwise-allowed classes
+/// (`app_config`, `runtime_config`, ...). These carry credentials,
+/// tokens or authentication policy: writes are admin-only through the
+/// generic config API and non-admin reads see `content_json` redacted.
+/// The middleware never consults them for auth decisions (F1) — this
+/// list is a containment boundary for the remaining consumers.
+pub const PROTECTED_CONFIG_NAMES: &[&str] = &[
+    "require_auth",
+    "internal_service_token",
+    "routing_service_token",
+    "service_token",
+    "jwt_secret",
+    "admin_password",
+    "bind_password",
+];
+
+/// True when a ConfigItem (class + name) is protected from non-admin
+/// writes and redacted on non-admin reads.
+pub fn is_protected_config_item(config_class: &str, name: &str) -> bool {
+    is_sensitive_config_class(config_class) || PROTECTED_CONFIG_NAMES.contains(&name)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct EnvironmentWithCounts {
     pub id: String,
@@ -296,6 +318,42 @@ pub struct GraphStore {
     /// signing keys, revocations). Lives in `bonsai_auth.db` beside the
     /// graph database — never inside the queryable graph.
     pub auth_store: crate::auth_store::AuthStore,
+    /// F1: per-store auth enforcement override for isolated tests.
+    /// 0 = deployment env policy, 1 = force required, 2 = force disabled.
+    /// Never reachable through HTTP APIs — deployment policy comes from
+    /// `crate::auth_store::auth_required_by_deployment()`.
+    pub auth_enforcement_override: std::sync::atomic::AtomicU8,
+}
+
+impl GraphStore {
+    /// F1: test-only hook — override deployment auth policy for THIS
+    /// store instance. `Some(true)` forces auth on, `Some(false)` forces
+    /// the insecure no-auth mode, `None` restores env resolution.
+    /// Not reachable via any HTTP API.
+    pub fn set_auth_enforcement_override(&self, v: Option<bool>) {
+        self.auth_enforcement_override.store(
+            match v {
+                None => 0,
+                Some(true) => 1,
+                Some(false) => 2,
+            },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Whether HTTP auth is required for this store: explicit per-store
+    /// override (tests) wins, otherwise deployment env policy — never
+    /// graph ConfigItems.
+    pub fn auth_required(&self) -> bool {
+        match self
+            .auth_enforcement_override
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            1 => true,
+            2 => false,
+            _ => crate::auth_store::auth_required_by_deployment(),
+        }
+    }
 }
 
 impl GraphStore {
@@ -336,6 +394,7 @@ impl GraphStore {
             ddos_config: Arc::new(DdosConfig::default()),
             signal_filter: SignalFilter::new(),
             auth_store,
+            auth_enforcement_override: std::sync::atomic::AtomicU8::new(0),
         };
 
         let t = Instant::now();

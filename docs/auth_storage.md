@@ -22,7 +22,7 @@ sensitivity. Verified by code inspection on `fix/bn019-b6-fail-closed-ci`
 | 7 | LDAP configuration | `bonsai.toml` `[ldap]` (`LdapConfig`) | server URL, bind DN, `bind_password_env` **name**, role map | Safe metadata (env var *name*, never the secret; secret resolved from env/vault at runtime) | Config file, not graph |
 | 8 | LDAP bind password | env var named by `bind_password_env` / vault alias `ldap-bind` | cleartext secret | Secret — already outside graph (env/vault) | Vault-protected |
 | 9 | Collector/device credentials | `CredentialVault` (`runtime/vault/vault.age`) | age-encrypted username/password pairs | Secret — already protected | Vault-protected |
-| 10 | `app_config.require_auth` | `app_config` | `"1"/"0"` flag | Safe operational metadata | Graph OK |
+| 10 | `app_config.require_auth` | `app_config` | `"1"/"0"` flag | Safe operational metadata | Graph OK — **ignored for auth decisions since F1** (deployment env policy only) |
 | 11 | Env admin bootstrap | `BONSAI_ADMIN_USER` / `BONSAI_ADMIN_PASS` env + vault aliases `bonsai-admin`, `bonsai-admin-pass` | cleartext password compared directly | Secret — env/vault only, never persisted to graph | OK |
 
 **Conclusion:** records 1–5 must leave the graph. Record 6 stays (it is a
@@ -233,3 +233,32 @@ only counts, classes and record IDs.
 - Process-wide env vars (`BONSAI_JWT_SECRET`, `BONSAI_VAULT_PASSPHRASE`)
   remain process-scoped; tests must serialize via an env lock.
 - No distributed revocation/HA claim.
+
+## 6. F1–F6 closure notes (WP2, 14 November)
+
+- **F1 auth policy:** `auth_middleware` no longer reads `app_config.require_auth`
+  (or any graph ConfigItem). `GraphStore::auth_required()` resolves a
+  per-store test override, else `auth_store::auth_required_by_deployment()`:
+  auth required by default; `BONSAI_REQUIRE_AUTH=1|true` forces it on;
+  `BONSAI_REQUIRE_AUTH=0|false` is honored ONLY with
+  `BONSAI_ALLOW_INSECURE_NO_AUTH=1|true` or `BONSAI_ALLOW_INSECURE_DEV=1|true`;
+  unset → required unless an insecure flag is set. A stale
+  `require_auth=false` graph record cannot weaken enforcement.
+- **F2:** `/api/auth/apikeys*` and `/api/auth/ldap/*` are Administrator-only
+  in `required_role`; scope strings are validated at creation.
+- **F3:** `bonsai auth verify-backup` uses `AuthStore::verify_backup` —
+  manifest v2 (`bonsai-auth-backup-v2`) with snapshot SHA-256+size, read-only
+  `integrity_check`/`foreign_key_check`, count/migration-state comparison,
+  and decrypt-verification of every `jwt_keys.secret_enc` without generating
+  material. v1 manifests are rejected explicitly. Digest proves integrity,
+  not authenticity against an attacker rewriting both artifacts.
+- **F4:** backup stages with fsync, installs via hard-link, writes+fsyncs the
+  manifest, then fsyncs the parent directory. Incomplete pairs fail verify.
+- **F5:** `AuthStore::open` rejects symlink/non-regular/foreign-owned DB files
+  and world-writable non-sticky parents; opens with `SQLITE_OPEN_NOFOLLOW`.
+  Trusted-directory assumption: the parent dir must be operator-controlled;
+  intermediate symlinked ancestors are out of scope.
+- **F6:** login rate limiting split into `login_is_locked` /
+  `record_login_failure` / `record_login_success` — one count per failed
+  auth, poisoned mutex recovers the guard (never fails open), tracker is
+  bounded (8192 usernames, FIFO eviction).

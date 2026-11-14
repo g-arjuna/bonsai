@@ -146,7 +146,13 @@ pub async fn verify_jwt(
 
 // ── Rate limiting (brute-force lockout) ───────────────────────────────────────
 
-/// Per-username login attempt tracking.
+const RATE_LIMIT_MAX_ATTEMPTS: u32 = 3;
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
+const RATE_LIMIT_LOCKOUT: Duration = Duration::from_secs(1800); // 30 minutes
+/// Bound on tracked usernames — a password-spray of distinct names must
+/// not grow the map without limit. Inactive entries are evicted FIFO.
+const LOGIN_TRACK_MAX_ENTRIES: usize = 8192;
+
 #[derive(Default)]
 struct LoginAttempts {
     count: u32,
@@ -154,40 +160,90 @@ struct LoginAttempts {
     locked_until: Option<Instant>,
 }
 
-const RATE_LIMIT_MAX_ATTEMPTS: u32 = 3;
-const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
-const RATE_LIMIT_LOCKOUT: Duration = Duration::from_secs(1800); // 30 minutes
-
-lazy_static::lazy_static! {
-    static ref LOGIN_ATTEMPTS: Mutex<HashMap<String, LoginAttempts>> = Mutex::new(HashMap::new());
+#[derive(Default)]
+struct LoginAttemptTracker {
+    map: HashMap<String, LoginAttempts>,
+    /// Insertion order for bounded FIFO eviction of inactive usernames.
+    order: std::collections::VecDeque<String>,
 }
 
-/// Returns `true` if the username is currently rate-limited (locked out).
-/// Records a failed attempt if `success` is false; clears state if `success` is true.
-fn rate_limit_check(username: &str, success: bool) -> bool {
-    let mut map = match LOGIN_ATTEMPTS.lock() {
-        Ok(m) => m,
-        Err(_) => return false, // Don't block on poisoned mutex
-    };
-    let entry = map.entry(username.to_lowercase()).or_default();
-    let now = Instant::now();
+lazy_static::lazy_static! {
+    static ref LOGIN_ATTEMPTS: Mutex<LoginAttemptTracker> = Mutex::new(LoginAttemptTracker::default());
+}
 
-    // Clear if lockout has expired
-    if let Some(locked_until) = entry.locked_until {
-        if now >= locked_until {
-            entry.locked_until = None;
-            entry.count = 0;
-            entry.window_start = None;
-        } else if !success {
-            return true; // Still locked
+/// Lock the tracker, recovering from poisoning instead of failing open.
+/// A poisoned mutex previously returned `false` ("not locked") which
+/// disabled rate limiting entirely; recovering the guard keeps
+/// enforcement active with at worst slightly stale counters.
+fn attempts_guard() -> std::sync::MutexGuard<'static, LoginAttemptTracker> {
+    match LOGIN_ATTEMPTS.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!("login rate-limit mutex poisoned — recovering guard; enforcement continues");
+            e.into_inner()
         }
     }
+}
 
-    if success {
+/// Make room for one new tracked username under the cardinality bound.
+fn ensure_tracking_capacity(tracker: &mut LoginAttemptTracker, username: &str) {
+    if tracker.map.contains_key(username) || tracker.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+        return;
+    }
+    while let Some(old) = tracker.order.pop_front() {
+        if tracker.map.remove(&old).is_some() {
+            return;
+        }
+    }
+    // Order queue drained but map still full (defensive): give up
+    // tracking this username rather than grow unboundedly. Auth itself
+    // is unaffected — only the rate-limit counter for this name is off.
+    tracing::warn!("login rate-limit tracker at capacity; not tracking new username");
+}
+
+/// Returns `true` when `username` is currently inside a lockout window.
+/// Read-only: never records an attempt (F6 — the old combined check+record
+/// counted every login request as a failure before authentication ran).
+fn login_is_locked(username: &str) -> bool {
+    let mut tracker = attempts_guard();
+    let key = username.to_lowercase();
+    let Some(entry) = tracker.map.get_mut(&key) else {
+        return false;
+    };
+    let now = Instant::now();
+    if let Some(locked_until) = entry.locked_until {
+        if now < locked_until {
+            return true;
+        }
+        // Lockout expired: reset and allow a fresh window.
+        entry.locked_until = None;
         entry.count = 0;
         entry.window_start = None;
+    }
+    false
+}
+
+/// Record ONE failed authentication attempt for `username`.
+/// Called exactly once per failed login — never speculatively.
+fn record_login_failure(username: &str) {
+    let mut tracker = attempts_guard();
+    let key = username.to_lowercase();
+    ensure_tracking_capacity(&mut tracker, &key);
+    if !tracker.map.contains_key(&key) {
+        return; // at capacity and untracked — see ensure_tracking_capacity
+    }
+    tracker.order.push_back(key.clone());
+    let entry = tracker.map.entry(key).or_default();
+    let now = Instant::now();
+
+    // Already inside an active lockout: do not extend it or double count.
+    if let Some(locked_until) = entry.locked_until {
+        if now < locked_until {
+            return;
+        }
         entry.locked_until = None;
-        return false;
+        entry.count = 0;
+        entry.window_start = None;
     }
 
     // Roll the window if older than RATE_LIMIT_WINDOW
@@ -204,9 +260,13 @@ fn rate_limit_check(username: &str, success: bool) -> bool {
     if entry.count >= RATE_LIMIT_MAX_ATTEMPTS {
         entry.locked_until = Some(now + RATE_LIMIT_LOCKOUT);
         tracing::warn!(username = %username, "Login account locked: too many failed attempts");
-        return true;
     }
-    false
+}
+
+/// Clear all rate-limit state for `username` after a successful login.
+fn record_login_success(username: &str) {
+    let mut tracker = attempts_guard();
+    tracker.map.remove(&username.to_lowercase());
 }
 
 // ── Password policy ───────────────────────────────────────────────────────────
@@ -366,6 +426,19 @@ pub(super) async fn create_api_key_handler(
             alias,
             id: String::new(),
             error: "alias is required".to_string(),
+        }));
+    }
+
+    // F2: reject malformed, unknown and ambiguous scope strings at
+    // creation time — an invalid scope must never be stored where it
+    // would only fail closed later at authentication time.
+    if let ScopeGrant::Invalid(reason) = parse_scope_grant(&req.scope) {
+        return Ok(Json(CreateApiKeyResponse {
+            success: false,
+            api_key: String::new(),
+            alias,
+            id: String::new(),
+            error: format!("invalid scope: {reason}"),
         }));
     }
 
@@ -540,7 +613,7 @@ pub(super) async fn login_handler(
     }
 
     // Rate-limit check — must be before any DB access to prevent user enumeration
-    if rate_limit_check(&username, false) {
+    if login_is_locked(&username) {
         return Ok(Json(LoginResponse {
             success: false,
             token: String::new(),
@@ -597,7 +670,7 @@ pub(super) async fn login_handler(
             .await
             .unwrap_or(false);
         if !password_ok {
-            rate_limit_check(&username, false);
+            record_login_failure(&username);
             return Ok(Json(LoginResponse {
                 success: false,
                 token: String::new(),
@@ -612,7 +685,7 @@ pub(super) async fn login_handler(
         // A local account record exists but is disabled: deny. It must
         // NOT fall through to LDAP — a same-named external identity
         // cannot resurrect a disabled local account (AUTH-C2).
-        rate_limit_check(&username, false);
+        record_login_failure(&username);
         return Ok(Json(LoginResponse {
             success: false,
             token: String::new(),
@@ -626,7 +699,7 @@ pub(super) async fn login_handler(
             Ok(role) => (role, false, "ldap"),
             Err(e) => {
                 tracing::warn!(username = %username, error = %e, "LDAP authentication failed");
-                rate_limit_check(&username, false);
+                record_login_failure(&username);
                 return Ok(Json(LoginResponse {
                     success: false,
                     token: String::new(),
@@ -638,7 +711,7 @@ pub(super) async fn login_handler(
             }
         }
     } else {
-        rate_limit_check(&username, false);
+        record_login_failure(&username);
         return Ok(Json(LoginResponse {
             success: false,
             token: String::new(),
@@ -650,7 +723,7 @@ pub(super) async fn login_handler(
     };
 
     // Auth success — clear rate-limit state
-    rate_limit_check(&username, true);
+    record_login_success(&username);
 
     // Mint a signed JWT (HS256) — no DB row needed for session. The
     // source marker lets the middleware apply local-account authority
@@ -888,6 +961,8 @@ fn required_role(method: &str, path: &str) -> Role {
     if path == "/api/ownership"
         || path.starts_with("/api/ownership/")
         || path.starts_with("/api/auth/users")
+        || path.starts_with("/api/auth/apikeys")
+        || path.starts_with("/api/auth/ldap/")
         || path.starts_with("/api/vault")
         || path == "/api/db/purge"
         || path == "/api/db/backup"
@@ -1170,32 +1245,14 @@ pub async fn auth_middleware(
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // D4-7 T5 / BN-005: Check DB for require_auth setting, fallback to env var. Fail closed by default.
-    let require_auth = {
-        let db_val = store
-            .list_config_items(Some("app_config".to_string()))
-            .await
-            .unwrap_or_default()
-            .iter()
-            .find(|i| i.name == "require_auth" && i.enabled)
-            .map(|i| i.content_json.trim().trim_matches('"').to_string());
-        match db_val.as_deref() {
-            Some("1") | Some("true") => true,
-            Some("0") | Some("false") => false,
-            _ => {
-                let env_val = std::env::var("BONSAI_REQUIRE_AUTH").unwrap_or_default();
-                let allow_insecure = std::env::var("BONSAI_ALLOW_INSECURE_NO_AUTH")
-                    .or_else(|_| std::env::var("BONSAI_ALLOW_INSECURE_DEV"))
-                    .map(|v| v == "1" || v == "true")
-                    .unwrap_or(false);
-                if allow_insecure || env_val == "0" || env_val.eq_ignore_ascii_case("false") {
-                    false
-                } else {
-                    true
-                }
-            }
-        }
-    };
+    // F1: authentication enforcement is a DEPLOYMENT-level decision resolved
+    // from environment configuration (with a per-store test override). It is
+    // NEVER read from graph ConfigItems — `app_config.require_auth` and every
+    // other graph-writable record are ignored here, so no HTTP API, Explorer,
+    // MCP tool or graph query can disable production authentication. An
+    // existing `require_auth=false` record does not weaken a secure
+    // deployment; insecure no-auth mode requires the explicit env opt-in.
+    let require_auth = store.auth_required();
 
     if !require_auth {
         return Ok(next.run(request).await);
