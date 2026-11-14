@@ -81,6 +81,15 @@ The first authoritative projection is deliberately minimal:
      device/application record. The first verified slice does NOT create
      or assert this; it remains a separate, explicit authorization
      decision.
+
+  The normative identity chain is: **certificate fingerprint → trusted
+  credential binding → stable producer identity → producer-local
+  application identity**. Application ids are keyed on the stable
+  producer identity only; the fingerprint is a credential-binding key,
+  never an identity key. Credential rotation re-binds the same producer
+  and therefore preserves both producer and application identity; a
+  payload-asserted producer role can never substitute for the
+  transport-attested binding.
 - **Ownership:** the verified projection asserts "producer P produced
   application-evidence E at time T" — nothing more. It does not assert
   that P *hosts* the application in an inventory sense unless a trusted
@@ -130,8 +139,8 @@ no mocks for persistence), mirroring the g-1 harness style:
 
 | # | Case | Expected |
 |---|------|----------|
-| A1 | Valid mTLS producer posts `/v1/traces` with `service.name=payments` | Span event written with verified principal + stable `otlpapp+/sha256:…/payments`-class id; `identity_status` verified; no canonical `Device` fabricated |
-| A2 | Same producer reconnects from a different source port / behind NAT | Same application identity (fingerprint-keyed, not peer-keyed) |
+| A1 | Valid mTLS producer posts `/v1/traces` with `service.name=payments` | Span event written with verified principal + stable `otlpapp+/{producer_identity}/payments`-class id keyed on the **stable bound producer identity** (never the credential fingerprint); `identity_status` verified; no canonical `Device` fabricated |
+| A2 | Same producer reconnects from a different source port / behind NAT | Same application identity (producer-identity-keyed, not peer-keyed, not fingerprint-keyed) |
 | A3 | Producer presents valid cert not bound to an `otlp-producer` capability | Rejected at handshake/authz; zero graph writes |
 | A4 | Binding revoked mid-stream | In-flight stream denied within documented epoch window; subsequent messages rejected |
 | A5 | Two credentials bound to ambiguous/duplicate principals | Fail closed (no arbitrary pick) |
@@ -145,6 +154,11 @@ no mocks for persistence), mirroring the g-1 harness style:
 | A13 | JWT/API-key authn on northbound API cannot mint `VerifiedIngressPrincipal` | Deserialized/replayed principals carry `transport_attested=false` and are rejected (existing serde guarantee — regression test) |
 | A14 | Cardinality abuse: producer registers > cap distinct app discriminators | Excess rejected/dropped with metric; no unbounded id space |
 | A15 | Real TLS acceptance | End-to-end over actual TLS (not synthetic in-process channel): handshake → verified write → API read-back shows verified status |
+| A16 | Credential rotation: bound producer presents a NEW client cert/fingerprint for the same stable producer identity | Same stable producer identity and same `otlpapp+/…` application ids; rotation is a re-binding event that never mints a duplicate producer or app id; prior fingerprint's in-flight window closes per the documented epoch semantics |
+| A17 | Old credential replayed after rotation/revocation | Rejected at handshake/authz (fingerprint no longer bound or binding disabled); zero graph writes; error path does not reveal binding internals |
+| A18 | Cross-scope collision: two producers in different scopes use identical `service.name`/discriminator | App ids remain distinct per (scope, producer identity); no cross-scope merge, lookup or metric aggregation |
+| A19 | Forwarding collector holds a valid collector credential and payload attributes assert `role=original_producer` / upstream producer identity | Payload-asserted role is a claim only; collector's own evidence may verify under its collector capability, upstream identities stay `claimed_*`/`provisional`; a collector credential alone can never satisfy the `otlp-producer` capability check |
+| A20 | Duplicate/replayed span and metric deliveries (same principal + app id + span/metric identity, incl. out-of-order within `sane_timestamp_ns`) | Projection is idempotent: no duplicate graph events or parquet rows; dedup key = stable producer identity + app id + span/metric identity over a bounded retention horizon |
 
 ## 5. Explicit non-goals for g-2
 
