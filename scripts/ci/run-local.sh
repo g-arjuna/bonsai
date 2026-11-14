@@ -210,7 +210,10 @@ docker run --rm \
     ln -sfn /ci-cache/venv .venv
     if [ '$NEED_UI' = '1' ]; then
       (cd ui && npm ci --no-audit --no-fund && npm run build)
-      (cd tests/ui_driver && npm ci --no-audit --no-fund)
+      # tests/ui_driver/package-lock.json is gitignored, so the committed
+      # snapshot never contains it: npm ci cannot run there. Install (which
+      # generates a lockfile inside the snapshot) when it is absent.
+      (cd tests/ui_driver && { [ -f package-lock.json ] && npm ci --no-audit --no-fund || npm install --no-audit --no-fund; })
     fi
     if [ '$NEED_BROWSER' = '1' ]; then
       (cd tests/ui_driver && npx playwright install chromium)
