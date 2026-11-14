@@ -350,11 +350,8 @@ impl AuthStore {
         // instead of silently establishing a divergent encryption identity.
         let (secret_key, keyfile_created) = resolve_secret_key(path)?;
         if keyfile_created {
-            let has_jwt_keys: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM jwt_keys)",
-                [],
-                |r| r.get(0),
-            )?;
+            let has_jwt_keys: bool =
+                conn.query_row("SELECT EXISTS(SELECT 1 FROM jwt_keys)", [], |r| r.get(0))?;
             if has_jwt_keys {
                 bail!(
                     "auth store '{}' contains encrypted JWT keys but its \
@@ -598,7 +595,9 @@ impl AuthStore {
     /// list is needed because invalidation is cryptographic.
     pub fn rotate_jwt_key_emergency(&self) -> Result<()> {
         if std::env::var(JWT_SECRET_ENV).is_ok() {
-            bail!("{JWT_SECRET_ENV} override is active; stored-key emergency rotation does not apply");
+            bail!(
+                "{JWT_SECRET_ENV} override is active; stored-key emergency rotation does not apply"
+            );
         }
         let mut conn = self.lock()?;
         let tx = conn.transaction()?;
@@ -1095,8 +1094,7 @@ impl AuthStore {
     /// (`None` when absent). Internal.
     fn jwt_revoked_expiry(&self, jti: &str) -> Result<Option<i64>> {
         let conn = self.lock()?;
-        let mut stmt =
-            conn.prepare("SELECT expires_at_ns FROM jwt_revoked WHERE jti = ?1")?;
+        let mut stmt = conn.prepare("SELECT expires_at_ns FROM jwt_revoked WHERE jti = ?1")?;
         let mut rows = stmt.query_map(params![jti], |r| r.get::<_, i64>(0))?;
         match rows.next() {
             Some(row) => row
@@ -1424,11 +1422,7 @@ impl AuthStore {
                                 item.id.clone(),
                                 "quarantined".to_string(),
                             ));
-                            malformed.push((
-                                class.to_string(),
-                                item,
-                                "unparseable api_key record",
-                            ));
+                            malformed.push((class.to_string(), item, "unparseable api_key record"));
                         }
                     },
                     "jwt_secret" => {
@@ -1682,9 +1676,7 @@ impl AuthStore {
         let records: Vec<serde_json::Value> = dispositions
             .iter()
             .filter(|(c, i, _)| seen.insert((c.clone(), i.clone())))
-            .map(|(c, i, d)| {
-                serde_json::json!({"class": c, "id": i, "disposition": d})
-            })
+            .map(|(c, i, d)| serde_json::json!({"class": c, "id": i, "disposition": d}))
             .collect();
         let manifest_json = serde_json::json!({
             "format": "bonsai-auth-migration-v1",
@@ -1769,7 +1761,9 @@ impl AuthStore {
                     )
                 }
             }
-            Err(e) => Err(anyhow!("quarantine insert failed for ({class}, '{item_id}'): {e}")),
+            Err(e) => Err(anyhow!(
+                "quarantine insert failed for ({class}, '{item_id}'): {e}"
+            )),
         }
     }
 
@@ -1915,9 +1909,12 @@ impl AuthStore {
         legacy_jwt_secret: Option<&str>,
     ) -> Result<()> {
         for (_item, user) in legacy_users {
-            let stored = self
-                .get_user(&user.username)?
-                .ok_or_else(|| anyhow!("migration verify: user '{}' missing after import", user.username))?;
+            let stored = self.get_user(&user.username)?.ok_or_else(|| {
+                anyhow!(
+                    "migration verify: user '{}' missing after import",
+                    user.username
+                )
+            })?;
             if stored.password_hash != user.password_hash
                 || stored.role != user.role
                 || stored.enabled != user.enabled
@@ -1930,7 +1927,10 @@ impl AuthStore {
         }
         for (_item, key) in legacy_keys {
             let Some((hash, scope, enabled, expires)) = self.api_key_verifier_row(&key.id)? else {
-                bail!("migration verify: api_key '{}' missing after import", key.id);
+                bail!(
+                    "migration verify: api_key '{}' missing after import",
+                    key.id
+                );
             };
             if hash != key.key_hash
                 || scope != key.scope
@@ -1947,18 +1947,16 @@ impl AuthStore {
             let stored = self.jwt_revoked_expiry(jti)?;
             match stored {
                 Some(se) if se >= *exp => {}
-                _ => bail!(
-                    "migration verify failed: revocation '{jti}' missing or expiry shortened"
-                ),
+                _ => {
+                    bail!("migration verify failed: revocation '{jti}' missing or expiry shortened")
+                }
             }
         }
         if let Some(secret) = legacy_jwt_secret {
             if std::env::var(JWT_SECRET_ENV).is_err() {
                 let candidates = self.jwt_verify_candidates()?;
                 if !candidates.iter().any(|c| c == secret) {
-                    bail!(
-                        "migration verify failed: legacy jwt secret not verifiable after import"
-                    );
+                    bail!("migration verify failed: legacy jwt secret not verifiable after import");
                 }
             }
         }
@@ -2103,13 +2101,14 @@ impl AuthStore {
             // Manifest describes the SNAPSHOT, read from the staged file
             // itself — immune to concurrent live-store mutation and to
             // the nested-lock deadlock of reading via `self`.
-            let snap = Connection::open_with_flags(
-                &staging,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .with_context(|| {
-                format!("failed to open auth backup snapshot '{}'", staging.display())
-            })?;
+            let snap =
+                Connection::open_with_flags(&staging, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .with_context(|| {
+                    format!(
+                        "failed to open auth backup snapshot '{}'",
+                        staging.display()
+                    )
+                })?;
             let count = |sql: &str| -> Result<usize> {
                 snap.query_row(sql, [], |r| r.get::<_, i64>(0))
                     .map(|n| n as usize)
@@ -2126,9 +2125,7 @@ impl AuthStore {
                 format: "bonsai-auth-backup-v1".to_string(),
                 schema_version: SCHEMA_VERSION,
                 created_at_ns: now_ns(),
-                key_source: if std::env::var(VAULT_PASSPHRASE_ENV)
-                    .is_ok_and(|v| !v.is_empty())
-                {
+                key_source: if std::env::var(VAULT_PASSPHRASE_ENV).is_ok_and(|v| !v.is_empty()) {
                     "env:BONSAI_VAULT_PASSPHRASE".to_string()
                 } else {
                     "keyfile".to_string()
@@ -2404,7 +2401,11 @@ fn seal_legacy_quarantine_plaintext(
              WHERE content_enc IS NULL",
         )?;
         let mapped = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         })?;
         mapped.collect::<rusqlite::Result<Vec<_>>>()?
     };
@@ -2492,9 +2493,7 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
             {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
-                    .with_context(|| {
-                        format!("failed to restrict '{}'", key_path.display())
-                    })?;
+                    .with_context(|| format!("failed to restrict '{}'", key_path.display()))?;
             }
             let raw = std::fs::read_to_string(&key_path)
                 .with_context(|| format!("failed to read auth keyfile '{}'", key_path.display()))?;
@@ -2512,9 +2511,8 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
-            return Err(e).with_context(|| {
-                format!("failed to stat auth keyfile '{}'", key_path.display())
-            })
+            return Err(e)
+                .with_context(|| format!("failed to stat auth keyfile '{}'", key_path.display()));
         }
     }
 
@@ -2544,7 +2542,10 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             let _ = std::fs::remove_file(&tmp);
             let raw = std::fs::read_to_string(&key_path).with_context(|| {
-                format!("failed to read winning auth keyfile '{}'", key_path.display())
+                format!(
+                    "failed to read winning auth keyfile '{}'",
+                    key_path.display()
+                )
             })?;
             let trimmed = raw.trim();
             if trimmed.len() < 32 {
@@ -2560,9 +2561,8 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
         }
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
-            Err(e).with_context(|| {
-                format!("failed to install auth keyfile '{}'", key_path.display())
-            })
+            Err(e)
+                .with_context(|| format!("failed to install auth keyfile '{}'", key_path.display()))
         }
     }
 }
@@ -2570,11 +2570,7 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
 /// Unique staging path for `backup_to`, sibling of the destination.
 fn unique_backup_staging(dest_path: &Path) -> Result<PathBuf> {
     for i in 0..100u32 {
-        let candidate = dest_path.with_extension(format!(
-            "partial.{}.{}",
-            std::process::id(),
-            i
-        ));
+        let candidate = dest_path.with_extension(format!("partial.{}.{}", std::process::id(), i));
         if !candidate.exists() {
             return Ok(candidate);
         }
@@ -2586,11 +2582,7 @@ fn unique_backup_staging(dest_path: &Path) -> Result<PathBuf> {
 /// via `create_new` inside `open_owner_only_new`.
 fn unique_keyfile_tmp(key_path: &Path) -> Result<PathBuf> {
     for i in 0..100u32 {
-        let candidate = key_path.with_extension(format!(
-            "key.tmp.{}.{}",
-            std::process::id(),
-            i
-        ));
+        let candidate = key_path.with_extension(format!("key.tmp.{}.{}", std::process::id(), i));
         if !candidate.exists() {
             return Ok(candidate);
         }

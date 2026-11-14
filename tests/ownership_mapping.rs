@@ -162,7 +162,11 @@ async fn admin_http_inventory_and_audit_do_not_change_authorization() {
         .unwrap(),
     );
     // AUTH-C2: src=local JWTs require live local accounts.
-    for (u, r) in [("alice", "admin"), ("bob", "viewer"), ("charlie", "operator")] {
+    for (u, r) in [
+        ("alice", "admin"),
+        ("bob", "viewer"),
+        ("charlie", "operator"),
+    ] {
         store
             .auth_store
             .upsert_user(&bonsai::auth_store::AuthUser {

@@ -681,11 +681,12 @@ pub(super) async fn login_handler(
             } else {
                 None
             };
-            if let Err(e) = state.store.auth_store.record_login(
-                &username,
-                expected,
-                new_hash.as_deref(),
-            ) {
+            if let Err(e) =
+                state
+                    .store
+                    .auth_store
+                    .record_login(&username, expected, new_hash.as_deref())
+            {
                 tracing::warn!(username = %username, error = %e, "failed to update last_login");
             }
         }
@@ -1294,8 +1295,7 @@ pub async fn auth_middleware(
                             match store.auth_store.get_user(&claims.sub) {
                                 Ok(Some(user)) => {
                                     if user.enabled {
-                                        authenticated_role =
-                                            Some(Role::from_str(&user.role));
+                                        authenticated_role = Some(Role::from_str(&user.role));
                                         authenticated_subject =
                                             Some(format!("user:{}", claims.sub));
                                     }
@@ -1304,8 +1304,7 @@ pub async fn auth_middleware(
                                 }
                                 Ok(None) => {
                                     if src == "ldap" {
-                                        authenticated_role =
-                                            Some(Role::from_str(&claims.role));
+                                        authenticated_role = Some(Role::from_str(&claims.role));
                                         authenticated_subject =
                                             Some(format!("user:{}", claims.sub));
                                     }
@@ -1320,10 +1319,7 @@ pub async fn auth_middleware(
                             }
                         }
                         other => {
-                            tracing::warn!(
-                                src = other,
-                                "JWT with unknown identity source denied"
-                            );
+                            tracing::warn!(src = other, "JWT with unknown identity source denied");
                         }
                     }
                 }

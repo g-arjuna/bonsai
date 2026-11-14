@@ -289,15 +289,17 @@ async fn migration_rejects_same_user_different_role() -> Result<()> {
         .upsert_config_item(legacy_user_item("conflict-user", &pw_hash, "operator"))
         .await?;
     // Pre-existing auth-store row with same verifier but different role.
-    store.auth_store.upsert_user(&bonsai::auth_store::AuthUser {
-        username: "conflict-user".into(),
-        password_hash: pw_hash.clone(),
-        role: "admin".into(),
-        enabled: true,
-        last_login_ns: 0,
-        created_at_ns: 0,
-        updated_at_ns: 0,
-    })?;
+    store
+        .auth_store
+        .upsert_user(&bonsai::auth_store::AuthUser {
+            username: "conflict-user".into(),
+            password_hash: pw_hash.clone(),
+            role: "admin".into(),
+            enabled: true,
+            last_login_ns: 0,
+            created_at_ns: 0,
+            updated_at_ns: 0,
+        })?;
     let err = store
         .auth_store
         .migrate_from_graph(&store)
@@ -305,10 +307,11 @@ async fn migration_rejects_same_user_different_role() -> Result<()> {
         .expect_err("role conflict must abort migration");
     assert!(err.to_string().contains("conflict"), "{err}");
     // Graph row must NOT be scrubbed — migration failed before quarantine.
-    let items = store
-        .list_config_items(Some("user".to_string()))
-        .await?;
-    assert!(items.iter().any(|i| i.enabled), "graph row scrubbed on conflict");
+    let items = store.list_config_items(Some("user".to_string())).await?;
+    assert!(
+        items.iter().any(|i| i.enabled),
+        "graph row scrubbed on conflict"
+    );
     Ok(())
 }
 
@@ -319,11 +322,16 @@ async fn migration_rejects_same_key_id_different_verifier() -> Result<()> {
     let hash_a = hex::encode(sha2::Sha256::digest(b"key-material-A"));
     let hash_b = hex::encode(sha2::Sha256::digest(b"key-material-B"));
     store
-        .upsert_config_item(legacy_api_key_item("apikey-conflict", "svc", &hash_a, "read"))
+        .upsert_config_item(legacy_api_key_item(
+            "apikey-conflict",
+            "svc",
+            &hash_a,
+            "read",
+        ))
         .await?;
-    store.auth_store.upsert_api_key_verifier(
-        "apikey-conflict", "svc", &hash_b, "read", 0,
-    )?;
+    store
+        .auth_store
+        .upsert_api_key_verifier("apikey-conflict", "svc", &hash_b, "read", 0)?;
     let err = store
         .auth_store
         .migrate_from_graph(&store)
@@ -374,9 +382,7 @@ async fn migration_quarantines_malformed_without_loss() -> Result<()> {
     assert_eq!(report.quarantined_records, 1);
     assert_eq!(store.auth_store.quarantined_record_count()?, 1);
     // Graph row scrubbed; the only copy survives inside auth_quarantine.
-    let items = store
-        .list_config_items(Some("user".to_string()))
-        .await?;
+    let items = store.list_config_items(Some("user".to_string())).await?;
     assert!(items.iter().all(|i| !i.enabled));
     assert!(items[0].content_json.contains("migrated_to"));
     Ok(())
@@ -396,7 +402,11 @@ async fn emergency_rotation_invalidates_old_tokens() -> Result<()> {
     store.auth_store.rotate_jwt_key_emergency()?;
     assert_ne!(store.auth_store.jwt_secret()?, old_secret);
     // Old token must fail verification — zero overlap.
-    assert!(bonsai::http_server::verify_jwt(&token, &store).await.is_err());
+    assert!(
+        bonsai::http_server::verify_jwt(&token, &store)
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -410,7 +420,11 @@ async fn planned_rotation_preserves_overlap() -> Result<()> {
         .map_err(anyhow::Error::msg)?;
     store.auth_store.rotate_jwt_key()?;
     // Planned rotation: old token still verifies inside the overlap.
-    assert!(bonsai::http_server::verify_jwt(&token, &store).await.is_ok());
+    assert!(
+        bonsai::http_server::verify_jwt(&token, &store)
+            .await
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -440,15 +454,17 @@ async fn disabled_user_token_denied_via_router() -> Result<()> {
         })
         .await?;
     let pw = bonsai::http_server::hash_password("RouterPassw0rd!123").unwrap();
-    store.auth_store.upsert_user(&bonsai::auth_store::AuthUser {
-        username: "router-user".into(),
-        password_hash: pw,
-        role: "viewer".into(),
-        enabled: true,
-        last_login_ns: 0,
-        created_at_ns: 0,
-        updated_at_ns: 0,
-    })?;
+    store
+        .auth_store
+        .upsert_user(&bonsai::auth_store::AuthUser {
+            username: "router-user".into(),
+            password_hash: pw,
+            role: "viewer".into(),
+            enabled: true,
+            last_login_ns: 0,
+            created_at_ns: 0,
+            updated_at_ns: 0,
+        })?;
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -471,7 +487,11 @@ async fn disabled_user_token_denied_via_router() -> Result<()> {
         .bearer_auth(&token)
         .send()
         .await?;
-    assert!(ok.status().is_success(), "enabled user must pass: {}", ok.status());
+    assert!(
+        ok.status().is_success(),
+        "enabled user must pass: {}",
+        ok.status()
+    );
 
     // Disable the account → same token must now be denied.
     store.auth_store.set_user_enabled("router-user", false)?;
@@ -483,15 +503,21 @@ async fn disabled_user_token_denied_via_router() -> Result<()> {
     assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     // Role reduction: re-enable as viewer→ check admin-only path denied.
-    store.auth_store.upsert_user(&bonsai::auth_store::AuthUser {
-        username: "router-user".into(),
-        password_hash: store.auth_store.get_user("router-user")?.unwrap().password_hash,
-        role: "viewer".into(),
-        enabled: true,
-        last_login_ns: 0,
-        created_at_ns: 0,
-        updated_at_ns: 0,
-    })?;
+    store
+        .auth_store
+        .upsert_user(&bonsai::auth_store::AuthUser {
+            username: "router-user".into(),
+            password_hash: store
+                .auth_store
+                .get_user("router-user")?
+                .unwrap()
+                .password_hash,
+            role: "viewer".into(),
+            enabled: true,
+            last_login_ns: 0,
+            created_at_ns: 0,
+            updated_at_ns: 0,
+        })?;
     // Mint an admin-role token directly (simulates stale elevated token).
     let stale_admin = mint_jwt("router-user", "admin", &store)
         .await

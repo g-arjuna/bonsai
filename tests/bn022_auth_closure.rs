@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use bonsai::auth_store::{AuthStore, AuthUser, MIGRATION_MARKER};
 use bonsai::graph::{ConfigItemRecord, GraphStore};
-use sha2::Digest;
 use bonsai::http_server::{build_public_routing_web_router, mint_jwt, mint_jwt_for_source};
+use sha2::Digest;
 use tempfile::TempDir;
 
 /// Deterministic key source: keyfile, not ambient env passphrase/secret.
@@ -31,17 +31,17 @@ fn open_store(dir: &TempDir) -> Arc<GraphStore> {
 async fn require_auth(store: &GraphStore) {
     store
         .upsert_config_item(ConfigItemRecord {
-        id: "app-cfg-auth".into(),
-        config_class: "app_config".into(),
-        vendor: String::new(),
-        name: "require_auth".into(),
-        version: "1".into(),
-        content_json: "\"1\"".into(),
-        enabled: true,
-        created_by: "test".into(),
-    })
-    .await
-    .expect("require_auth");
+            id: "app-cfg-auth".into(),
+            config_class: "app_config".into(),
+            vendor: String::new(),
+            name: "require_auth".into(),
+            version: "1".into(),
+            content_json: "\"1\"".into(),
+            enabled: true,
+            created_by: "test".into(),
+        })
+        .await
+        .expect("require_auth");
 }
 
 async fn serve(store: Arc<GraphStore>) -> (String, tokio::task::JoinHandle<()>) {
@@ -265,7 +265,9 @@ async fn local_token_denied_when_no_local_account() -> Result<()> {
     let client = reqwest::Client::new();
     // src=local token for a user that does not exist locally → deny even
     // though the signature is valid and the claim says admin.
-    let t = mint_jwt("ghost", "admin", &store).await.map_err(anyhow::Error::msg)?;
+    let t = mint_jwt("ghost", "admin", &store)
+        .await
+        .map_err(anyhow::Error::msg)?;
     assert_eq!(get_status(&client, &base, &t).await, 401);
     Ok(())
 }
@@ -373,7 +375,10 @@ async fn record_login_cannot_undo_concurrent_changes() -> Result<()> {
         .auth_store
         .record_login("race", Some(&legacy), Some("argon2-should-not-land"))?;
     let u = store.auth_store.get_user("race")?.unwrap();
-    assert_eq!(u.password_hash, reset_hash, "rehash overwrote password reset");
+    assert_eq!(
+        u.password_hash, reset_hash,
+        "rehash overwrote password reset"
+    );
     assert_eq!(u.role, "viewer", "login write changed role");
     assert!(!u.enabled, "login write re-enabled account");
     assert_eq!(u.last_login_ns, 0, "disabled account got last_login");
@@ -393,25 +398,37 @@ async fn expired_retired_key_stops_authorizing_without_restart() -> Result<()> {
         let dir = TempDir::new()?;
         let store = open_store(&dir);
         store.auth_store.ensure_migrated(&store).await?;
-        let old_token = mint_jwt("u", "viewer", &store).await.map_err(anyhow::Error::msg)?;
+        let old_token = mint_jwt("u", "viewer", &store)
+            .await
+            .map_err(anyhow::Error::msg)?;
         // 10 s synthetic overlap — no 26 h wait.
-        store.auth_store.rotate_jwt_key_with_overlap_ns(10_000_000_000)?;
+        store
+            .auth_store
+            .rotate_jwt_key_with_overlap_ns(10_000_000_000)?;
         // Inside the window the retired key still verifies (populates
         // the generation-scoped cache).
-        if bonsai::http_server::verify_jwt(&old_token, &store).await.is_err() {
+        if bonsai::http_server::verify_jwt(&old_token, &store)
+            .await
+            .is_err()
+        {
             last_err = Some("retired key did not verify inside overlap".to_string());
             continue;
         }
         // Past the deadline the SAME cached generation must stop serving
         // the expired retired secret — no rotation, no restart.
         tokio::time::sleep(Duration::from_millis(10_500)).await;
-        if bonsai::http_server::verify_jwt(&old_token, &store).await.is_ok() {
+        if bonsai::http_server::verify_jwt(&old_token, &store)
+            .await
+            .is_ok()
+        {
             last_err = Some("expired retired key still verified".to_string());
             continue;
         }
         return Ok(());
     }
-    Err(anyhow::anyhow!("expired-retired-key check failed: {last_err:?}"))
+    Err(anyhow::anyhow!(
+        "expired-retired-key check failed: {last_err:?}"
+    ))
 }
 
 #[tokio::test]
@@ -419,7 +436,9 @@ async fn concurrent_requests_during_rotation_stay_consistent() -> Result<()> {
     let dir = TempDir::new()?;
     let store = Arc::new(open_store_inner(&dir));
     store.auth_store.ensure_migrated(&store).await?;
-    let token = mint_jwt("u", "viewer", &store).await.map_err(anyhow::Error::msg)?;
+    let token = mint_jwt("u", "viewer", &store)
+        .await
+        .map_err(anyhow::Error::msg)?;
     let mut handles = Vec::new();
     for _ in 0..6 {
         let s = Arc::clone(&store);
@@ -431,7 +450,9 @@ async fn concurrent_requests_during_rotation_stay_consistent() -> Result<()> {
         }));
     }
     for _ in 0..3 {
-        store.auth_store.rotate_jwt_key_with_overlap_ns(60_000_000_000)?;
+        store
+            .auth_store
+            .rotate_jwt_key_with_overlap_ns(60_000_000_000)?;
     }
     for h in handles {
         h.await?;
@@ -439,8 +460,14 @@ async fn concurrent_requests_during_rotation_stay_consistent() -> Result<()> {
     // After rotations settle the retired-window token may or may not
     // verify depending on timing — what must hold is that a freshly
     // minted token verifies and nothing panicked.
-    let fresh = mint_jwt("u", "viewer", &store).await.map_err(anyhow::Error::msg)?;
-    assert!(bonsai::http_server::verify_jwt(&fresh, &store).await.is_ok());
+    let fresh = mint_jwt("u", "viewer", &store)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(
+        bonsai::http_server::verify_jwt(&fresh, &store)
+            .await
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -454,18 +481,24 @@ async fn jwt_verify_latency_cached_vs_cold() -> Result<()> {
     let dir = TempDir::new()?;
     let store = open_store(&dir);
     store.auth_store.ensure_migrated(&store).await?;
-    let token = mint_jwt("u", "viewer", &store).await.map_err(anyhow::Error::msg)?;
+    let token = mint_jwt("u", "viewer", &store)
+        .await
+        .map_err(anyhow::Error::msg)?;
     // Force a cache refresh: rotation bumps the generation and clears the
     // cache, so the next verification pays the scrypt decrypt cost again.
     store.auth_store.rotate_jwt_key()?;
     // Cold: first verification after invalidation repopulates the cache.
     let t0 = Instant::now();
-    bonsai::http_server::verify_jwt(&token, &store).await.unwrap();
+    bonsai::http_server::verify_jwt(&token, &store)
+        .await
+        .unwrap();
     let cold = t0.elapsed();
     // Warm: cached secrets — must be dramatically faster.
     let t1 = Instant::now();
     for _ in 0..20 {
-        bonsai::http_server::verify_jwt(&token, &store).await.unwrap();
+        bonsai::http_server::verify_jwt(&token, &store)
+            .await
+            .unwrap();
     }
     let warm_each = t1.elapsed() / 20;
     eprintln!("jwt verify latency: cold={cold:?} warm_each={warm_each:?}");
@@ -598,7 +631,10 @@ async fn migration_resumes_with_existing_tombstones() -> Result<()> {
     assert!(store.auth_store.get_user("second")?.is_some());
     // Manifest is consistent: marker + report committed together.
     assert_eq!(
-        store.auth_store.get_auth_config("migration_state")?.as_deref(),
+        store
+            .auth_store
+            .get_auth_config("migration_state")?
+            .as_deref(),
         Some("complete")
     );
     let report = store.auth_store.get_auth_config("migration_report")?;
@@ -636,7 +672,10 @@ fn concurrent_auth_store_init_shares_one_identity() -> Result<()> {
         .into_iter()
         .map(|h| h.join().expect("join"))
         .collect();
-    assert!(secrets.iter().all(|s| s == &secrets[0]), "divergent identities");
+    assert!(
+        secrets.iter().all(|s| s == &secrets[0]),
+        "divergent identities"
+    );
     // Exactly one keyfile, owner-only.
     #[cfg(unix)]
     {
@@ -656,7 +695,11 @@ fn concurrent_auth_store_init_shares_one_identity() -> Result<()> {
     Ok(())
 }
 
-fn install_backup(backup_db: &std::path::Path, key_src: &std::path::Path, dest_dir: &std::path::Path) -> Result<AuthStore> {
+fn install_backup(
+    backup_db: &std::path::Path,
+    key_src: &std::path::Path,
+    dest_dir: &std::path::Path,
+) -> Result<AuthStore> {
     std::fs::create_dir_all(dest_dir)?;
     std::fs::copy(backup_db, dest_dir.join("bonsai_auth.db"))?;
     let key_name = key_src.file_name().unwrap();
@@ -706,7 +749,10 @@ fn protected_backup_restore_roundtrip() -> Result<()> {
     // Restore with WRONG key material → encrypted secrets unreadable.
     let wrong_dir = dir.path().join("wrong");
     std::fs::create_dir_all(&wrong_dir)?;
-    std::fs::write(wrong_dir.join("bonsai_auth.db.key"), format!("{}\n", "0".repeat(64)))?;
+    std::fs::write(
+        wrong_dir.join("bonsai_auth.db.key"),
+        format!("{}\n", "0".repeat(64)),
+    )?;
     std::fs::copy(&backup, wrong_dir.join("bonsai_auth.db"))?;
     let wrong = AuthStore::open(&wrong_dir.join("bonsai_auth.db"))?;
     assert!(wrong.jwt_secret().is_err(), "wrong key must fail closed");
