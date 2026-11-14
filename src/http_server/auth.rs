@@ -229,8 +229,8 @@ fn record_login_failure(username: &str) {
     let mut tracker = attempts_guard();
     let key = username.to_lowercase();
     ensure_tracking_capacity(&mut tracker, &key);
-    if !tracker.map.contains_key(&key) {
-        return; // at capacity and untracked — see ensure_tracking_capacity
+    if !tracker.map.contains_key(&key) && tracker.map.len() >= LOGIN_TRACK_MAX_ENTRIES {
+        return; // eviction failed — untracked (bounded memory)
     }
     tracker.order.push_back(key.clone());
     let entry = tracker.map.entry(key).or_default();

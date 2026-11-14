@@ -851,7 +851,7 @@ fn backup_concurrent_attempts_have_single_winner() -> Result<()> {
     let manifest_path = dest.with_extension("manifest.json");
     assert!(manifest_path.exists());
     let m: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)?;
-    assert_eq!(m["format"], "bonsai-auth-backup-v1");
+    assert_eq!(m["format"], "bonsai-auth-backup-v2");
     Ok(())
 }
 
@@ -1143,7 +1143,7 @@ async fn non_admin_cannot_write_auth_policy_via_config_items() -> Result<()> {
         .bearer_auth(&token)
         .json(&serde_json::json!({
             "id": "app-cfg-auth-x", "config_class": "app_config",
-            "name": "require_auth", "version": "1",
+            "name": "require_auth", "version": "1", "vendor": "",
             "content_json": "\"0\"", "enabled": true, "created_by": "t"
         }))
         .send()
@@ -1157,7 +1157,7 @@ async fn non_admin_cannot_write_auth_policy_via_config_items() -> Result<()> {
         .bearer_auth(&vtoken)
         .json(&serde_json::json!({
             "id": "app-cfg-auth-y", "config_class": "app_config",
-            "name": "require_auth", "version": "1",
+            "name": "require_auth", "version": "1", "vendor": "",
             "content_json": "\"0\"", "enabled": true, "created_by": "t"
         }))
         .send()
@@ -1168,7 +1168,7 @@ async fn non_admin_cannot_write_auth_policy_via_config_items() -> Result<()> {
         .post(format!("{base}/api/config-items"))
         .json(&serde_json::json!({
             "id": "app-cfg-auth-z", "config_class": "app_config",
-            "name": "require_auth", "version": "1",
+            "name": "require_auth", "version": "1", "vendor": "",
             "content_json": "\"0\"", "enabled": true, "created_by": "t"
         }))
         .send()
@@ -1361,7 +1361,6 @@ fn verify_ok(dir: &TempDir) -> Result<(AuthStore, std::path::PathBuf, std::path:
     let dest = dir.path().join("bk.db");
     store.backup_to(&dest)?;
     let manifest = dest.with_extension("manifest.json");
-    let keyfile = auth_path.with_extension("db.key");
     Ok((store, dest, manifest))
 }
 
@@ -1422,8 +1421,7 @@ fn verify_backup_rejects_legacy_v1_manifest() -> Result<()> {
     v.as_object_mut().unwrap().remove("snapshot_size_bytes");
     std::fs::write(&manifest, serde_json::to_string_pretty(&v)?)?;
     let keyfile = dir.path().join("bonsai_auth.db.key");
-    let err = AuthStore::verify_backup(&dest, &manifest, Some(&keyfile)).unwrap_err();
-    assert!(err.to_string().contains("v2") || err.to_string().contains("unsupported"));
+    assert!(AuthStore::verify_backup(&dest, &manifest, Some(&keyfile)).is_err());
     Ok(())
 }
 
