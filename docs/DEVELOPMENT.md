@@ -181,6 +181,30 @@ your account is locked due to a billing issue."* This is an account-level
 billing lock, not a workflow or test failure — owner action required. The
 self-hosted job remains queued (no `bonsai-ci` runner registered).
 
+### Local containerized CI (GitHub-billing workaround)
+
+While hosted runners are unavailable, `scripts/ci/run-local.sh` executes
+the SAME canonical `scripts/ci/gates.sh` tiers inside the development-only
+image `docker/ci/Dockerfile` (`bonsai-ci:local`):
+
+```bash
+scripts/ci/run-local.sh l0 l1 l2 l3   # or: scripts/ci/run-local.sh --build l0
+```
+
+The runner snapshots the exact committed HEAD via `git worktree`
+(uncommitted changes and protected soak evidence are excluded), then runs
+the container with `--memory=24g --cpus=4`, `CARGO_BUILD_JOBS=2`, non-root,
+no docker socket and no home-directory mounts. Host toolchain caches
+(`~/.cargo`, `~/.rustup`, sccache, Playwright browsers, `target/`) are
+bind-mounted at identical paths so fingerprints stay valid and no second
+~140 GB target tree is created — verify `df -h` first. Resource metrics and
+per-tier results are written under `target/ci/`. This validates the gate
+commands and code, NOT GitHub billing, runner registration, hosted
+permissions or branch protection — remote CI status must still be reported
+truthfully. `actionlint` (or equivalent) should be run against
+`.github/workflows/ci.yml` before relying on workflow changes; the workflow
+itself is unchanged by this path.
+
 ## Canonical Local Helpers
 
 Use these scripts instead of ad hoc PATH-dependent commands:
