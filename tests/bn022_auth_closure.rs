@@ -695,6 +695,47 @@ fn concurrent_auth_store_init_shares_one_identity() -> Result<()> {
     Ok(())
 }
 
+/// Regression for the concurrent-first-open races fixed in WP3:
+/// `create_owner_only_file` treated a lost create_new race as fatal, and
+/// `unique_keyfile_tmp`/`unique_backup_staging` handed the same candidate
+/// path to multiple in-process openers (the pid component is shared).
+/// The races are timing-dependent, so repeat across fresh directories —
+/// pre-fix this reliably produced `AuthStore::open` errors under parallel
+/// load; post-fix every opener must succeed with one shared identity.
+#[test]
+fn concurrent_auth_store_init_repeated_rounds() -> Result<()> {
+    clear_auth_env();
+    for round in 0..12 {
+        let dir = TempDir::new()?;
+        let path = dir.path().join("bonsai_auth.db");
+        let path_str = path.to_string_lossy().into_owned();
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let p = path_str.clone();
+            handles.push(std::thread::spawn(move || {
+                AuthStore::open(std::path::Path::new(&p)).expect("open")
+            }));
+        }
+        let stores: Vec<AuthStore> = handles
+            .into_iter()
+            .map(|h| h.join().expect("join"))
+            .collect();
+        let first = stores[0].jwt_secret()?;
+        for s in &stores[1..] {
+            assert_eq!(s.jwt_secret()?, first, "round {round}: divergent identity");
+        }
+        // One keyfile, no staging litter.
+        for e in std::fs::read_dir(dir.path())? {
+            let n = e?.file_name().to_string_lossy().to_string();
+            assert!(
+                !n.contains(".tmp.") && !n.contains(".partial."),
+                "round {round}: leftover staging file {n}"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn install_backup(
     backup_db: &std::path::Path,
     key_src: &std::path::Path,
@@ -1492,7 +1533,9 @@ async fn protected_service_tokens_migrate_out_of_graph() -> Result<()> {
         cfg_item("app-cfg-jwt", "app_config", "jwt_secret", "\"stray-jwt-material\""),
         cfg_item("app-cfg-auth", "app_config", "require_auth", "\"1\""),
     ] {
-        store.upsert_config_item(item).await?;
+        // Fixture reproduces pre-migration graph state — bypass the
+        // store-level protected-name guard deliberately.
+        store.upsert_config_item_unchecked(item).await?;
     }
     store.auth_store.migrate_from_graph(&store).await?;
     let report = store.auth_store.migrate_protected_config(&store).await?;
@@ -1610,6 +1653,113 @@ fn backup_manifest_counts_sealed_service_tokens() -> Result<()> {
     assert_eq!(
         restored.get_service_token("routing_service_token")?,
         Some("rtok-backup-synthetic".into())
+    );
+    Ok(())
+}
+
+// ── WP4.5: structural reintroduction guard + WP4.3 resume ─────────────
+
+#[tokio::test]
+async fn protected_names_rejected_at_store_choke_point() -> Result<()> {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    // Every alternate write path funnels through GraphStore::
+    // upsert_config_item — a protected name must be rejected there even
+    // for enabled rows and non-secret-looking content.
+    for name in [
+        "routing_service_token",
+        "internal_service_token",
+        "service_token",
+        "admin_password",
+        "bind_password",
+        "jwt_secret",
+    ] {
+        let item = cfg_item(&format!("reintro-{name}"), "app_config", name, "\"x\"");
+        assert!(
+            store.upsert_config_item(item).await.is_err(),
+            "{name} must be rejected at the store choke point"
+        );
+    }
+    // A validated migration tombstone remains writable (migration needs it).
+    let mut tomb = cfg_item(
+        "reintro-tomb",
+        "app_config",
+        "routing_service_token",
+        &serde_json::json!({
+            "migrated_to": "auth_store",
+            "migration": bonsai::auth_store::MIGRATION_MARKER,
+            "record_class": "app_config",
+            "item_id": "reintro-tomb",
+            "disposition": "imported",
+        })
+        .to_string(),
+    );
+    tomb.enabled = false;
+    store.upsert_config_item(tomb).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn protected_config_migration_resumes_and_rejects_conflicts() -> Result<()> {
+    clear_auth_env();
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    store
+        .upsert_config_item_unchecked(cfg_item(
+            "pc-1",
+            "app_config",
+            "routing_service_token",
+            "\"rtok-resume-A\"",
+        ))
+        .await?;
+    // First run imports + scrubs.
+    store.auth_store.migrate_from_graph(&store).await?;
+    store.auth_store.migrate_protected_config(&store).await?;
+    assert_eq!(
+        store.auth_store.get_service_token("routing_service_token")?,
+        Some("rtok-resume-A".into())
+    );
+    // Simulate interruption before completion: roll the marker back and
+    // add a second protected record; resume must be idempotent.
+    store
+        .auth_store
+        .set_auth_config("protected_config_state", "scrub")?;
+    store
+        .upsert_config_item_unchecked(cfg_item(
+            "pc-2",
+            "runtime_config",
+            "internal_service_token",
+            "\"itok-resume-B\"",
+        ))
+        .await?;
+    store.auth_store.migrate_protected_config(&store).await?;
+    assert_eq!(
+        store.auth_store.get_service_token("internal_service_token")?,
+        Some("itok-resume-B".into())
+    );
+    assert_eq!(
+        store.auth_store.get_service_token("routing_service_token")?,
+        Some("rtok-resume-A".into()),
+        "resume must not lose the previously imported token"
+    );
+    // Conflicting duplicate value for an already-imported name must abort.
+    store
+        .upsert_config_item_unchecked(cfg_item(
+            "pc-3",
+            "app_config",
+            "service_token",
+            "\"stok-conflict\"",
+        ))
+        .await?;
+    store
+        .auth_store
+        .set_service_token("service_token", "stok-different")?;
+    store
+        .auth_store
+        .set_auth_config("protected_config_state", "detect")?;
+    assert!(
+        store.auth_store.migrate_protected_config(&store).await.is_err(),
+        "conflicting stored vs graph value must abort, never silently pick"
     );
     Ok(())
 }

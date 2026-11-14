@@ -34,6 +34,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -152,6 +153,17 @@ const RATE_LIMIT_LOCKOUT: Duration = Duration::from_secs(1800); // 30 minutes
 /// Bound on tracked usernames — a password-spray of distinct names must
 /// not grow the map without limit. Inactive entries are evicted FIFO.
 const LOGIN_TRACK_MAX_ENTRIES: usize = 8192;
+/// Bound on tracked source IPs for the supplementary per-source limiter.
+const SOURCE_TRACK_MAX_ENTRIES: usize = 4096;
+/// Per-source failure threshold: more lenient than the per-account limit
+/// because many legitimate users can share one NAT/proxy address.
+const SOURCE_RATE_LIMIT_MAX_ATTEMPTS: u32 = 20;
+/// Global bound on failures that can be attributed to NO tracker (the
+/// per-username tracker is saturated with live entries AND the source is
+/// untracked/unknown). Once exceeded, untracked usernames are rejected
+/// until the window/lockout expires — closing the saturation gap without
+/// unbounded allocation.
+const OVERFLOW_RATE_LIMIT_MAX_ATTEMPTS: u32 = 10;
 
 #[derive(Default)]
 struct LoginAttempts {
@@ -169,6 +181,25 @@ struct LoginAttemptTracker {
 
 lazy_static::lazy_static! {
     static ref LOGIN_ATTEMPTS: Mutex<LoginAttemptTracker> = Mutex::new(LoginAttemptTracker::default());
+    /// Supplementary per-source-IP tracker. Counts EVERY failed login
+    /// regardless of whether the username could be tracked, so saturating
+    /// the per-username map cannot leave an attacker unlimited attempts.
+    /// Keyed by TCP peer address only — forwarded headers are never
+    /// trusted for identity.
+    static ref LOGIN_SOURCE_ATTEMPTS: Mutex<SourceAttemptTracker> =
+        Mutex::new(SourceAttemptTracker::default());
+    /// Single bounded bucket for failures that fit no tracker: reached
+    /// only when the per-username map is saturated with live entries and
+    /// the source IP is unavailable or itself untracked. O(1) memory.
+    static ref LOGIN_OVERFLOW_ATTEMPTS: Mutex<LoginAttempts> =
+        Mutex::new(LoginAttempts::default());
+}
+
+#[derive(Default)]
+struct SourceAttemptTracker {
+    map: HashMap<IpAddr, LoginAttempts>,
+    /// Insertion order for bounded stale-only eviction.
+    order: std::collections::VecDeque<IpAddr>,
 }
 
 /// Lock the tracker, recovering from poisoning instead of failing open.
@@ -185,6 +216,85 @@ fn attempts_guard() -> std::sync::MutexGuard<'static, LoginAttemptTracker> {
     }
 }
 
+fn source_attempts_guard() -> std::sync::MutexGuard<'static, SourceAttemptTracker> {
+    match LOGIN_SOURCE_ATTEMPTS.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!("login source rate-limit mutex poisoned — recovering guard; enforcement continues");
+            e.into_inner()
+        }
+    }
+}
+
+fn overflow_attempts_guard() -> std::sync::MutexGuard<'static, LoginAttempts> {
+    match LOGIN_OVERFLOW_ATTEMPTS.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!("login overflow rate-limit mutex poisoned — recovering guard; enforcement continues");
+            e.into_inner()
+        }
+    }
+}
+
+/// An entry is stale — safe to evict — only when neither an active
+/// lockout nor a live rate-limit window protects it.
+fn entry_is_stale(e: &LoginAttempts, now: Instant) -> bool {
+    let locked = e.locked_until.is_some_and(|l| now < l);
+    let window_live = e
+        .window_start
+        .is_some_and(|ws| now.duration_since(ws) < RATE_LIMIT_WINDOW);
+    !locked && !window_live
+}
+
+/// Read-side lockout check: returns true while `entry` is inside an
+/// active lockout; an expired lockout resets the entry to a fresh state.
+fn entry_is_locked(entry: &mut LoginAttempts) -> bool {
+    let now = Instant::now();
+    if let Some(locked_until) = entry.locked_until {
+        if now < locked_until {
+            return true;
+        }
+        entry.locked_until = None;
+        entry.count = 0;
+        entry.window_start = None;
+    }
+    false
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AttemptCount {
+    /// Inside an active lockout: not counted, lockout not extended.
+    AlreadyLocked,
+    /// Failure counted within the window.
+    Counted,
+    /// This failure reached the threshold and armed the lockout.
+    Locked,
+}
+
+/// Count one failure against `entry` under the shared window/lockout
+/// policy. Lockouts are never extended by further failures.
+fn count_attempt(entry: &mut LoginAttempts, max_attempts: u32) -> AttemptCount {
+    let now = Instant::now();
+    if entry_is_locked(entry) {
+        return AttemptCount::AlreadyLocked;
+    }
+    // Roll the window if older than RATE_LIMIT_WINDOW
+    match entry.window_start {
+        Some(ws) if now.duration_since(ws) >= RATE_LIMIT_WINDOW => {
+            entry.count = 0;
+            entry.window_start = Some(now);
+        }
+        Some(_) => {}
+        None => entry.window_start = Some(now),
+    }
+    entry.count += 1;
+    if entry.count >= max_attempts {
+        entry.locked_until = Some(now + RATE_LIMIT_LOCKOUT);
+        return AttemptCount::Locked;
+    }
+    AttemptCount::Counted
+}
+
 /// Make room for one new tracked username under the cardinality bound.
 ///
 /// F6-hardening: eviction targets ONLY stale entries — a username whose
@@ -193,19 +303,14 @@ fn attempts_guard() -> std::sync::MutexGuard<'static, LoginAttemptTracker> {
 /// protected, so an attacker cannot flush a victim's lockout (or its
 /// pre-lockout failure count) by flooding distinct usernames. If every
 /// tracked entry is live, the new username is simply not tracked
-/// (bounded memory preserved; documented residual — see auth_storage.md).
+/// (bounded memory preserved; the overflow bucket bounds those
+/// failures — see `record_overflow_failure`).
 fn ensure_tracking_capacity(tracker: &mut LoginAttemptTracker, username: &str) {
     if tracker.map.contains_key(username) || tracker.map.len() < LOGIN_TRACK_MAX_ENTRIES {
         return;
     }
     let now = Instant::now();
-    let is_evictable = |e: &LoginAttempts| {
-        let locked = e.locked_until.is_some_and(|l| now < l);
-        let window_live = e
-            .window_start
-            .is_some_and(|ws| now.duration_since(ws) < RATE_LIMIT_WINDOW);
-        !locked && !window_live
-    };
+    let is_evictable = |e: &LoginAttempts| entry_is_stale(e, now);
     // Walk insertion order oldest→newest; set aside protected entries
     // and requeue them so their relative order is preserved.
     let mut skipped: Vec<String> = Vec::new();
@@ -232,37 +337,65 @@ fn ensure_tracking_capacity(tracker: &mut LoginAttemptTracker, username: &str) {
     }
 }
 
-/// Returns `true` when `username` is currently inside a lockout window.
-/// Read-only: never records an attempt (F6 — the old combined check+record
-/// counted every login request as a failure before authentication ran).
-fn login_is_locked(username: &str) -> bool {
-    let mut tracker = attempts_guard();
-    let key = username.to_lowercase();
-    let Some(entry) = tracker.map.get_mut(&key) else {
-        return false;
-    };
-    let now = Instant::now();
-    if let Some(locked_until) = entry.locked_until {
-        if now < locked_until {
+/// Returns `true` when the login attempt must be rejected: the username
+/// is inside a lockout window, the source IP is locked, or the username
+/// is untracked while the per-username tracker is saturated and the
+/// global overflow bucket is locked.
+/// Read-only with respect to failure counting: never records an attempt
+/// (F6 — the old combined check+record counted every login request as a
+/// failure before authentication ran).
+fn login_is_locked(username: &str, peer: Option<IpAddr>) -> bool {
+    // Per-source limit applies to every login from that address,
+    // tracked username or not.
+    if let Some(ip) = peer {
+        if source_is_locked(ip) {
             return true;
         }
-        // Lockout expired: reset and allow a fresh window.
-        entry.locked_until = None;
-        entry.count = 0;
-        entry.window_start = None;
+    }
+    let key = username.to_lowercase();
+    {
+        let mut tracker = attempts_guard();
+        if let Some(entry) = tracker.map.get_mut(&key) {
+            return entry_is_locked(entry);
+        }
+        // Untracked username: the overflow bucket only applies while the
+        // per-username map is full — the exact condition under which the
+        // next failure could not be tracked either. O(1) check; precise
+        // eviction-ability is not worth an O(n) scan per login attempt.
+        if tracker.map.len() >= LOGIN_TRACK_MAX_ENTRIES {
+            drop(tracker);
+            return overflow_is_locked();
+        }
     }
     false
 }
 
 /// Record ONE failed authentication attempt for `username`.
 /// Called exactly once per failed login — never speculatively.
+#[cfg(test)]
 fn record_login_failure(username: &str) {
+    record_login_failure_from(username, None);
+}
+
+/// Record ONE failed authentication attempt, attributing it to the
+/// per-username tracker, the per-source tracker (when the TCP peer is
+/// known) and — only when the username cannot be tracked — the bounded
+/// global overflow bucket.
+fn record_login_failure_from(username: &str, peer: Option<IpAddr>) {
+    if let Some(ip) = peer {
+        record_source_failure(ip);
+    }
     let mut tracker = attempts_guard();
     let key = username.to_lowercase();
     ensure_tracking_capacity(&mut tracker, &key);
     let is_new = !tracker.map.contains_key(&key);
     if is_new && tracker.map.len() >= LOGIN_TRACK_MAX_ENTRIES {
-        return; // eviction failed — untracked (bounded memory)
+        // Saturated with live entries: this username cannot be tracked.
+        // Its failure still counts — against the bounded overflow bucket
+        // — so untracked names never get unlimited attempts.
+        drop(tracker);
+        record_overflow_failure();
+        return;
     }
     // Order refs are pushed only for NEW map entries: pushing on every
     // failure let the queue grow without bound under repeated attempts.
@@ -270,32 +403,103 @@ fn record_login_failure(username: &str) {
         tracker.order.push_back(key.clone());
     }
     let entry = tracker.map.entry(key).or_default();
-    let now = Instant::now();
-
-    // Already inside an active lockout: do not extend it or double count.
-    if let Some(locked_until) = entry.locked_until {
-        if now < locked_until {
-            return;
-        }
-        entry.locked_until = None;
-        entry.count = 0;
-        entry.window_start = None;
-    }
-
-    // Roll the window if older than RATE_LIMIT_WINDOW
-    if let Some(ws) = entry.window_start {
-        if now.duration_since(ws) >= RATE_LIMIT_WINDOW {
-            entry.count = 0;
-            entry.window_start = Some(now);
-        }
-    } else {
-        entry.window_start = Some(now);
-    }
-
-    entry.count += 1;
-    if entry.count >= RATE_LIMIT_MAX_ATTEMPTS {
-        entry.locked_until = Some(now + RATE_LIMIT_LOCKOUT);
+    if count_attempt(entry, RATE_LIMIT_MAX_ATTEMPTS) == AttemptCount::Locked {
         tracing::warn!(username = %username, "Login account locked: too many failed attempts");
+    }
+}
+
+// ── Supplementary per-source and overflow limiting ────────────────────────────
+//
+// The per-username tracker alone has a saturation gap: when all
+// LOGIN_TRACK_MAX_ENTRIES slots hold live entries, new usernames cannot
+// be tracked and would otherwise get unlimited attempts. Two bounded
+// supplements close it:
+//
+//   * Per-source-IP: every failure is also counted against the TCP peer
+//     address (never forwarded headers). A source that exceeds
+//     SOURCE_RATE_LIMIT_MAX_ATTEMPTS in the window is locked out for all
+//     usernames, so one attacker cannot spray past the per-account limit.
+//     Threshold is higher than the per-account limit to tolerate shared
+//     NAT/proxy addresses.
+//   * Global overflow: failures for usernames that fit NO tracker (map
+//     saturated, source unknown or itself saturated) count against a
+//     single O(1) bucket. Once it locks, untracked usernames are
+//     rejected until expiry. Tracked accounts are unaffected.
+//
+// Residual, documented: an attacker controlling >SOURCE_TRACK_MAX_ENTRIES
+// distinct source addresses AND keeping the username map saturated can
+// still force untracked logins into the overflow bucket — which then
+// rejects ALL untracked usernames (fail closed) rather than allowing
+// unlimited guessing. Process-local state is an accepted limitation of
+// the deployment model (see docs/auth_storage.md § HA note).
+
+/// Make room for one new tracked source under the cardinality bound.
+/// Same stale-only eviction policy as the username tracker.
+fn ensure_source_capacity(tracker: &mut SourceAttemptTracker, ip: IpAddr) {
+    if tracker.map.contains_key(&ip) || tracker.map.len() < SOURCE_TRACK_MAX_ENTRIES {
+        return;
+    }
+    let now = Instant::now();
+    let is_evictable = |e: &LoginAttempts| entry_is_stale(e, now);
+    let mut skipped: Vec<IpAddr> = Vec::new();
+    let mut evicted = false;
+    while let Some(old) = tracker.order.pop_front() {
+        match tracker.map.get(&old) {
+            None => continue,
+            Some(entry) if is_evictable(entry) => {
+                tracker.map.remove(&old);
+                evicted = true;
+                break;
+            }
+            Some(_) => skipped.push(old),
+        }
+    }
+    for key in skipped {
+        tracker.order.push_back(key);
+    }
+    if !evicted {
+        tracing::warn!("login source rate-limit tracker at capacity with live entries; source untracked");
+    }
+}
+
+/// Returns `true` when `ip` is currently inside a source lockout window.
+fn source_is_locked(ip: IpAddr) -> bool {
+    let mut tracker = source_attempts_guard();
+    let Some(entry) = tracker.map.get_mut(&ip) else {
+        return false;
+    };
+    entry_is_locked(entry)
+}
+
+/// Record ONE failed login against the source-IP tracker.
+fn record_source_failure(ip: IpAddr) {
+    let mut tracker = source_attempts_guard();
+    ensure_source_capacity(&mut tracker, ip);
+    let is_new = !tracker.map.contains_key(&ip);
+    if is_new && tracker.map.len() >= SOURCE_TRACK_MAX_ENTRIES {
+        return; // saturated — untracked (bounded memory preserved)
+    }
+    if is_new {
+        tracker.order.push_back(ip);
+    }
+    let entry = tracker.map.entry(ip).or_default();
+    if count_attempt(entry, SOURCE_RATE_LIMIT_MAX_ATTEMPTS) == AttemptCount::Locked {
+        tracing::warn!(%ip, "Login source locked: too many failed attempts");
+    }
+}
+
+/// Returns `true` while the global overflow bucket is locked. Applies
+/// only to usernames that cannot be tracked (see `login_is_locked`).
+fn overflow_is_locked() -> bool {
+    let mut overflow = overflow_attempts_guard();
+    entry_is_locked(&mut overflow)
+}
+
+/// Record ONE failure that fit no tracker. Bounded: a single entry.
+fn record_overflow_failure() {
+    let mut overflow = overflow_attempts_guard();
+    if count_attempt(&mut overflow, OVERFLOW_RATE_LIMIT_MAX_ATTEMPTS) == AttemptCount::Locked {
+        tracing::warn!("login overflow bucket locked: untracked usernames rejected until expiry");
     }
 }
 
@@ -634,9 +838,18 @@ pub(crate) struct LoginResponse {
 pub(super) async fn login_handler(
     State(state): State<AppState>,
     tls: Option<axum::Extension<TlsConnection>>,
+    connect_info: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, (StatusCode, String)> {
     let username = req.username.trim().to_string();
+    // TCP peer address for the supplementary source rate limit. Taken
+    // only from the connection itself (ConnectInfo) — never from
+    // client-supplied forwarding headers. Absent in tests and exotic
+    // serving setups; the per-username and overflow limits still apply.
+    let peer_ip = connect_info.map(|e| {
+        let axum::extract::ConnectInfo(addr) = e.0;
+        addr.ip()
+    });
     if username.is_empty() || req.password.is_empty() {
         return Ok(Json(LoginResponse {
             success: false,
@@ -649,7 +862,7 @@ pub(super) async fn login_handler(
     }
 
     // Rate-limit check — must be before any DB access to prevent user enumeration
-    if login_is_locked(&username) {
+    if login_is_locked(&username, peer_ip) {
         return Ok(Json(LoginResponse {
             success: false,
             token: String::new(),
@@ -706,7 +919,7 @@ pub(super) async fn login_handler(
             .await
             .unwrap_or(false);
         if !password_ok {
-            record_login_failure(&username);
+            record_login_failure_from(&username, peer_ip);
             return Ok(Json(LoginResponse {
                 success: false,
                 token: String::new(),
@@ -721,7 +934,7 @@ pub(super) async fn login_handler(
         // A local account record exists but is disabled: deny. It must
         // NOT fall through to LDAP — a same-named external identity
         // cannot resurrect a disabled local account (AUTH-C2).
-        record_login_failure(&username);
+        record_login_failure_from(&username, peer_ip);
         return Ok(Json(LoginResponse {
             success: false,
             token: String::new(),
@@ -735,7 +948,7 @@ pub(super) async fn login_handler(
             Ok(role) => (role, false, "ldap"),
             Err(e) => {
                 tracing::warn!(username = %username, error = %e, "LDAP authentication failed");
-                record_login_failure(&username);
+                record_login_failure_from(&username, peer_ip);
                 return Ok(Json(LoginResponse {
                     success: false,
                     token: String::new(),
@@ -747,7 +960,7 @@ pub(super) async fn login_handler(
             }
         }
     } else {
-        record_login_failure(&username);
+        record_login_failure_from(&username, peer_ip);
         return Ok(Json(LoginResponse {
             success: false,
             token: String::new(),
@@ -2169,6 +2382,24 @@ mod tests {
         let mut t = LOGIN_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner());
         t.map.clear();
         t.order = VecDeque::new();
+        drop(t);
+        let mut s = LOGIN_SOURCE_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner());
+        s.map.clear();
+        s.order = VecDeque::new();
+        drop(s);
+        let mut o = LOGIN_OVERFLOW_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner());
+        *o = LoginAttempts::default();
+    }
+
+    /// Fill the per-username tracker with live entries so any new
+    /// username is untrackable (the saturation precondition).
+    fn saturate_username_tracker() {
+        let mut t = attempts_guard();
+        while t.map.len() < LOGIN_TRACK_MAX_ENTRIES {
+            let name = format!("saturated-{}", t.map.len());
+            t.map.insert(name.clone(), fresh_entry());
+            t.order.push_back(name);
+        }
     }
 
     #[test]
@@ -2285,5 +2516,136 @@ mod tests {
         assert!(!plain.contains("Secure"), "{plain}");
         let tls = session_cookie_value("tok", true);
         assert!(tls.contains("; Secure"), "{tls}");
+    }
+
+    // ── Saturation / supplementary limiter regression tests ──────────────
+
+    #[test]
+    fn saturated_tracker_bounds_untracked_usernames_via_overflow() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        saturate_username_tracker();
+        // Failures against an untracked username cannot be tracked per
+        // name — they must still count, against the bounded overflow
+        // bucket, until it locks.
+        for _ in 0..OVERFLOW_RATE_LIMIT_MAX_ATTEMPTS {
+            record_login_failure_from("untracked-victim", None);
+        }
+        assert!(
+            login_is_locked("another-untracked-name", None),
+            "overflow lockout must reject untracked usernames under saturation"
+        );
+        // Tracked accounts are unaffected by the overflow lockout and
+        // their own per-account limit still works.
+        assert!(!login_is_locked("saturated-0", None));
+        for _ in 0..RATE_LIMIT_MAX_ATTEMPTS - 1 {
+            record_login_failure_from("saturated-0", None);
+        }
+        assert!(
+            login_is_locked("saturated-0", None),
+            "per-account lockout must still engage under tracker saturation"
+        );
+        // Overflow failures beyond the threshold do not grow state.
+        for _ in 0..5 {
+            record_login_failure_from("yet-another-untracked", None);
+        }
+        {
+            let o = overflow_attempts_guard();
+            assert!(o.locked_until.is_some());
+            assert_eq!(o.count, OVERFLOW_RATE_LIMIT_MAX_ATTEMPTS);
+        }
+        reset_tracker();
+    }
+
+    #[test]
+    fn source_ip_lockout_rejects_all_usernames_from_source() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        let attacker: IpAddr = "192.0.2.10".parse().unwrap();
+        let bystander: IpAddr = "192.0.2.20".parse().unwrap();
+        for _ in 0..SOURCE_RATE_LIMIT_MAX_ATTEMPTS {
+            record_source_failure(attacker);
+        }
+        assert!(source_is_locked(attacker));
+        assert!(!source_is_locked(bystander));
+        // A locked source is rejected for ANY username — tracked or not.
+        assert!(login_is_locked("never-seen-user", Some(attacker)));
+        assert!(!login_is_locked("never-seen-user", Some(bystander)));
+        assert!(!login_is_locked("never-seen-user", None));
+        reset_tracker();
+    }
+
+    #[test]
+    fn expired_source_lockout_recovers() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        let ip: IpAddr = "192.0.2.30".parse().unwrap();
+        for _ in 0..SOURCE_RATE_LIMIT_MAX_ATTEMPTS {
+            record_source_failure(ip);
+        }
+        assert!(source_is_locked(ip));
+        // Age the lockout into the past: the next check must reset the
+        // entry and allow fresh attempts (recovery after expiry).
+        {
+            let mut t = source_attempts_guard();
+            let e = t.map.get_mut(&ip).unwrap();
+            e.locked_until = Instant::now().checked_sub(Duration::from_secs(1));
+        }
+        assert!(!source_is_locked(ip));
+        {
+            let t = source_attempts_guard();
+            let e = t.map.get(&ip).unwrap();
+            assert_eq!(e.count, 0);
+            assert!(e.locked_until.is_none());
+        }
+        reset_tracker();
+    }
+
+    #[test]
+    fn overflow_does_not_engage_without_saturation() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        // Plenty of capacity: distinct new usernames are tracked
+        // normally and the overflow bucket is never touched.
+        for i in 0..25 {
+            record_login_failure_from(&format!("fresh-{i}"), None);
+        }
+        {
+            let o = overflow_attempts_guard();
+            assert_eq!(o.count, 0, "overflow must stay untouched while usernames are trackable");
+            assert!(o.locked_until.is_none());
+        }
+        let t = attempts_guard();
+        assert_eq!(t.map.len(), 25);
+        drop(t);
+        reset_tracker();
+    }
+
+    #[test]
+    fn concurrent_failures_stay_bounded() {
+        let _serial = TRACKER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_tracker();
+        let ip: IpAddr = "192.0.2.99".parse().unwrap();
+        let mut handles = Vec::new();
+        for t in 0..4 {
+            handles.push(std::thread::spawn(move || {
+                for i in 0..50 {
+                    record_login_failure_from(&format!("conc-{t}-{i}"), Some(ip));
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        {
+            let t = attempts_guard();
+            assert!(t.map.len() <= LOGIN_TRACK_MAX_ENTRIES);
+            assert!(t.order.len() <= LOGIN_TRACK_MAX_ENTRIES + 1);
+        }
+        {
+            let s = source_attempts_guard();
+            assert!(s.map.len() <= SOURCE_TRACK_MAX_ENTRIES);
+        }
+        reset_tracker();
     }
 }

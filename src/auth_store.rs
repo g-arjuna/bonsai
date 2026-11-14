@@ -88,7 +88,7 @@ pub const PROTECTED_SECRET_CONFIG_NAMES: &[&str] = &[
 /// `Some("imported")` → seal into `service_tokens`;
 /// `Some("quarantined")` → seal into `auth_quarantine` (recoverable but
 /// not authoritative anywhere); `None` → not a protected secret.
-fn protected_config_disposition(name: &str) -> Option<&'static str> {
+pub(crate) fn protected_config_disposition(name: &str) -> Option<&'static str> {
     if PROTECTED_SECRET_CONFIG_NAMES.contains(&name) {
         Some("imported")
     } else if name == "jwt_secret" {
@@ -2405,7 +2405,7 @@ fn extract_config_secret(content_json: &str) -> String {
 /// lookalike record that merely contains the marker text — is NOT a
 /// tombstone and will be treated as an original record (fail-safe: it
 /// gets re-validated and re-scrubbed, never silently skipped).
-fn is_migration_tombstone(item: &ConfigItemRecord) -> bool {
+pub(crate) fn is_migration_tombstone(item: &ConfigItemRecord) -> bool {
     if item.enabled {
         return false;
     }
@@ -2640,10 +2640,8 @@ impl AuthStore {
         // with mode 0600 means VACUUM INTO writes into an already
         // protected file — the snapshot is never world-readable, even
         // transiently.
-        let staging = unique_backup_staging(dest_path)?;
-        // O_EXCL create: a staging path that appeared since the
-        // uniqueness check fails instead of being adopted.
-        drop(open_owner_only_new(&staging)?);
+        let (staging, staging_file) = unique_backup_staging(dest_path)?;
+        drop(staging_file);
         let result = (|| -> Result<AuthBackupManifest> {
             {
                 let conn = self.lock()?;
@@ -3547,15 +3545,17 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
         rand::rngs::OsRng.fill_bytes(&mut bytes);
     }
     let key = hex::encode(bytes);
-    let tmp = unique_keyfile_tmp(&key_path)?;
+    // Staging file is created atomically (O_EXCL) inside the allocator —
+    // concurrent openers can never be handed the same candidate path.
+    let (tmp, mut f) = unique_keyfile_tmp(&key_path)?;
     // Write + fsync-ish close, then set 0600 BEFORE the file becomes
     // visible under its final name. OpenOptions mode applies at creation.
     {
         use std::io::Write;
-        let mut f = open_owner_only_new(&tmp)?;
         f.write_all(format!("{key}\n").as_bytes())
             .with_context(|| format!("failed to write auth keyfile tmp '{}'", tmp.display()))?;
     }
+    drop(f);
     // hard_link fails with EEXIST when another process won the race —
     // that process's key is authoritative; read it back instead.
     match std::fs::hard_link(&tmp, &key_path) {
@@ -3591,32 +3591,51 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
     }
 }
 
-/// Unique staging path for `backup_to`, sibling of the destination.
-fn unique_backup_staging(dest_path: &Path) -> Result<PathBuf> {
+/// Allocate a unique staging path for `backup_to` AND create it
+/// owner-only, atomically. The previous exists-then-create pair raced
+/// under concurrent backups in one process (all threads share the pid
+/// component and could pick the same candidate); `create_new` inside
+/// the loop makes the check-and-create a single atomic step.
+fn unique_backup_staging(dest_path: &Path) -> Result<(PathBuf, std::fs::File)> {
     for i in 0..100u32 {
         let candidate = dest_path.with_extension(format!("partial.{}.{}", std::process::id(), i));
-        if !candidate.exists() {
-            return Ok(candidate);
+        match open_owner_only_new_io(&candidate) {
+            Ok(f) => return Ok((candidate, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("failed to create auth backup staging '{}'", candidate.display())
+                });
+            }
         }
     }
     bail!("could not allocate auth backup staging path")
 }
 
-/// Unique temp path for keyfile staging, created with O_EXCL semantics
-/// via `create_new` inside `open_owner_only_new`.
-fn unique_keyfile_tmp(key_path: &Path) -> Result<PathBuf> {
+/// Allocate a unique temp path for keyfile staging AND create it
+/// owner-only, atomically — same concurrent-first-open race as
+/// `unique_backup_staging` (threads in one process share the pid
+/// component, so an exists-check-then-create pair can hand the same
+/// candidate to multiple openers).
+fn unique_keyfile_tmp(key_path: &Path) -> Result<(PathBuf, std::fs::File)> {
     for i in 0..100u32 {
         let candidate = key_path.with_extension(format!("key.tmp.{}.{}", std::process::id(), i));
-        if !candidate.exists() {
-            return Ok(candidate);
+        match open_owner_only_new_io(&candidate) {
+            Ok(f) => return Ok((candidate, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("failed to create auth keyfile temp '{}'", candidate.display())
+                });
+            }
         }
     }
     bail!("could not allocate auth keyfile temp path")
 }
 
-/// Create `path` with mode 0600 at creation time (Unix). Fails if the
-/// file already exists.
-fn open_owner_only_new(path: &Path) -> Result<std::fs::File> {
+/// Create `path` with mode 0600 at creation time (Unix), without the
+/// context wrapper so callers can match `ErrorKind::AlreadyExists`.
+fn open_owner_only_new_io(path: &Path) -> std::io::Result<std::fs::File> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -3625,16 +3644,33 @@ fn open_owner_only_new(path: &Path) -> Result<std::fs::File> {
         opts.mode(0o600);
     }
     opts.open(path)
+}
+
+/// Create `path` with mode 0600 at creation time (Unix).
+/// Fails if the file already exists.
+fn open_owner_only_new(path: &Path) -> Result<std::fs::File> {
+    open_owner_only_new_io(path)
         .with_context(|| format!("failed to create owner-only file '{}'", path.display()))
 }
 
 /// Create an empty file with mode 0600 at creation time (Unix).
+///
+/// The exists-then-create pair is a TOCTOU race under concurrent first
+/// open: two openers can both observe absence and the loser would fail
+/// `create_new` with EEXIST. Treating AlreadyExists as success is safe —
+/// the file is created empty with owner-only mode either way, and the
+/// caller proceeds to open and validate it normally.
 fn create_owner_only_file(path: &Path) -> Result<()> {
     if path.exists() {
         return Ok(());
     }
-    let _f = open_owner_only_new(path)?;
-    Ok(())
+    match open_owner_only_new_io(path) {
+        Ok(_f) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e).with_context(|| {
+            format!("failed to create owner-only file '{}'", path.display())
+        }),
+    }
 }
 
 /// Read `schema_meta.schema_version`; `None` when absent (fresh or

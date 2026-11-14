@@ -1804,7 +1804,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     // HTTPS: accept each TCP connection, upgrade to TLS, then serve.
                     let mut join_set: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
                     loop {
-                        let (tcp, _peer) = match http_listener.accept().await {
+                        let (tcp, peer) = match http_listener.accept().await {
                             Ok(p) => p,
                             Err(e) => {
                                 warn!(%e, "HTTPS accept error");
@@ -1828,6 +1828,12 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                                             // handlers can set Secure cookies.
                                             req.extensions_mut()
                                                 .insert(bonsai::http_server::TlsConnection);
+                                            // TCP peer address for the
+                                            // supplementary login source
+                                            // rate limit (never forwarded
+                                            // headers).
+                                            req.extensions_mut()
+                                                .insert(axum::extract::ConnectInfo(peer));
                                             let mut svc = svc.clone();
                                             async move { tower::Service::call(&mut svc, req).await }
                                         }),
@@ -1841,12 +1847,18 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     #[allow(unreachable_code)]
                     Ok::<_, std::convert::Infallible>(())
                 } else {
-                    axum::serve(http_listener, router)
-                        .await
-                        .map_err(|e| {
-                            warn!(%e, "HTTP server exited with error");
-                        })
-                        .ok();
+                    // ConnectInfo exposes the TCP peer address to handlers
+                    // (login source rate limit); it is the connection peer,
+                    // never a client-supplied forwarding header.
+                    axum::serve(
+                        http_listener,
+                        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    )
+                    .await
+                    .map_err(|e| {
+                        warn!(%e, "HTTP server exited with error");
+                    })
+                    .ok();
                     Ok(())
                 };
                 if let Err(e) = serve_result {

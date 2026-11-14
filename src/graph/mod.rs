@@ -4327,6 +4327,36 @@ impl GraphStore {
 
     /// D4-7 T1: Upsert a single ConfigItem (insert or update by id).
     pub async fn upsert_config_item(&self, item: ConfigItemRecord) -> Result<()> {
+        // F7/F8 structural isolation: secret-bearing ConfigItem names may
+        // never be (re)created through ANY write path — HTTP handler,
+        // settings/governance/capture writers, YAML migration, MCP or
+        // ad-hoc store use. The only permitted writes are validated
+        // migration tombstones produced by AuthStore migration itself.
+        // This guard lives at the store choke point so endpoint-level
+        // checks cannot be bypassed.
+        if crate::auth_store::protected_config_disposition(&item.name).is_some()
+            && !crate::auth_store::is_migration_tombstone(&item)
+        {
+            anyhow::bail!(
+                "config item name '{}' carries protected secret material and \
+                 cannot be written to the graph; use `bonsai auth \
+                 set-service-token` (stdin) instead",
+                item.name
+            );
+        }
+        self.upsert_config_item_unchecked(item).await
+    }
+
+    /// Write a ConfigItem bypassing the protected-name guard.
+    ///
+    /// Intended ONLY for AuthStore migration fixtures/tests and audited
+    /// legacy-import tooling that must reproduce pre-migration graph
+    /// state. Never call from request-serving paths — the guarded
+    /// `upsert_config_item` is the only supported write entry point.
+    pub async fn upsert_config_item_unchecked(
+        &self,
+        item: ConfigItemRecord,
+    ) -> Result<()> {
         let db = Arc::clone(&self.db);
         let write_lock = Arc::clone(&self.write_lock);
         tokio::task::spawn_blocking(move || {

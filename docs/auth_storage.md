@@ -270,6 +270,16 @@ only counts, classes and record IDs.
   auth, poisoned mutex recovers the guard (never fails open), tracker is
   bounded (8192 usernames). Eviction is **stale-only**: entries with a
   live window or active lockout are never evicted, so username flooding
-  cannot flush a victim's lockout or pre-lockout failure count. Residual:
-  when all 8192 entries are live, new usernames are untracked (documented
-  trade-off; rate limiting is process-local — see §6 HA note).
+  cannot flush a victim's lockout or pre-lockout failure count.
+  Saturation is now closed by two supplementary bounded limiters rather
+  than left open: a per-source-IP tracker (4096 peers, 20 failures /
+  5 min → 30 min lockout, keyed by TCP peer address only — forwarded
+  headers are never trusted) counts every failed login regardless of
+  username tracking, and a single global overflow bucket (10 failures /
+  5 min → 30 min) counts failures for usernames that fit no tracker.
+  While the overflow bucket is locked, untracked usernames are rejected;
+  tracked accounts are unaffected. Residual: an attacker controlling
+  more than 4096 source addresses can force untracked logins into the
+  overflow bucket, which then fails closed for ALL untracked usernames
+  until expiry — bounded availability impact, no unlimited guessing.
+  All rate-limit state is process-local — see §6 HA note.
