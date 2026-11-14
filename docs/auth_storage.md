@@ -172,7 +172,8 @@ only counts, classes and record IDs.
   and re-check `jwt_revoked`/`users` state before declaring recovery.
   Quarantined records are never reactivated automatically; operator
   recovery uses `AuthStore::decrypt_quarantine_content(id)` with the
-  same at-rest key, per the runbook in `docs/operations/`.
+  same at-rest key, per the runbook in
+  `docs/auth_backup_restore_runbook.md`.
 - **HA:** single-writer SQLite; cross-process HA is not claimed. Revocation
   and key state are per-node until a replication design exists.
 - **Recovery:** losing `bonsai_auth.db` while keeping the vault passphrase
