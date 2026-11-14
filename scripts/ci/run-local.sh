@@ -202,14 +202,16 @@ docker run --rm \
       /ci-cache/venv/bin/pip install --upgrade pip
     fi
     # Editable SDK install is path-dependent ($ROOT differs across
-    # checkouts) and the ml extra is required by SDK test modules —
-    # verify both and reinstall if either went stale.
-    if ! /ci-cache/venv/bin/python -c 'import bonsai_sdk, joblib' >/dev/null 2>&1; then
-      /ci-cache/venv/bin/pip install -e 'python[dev,ml]'
-    fi
+    # checkouts) and the ml extra is required by SDK test modules.
+    # Reinstall unconditionally: an import check cannot prove the installed
+    # environment still matches this checkout's pyproject specification.
+    /ci-cache/venv/bin/pip install -e 'python[dev,ml]'
     ln -sfn /ci-cache/venv .venv
     if [ '$NEED_UI' = '1' ]; then
       (cd ui && npm ci --no-audit --no-fund && npm run build)
+      # tests/ui_driver/package-lock.json is committed, so npm ci runs
+      # unconditionally and fails closed on any lockfile/package.json drift
+      # instead of silently resolving a different dependency tree.
       (cd tests/ui_driver && npm ci --no-audit --no-fund)
     fi
     if [ '$NEED_BROWSER' = '1' ]; then
