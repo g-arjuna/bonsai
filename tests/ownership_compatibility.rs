@@ -21,7 +21,8 @@ use std::{future::IntoFuture, net::Ipv4Addr, sync::Arc};
 /// graph `api_key` ConfigItem path is retired — post-migration graph rows
 /// cannot authorize, so tests must seed the auth store directly.
 fn seed_api_key(store: &bonsai::graph::GraphStore, item: bonsai::graph::ConfigItemRecord) {
-    let v: serde_json::Value = serde_json::from_str(&item.content_json).expect("api_key content_json");
+    let v: serde_json::Value =
+        serde_json::from_str(&item.content_json).expect("api_key content_json");
     store
         .auth_store
         .upsert_api_key_verifier(
@@ -55,7 +56,9 @@ async fn config(store: &GraphStore, name: &str, value: &str) {
 }
 async fn key(store: &GraphStore, id: &str, grant: &str) -> String {
     let key = format!("bsk_ownership_compat_{id}");
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: id.into(),
             config_class: "api_key".into(),
             vendor: String::new(),
@@ -67,7 +70,8 @@ async fn key(store: &GraphStore, id: &str, grant: &str) -> String {
                 .to_string(),
             enabled: true,
             created_by: "test".into(),
-        });
+        },
+    );
     key
 }
 

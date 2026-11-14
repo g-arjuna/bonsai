@@ -13,7 +13,8 @@ use std::sync::Arc;
 /// graph `api_key` ConfigItem path is retired — post-migration graph rows
 /// cannot authorize, so tests must seed the auth store directly.
 fn seed_api_key(store: &bonsai::graph::GraphStore, item: bonsai::graph::ConfigItemRecord) {
-    let v: serde_json::Value = serde_json::from_str(&item.content_json).expect("api_key content_json");
+    let v: serde_json::Value =
+        serde_json::from_str(&item.content_json).expect("api_key content_json");
     store
         .auth_store
         .upsert_api_key_verifier(
@@ -248,7 +249,9 @@ async fn admin_http_inventory_and_audit_do_not_change_authorization() {
     assert_eq!(listed["bindings"].as_array().unwrap().len(), 1);
     assert_eq!(listed["truncated"], false);
     let api_key = "bsk_ownership_test_admin_only";
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "ownership-admin-key".into(),
             config_class: "api_key".into(),
             vendor: String::new(),
@@ -259,7 +262,8 @@ async fn admin_http_inventory_and_audit_do_not_change_authorization() {
             .to_string(),
             enabled: true,
             created_by: "test".into(),
-        });
+        },
+    );
     let reassigned: Value = client
         .put(&url)
         .bearer_auth(api_key)

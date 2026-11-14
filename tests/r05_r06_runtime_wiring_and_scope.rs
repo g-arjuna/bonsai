@@ -24,7 +24,8 @@ use tempfile::TempDir;
 /// graph `api_key` ConfigItem path is retired — post-migration graph rows
 /// cannot authorize, so tests must seed the auth store directly.
 fn seed_api_key(store: &bonsai::graph::GraphStore, item: bonsai::graph::ConfigItemRecord) {
-    let v: serde_json::Value = serde_json::from_str(&item.content_json).expect("api_key content_json");
+    let v: serde_json::Value =
+        serde_json::from_str(&item.content_json).expect("api_key content_json");
     store
         .auth_store
         .upsert_api_key_verifier(
@@ -414,7 +415,9 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
     set_app_config(&graph_store, "require_auth", "1").await;
     let scoped_key = "bsk_scoped_speaker11_vrf10_key";
     let key_hash = hex::encode(Sha256::digest(scoped_key.as_bytes()));
-    seed_api_key(&graph_store, ConfigItemRecord {
+    seed_api_key(
+        &graph_store,
+        ConfigItemRecord {
             id: "key-scoped-r06".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -429,7 +432,8 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
             .to_string(),
             enabled: true,
             created_by: "test".to_string(),
-        });
+        },
+    );
 
     let bonsai_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

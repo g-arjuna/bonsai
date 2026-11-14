@@ -22,7 +22,8 @@ use tokio::net::TcpListener;
 /// graph `api_key` ConfigItem path is retired — post-migration graph rows
 /// cannot authorize, so tests must seed the auth store directly.
 fn seed_api_key(store: &bonsai::graph::GraphStore, item: bonsai::graph::ConfigItemRecord) {
-    let v: serde_json::Value = serde_json::from_str(&item.content_json).expect("api_key content_json");
+    let v: serde_json::Value =
+        serde_json::from_str(&item.content_json).expect("api_key content_json");
     store
         .auth_store
         .upsert_api_key_verifier(
@@ -52,7 +53,9 @@ async fn set_app_config(store: &GraphStore, name: &str, value: &str) {
 }
 
 async fn provision_test_key(store: &GraphStore, id: &str, key: &str, scope: &str) {
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: id.into(),
             config_class: "api_key".into(),
             vendor: String::new(),
@@ -64,7 +67,8 @@ async fn provision_test_key(store: &GraphStore, id: &str, key: &str, scope: &str
                 .to_string(),
             enabled: true,
             created_by: "bn005-closeout".into(),
-        });
+        },
+    );
 }
 
 /// 1. Deployment configuration fails closed for direct binary launch and service initialization.
@@ -329,7 +333,9 @@ async fn test_bn005_identity_derived_tenant_and_exporter_scoping() {
     // Create an API key scoped to speaker=192.0.2.1, vrf_rd=65000:100, tenant_id=acme
     let scoped_api_key = "bsk_scoped_token_alpha_12345678";
     let key_hash = hex::encode(Sha256::digest(scoped_api_key.as_bytes()));
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "apikey-scoped-alpha".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -344,7 +350,8 @@ async fn test_bn005_identity_derived_tenant_and_exporter_scoping() {
             .to_string(),
             enabled: true,
             created_by: "bn005-test".to_string(),
-        });
+        },
+    );
 
     let routing_key = "bsk_supported_routing_scope";
     let device_key = "bsk_supported_device_scope";
@@ -770,7 +777,9 @@ async fn test_bn005_conflicting_speaker_aliases_are_rejected() {
 
     let key = "bsk_audit_alias_key";
     let key_hash = hex::encode(Sha256::digest(key.as_bytes()));
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "api-key-alias".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -785,7 +794,8 @@ async fn test_bn005_conflicting_speaker_aliases_are_rejected() {
             .to_string(),
             enabled: true,
             created_by: "bn005-test".to_string(),
-        });
+        },
+    );
 
     let public_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let public_addr = public_listener.local_addr().unwrap();
@@ -875,7 +885,9 @@ async fn test_bn005_decoded_bmp_vrf_mismatch_is_rejected() {
 
     let key = "bsk_audit_vrf_key";
     let key_hash = hex::encode(Sha256::digest(key.as_bytes()));
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "api-key-vrf".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -890,7 +902,8 @@ async fn test_bn005_decoded_bmp_vrf_mismatch_is_rejected() {
             .to_string(),
             enabled: true,
             created_by: "bn005-test".to_string(),
-        });
+        },
+    );
 
     let global_key = "bsk_trusted_exporter_ingest";
     provision_test_key(&store, "global-ingest", global_key, "routing:write").await;
@@ -1133,7 +1146,9 @@ async fn test_bn005_authenticated_mcp_scoped_tool_authorization_and_denial() {
 
     // 1. Supported device scope: speaker-only. Composite grants are denied by the matrix test.
     let scoped_key = "bsk_scoped_test_12345";
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "apikey-scoped".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -1148,11 +1163,14 @@ async fn test_bn005_authenticated_mcp_scoped_tool_authorization_and_denial() {
             .to_string(),
             enabled: true,
             created_by: "test".to_string(),
-        });
+        },
+    );
 
     // 2. Global viewer key
     let viewer_key = "bsk_viewer_global_12345";
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "apikey-viewer".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -1167,11 +1185,14 @@ async fn test_bn005_authenticated_mcp_scoped_tool_authorization_and_denial() {
             .to_string(),
             enabled: true,
             created_by: "test".to_string(),
-        });
+        },
+    );
 
     // 3. ApiReadonly key
     let readonly_key = "bsk_readonly_api_12345";
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "apikey-readonly".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -1186,11 +1207,14 @@ async fn test_bn005_authenticated_mcp_scoped_tool_authorization_and_denial() {
             .to_string(),
             enabled: true,
             created_by: "test".to_string(),
-        });
+        },
+    );
 
     // 4. Scoped operator key: speaker=192.0.2.1, vrf_rd=0:0, tenant_id=acme
     let operator_key = "bsk_operator_scoped_12345";
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "apikey-operator".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -1205,7 +1229,8 @@ async fn test_bn005_authenticated_mcp_scoped_tool_authorization_and_denial() {
             .to_string(),
             enabled: true,
             created_by: "test".to_string(),
-        });
+        },
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1586,7 +1611,9 @@ async fn test_bn005_strict_scope_parsing_default_deny_and_readonly_transactions(
     // 1. Malformed scope: unknown field
     let malformed_key_1 = "bsk_malformed_scope_unknown_12345678";
     let hash_m1 = hex::encode(Sha256::digest(malformed_key_1.as_bytes()));
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "apikey-m1".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -1601,12 +1628,15 @@ async fn test_bn005_strict_scope_parsing_default_deny_and_readonly_transactions(
             .to_string(),
             enabled: true,
             created_by: "bn005-test".to_string(),
-        });
+        },
+    );
 
     // 2. Malformed scope: empty value
     let malformed_key_2 = "bsk_malformed_scope_empty_12345678";
     let hash_m2 = hex::encode(Sha256::digest(malformed_key_2.as_bytes()));
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "apikey-m2".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -1621,12 +1651,15 @@ async fn test_bn005_strict_scope_parsing_default_deny_and_readonly_transactions(
             .to_string(),
             enabled: true,
             created_by: "bn005-test".to_string(),
-        });
+        },
+    );
 
     // 3. Tenant-only scoped key
     let tenant_only_key = "bsk_tenant_only_scoped_12345678";
     let hash_to = hex::encode(Sha256::digest(tenant_only_key.as_bytes()));
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "apikey-to".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -1641,12 +1674,15 @@ async fn test_bn005_strict_scope_parsing_default_deny_and_readonly_transactions(
             .to_string(),
             enabled: true,
             created_by: "bn005-test".to_string(),
-        });
+        },
+    );
 
     // 4. VRF-only scoped key
     let vrf_only_key = "bsk_vrf_only_scoped_12345678";
     let hash_vo = hex::encode(Sha256::digest(vrf_only_key.as_bytes()));
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "apikey-vo".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -1661,12 +1697,15 @@ async fn test_bn005_strict_scope_parsing_default_deny_and_readonly_transactions(
             .to_string(),
             enabled: true,
             created_by: "bn005-test".to_string(),
-        });
+        },
+    );
 
     // 5. Speaker-only scoped key
     let speaker_scoped_key = "bsk_speaker_scoped_12345678";
     let hash_spk = hex::encode(Sha256::digest(speaker_scoped_key.as_bytes()));
-    seed_api_key(&store, ConfigItemRecord {
+    seed_api_key(
+        &store,
+        ConfigItemRecord {
             id: "apikey-spk".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -1681,7 +1720,8 @@ async fn test_bn005_strict_scope_parsing_default_deny_and_readonly_transactions(
             .to_string(),
             enabled: true,
             created_by: "bn005-test".to_string(),
-        });
+        },
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
