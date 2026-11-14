@@ -14,7 +14,18 @@
 #   l1  compile/static: cargo check workspace + UI build + python import check
 #   l2  required behavioral tests: bonsai lib + rbmp crates + core integration
 #   l3  cross-component: extended integration + headless browser + python tests
-#   l4  lab/deployment acceptance: NOT runnable here; prints explicit skip
+#   l4  lab/deployment acceptance: NOT runnable here; reports NOT_EXECUTED
+#
+# Outcomes (reported per tier, never collapsed into a single "passed"):
+#   PASS         tier executed and every check passed
+#   FAIL         a check failed or a required prerequisite/target was missing
+#   SKIP         tier deliberately skipped (reserved; none currently)
+#   UNAVAILABLE  tier cannot run in this environment (reserved; none currently)
+#   NOT_EXECUTED tier was requested but does not execute here (l4 lab gates)
+#
+# The final summary lists every requested tier with its outcome. A tier that
+# did not execute is never reported as a pass, and "ALL GATES PASSED" is only
+# printed when every requested tier reached PASS.
 #
 # Environment:
 #   GATE_BASE   git ref for changed-file detection (default: origin/main,
@@ -36,6 +47,45 @@ log()  { printf '\n=== [gate] %s ===\n' "$*"; }
 die()  { printf 'GATE FAIL: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool missing: $1"; }
 
+# Per-tier outcome tracking. Tiers run in subshells so a `die` inside one
+# records FAIL for that tier without aborting the summary.
+declare -A TIER_RESULT=()
+
+# Verify every named integration target exists before invoking cargo, so a
+# renamed/removed test file fails with a clear message instead of a cargo
+# target-resolution error (or, worse, silently matching nothing).
+require_test_files() {
+  local tier="$1"; shift
+  local missing=0 t
+  for t in "$@"; do
+    if [ ! -f "tests/$t.rs" ]; then
+      echo "GATE FAIL: $tier required test target missing: tests/$t.rs" >&2
+      missing=1
+    fi
+  done
+  [ "$missing" -eq 0 ] || exit 1
+}
+
+# Run one tier in a subshell and record its outcome.
+# Exit codes inside the subshell: 0 = PASS, 3 = NOT_EXECUTED, anything else = FAIL.
+run_tier() {
+  local tier="$1"; shift
+  local rc=0
+  case "$tier" in
+    l0) ( gate_l0 ) || rc=$? ;;
+    l1) ( gate_l1 ) || rc=$? ;;
+    l2) ( gate_l2 ) || rc=$? ;;
+    l3) ( gate_l3 ) || rc=$? ;;
+    l4) ( gate_l4 ) || rc=$? ;;
+    *)  die "unknown tier: $tier" ;;
+  esac
+  case "$rc" in
+    0) TIER_RESULT[$tier]="PASS" ;;
+    3) TIER_RESULT[$tier]="NOT_EXECUTED" ;;
+    *) TIER_RESULT[$tier]="FAIL" ;;
+  esac
+}
+
 changed_rs_files() {
   local base="$1"
   if git rev-parse --verify --quiet "$base" >/dev/null; then
@@ -51,6 +101,10 @@ changed_rs_files() {
 gate_l0() {
   log "L0 source checks"
   need cargo; need rustfmt; need python3
+  # New-drift detection requires a base ref. Without one we cannot distinguish
+  # new unformatted code from pre-existing repo drift, so fail closed rather
+  # than silently passing (set GATE_BASE to override).
+  [ -n "$BASE" ] || die "no diff base ref found; set GATE_BASE=<ref>"
 
   # Rust formatting, scoped to files changed vs the base ref. Repository-wide
   # fmt drift predates this gate and is tracked separately; new/changed files
@@ -63,22 +117,27 @@ gate_l0() {
     echo "L0: rustfmt --check on changed files (base: ${BASE:-none})"
     # Fail only on NEW drift: a file that was already unformatted at the base
     # ref keeps its pre-existing drift (tracked separately, not this gate's
-    # job to reformat); a file clean at base must stay clean.
-    local failed=0 warned=0 f base_f base_ok
+    # job to reformat); a file clean at base — or absent at base (new file) —
+    # must be formatted.
+    local failed=0 warned=0 f base_f
     while IFS= read -r f; do
       [ -f "$f" ] || continue
       if rustfmt --edition 2024 --check "$f" >/dev/null 2>&1; then continue; fi
-      base_ok=1
-      if git rev-parse --verify --quiet "$BASE" >/dev/null && git cat-file -e "$BASE:$f" 2>/dev/null; then
-        base_f="$(mktemp)"
-        git show "$BASE:$f" > "$base_f"
-        rustfmt --edition 2024 --check "$base_f" >/dev/null 2>&1 && base_ok=0
-        rm -f "$base_f"
+      if ! git rev-parse --verify --quiet "$BASE" >/dev/null || ! git cat-file -e "$BASE:$f" 2>/dev/null; then
+        # No base ref, or the file did not exist at base: it is new and must
+        # be formatted — never inherit a pass from missing history.
+        echo "  NEW unformatted (no formatted base): $f"
+        failed=1
+        continue
       fi
-      if [ "$base_ok" -eq 0 ]; then
+      base_f="$(mktemp)"
+      git show "$BASE:$f" > "$base_f"
+      if rustfmt --edition 2024 --check "$base_f" >/dev/null 2>&1; then
+        rm -f "$base_f"
         echo "  NEW unformatted: $f"
         failed=1
       else
+        rm -f "$base_f"
         echo "  warn: pre-existing fmt drift at base: $f"
         warned=$((warned + 1))
       fi
@@ -113,8 +172,9 @@ gate_l1() {
     [ -d ui/dist ] || die "SKIP_UI_BUILD=1 but ui/dist missing"
   fi
 
-  # Python import/config check: SDK must import cleanly.
-  if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=python3; fi
+  # Python import/config check: SDK must import cleanly. Use an absolute
+  # interpreter path — the subshell cd's into python/ first.
+  local PY="$(pwd)/.venv/bin/python"; [ -x "$PY" ] || PY=python3
   (cd python && "$PY" -c "import bonsai_sdk; print('bonsai_sdk import OK')") \
     || die "bonsai_sdk import failed"
   echo "L1: OK"
@@ -153,6 +213,11 @@ gate_l2() {
   log "L2 required behavioral tests"
   need cargo
 
+  # Fail closed if a required target file is absent (rename/removal must be
+  # an explicit manifest change, not a silent skip).
+  require_test_files l2 $L2_INTEGRATION_TESTS
+  echo "L2: $(echo "$L2_INTEGRATION_TESTS" | wc -w) integration targets + bonsai lib + rbmp crates"
+
   # Library unit tests (363 tests at BN-019-B6 baseline).
   cargo test -p bonsai --lib --profile "$PROFILE" --offline
 
@@ -188,17 +253,30 @@ L3_INTEGRATION_TESTS="
 
 gate_l3() {
   log "L3 cross-component integration"
-  need cargo; need node; need npx
-  [ -d ui/dist ] || die "ui/dist missing — run l1 first"
+  need cargo; need node; need npx; need python3
+  [ -d ui/dist ] || die "ui/dist missing — run l1 first (or SKIP_UI_BUILD=0)"
   [ -d tests/ui_driver/node_modules ] || \
     (cd tests/ui_driver && npm ci --no-audit --no-fund)
+
+  require_test_files l3 $L3_INTEGRATION_TESTS
+  echo "L3: $(echo "$L3_INTEGRATION_TESTS" | wc -w) integration targets + python suites"
+
+  # Python suites need pytest importable by the selected interpreter.
+  local PY="$(pwd)/.venv/bin/python"; [ -x "$PY" ] || PY=python3
+  "$PY" -m pytest --version >/dev/null 2>&1 \
+    || die "pytest not importable by $PY — provision .venv or install pytest"
+
+  # Browser targets shell out to `npx playwright test`; the driver deps and
+  # a chromium build must exist or the specs fail (fail-closed, but check
+  # early for a clearer error).
+  [ -x tests/ui_driver/node_modules/.bin/playwright ] \
+    || die "playwright driver missing — run: (cd tests/ui_driver && npm ci && npx playwright install chromium)"
 
   local args=()
   for t in $L3_INTEGRATION_TESTS; do args+=(--test "$t"); done
   cargo test -p bonsai --profile "$PROFILE" --offline "${args[@]}"
 
   # Python suites. Root tests/ = bonsai unit tests; python/tests = SDK suite.
-  local PY="$(pwd)/.venv/bin/python"; [ -x "$PY" ] || PY=python3
   PYTHONPATH=.:python "$PY" -m pytest tests/ -q
   (cd python && PYTHONPATH=. "$PY" -m pytest tests/ -q)
   echo "L3: OK"
@@ -222,20 +300,63 @@ run via the named lab harnesses, e.g.:
 A green L0-L3 result does NOT imply L4 passed. L4 status must be reported
 separately and never inferred from CI.
 EOF
+  # Exit 3 = NOT_EXECUTED: documentation-only output is never a pass.
+  exit 3
+}
+
+# ---------------------------------------------------------------- manifest
+gate_manifest() {
+  log "Acceptance manifest (derived from the executed target lists)"
+  echo "L0  source checks (scoped rustfmt drift, python compile, cargo metadata)"
+  echo "L1  compile/static (cargo check --workspace --all-targets, UI build, SDK import)"
+  echo "L2  $(echo "$L2_INTEGRATION_TESTS" | wc -w) required integration targets:"
+  for t in $L2_INTEGRATION_TESTS; do echo "    $t"; done
+  echo "L3  $(echo "$L3_INTEGRATION_TESTS" | wc -w) cross-component integration targets:"
+  for t in $L3_INTEGRATION_TESTS; do echo "    $t"; done
+  echo "L4  lab/deployment acceptance — NOT_EXECUTED by gates.sh (see gate_l4)"
 }
 
 # ---------------------------------------------------------------- main
 if [ "$#" -eq 0 ]; then
-  echo "usage: $0 <l0|l1|l2|l3|l4> [...]" >&2; exit 2
+  echo "usage: $0 <l0|l1|l2|l3|l4|manifest> [...]" >&2; exit 2
 fi
-for tier in "$@"; do
+tiers=("$@")
+for tier in "${tiers[@]}"; do
   case "$tier" in
-    l0) gate_l0 ;;
-    l1) gate_l1 ;;
-    l2) gate_l2 ;;
-    l3) gate_l3 ;;
-    l4) gate_l4 ;;
+    l0|l1|l2|l3|l4|manifest) ;;
     *) die "unknown tier: $tier" ;;
   esac
 done
-echo "ALL REQUESTED GATES PASSED"
+
+failed=0
+for tier in "${tiers[@]}"; do
+  if [ "$failed" -eq 1 ]; then
+    # Fail fast: tiers after a failure are NOT_EXECUTED, never attempted.
+    TIER_RESULT[$tier]="NOT_EXECUTED"
+    continue
+  fi
+  case "$tier" in
+    manifest) gate_manifest ;;
+    *) run_tier "$tier" ;;
+  esac
+  [ "${TIER_RESULT[$tier]:-}" = "FAIL" ] && failed=1
+done
+
+if [ "${#TIER_RESULT[@]}" -gt 0 ]; then
+  echo
+  echo "=== Gate outcomes ==="
+  local_failed=0
+  for tier in "${tiers[@]}"; do
+    [ "$tier" = "manifest" ] && continue
+    printf '  %-4s %s\n' "$tier" "${TIER_RESULT[$tier]:-NOT_EXECUTED}"
+    [ "${TIER_RESULT[$tier]}" = "PASS" ] || local_failed=1
+  done
+  if [ "$local_failed" -eq 0 ]; then
+    echo "ALL REQUESTED GATES PASSED"
+  else
+    echo "GATES INCOMPLETE: see per-tier outcomes above (NOT_EXECUTED is not a pass)" >&2
+    exit 1
+  fi
+else
+  echo "manifest printed; no gates executed"
+fi

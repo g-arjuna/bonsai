@@ -40,11 +40,14 @@ recipes delegate to the canonical script.
   --profile ci --offline`, `ui` `npm ci && npm run build`, `bonsai_sdk`
   import check.
 - **L2** required behavioral — `cargo test -p bonsai --lib`,
-  `cargo test -p rbmp-core -p rbmp-rib -p rbmp-store`, and 21 named
+  `cargo test -p rbmp-core -p rbmp-rib -p rbmp-store`, and 22 named
   self-contained integration targets (bmp_rfc_contract, config_example,
   ownership_*, b07/b08/b09, bn001/002/004/005_closeout, bn021b–bn021g,
-  bn022). One `cargo test` invocation compiles all binaries once, then runs
-  them — compile-once, no per-target relink.
+  bn022_graph_read_boundary). One `cargo test` invocation compiles all
+  binaries once, then runs them — compile-once, no per-target relink.
+  (Corrected 2026-11-14: the list contains 22 targets; earlier text said
+  21. `gates.sh` now prints the executed count at runtime and a `manifest`
+  tier derives accounting from the actual lists.)
 - **L3** cross-component — 13 heavier integration targets including the two
   headless-browser acceptance suites (`bn015_u1_inventory_browser`,
   `bn016_u1_topology_browser`, Playwright + Chromium against the real
@@ -167,7 +170,7 @@ Result: `208 passed, 1 skipped, 1 deselected`.
 | Gate | Result | Wall time |
 |------|--------|-----------|
 | `gates.sh l0` | PASS | ~3 s |
-| `gates.sh l2` | PASS — lib 363/363 + rbmp suites + 21 integration targets, 0 failures | ~22 min incl. bonsai lib recompile |
+| `gates.sh l2` | PASS — lib 363/363 + rbmp suites + 22 integration targets, 0 failures | ~22 min incl. bonsai lib recompile |
 | `gates.sh l3` | PASS — 13 integration targets incl. bn015/bn016 Playwright/Chromium browser acceptance + root pytest 16 + SDK pytest 208 | ~8 min (binaries warm) |
 | `gates.sh l4` | not executed (lab infra required) | — |
 

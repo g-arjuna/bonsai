@@ -101,7 +101,7 @@ gates; `just gate <tier>` and `just gate-all` are thin wrappers, and
 |------|-------|---------|
 | L0 | Source checks: rustfmt on changed files (new drift only), python compile, cargo metadata | `scripts/ci/gates.sh l0` |
 | L1 | Compile/static: `cargo check --workspace --all-targets --profile ci`, UI build, SDK import | `scripts/ci/gates.sh l1` |
-| L2 | Required behavioral: bonsai lib tests, rbmp crates, 21 core integration targets | `scripts/ci/gates.sh l2` |
+| L2 | Required behavioral: bonsai lib tests, rbmp crates, 22 core integration targets | `scripts/ci/gates.sh l2` |
 | L3 | Cross-component: 13 workflow/browser integration targets + python suites | `scripts/ci/gates.sh l3` |
 | L4 | Lab/deployment acceptance (containerlab, live NOS, soak) — never implied by L0–L3 | manual, see `gates.sh l4` |
 
@@ -118,11 +118,68 @@ GitHub-hosted `ubuntu-latest` runners cannot build the full Bonsai test
 suite: `target/` exceeds 100 GB and parallel test-binary links exceed 16 GB
 RAM. The `rust-gates` job therefore requires a **self-hosted runner**
 labelled `[self-hosted, linux, x64, bonsai-ci]` with: Rust 1.95.0
-(`rust-toolchain.toml`), `sccache`, `mold`, `protoc`, `cmake`, Node 20,
-warm cargo registry, and ~150 GB free disk. The `source-checks`,
-`python-tests` and `ui-build` jobs run on hosted runners. Until a
-self-hosted runner is registered the rust job stays queued — that is
-intentional fail-closed behaviour, not a pass.
+(`rust-toolchain.toml`), `sccache`, `mold`, Node 20, a warm cargo registry,
+and ~150 GB free disk. The `source-checks`, `python-tests` and `ui-build`
+jobs run on hosted runners. Until a self-hosted runner is registered the
+rust job stays queued — that is intentional fail-closed behaviour, not a
+pass.
+
+#### Isolated runner requirements (CI-R2)
+
+The `bonsai-ci` runner must be a **dedicated disposable or single-purpose
+VM** — never the developer workstation, the containerlab host, or any
+production-connected machine. Required isolation properties:
+
+- **No production credentials**: no cloud keys, no NetBox/prod tokens, no
+  VPN profiles, no SSH keys to network devices.
+- **No developer home directory access**: the runner workdir is a fresh
+  ephemeral checkout; `$HOME` contains only runner + toolchain state.
+- **No production network-device connectivity**: e2e/L3 tests are
+  loopback/tempdir/synthetic-cert only; the VM must not route to lab or
+  production addressing.
+- **No access to the protected soak evidence**
+  (`docs/merger/evidence/2026-11-09-bn009-soak-full/soak-metrics.csv`) —
+  irrelevant on a clean VM, but reinforces that this host must never be the
+  dev machine.
+- **No unrestricted host Docker socket**: tests that need Docker are L4 and
+  do not run in CI; do not mount `/var/run/docker.sock` into the runner.
+- **Minimal GitHub permissions**: runner registration token is single-use,
+  short-lived, and must never appear in logs, artifacts, or the repo.
+  `GITHUB_TOKEN` keeps default read-only job permissions.
+- **Controlled cache reuse**: sccache/GHA cache only; no shared mutable
+  cargo registry credentials.
+- **Explicit resource limits**: VM sized ≥16 GB RAM (links are the peak),
+  ≥150 GB disk for `target/`, CPU quota documented; ephemeral disk is
+  wiped between jobs or the VM is rebuilt per CI window.
+
+#### Hosted larger runners vs self-hosted (evaluation)
+
+Measured requirements (BN-019-B6 evidence,
+`docs/merger/evidence/2026-11-13-bn019-b6-fail-closed-ci/`):
+
+- `target/` for the ci profile across workspace + all `--test` targets:
+  well over 100 GB during L2/L3 (ci-profile test binaries are 34–90 MB
+  each but there are ~35 of them plus deps).
+- Peak memory during parallel test-binary links exceeds the 16 GB
+  GitHub-hosted runner limit; disk exceeds the ~14 GB hosted SSD.
+
+GitHub-hosted **larger runners** (4-core/16 GB, or custom) still cap disk
+near hosted levels and cost per-minute on private repos; for a public repo
+hosted minutes are free but larger-runner SKUs are billed. A dedicated
+self-hosted VM on existing infrastructure is cheaper and satisfies the
+isolation list above. **Decision: self-hosted isolated VM.** Provisioning
+requires owner approval (new VM, runner registration token); until then the
+rust job stays queued — the correct fail-closed state.
+
+#### Known infrastructure blocker (2026-11-14)
+
+GitHub Actions run
+[43515987209](https://github.com/g-arjuna/bonsai/actions/runs/43515987209)
+at `a911573`: all hosted jobs failed in ~2–3 s with **zero steps and zero
+billable minutes**; job annotations read *"The job was not started because
+your account is locked due to a billing issue."* This is an account-level
+billing lock, not a workflow or test failure — owner action required. The
+self-hosted job remains queued (no `bonsai-ci` runner registered).
 
 ## Canonical Local Helpers
 

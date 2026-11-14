@@ -70,10 +70,16 @@ test: ## Run Rust + Python tests (fail-closed: runner chosen once, failures prop
 test-python: ## Run Python tests only
 	cd $(PYTHON_DIR) && python -m pytest tests/ -v
 
-test-ui: ## Run UI acceptance (Playwright via cargo harness). Requires ui build + chromium.
-	@echo "UI specs live in tests/ui_driver and run through cargo test targets"
-	@echo "(e.g. cargo test --test bn016_u1_topology_browser --offline)."
-	@echo "Run 'just verify-release' for the canonical UI build + acceptance gate."
+test-ui: ## Run UI browser acceptance (Playwright via cargo harness). Builds ui/dist and installs chromium if needed; any failure fails the target.
+	@set -e; \
+	if [ ! -d $(UI_DIR)/dist ]; then \
+		echo "ui/dist missing — building UI"; \
+		cd $(UI_DIR) && npm ci --no-audit --no-fund && npm run build; \
+	fi; \
+	cd tests/ui_driver && npm ci --no-audit --no-fund && npx playwright install chromium; \
+	cd ../..; \
+	echo "=== UI browser acceptance (bn015_u1_inventory_browser + bn016_u1_topology_browser) ==="; \
+	$(CARGO) test --test bn015_u1_inventory_browser --test bn016_u1_topology_browser --offline
 
 test-integration: ## Run every tests/*.rs integration target; any failure fails the target
 	@set -e; \
@@ -83,7 +89,7 @@ test-integration: ## Run every tests/*.rs integration target; any failure fails 
 		$(CARGO) test --test $$name --offline; \
 	done
 
-test-all: ## Run all test suites (Rust + Python). Browser acceptance runs via cargo test --test <name> (see justfile verify-release).
+test-all: ## Run all test suites: Rust + Python + UI browser acceptance. Any failure fails the target.
 	@echo "=== Rust tests ==="
 	@if cargo nextest --version >/dev/null 2>&1; then \
 		cargo nextest run --workspace; \
@@ -93,9 +99,8 @@ test-all: ## Run all test suites (Rust + Python). Browser acceptance runs via ca
 	fi
 	@echo "=== Python tests ==="
 	cd $(PYTHON_DIR) && python -m pytest tests/ -v
-	@echo "=== UI tests ==="
-	@echo "UI acceptance is Playwright-driven (tests/ui_driver) and runs through"
-	@echo "cargo test --test <suite> — see 'just verify-release' for the canonical gate."
+	@echo "=== UI browser tests ==="
+	$(MAKE) test-ui
 
 # ── Lint ───────────────────────────────────────────────────────────────────
 
