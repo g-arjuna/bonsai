@@ -553,6 +553,31 @@ are not reclassified as absent.
 **Existing evidence/source limitations:** `docs/build_performance.md`'s early 2026 cold/warm figures and `runs.csv`'s varied November measurements are historical and have mixed profiles/hosts/commands; `AGENTS.md` already requires sccache and focused builds while older `docs/DEVELOPMENT.md` contradicted it. These documentation corrections are guidance only. Rust stable [timings](https://doc.rust-lang.org/cargo/reference/timings.html), [profiles](https://doc.rust-lang.org/cargo/reference/profiles.html), [cache](https://doc.rust-lang.org/cargo/reference/build-cache.html), [test selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html), [sccache](https://github.com/mozilla/sccache/blob/main/docs/Rust.md) and [nextest archives](https://nexte.st/docs/ci-features/archiving/) underpin the proposed experiments.
 
 
+### 14 November 2026 — WP6.5A persistent message-template dedup (BN-011/EV1-3 slice)
+
+- **Implemented + unit-tested:** local-first three-stage embedding dedup
+  (exact fingerprint → normalized template fingerprint → provider call on
+  miss) in `python/bonsai_ml/message_templates.py`, wired into
+  `syslog_embedding_worker.py` behind `dedup_enabled` (default on).
+  Persistent versioned SQLite template registry
+  (`runtime/message_templates.db`); cache key carries scope, model id,
+  model revision and normalization version; atomic claim leases prevent
+  duplicate concurrent embedding; provider outputs validated before caching
+  (failures back off, never poison). Conservative token normalizer — Drain/Drain3
+  evaluated and rejected (unvendored dependency, similarity-merge collapse
+  risk); bare numbers, error codes, thresholds and up/down/admin-vs-failure
+  wording are never masked.
+- **Evidence:** `docs/merger/evidence/2026-11-14-wp65a-template-dedup/` —
+  22 focused tests pass; 10k-message benchmark shows 57.8% provider-text
+  reduction on mixed corpus (bge-small: 106.3s → 54.7s wall).
+- **Open:** WP6.2 worker defects (zero-vector provider paths, fetch/write-back
+  error swallowing, newest-first ordering, per-retry UUIDs), Prometheus/core
+  metrics surfacing, per-event `EventEmbedding` storage amplification and
+  100/1k/10k-device capacity modeling (WP6.5), clustering/search quality
+  (WP6.6). 17 pre-existing `python/tests` failures on main e071cc7 unrelated
+  to this change.
+
+
 ## Verified foundation, not a new queue
 
 - Imported routing crates and Bonsai routing service, public proxy/UI, scope-aware diagnostics, migration helpers and graph projector exist.

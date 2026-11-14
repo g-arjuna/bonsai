@@ -170,3 +170,5 @@ date,command,scope,wall_seconds,result,notes
 2026-11-13,cargo test -p bonsai --lib sqlite_store --offline,bonsai lib sqlite migration tests,111.0,pass,6/6 migration tests; ~1m51s compile + 1.2s run
 2026-11-13,cargo test --test bn015_u1_inventory_browser --offline,NetBox browser acceptance,422.0,pass,7m02s cold link incl all bins + 7.2s run; Playwright chromium; 1/1
 2026-11-13,npm run build (ui),ui vite build,6.37,pass,Onboarding.svelte + Devices.svelte compile; existing chunk warnings only
+2026-11-14,pytest python/tests/test_message_templates.py,WP6.5A dedup tests,1.2,pass,22/22; venv python; no cargo
+2026-11-14,python -m bonsai_ml.dedup_benchmark --embedder st --messages 10000,WP6.5A real-model bench,170.0,pass,bge-small CPU: baseline 106.3s vs dedup 54.7s; 57.8%% provider-text reduction

@@ -1,0 +1,22 @@
+{
+  "messages": 10000,
+  "unique_frac": 0.0,
+  "baseline": {
+    "provider_texts": 10000,
+    "wall_s": 0.255,
+    "texts_per_sec": 39283.4
+  },
+  "dedup": {
+    "provider_calls": 50,
+    "provider_texts_embedded": 3916,
+    "events_resolved": 10000,
+    "provider_calls_avoided": 6084,
+    "embedding_cache_hit_ratio": 0.6037,
+    "template_cardinality": 3916,
+    "template_occurrences": 10000,
+    "wall_s": 2.581,
+    "texts_per_sec": 3873.9,
+    "estimated_provider_ms_saved": 209.2
+  },
+  "provider_text_reduction": 0.6084
+}
