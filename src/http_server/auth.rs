@@ -504,6 +504,7 @@ pub(crate) struct LoginResponse {
 /// POST /api/auth/login — authenticate and issue a signed JWT.
 pub(super) async fn login_handler(
     State(state): State<AppState>,
+    tls: Option<axum::Extension<TlsConnection>>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, (StatusCode, String)> {
     let username = req.username.trim().to_string();
@@ -635,8 +636,12 @@ pub(super) async fn login_handler(
         error: String::new(),
     })
     .into_response();
+    // `Secure` is set only for requests that arrived over the verified
+    // TLS listener (TlsConnection extension); on plain HTTP the flag
+    // would cause browsers to drop the cookie.
+    let secure = if tls.is_some() { "; Secure" } else { "" };
     if let Ok(cookie_val) = axum::http::HeaderValue::from_str(&format!(
-        "bonsai_token={jwt}; Path=/; SameSite=Lax; HttpOnly"
+        "bonsai_token={jwt}; Path=/; SameSite=Lax; HttpOnly{secure}"
     )) {
         resp.headers_mut()
             .insert(axum::http::header::SET_COOKIE, cookie_val);
@@ -693,10 +698,15 @@ pub(super) async fn logout_handler(
                 })?;
         }
     }
+    let secure = if request.extensions().get::<TlsConnection>().is_some() {
+        "; Secure"
+    } else {
+        ""
+    };
     let mut resp = StatusCode::NO_CONTENT.into_response();
-    if let Ok(cookie_val) = axum::http::HeaderValue::from_str(
-        "bonsai_token=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly",
-    ) {
+    if let Ok(cookie_val) = axum::http::HeaderValue::from_str(&format!(
+        "bonsai_token=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly{secure}"
+    )) {
         resp.headers_mut()
             .insert(axum::http::header::SET_COOKIE, cookie_val);
     }
@@ -949,6 +959,14 @@ impl RoutingAccessScope {
         effective
     }
 }
+
+/// Marker extension inserted by the TLS accept loop for requests that
+/// arrived over a verified TLS connection. Auth handlers use it to set
+/// the `Secure` cookie attribute; plaintext-served requests never carry
+/// it, so cookies are not marked Secure on plain HTTP (which would make
+/// browsers drop them).
+#[derive(Debug, Clone, Copy)]
+pub struct TlsConnection;
 
 /// Authenticated subject for server-attributed administrative records, never a credential.
 #[derive(Debug, Clone)]

@@ -132,13 +132,24 @@ async fn migration_imports_users_keys_and_quarantines_graph_rows() -> Result<()>
     // Revocation imported.
     assert!(store.auth_store.is_jwt_revoked("testjti")?);
 
-    // Graph rows quarantined (disabled), not deleted.
+    // Graph rows quarantined (disabled AND scrubbed), not deleted. No
+    // credential material may remain queryable through the graph.
     for class in ["user", "api_key", "jwt_secret", "jwt_revoked"] {
         let items = store.list_config_items(Some(class.to_string())).await?;
         assert!(
             items.iter().all(|i| !i.enabled),
             "class {class} still has enabled rows"
         );
+        for item in &items {
+            assert!(
+                !item.content_json.contains(&pw_hash)
+                    && !item.content_json.contains(&key_hash)
+                    && !item.content_json.contains("ab".repeat(64).as_str()),
+                "class {class} row {} still carries credential material",
+                item.id
+            );
+            assert!(item.content_json.contains("migrated_to"));
+        }
     }
 
     // Idempotent: second run is a no-op.

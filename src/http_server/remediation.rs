@@ -1642,10 +1642,6 @@ const ALLOWED_CONFIG_CLASSES: &[&str] = &[
     "gnmi_known_issues",
     "playbook",
     "runtime_config",
-    "api_key",
-    "user",
-    "jwt_revoked",
-    "jwt_secret",
     "app_config",
 ];
 
@@ -1664,6 +1660,21 @@ pub(super) async fn upsert_config_item_handler(
         return Err((
             StatusCode::FORBIDDEN,
             "config class is restricted to admin principals".to_string(),
+        ));
+    }
+    // BN-022: credential-bearing classes moved to AuthStore. Writing them
+    // through the generic config API would re-pollute the graph with
+    // inert credential-shaped rows; auth material is managed exclusively
+    // through the dedicated /api/auth/* endpoints. `cert_config` remains
+    // allowed (vault references, not key material).
+    const RETIRED_CREDENTIAL_CLASSES: &[&str] =
+        &["user", "session", "api_key", "jwt_secret", "jwt_revoked"];
+    if RETIRED_CREDENTIAL_CLASSES.contains(&item.config_class.as_str()) {
+        return Err((
+            StatusCode::GONE,
+            "credential classes are managed by the protected auth store; \
+             use /api/auth/* endpoints"
+                .to_string(),
         ));
     }
     if item.id.is_empty() || item.id.len() > 256 {

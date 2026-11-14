@@ -1816,7 +1816,12 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                                     )
                                     .serve_connection(
                                         io,
-                                        hyper::service::service_fn(move |req| {
+                                        hyper::service::service_fn(move |mut req| {
+                                            // Mark requests served over the
+                                            // verified TLS listener so auth
+                                            // handlers can set Secure cookies.
+                                            req.extensions_mut()
+                                                .insert(bonsai::http_server::TlsConnection);
                                             let mut svc = svc.clone();
                                             async move { tower::Service::call(&mut svc, req).await }
                                         }),
