@@ -3160,10 +3160,21 @@ pub async fn load_projection_checkpoint(
 pub async fn resolve_routing_service_endpoint_config(
     store: &crate::graph::GraphStore,
 ) -> anyhow::Result<(String, Option<String>, bool)> {
+    // SEC-18: a graph READ ERROR is not "configuration absent". Silently
+    // defaulting to an empty item list would fall back to the env/default
+    // URL while a valid stored credential is retained — the token could
+    // then be transmitted to an unintended destination. Distinguish:
+    //   - storage unavailable  → hard error (fail closed);
+    //   - config absent        → explicit env/default fallback (unchanged).
     let items = store
         .list_config_items(Some("app_config".to_string()))
         .await
-        .unwrap_or_default();
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "routing endpoint config read failed; refusing to resolve \
+                 credentials against an unreadable graph: {e:#}"
+            )
+        })?;
     let db_url = items
         .iter()
         .find(|i| i.name == "routing_service_url" && i.enabled)

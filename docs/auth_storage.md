@@ -280,10 +280,16 @@ only counts, classes and record IDs.
   i.e. whenever the per-username map is saturated with live entries,
   regardless of whether the source IP is itself tracked.
   While the overflow bucket is locked, untracked usernames are rejected;
-  tracked accounts are unaffected. Residual: an attacker controlling
-  more than 4096 source addresses can force untracked logins into the
-  overflow bucket, which then fails closed for ALL untracked usernames
-  until expiry — bounded availability impact, no unlimited guessing.
+  tracked accounts are unaffected. The overflow tier applies whenever
+  the per-username tracker cannot admit an entry — i.e. the username
+  map is saturated with live (unexpired window or active lockout)
+  entries — regardless of how many distinct source addresses the
+  attacker controls; source-IP count is irrelevant to this trigger.
+  While the overflow bucket is locked, untracked usernames are rejected;
+  tracked accounts are unaffected. Residual: an attacker who keeps the
+  username map saturated forces untracked logins into the overflow
+  bucket, which then fails closed for ALL untracked usernames until
+  expiry — bounded availability impact, no unlimited guessing.
   The insertion-order queue is compacted once it exceeds twice the
   tracker bound, so fail/success cycles cannot grow it without limit.
   Concurrent expensive verification (Argon2id, LDAP binds) is bounded

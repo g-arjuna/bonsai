@@ -1366,9 +1366,9 @@ pub(super) async fn run_auth_cli(command: AuthCliCommand) -> Result<()> {
                 report.integrity_check, report.foreign_key_violations
             );
             if report.key_material_verified {
-                println!("  jwt key material: all {} record(s) decrypt OK (secret not printed)", report.jwt_key_count);
+                println!("  encrypted credential material: all {} record(s) across jwt_keys, service_tokens and sealed quarantine decrypt OK (secrets not printed)", report.encrypted_records_verified);
             } else {
-                println!("  jwt key material: no keys present to verify");
+                println!("  encrypted credential material: no encrypted records present to verify");
             }
             if report.jwt_env_override_active {
                 println!("  WARNING: BONSAI_JWT_SECRET env override is set — runtime JWT verification uses the env secret, not necessarily the verified DB keys");

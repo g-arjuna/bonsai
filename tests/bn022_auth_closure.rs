@@ -1955,3 +1955,291 @@ async fn protected_config_migration_resumes_and_rejects_conflicts() -> Result<()
     );
     Ok(())
 }
+
+// ── SEC-11..SEC-16: final secure-core invariant regressions ──────────
+
+/// SEC-11: a `migration_state=complete` marker must not certify an
+/// OLDER graph. Restoring a pre-migration graph backup re-exposes live
+/// credential records; `ensure_migrated` must refuse rather than let
+/// completion markers bypass credential isolation.
+#[tokio::test]
+async fn migration_marker_cannot_certify_older_graph() -> Result<()> {
+    clear_auth_env();
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    let pw = bonsai::http_server::hash_password("OlderGraphPassw0rd!1").unwrap();
+    let legacy = ConfigItemRecord {
+        id: "user-oldgraph".into(),
+        config_class: "user".into(),
+        vendor: String::new(),
+        name: "oldgraph-user".into(),
+        version: String::new(),
+        content_json: serde_json::json!({
+            "password_hash": pw, "role": "viewer", "last_login_ns": 0
+        })
+        .to_string(),
+        enabled: true,
+        created_by: "test".into(),
+    };
+    store.upsert_config_item(legacy.clone()).await?;
+    store.auth_store.migrate_from_graph(&store).await?;
+    store.auth_store.migrate_protected_config(&store).await?;
+    store.auth_store.ensure_migrated(&store).await?;
+
+    // Simulate restoring an older graph state: the same credential row
+    // is live again (id MERGE revives the tombstoned record).
+    store.upsert_config_item(legacy).await?;
+
+    // Fresh process-local migration state: the durable markers are
+    // complete, but the attached graph no longer matches them.
+    let store2 = GraphStore::open(
+        &dir.path().join("bonsai.db").to_string_lossy(),
+        256 * 1024 * 1024,
+    )?;
+    let err = store2
+        .auth_store
+        .ensure_migrated(&store2)
+        .await
+        .expect_err("complete markers must not certify a mismatched graph");
+    assert!(
+        format!("{err:#}").contains("unmigrated credential"),
+        "unexpected error: {err:#}"
+    );
+    // The live credential row must not be silently re-migrated either:
+    // the user must NOT reappear beyond what the auth store already has.
+    Ok(())
+}
+
+/// SEC-11 inverse: an older AuthStore (markers absent) paired with a
+/// newer migrated graph must fail closed — tombstones claim protected
+/// counterparts that do not exist in the fresh store.
+#[tokio::test]
+async fn older_auth_store_with_migrated_graph_fails_closed() -> Result<()> {
+    clear_auth_env();
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    let pw = bonsai::http_server::hash_password("InversePassw0rd!1").unwrap();
+    store
+        .upsert_config_item(ConfigItemRecord {
+            id: "user-inv".into(),
+            config_class: "user".into(),
+            vendor: String::new(),
+            name: "inv-user".into(),
+            version: String::new(),
+            content_json: serde_json::json!({
+                "password_hash": pw, "role": "viewer", "last_login_ns": 0
+            })
+            .to_string(),
+            enabled: true,
+            created_by: "test".into(),
+        })
+        .await?;
+    store.auth_store.migrate_from_graph(&store).await?;
+    store.auth_store.migrate_protected_config(&store).await?;
+    drop(store);
+
+    // Replace the AuthStore with a fresh (pre-migration) one while
+    // keeping the migrated graph.
+    let auth_path = bonsai::auth_store::AuthStore::path_for_graph(
+        &dir.path().join("bonsai.db").to_string_lossy(),
+    );
+    std::fs::remove_file(&auth_path)?;
+    let _ = std::fs::remove_file(auth_path.with_extension("db.key"));
+    let store2 = GraphStore::open(
+        &dir.path().join("bonsai.db").to_string_lossy(),
+        256 * 1024 * 1024,
+    )?;
+    let err = store2
+        .auth_store
+        .ensure_migrated(&store2)
+        .await
+        .expect_err("tombstones without counterparts must abort migration");
+    assert!(
+        format!("{err:#}").contains("counterpart")
+            || format!("{err:#}").contains("migration"),
+        "unexpected error: {err:#}"
+    );
+    Ok(())
+}
+
+/// SEC-12: dispositions are class/name-scoped. A protected service
+/// config tombstone claiming `retired`/`scrubbed` (no protected
+/// counterpart) must be rejected — by the graph write guard AND by
+/// migration validation.
+#[tokio::test]
+async fn protected_tombstone_requires_valid_disposition() -> Result<()> {
+    clear_auth_env();
+    let dir = TempDir::new()?;
+    let store = open_store(&dir);
+    for disposition in ["retired", "skipped_env_override", "scrubbed"] {
+        let item = migration_tombstone(
+            "app-cfg-evil",
+            "routing_service_token",
+            "app_config",
+            disposition,
+        );
+        assert!(
+            store.upsert_config_item(item).await.is_err(),
+            "protected tombstone with disposition '{disposition}' must be rejected"
+        );
+    }
+    // A `quarantined` claim without a sealed counterpart is also rejected.
+    let item = migration_tombstone(
+        "app-cfg-evil2",
+        "routing_service_token",
+        "app_config",
+        "quarantined",
+    );
+    assert!(store.upsert_config_item(item).await.is_err());
+    // A valid `imported` tombstone bound to a real service token AND a
+    // real persisted protected record IS writable through the guarded
+    // path. The protected source row is created via the audited
+    // fixture-only unchecked path (pre-migration graph state).
+    store
+        .auth_store
+        .set_service_token("routing_service_token", "tok-sec12")?;
+    store
+        .upsert_config_item_unchecked(cfg_item(
+            "app-cfg-ok",
+            "app_config",
+            "routing_service_token",
+            "\"tok-sec12\"",
+        ))
+        .await?;
+    // Now tombstone it through the guarded path: disable + marker
+    // content, bound to the existing protected identity.
+    let tomb = migration_tombstone(
+        "app-cfg-ok",
+        "routing_service_token",
+        "app_config",
+        "imported",
+    );
+    store.upsert_config_item(tomb).await?;
+    Ok(())
+}
+
+/// SEC-14: with a wrong at-rest key, `AuthStore::open` must fail BEFORE
+/// sealing legacy plaintext quarantine rows — no mixed-key credential
+/// state, no destroyed evidence.
+#[test]
+fn wrong_key_fails_before_touching_plaintext_quarantine() -> Result<()> {
+    clear_auth_env();
+    let dir = tempfile::tempdir()?;
+    let auth_path = dir.path().join("bonsai_auth.db");
+    let key_path = auth_path.with_extension("db.key");
+    {
+        let store = AuthStore::open(&auth_path)?;
+        let _ = store.jwt_secret()?;
+        store.set_service_token("internal_service_token", "tok-sec14")?;
+        // Legacy plaintext quarantine row (pre-seal format).
+        let conn = rusqlite::Connection::open(&auth_path)?;
+        conn.execute(
+            "INSERT INTO auth_quarantine(record_class, item_id, content_json, \
+             content_sha256, content_enc, reason, quarantined_at_ns) \
+             VALUES('user', 'user-legacy', '{\"password_hash\":\"x\"}', '', NULL, \
+             'legacy plaintext', 1)",
+            [],
+        )?;
+        drop(conn);
+        drop(store);
+    }
+    // Corrupt the keyfile: every encrypted class now fails verification.
+    std::fs::write(&key_path, format!("{}\n", "0".repeat(64)))?;
+    let err = match AuthStore::open(&auth_path) {
+        Ok(_) => panic!("wrong key must fail closed"),
+        Err(e) => e,
+    };
+    assert!(format!("{err:#}").contains("decrypt") || format!("{err:#}").contains("key"), "{err:#}");
+    // The plaintext row must be UNTOUCHED (content_enc still NULL).
+    let conn = rusqlite::Connection::open(&auth_path)?;
+    let enc_is_null: bool = conn.query_row(
+        "SELECT content_enc IS NULL FROM auth_quarantine WHERE item_id = 'user-legacy'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert!(enc_is_null, "wrong-key open mutated the plaintext quarantine row");
+    Ok(())
+}
+
+/// SEC-16: verify_backup enforces the per-schema required-table
+/// contract — a v4 snapshot missing service_tokens is rejected, while a
+/// genuine v3-layout snapshot (table absent, version 3) verifies.
+#[test]
+fn verify_backup_schema_compat_contract() -> Result<()> {
+    clear_auth_env();
+    let dir = tempfile::tempdir()?;
+    let auth_path = dir.path().join("bonsai_auth.db");
+    let store = AuthStore::open(&auth_path)?;
+    let _ = store.jwt_secret()?;
+    store.set_service_token("routing_service_token", "tok-sec16")?;
+
+    let snap = dir.path().join("snap.db");
+    let manifest = store.backup_to(&snap)?;
+    let keyfile = auth_path.with_extension("db.key");
+
+    // v4 baseline verifies.
+    let mpath = snap.with_extension("manifest.json");
+    AuthStore::verify_backup(&snap, &mpath, Some(&keyfile))?;
+
+    // Downgrade a COPY to schema v3 (drop service_tokens, set version 3)
+    // and write a matching v3 manifest — must verify read-only.
+    let snap3 = dir.path().join("snap3.db");
+    std::fs::copy(&snap, &snap3)?;
+    {
+        let conn = rusqlite::Connection::open(&snap3)?;
+        conn.execute_batch(
+            "DROP TABLE service_tokens;
+             UPDATE schema_meta SET value='3' WHERE key='schema_version';",
+        )?;
+    }
+    let (sha, size) = {
+        use sha2::Digest;
+        let bytes = std::fs::read(&snap3)?;
+        (hex::encode(sha2::Sha256::digest(&bytes)), bytes.len() as u64)
+    };
+    let m3 = serde_json::json!({
+        "format": "bonsai-auth-backup-v2",
+        "schema_version": 3,
+        "created_at_ns": manifest.created_at_ns,
+        "snapshot_sha256": sha,
+        "snapshot_size_bytes": size,
+        "key_source": "keyfile",
+        "migration_state": manifest.migration_state,
+        "user_count": manifest.user_count,
+        "api_key_count": manifest.api_key_count,
+        "jwt_key_count": manifest.jwt_key_count,
+        "jwt_revoked_count": manifest.jwt_revoked_count,
+        "quarantined_record_count": manifest.quarantined_record_count,
+        "service_token_count": null,
+    });
+    let m3path = snap3.with_extension("manifest.json");
+    std::fs::write(&m3path, serde_json::to_string_pretty(&m3)? + "\n")?;
+    let v3 = AuthStore::verify_backup(&snap3, &m3path, Some(&keyfile))?;
+    assert_eq!(v3.schema_version, 3);
+    assert_eq!(v3.service_token_count, None);
+    assert!(v3.key_material_verified);
+
+    // Same v3-layout snapshot but manifest/meta claim v4 → reject:
+    // missing required table is not a valid zero-record table.
+    let conn = rusqlite::Connection::open(&snap3)?;
+    conn.execute(
+        "UPDATE schema_meta SET value='4' WHERE key='schema_version'",
+        [],
+    )?;
+    drop(conn);
+    let (sha4, size4) = {
+        use sha2::Digest;
+        let bytes = std::fs::read(&snap3)?;
+        (hex::encode(sha2::Sha256::digest(&bytes)), bytes.len() as u64)
+    };
+    let mut m4: serde_json::Value = m3.clone();
+    m4["schema_version"] = serde_json::json!(4);
+    m4["snapshot_sha256"] = serde_json::json!(sha4);
+    m4["snapshot_size_bytes"] = serde_json::json!(size4);
+    m4["service_token_count"] = serde_json::json!(0);
+    std::fs::write(&m3path, serde_json::to_string_pretty(&m4)? + "\n")?;
+    let err = AuthStore::verify_backup(&snap3, &m3path, Some(&keyfile))
+        .expect_err("v4 schema missing service_tokens must be rejected");
+    assert!(format!("{err:#}").contains("service_tokens"), "{err:#}");
+    Ok(())
+}

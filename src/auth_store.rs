@@ -289,9 +289,19 @@ impl AuthStore {
         // init is idempotent (IF NOT EXISTS + INSERT OR REPLACE), so a
         // bounded SQLITE_BUSY retry is safe and closes the residual
         // concurrent-first-open race without inflating timeouts.
+        //
+        // SEC-13: retries are bounded by an explicit elapsed-time
+        // deadline, not an attempt count — under persistent lock
+        // contention each attempt can block up to the 5 s busy_timeout,
+        // so 100 attempts could stall startup for minutes. Startup now
+        // fails after ~SCHEMA_INIT_DEADLINE of continuous contention
+        // (plus at most one in-flight busy_timeout), which is the
+        // documented operator-visible failure deadline.
+        const SCHEMA_INIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+        let init_deadline = std::time::Instant::now() + SCHEMA_INIT_DEADLINE;
         let mut init_done = false;
         let mut init_err: Option<anyhow::Error> = None;
-        for _ in 0..100 {
+        loop {
             let attempt = (|| -> Result<()> {
                 let tx = conn
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -395,10 +405,38 @@ impl AuthStore {
             )
         })?;
 
+                // SEC-13: version-specific upgrades run INSIDE the same
+                // transaction, BEFORE the version marker is published.
+                // CREATE TABLE IF NOT EXISTS does not add columns to an
+                // existing table; each sealed-content column is added
+                // independently so a previously interrupted upgrade can
+                // never leave a half-upgraded table behind a "complete"
+                // version marker.
+                for (col, ddl) in [
+                    ("content_sha256", "TEXT NOT NULL DEFAULT ''"),
+                    ("content_enc", "BLOB"),
+                ] {
+                    let col_exists: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('auth_quarantine') \
+                         WHERE name = ?1)",
+                        params![col],
+                        |r| r.get(0),
+                    )?;
+                    if !col_exists {
+                        tx.execute(
+                            &format!("ALTER TABLE auth_quarantine ADD COLUMN {col} {ddl}"),
+                            [],
+                        )
+                        .with_context(|| {
+                            format!("failed to upgrade auth_quarantine column '{col}'")
+                        })?;
+                    }
+                }
+
                 // Durable schema marker: write the current version
-                // unconditionally (v1 databases are upgraded in place —
-                // the v1→v2 delta is the additive auth_quarantine table
-                // created above).
+                // unconditionally, and only AFTER every required column
+                // and table exists inside this transaction (v1 databases
+                // are upgraded in place — the deltas are additive).
                 tx.execute(
                     "INSERT OR REPLACE INTO schema_meta(key, value) \
                      VALUES('schema_version', ?1)",
@@ -419,6 +457,9 @@ impl AuthStore {
                 }
                 Err(e) if is_sqlite_busy(&e) => {
                     init_err = Some(e);
+                    if std::time::Instant::now() >= init_deadline {
+                        break;
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
                 Err(e) => return Err(e),
@@ -426,12 +467,16 @@ impl AuthStore {
         }
         if !init_done {
             return Err(init_err.unwrap_or_else(|| {
-                anyhow!("auth store schema init failed under concurrency")
+                anyhow!(
+                    "auth store schema init failed: SQLITE_BUSY persisted beyond the \
+                     {SCHEMA_INIT_DEADLINE:?} startup deadline"
+                )
             }));
         }
         // Post-condition: the marker must read back as the supported
-        // version, and every required table must exist — a partially
-        // initialized store must never appear usable.
+        // version, every required table must exist, and the sealed-content
+        // columns must be present — a partially initialized or partially
+        // upgraded store must never appear usable.
         let verify_version = read_schema_version(&conn)?;
         if verify_version != Some(SCHEMA_VERSION) {
             bail!(
@@ -439,6 +484,24 @@ impl AuthStore {
                 path.display(),
                 verify_version
             );
+        }
+        for (col, _) in [
+            ("content_sha256", ""),
+            ("content_enc", ""),
+        ] {
+            let col_exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('auth_quarantine') \
+                 WHERE name = ?1)",
+                params![col],
+                |r| r.get(0),
+            )?;
+            if !col_exists {
+                bail!(
+                    "auth store '{}' missing required auth_quarantine column '{col}' \
+                     after initialization",
+                    path.display()
+                );
+            }
         }
         for table in [
             "users",
@@ -461,23 +524,6 @@ impl AuthStore {
                     path.display()
                 );
             }
-        }
-
-        // v2 → v3 upgrade: seal quarantine content columns on databases
-        // created before AUTH-C4. CREATE TABLE IF NOT EXISTS does not add
-        // columns to an existing table, so ALTER explicitly.
-        let has_sha_col: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('auth_quarantine') \
-             WHERE name = 'content_sha256')",
-            [],
-            |r| r.get(0),
-        )?;
-        if !has_sha_col {
-            conn.execute_batch(
-                "ALTER TABLE auth_quarantine ADD COLUMN content_sha256 TEXT NOT NULL DEFAULT '';
-                 ALTER TABLE auth_quarantine ADD COLUMN content_enc BLOB;",
-            )
-            .context("failed to upgrade auth_quarantine to sealed-content schema")?;
         }
 
         restrict_permissions(path)?;
@@ -519,14 +565,12 @@ impl AuthStore {
             );
         }
 
-        // AUTH-C4: any quarantine rows written before sealed content
-        // (schema v2, content_enc NULL) are re-encrypted in place now that
-        // the at-rest key is resolved. Idempotent — sealed rows are skipped.
-        seal_legacy_quarantine_plaintext(&conn, &secret_key)?;
-
-        // SEC-06: prove the resolved key actually decrypts every
-        // encrypted credential class present — a wrong or mismatched
-        // keyfile must fail closed at startup, not at first use.
+        // SEC-14: prove the resolved key decrypts every PRE-EXISTING
+        // encrypted credential class BEFORE mutating any legacy plaintext
+        // quarantine row. A wrong or mismatched key must fail closed here
+        // — sealing plaintext under an invalid key first would create
+        // mixed-key credential state and destroy the evidence that the
+        // supplied key was wrong.
         if let Err(e) = verify_encrypted_material(&conn, &secret_key) {
             if keyfile_created {
                 let _ = std::fs::remove_file(&keyfile_path);
@@ -534,6 +578,28 @@ impl AuthStore {
             return Err(e).with_context(|| {
                 format!(
                     "auth store '{}' encrypted material does not verify under \
+                     the resolved at-rest key",
+                    path.display()
+                )
+            });
+        }
+
+        // AUTH-C4: any quarantine rows written before sealed content
+        // (schema v2, content_enc NULL) are re-encrypted in place now
+        // that the at-rest key is verified against existing material.
+        // Idempotent and transactional — a failure rolls back every row,
+        // so an interrupted seal can be safely resumed on the next open.
+        seal_legacy_quarantine_plaintext(&mut conn, &secret_key)?;
+
+        // Verify the RESULTING state: freshly sealed rows must decrypt
+        // and satisfy their sha256 integrity binding under the same key.
+        if let Err(e) = verify_encrypted_material(&conn, &secret_key) {
+            if keyfile_created {
+                let _ = std::fs::remove_file(&keyfile_path);
+            }
+            return Err(e).with_context(|| {
+                format!(
+                    "auth store '{}' post-seal verification failed under \
                      the resolved at-rest key",
                     path.display()
                 )
@@ -1532,24 +1598,110 @@ impl AuthStore {
             return Ok(());
         }
         self.last_attempt_ns.store(now_ns(), Ordering::Release);
-        let report = self.migrate_from_graph(store).await?;
+
+        // SEC-11: a completion marker certifies the graph state it was
+        // written against — NOT whatever graph is attached now. An older
+        // graph backup can carry live legacy credential records even
+        // though this AuthStore reports migration complete, and those
+        // records would be graph-readable again. Before trusting either
+        // marker, prove the CURRENTLY ATTACHED graph holds no
+        // unmigrated credential material for the marked-complete classes.
+        // This runs once per process (gated by `migrated`), never per
+        // request.
+        let mig_done = self.get_auth_config("migration_state")?.as_deref() == Some("complete");
+        let prot_done =
+            self.get_auth_config("protected_config_state")?.as_deref() == Some("complete");
+        if mig_done || prot_done {
+            let (cred_pending, prot_pending) = self.scan_pending_graph_credentials(store).await?;
+            if mig_done && cred_pending {
+                bail!(
+                    "auth migration marker 'migration_state=complete' but the attached \
+                     graph still contains unmigrated credential records; refusing to \
+                     serve auth — the graph does not match this auth store. Restore \
+                     the graph state the migration completed against, or reconcile \
+                     manually (docs/auth_storage.md §migration)."
+                );
+            }
+            if prot_done && prot_pending {
+                bail!(
+                    "auth migration marker 'protected_config_state=complete' but the \
+                     attached graph still contains unmigrated protected config records; \
+                     refusing to serve auth — the graph does not match this auth store. \
+                     Restore the graph state the migration completed against, or \
+                     reconcile manually (docs/auth_storage.md §migration)."
+                );
+            }
+            if mig_done && prot_done {
+                self.migrated.store(true, Ordering::Release);
+                return Ok(());
+            }
+        }
+
+        if !mig_done {
+            let report = self.migrate_from_graph(store).await?;
+            if !report.already_complete {
+                tracing::info!(
+                    users = report.users_imported,
+                    api_keys = report.api_keys_imported,
+                    jwt_revocations = report.jwt_revocations_imported,
+                    malformed = report.malformed_records,
+                    quarantined = report.quarantined_rows,
+                    "auth storage migration complete"
+                );
+            }
+        }
         // F7/F8: protected service-token ConfigItems are a separate
         // record set with their own durable marker — runs even when the
         // credential-class migration already completed on an earlier
         // build.
-        self.migrate_protected_config(store).await?;
-        if !report.already_complete {
-            tracing::info!(
-                users = report.users_imported,
-                api_keys = report.api_keys_imported,
-                jwt_revocations = report.jwt_revocations_imported,
-                malformed = report.malformed_records,
-                quarantined = report.quarantined_rows,
-                "auth storage migration complete"
-            );
+        if !prot_done {
+            self.migrate_protected_config(store).await?;
         }
         self.migrated.store(true, Ordering::Release);
         Ok(())
+    }
+
+    /// SEC-11: scan the attached graph for credential-bearing records
+    /// that are NOT validated migration tombstones.
+    ///
+    /// Returns `(credential_pending, protected_pending)`:
+    /// - `credential_pending`: any non-tombstone record in the migrated
+    ///   credential classes (`user`, `api_key`, `jwt_secret`,
+    ///   `jwt_revoked`, `session`).
+    /// - `protected_pending`: any non-tombstone record whose name is a
+    ///   protected secret config name, in ANY class.
+    ///
+    /// A record that merely *resembles* a tombstone is not trusted here —
+    /// `is_migration_tombstone` is the cheap marker predicate; strict
+    /// schema + counterpart validation happens inside the migration
+    /// paths. For certification purposes a marker-bearing row is treated
+    /// as already-scrubbed evidence (the strict checks ran when it was
+    /// written and are re-run by any resumed migration).
+    async fn scan_pending_graph_credentials(
+        &self,
+        store: &GraphStore,
+    ) -> Result<(bool, bool)> {
+        let items = store
+            .list_config_items(None)
+            .await
+            .context("migration certification: failed to list config items")?;
+        let mut cred_pending = false;
+        let mut prot_pending = false;
+        for item in &items {
+            if is_migration_tombstone(item) {
+                continue;
+            }
+            if matches!(
+                item.config_class.as_str(),
+                "user" | "api_key" | "jwt_secret" | "jwt_revoked" | "session"
+            ) {
+                cred_pending = true;
+            }
+            if protected_config_disposition(&item.name).is_some() {
+                prot_pending = true;
+            }
+        }
+        Ok((cred_pending, prot_pending))
     }
 
     /// Staged, idempotent migration from graph `ConfigItem` records.
@@ -2666,6 +2818,41 @@ impl AuthStore {
                 item.id
             );
         }
+        // SEC-12: dispositions are scoped to the record class and name
+        // they were written for — a tombstone may not claim a disposition
+        // its record could never legitimately produce. In particular,
+        // protected service-config records may ONLY carry `imported`
+        // (verified service_tokens counterpart) or `quarantined`
+        // (verified auth_quarantine counterpart); `retired`,
+        // `skipped_env_override` and `scrubbed` would let a generic
+        // graph write retire credential evidence without any protected
+        // counterpart.
+        let cred_class = matches!(
+            class,
+            "user" | "api_key" | "jwt_secret" | "jwt_revoked" | "session"
+        );
+        let disposition_allowed = if cred_class {
+            match (class, disposition.as_str()) {
+                // Sessions carry no credential material — retirement is
+                // their only disposition.
+                ("session", "retired") => true,
+                // jwt_secret under a BONSAI_JWT_SECRET env override is
+                // explicitly skipped rather than imported.
+                ("jwt_secret", "imported" | "quarantined" | "skipped_env_override") => true,
+                ("user" | "api_key" | "jwt_revoked", "imported" | "quarantined") => true,
+                _ => false,
+            }
+        } else {
+            protected_config_disposition(&item.name).is_some()
+                && matches!(disposition.as_str(), "imported" | "quarantined")
+        };
+        if !disposition_allowed {
+            bail!(
+                "migration tombstone '{class}/{}' has disposition '{disposition}' \
+                 that is not valid for this record class/name",
+                item.id
+            );
+        }
         match disposition.as_str() {
             "imported" => self.verify_imported_counterpart(class, item)?,
             "quarantined" => self.verify_quarantined_counterpart(class, item)?,
@@ -2797,6 +2984,10 @@ pub struct AuthBackupManifest {
     pub api_key_count: usize,
     pub jwt_key_count: usize,
     pub jwt_revoked_count: usize,
+    /// `serde(default)` tolerates manifests written before this field
+    /// existed (treated as 0 — only consistent with snapshots that
+    /// legitimately lack the table, i.e. schema v1).
+    #[serde(default)]
     pub quarantined_record_count: usize,
     /// Count of sealed service tokens (F7/F8). `None` in manifests
     /// written before the service_tokens table existed — verification
@@ -3108,6 +3299,50 @@ impl AuthStore {
             );
         }
 
+        // SEC-16: explicit per-schema required-table contract. A missing
+        // required table is NEVER equivalent to a valid zero-record
+        // table — verification rejects with an operator-facing error
+        // rather than silently treating absent storage as empty.
+        let table_exists = |name: &str| -> Result<bool> {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                params![name],
+                |r| r.get(0),
+            )
+            .with_context(|| format!("verification table probe failed for '{name}'"))
+        };
+        let upgrade_hint = "restore procedure: open the snapshot with a current \
+                            bonsai binary to upgrade it in place, or re-create the \
+                            backup from the upgraded store";
+        for t in [
+            "users",
+            "api_keys",
+            "jwt_keys",
+            "jwt_revoked",
+            "auth_config",
+            "auth_audit",
+        ] {
+            if !table_exists(t)? {
+                bail!(
+                    "snapshot schema v{schema_version} is missing required table '{t}'; \
+                     not a valid auth store backup ({upgrade_hint})"
+                );
+            }
+        }
+        // auth_quarantine was added in schema v2; service_tokens in v4.
+        if schema_version >= 2 && !table_exists("auth_quarantine")? {
+            bail!(
+                "snapshot schema v{schema_version} is missing required table \
+                 'auth_quarantine'; not a valid auth store backup ({upgrade_hint})"
+            );
+        }
+        if schema_version >= 4 && !table_exists("service_tokens")? {
+            bail!(
+                "snapshot schema v{schema_version} is missing required table \
+                 'service_tokens'; not a valid auth store backup ({upgrade_hint})"
+            );
+        }
+
         let count = |sql: &str| -> Result<usize> {
             conn.query_row(sql, [], |r| r.get::<_, i64>(0))
                 .map(|n| n as usize)
@@ -3117,29 +3352,46 @@ impl AuthStore {
         let api_key_count = count("SELECT COUNT(*) FROM api_keys")?;
         let jwt_key_count = count("SELECT COUNT(*) FROM jwt_keys")?;
         let jwt_revoked_count = count("SELECT COUNT(*) FROM jwt_revoked")?;
-        let quarantined = count("SELECT COUNT(*) FROM auth_quarantine")?;
+        let quarantined = if table_exists("auth_quarantine")? {
+            Some(count("SELECT COUNT(*) FROM auth_quarantine")?)
+        } else {
+            None
+        };
         for (name, actual, expected) in [
             ("users", user_count, manifest.user_count),
             ("api_keys", api_key_count, manifest.api_key_count),
             ("jwt_keys", jwt_key_count, manifest.jwt_key_count),
             ("jwt_revoked", jwt_revoked_count, manifest.jwt_revoked_count),
-            (
-                "auth_quarantine",
-                quarantined,
-                manifest.quarantined_record_count,
-            ),
         ] {
             if actual != expected {
                 bail!("manifest count mismatch for {name}: manifest={expected} actual={actual}");
             }
         }
+        match quarantined {
+            Some(actual) => {
+                if actual != manifest.quarantined_record_count {
+                    bail!(
+                        "manifest count mismatch for auth_quarantine: \
+                         manifest={} actual={actual}",
+                        manifest.quarantined_record_count
+                    );
+                }
+            }
+            // v1 snapshots legitimately lack the table; a manifest
+            // claiming quarantined records against it is inconsistent.
+            None => {
+                if manifest.quarantined_record_count != 0 {
+                    bail!(
+                        "manifest claims {} quarantined record(s) but the snapshot \
+                         has no auth_quarantine table (schema v1)",
+                        manifest.quarantined_record_count
+                    );
+                }
+            }
+        }
         // service_tokens (schema v4): snapshots predating the table have
         // no rows to compare; manifests predating the field carry None.
-        let has_service_tokens: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='service_tokens')",
-            [],
-            |r| r.get(0),
-        )?;
+        let has_service_tokens = table_exists("service_tokens")?;
         let service_token_count = if has_service_tokens {
             Some(count("SELECT COUNT(*) FROM service_tokens")?)
         } else {
@@ -3215,14 +3467,33 @@ impl AuthStore {
         } else {
             Vec::new()
         };
-        let quar_sealed: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM auth_quarantine WHERE content_enc IS NOT NULL",
-            [],
-            |r| r.get(0),
-        )?;
+        // Sealed-quarantine count is schema-aware: pre-v3 snapshots have
+        // no content_enc column, so they contribute no encrypted rows.
+        let quar_sealed: i64 = {
+            let has_enc_col: bool = if quarantined.is_some() {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('auth_quarantine') \
+                     WHERE name = 'content_enc')",
+                    [],
+                    |r| r.get(0),
+                )?
+            } else {
+                false
+            };
+            if has_enc_col {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM auth_quarantine WHERE content_enc IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )?
+            } else {
+                0
+            }
+        };
         let encrypted_present =
             !jwt_rows.is_empty() || !svc_token_rows.is_empty() || quar_sealed > 0;
         let mut key_material_verified = false;
+        let mut encrypted_records_verified = 0usize;
         if encrypted_present {
             let secret_key = resolve_secret_key_readonly(snapshot, keyfile)
                 .context("cannot verify encrypted credential material: no usable at-rest key")?;
@@ -3230,6 +3501,8 @@ impl AuthStore {
             debug_assert_eq!(counts.jwt_keys, jwt_rows.len());
             debug_assert_eq!(counts.service_tokens, svc_token_rows.len());
             debug_assert_eq!(counts.quarantine_records as i64, quar_sealed);
+            encrypted_records_verified =
+                counts.jwt_keys + counts.service_tokens + counts.quarantine_records;
             if counts.quarantine_plaintext > 0 {
                 warnings.push(format!(
                     "{} quarantine record(s) hold pre-seal plaintext content \
@@ -3273,11 +3546,12 @@ impl AuthStore {
             active_jwt_keys: active_jwt,
             retired_jwt_keys: retired_jwt,
             jwt_revoked_count,
-            quarantined_record_count: quarantined,
+            quarantined_record_count: quarantined.unwrap_or(0),
             service_token_count,
             integrity_check: integrity,
             foreign_key_violations: fk_violations as usize,
             key_material_verified,
+            encrypted_records_verified,
             jwt_env_override_active,
             warnings,
         })
@@ -3371,6 +3645,10 @@ pub struct BackupVerification {
     /// (JWT keys, service tokens, sealed quarantine content) decrypted
     /// under the resolved at-rest key.
     pub key_material_verified: bool,
+    /// Total encrypted credential records (across ALL classes — JWT
+    /// keys, service tokens, sealed quarantine content) that decrypted
+    /// successfully during verification.
+    pub encrypted_records_verified: usize,
     /// True when `BONSAI_JWT_SECRET` is set — runtime JWT verification
     /// then uses the env secret, which this check cannot validate.
     pub jwt_env_override_active: bool,
@@ -3702,10 +3980,13 @@ fn age_open(key: &age::secrecy::SecretString, ciphertext: &[u8]) -> Result<Strin
 
 /// Re-encrypt any `auth_quarantine` rows that still hold plaintext
 /// `content_json` with `content_enc IS NULL` (schema v2 leftovers,
-/// AUTH-C4). Runs at `AuthStore::open` once the at-rest key is resolved.
-/// Idempotent: sealed rows are skipped.
+/// AUTH-C4). Runs at `AuthStore::open` once the at-rest key is resolved
+/// AND verified against existing encrypted material (SEC-14).
+/// Idempotent: sealed rows are skipped. All updates run in ONE
+/// transaction — an interrupted seal rolls back cleanly and resumes on
+/// the next open.
 fn seal_legacy_quarantine_plaintext(
-    conn: &Connection,
+    conn: &mut Connection,
     key: &age::secrecy::SecretString,
 ) -> Result<()> {
     let rows: Vec<(i64, String, String)> = {
@@ -3722,6 +4003,10 @@ fn seal_legacy_quarantine_plaintext(
         })?;
         mapped.collect::<rusqlite::Result<Vec<_>>>()?
     };
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
     for (id, content_json, sha) in rows {
         let enc = age_seal(key, &content_json)?;
         let sha = if sha.is_empty() {
@@ -3734,12 +4019,13 @@ fn seal_legacy_quarantine_plaintext(
             "original_sha256": sha,
         })
         .to_string();
-        conn.execute(
+        tx.execute(
             "UPDATE auth_quarantine SET content_json = ?1, content_sha256 = ?2, \
              content_enc = ?3 WHERE id = ?4",
             params![descriptor, sha, enc, id],
         )?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -3825,37 +4111,73 @@ fn verify_encrypted_material(
             counts.service_tokens += 1;
         }
     }
-    let mut stmt = conn.prepare(
-        "SELECT id, content_enc, content_sha256 FROM auth_quarantine \
-         WHERE content_enc IS NOT NULL",
-    )?;
-    let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, Vec<u8>>(1)?,
-            r.get::<_, String>(2)?,
-        ))
-    })?;
-    for row in rows {
-        let (id, enc, sha) = row?;
-        let plain = age_open(key, &enc).with_context(|| {
-            format!("quarantine record {id} does not decrypt under the resolved key")
-        })?;
-        if !sha.is_empty() {
-            let actual = hex::encode(Sha256::digest(plain.as_bytes()));
-            if actual != sha {
-                bail!(
-                    "quarantine record {id} decrypted content fails its sha256 integrity binding"
-                );
-            }
-        }
-        counts.quarantine_records += 1;
-    }
-    counts.quarantine_plaintext = conn.query_row(
-        "SELECT COUNT(*) FROM auth_quarantine WHERE content_enc IS NULL",
+    // SEC-16: historical schemas may lack auth_quarantine entirely (v1)
+    // or the sealed-content columns (v2). Verify whatever encrypted
+    // material the schema actually supports; plaintext-legacy rows are
+    // counted, never treated as verified ciphertext.
+    let quar_table: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='auth_quarantine')",
         [],
-        |r| r.get::<_, i64>(0),
-    )? as usize;
+        |r| r.get(0),
+    )?;
+    if quar_table {
+        let enc_col: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('auth_quarantine') \
+             WHERE name = 'content_enc')",
+            [],
+            |r| r.get(0),
+        )?;
+        if enc_col {
+            let sha_col: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('auth_quarantine') \
+                 WHERE name = 'content_sha256')",
+                [],
+                |r| r.get(0),
+            )?;
+            // content_sha256 exists whenever content_enc does in every
+            // supported layout, but select it defensively.
+            let sha_expr = if sha_col { "content_sha256" } else { "''" };
+            let mut stmt = conn.prepare(&format!(
+                "SELECT id, content_enc, {sha_expr} FROM auth_quarantine \
+                 WHERE content_enc IS NOT NULL"
+            ))?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, enc, sha) = row?;
+                let plain = age_open(key, &enc).with_context(|| {
+                    format!("quarantine record {id} does not decrypt under the resolved key")
+                })?;
+                if !sha.is_empty() {
+                    let actual = hex::encode(Sha256::digest(plain.as_bytes()));
+                    if actual != sha {
+                        bail!(
+                            "quarantine record {id} decrypted content fails its sha256 integrity binding"
+                        );
+                    }
+                }
+                counts.quarantine_records += 1;
+            }
+            counts.quarantine_plaintext = conn.query_row(
+                "SELECT COUNT(*) FROM auth_quarantine WHERE content_enc IS NULL",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? as usize;
+        } else {
+            // Pre-seal schema (v2): every quarantine row holds plaintext
+            // content_json — report, do not verify as ciphertext.
+            counts.quarantine_plaintext = conn.query_row(
+                "SELECT COUNT(*) FROM auth_quarantine",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? as usize;
+        }
+    }
     Ok(counts)
 }
 
@@ -3900,54 +4222,18 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
     }
     let key_path = auth_db_path.with_extension("db.key");
     match std::fs::symlink_metadata(&key_path) {
-        Ok(md) => {
-            // Reject symlinks and foreign-owned files: the keyfile must
-            // be a regular file owned by the service identity.
-            if md.file_type().is_symlink() {
-                bail!(
-                    "auth keyfile '{}' is a symlink; refusing to use it",
-                    key_path.display()
-                );
-            }
-            if !md.file_type().is_file() {
-                bail!(
-                    "auth keyfile '{}' is not a regular file",
-                    key_path.display()
-                );
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                let euid = unsafe { libc::geteuid() };
-                if md.uid() != euid {
-                    bail!(
-                        "auth keyfile '{}' is owned by uid {} but the service \
-                         runs as uid {euid}; refusing to use it",
-                        key_path.display(),
-                        md.uid()
-                    );
+        Ok(_) => {
+            // SEC-15: every opener that returns usable key material must
+            // have crossed the durability boundary — fsync the parent
+            // directory after reading so the keyfile's directory entry is
+            // durable before this process relies on it.
+            let key = read_trusted_keyfile(&key_path)?;
+            if let Some(parent) = key_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    fsync_dir(parent)?;
                 }
             }
-            // Tighten permissions on the existing file (idempotent).
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
-                    .with_context(|| format!("failed to restrict '{}'", key_path.display()))?;
-            }
-            let raw = std::fs::read_to_string(&key_path)
-                .with_context(|| format!("failed to read auth keyfile '{}'", key_path.display()))?;
-            let trimmed = raw.trim();
-            if trimmed.len() < 32 {
-                bail!(
-                    "auth keyfile '{}' is too short; regenerate it and rotate the JWT key",
-                    key_path.display()
-                );
-            }
-            return Ok((
-                age::secrecy::SecretString::new(trimmed.to_string().into()),
-                false,
-            ));
+            return Ok((key, false));
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
@@ -3992,23 +4278,19 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             let _ = std::fs::remove_file(&tmp);
-            let raw = std::fs::read_to_string(&key_path).with_context(|| {
-                format!(
-                    "failed to read winning auth keyfile '{}'",
-                    key_path.display()
-                )
-            })?;
-            let trimmed = raw.trim();
-            if trimmed.len() < 32 {
-                bail!(
-                    "auth keyfile '{}' is too short after concurrent creation",
-                    key_path.display()
-                );
+            // SEC-15: the losing opener may observe the winner's
+            // hard-linked keyfile BEFORE the winner's directory fsync.
+            // Apply the SAME file-trust checks as the existing-file path
+            // and fsync the parent directory ourselves so the directory
+            // entry this process relies on is durable before returning
+            // usable key material.
+            let key = read_trusted_keyfile(&key_path)?;
+            if let Some(parent) = key_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    fsync_dir(parent)?;
+                }
             }
-            Ok((
-                age::secrecy::SecretString::new(trimmed.to_string().into()),
-                false,
-            ))
+            Ok((key, false))
         }
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
@@ -4016,6 +4298,61 @@ fn resolve_secret_key(auth_db_path: &Path) -> Result<(age::secrecy::SecretString
                 .with_context(|| format!("failed to install auth keyfile '{}'", key_path.display()))
         }
     }
+}
+
+/// Read and validate an existing auth keyfile (SEC-15): not a symlink,
+/// a regular file owned by the service identity, permissions tightened
+/// to 0600, and at least 32 bytes of key material. Shared by the
+/// existing-file path and the concurrent-winner readback path so both
+/// apply identical file-trust checks before returning usable key
+/// material.
+fn read_trusted_keyfile(key_path: &Path) -> Result<age::secrecy::SecretString> {
+    let md = std::fs::symlink_metadata(key_path)
+        .with_context(|| format!("failed to stat auth keyfile '{}'", key_path.display()))?;
+    if md.file_type().is_symlink() {
+        bail!(
+            "auth keyfile '{}' is a symlink; refusing to use it",
+            key_path.display()
+        );
+    }
+    if !md.file_type().is_file() {
+        bail!(
+            "auth keyfile '{}' is not a regular file",
+            key_path.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let euid = unsafe { libc::geteuid() };
+        if md.uid() != euid {
+            bail!(
+                "auth keyfile '{}' is owned by uid {} but the service \
+                 runs as uid {euid}; refusing to use it",
+                key_path.display(),
+                md.uid()
+            );
+        }
+    }
+    // Tighten permissions on the existing file (idempotent).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to restrict '{}'", key_path.display()))?;
+    }
+    let raw = std::fs::read_to_string(key_path)
+        .with_context(|| format!("failed to read auth keyfile '{}'", key_path.display()))?;
+    let trimmed = raw.trim();
+    if trimmed.len() < 32 {
+        bail!(
+            "auth keyfile '{}' is too short; regenerate it and rotate the JWT key",
+            key_path.display()
+        );
+    }
+    Ok(age::secrecy::SecretString::new(
+        trimmed.to_string().into(),
+    ))
 }
 
 /// Allocate a unique staging path for `backup_to` AND create it

@@ -205,8 +205,8 @@ lazy_static::lazy_static! {
         Mutex::new(LoginAttempts::default());
     /// Bounds concurrent expensive credential verification — see
     /// `LOGIN_VERIFY_MAX_INFLIGHT`.
-    static ref LOGIN_VERIFY_PERMITS: tokio::sync::Semaphore =
-        tokio::sync::Semaphore::new(LOGIN_VERIFY_MAX_INFLIGHT);
+    static ref LOGIN_VERIFY_PERMITS: std::sync::Arc<tokio::sync::Semaphore> =
+        std::sync::Arc::new(tokio::sync::Semaphore::new(LOGIN_VERIFY_MAX_INFLIGHT));
 }
 
 #[derive(Default)]
@@ -964,11 +964,15 @@ pub(super) async fn login_handler(
     {
         ("admin".to_string(), true, "env")
     } else if let Some(user) = user_item.as_ref() {
-        // SEC-07A: bound concurrent expensive verification — without a
-        // permit, parallel logins all pass the lockout check before any
+        // SEC-07A/WP6.1: bound concurrent expensive verification — without
+        // a permit, parallel logins all pass the lockout check before any
         // failure is recorded, giving unbounded Argon2 work. Re-check
-        // the lock after acquiring: it may have armed while queued.
-        let Ok(_verify_permit) = LOGIN_VERIFY_PERMITS.acquire().await else {
+        // the lock after acquiring: it may have armed while queued. The
+        // permit is OWNED by the blocking task below: a dropped HTTP
+        // request cannot release verification capacity while the Argon2
+        // work it spawned is still running (spawn_blocking tasks are not
+        // cancellable).
+        let Ok(verify_permit) = LOGIN_VERIFY_PERMITS.clone().acquire_owned().await else {
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 "login verifier unavailable".to_string(),
@@ -988,9 +992,12 @@ pub(super) async fn login_handler(
         // the async runtime's worker threads (AUTH-R6).
         let pw = req.password.clone();
         let stored = user.password_hash.clone();
-        let password_ok = tokio::task::spawn_blocking(move || verify_password(&pw, &stored))
-            .await
-            .unwrap_or(false);
+        let password_ok = tokio::task::spawn_blocking(move || {
+            let _permit = verify_permit;
+            verify_password(&pw, &stored)
+        })
+        .await
+        .unwrap_or(false);
         if !password_ok {
             record_login_failure_from(&username, peer_ip);
             return Ok(Json(LoginResponse {
