@@ -576,6 +576,22 @@ are not reclassified as absent.
   100/1k/10k-device capacity modeling (WP6.5), clustering/search quality
   (WP6.6). 17 pre-existing `python/tests` failures on main e071cc7 unrelated
   to this change.
+- **15 Nov follow-up (commit 9ea3143):** corrected confirmed defects —
+  claim-owner fencing on template completion/failure, occurrence counts
+  committed only after acknowledged write-back, idempotent
+  `EventEmbedding` write-back on (event_id, model_name, model_revision)
+  with `model_revision` now persisted end-to-end, oldest-first fetch
+  ordering (starvation fix), explicit `needs_embedding` eligibility
+  (syslog-only at creation + historical non-syslog rows cleared), and
+  provider-vector validation on the dedup-disabled path. Still open:
+  unbounded `EventEmbedding`/registry/exact_map growth (retention policy +
+  shared template-vector redesign need search/graph-semantics review),
+  per-tenant scope derivation inside a shared worker (currently a
+  deployment-wide `dedup_scope`; Bonsai ownership model has no per-event
+  tenant field on StateChangeEvent yet), Rust-side compile/test
+  verification of the ml_jobs/graph changes, and the end-to-end syslog
+  RFC pipeline assessment (RFC 3164/5424/5425/5426/6587) as a separate
+  prioritized backlog.
 
 
 ## Verified foundation, not a new queue
