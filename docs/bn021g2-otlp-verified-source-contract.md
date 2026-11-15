@@ -73,9 +73,16 @@ The first authoritative projection is deliberately minimal:
      duplicate producer.
   3. *Producer-local application identity* —
      `otlpapp+/{producer_identity}/{app_discriminator}` where
-     `app_discriminator` is a validated resource attribute (bounded
-     length, charset-restricted). Scoped to the bound producer; two
-     producers using the same `service.name` yield two distinct ids.
+     `producer_identity` is the **globally unique** stable bound
+     producer identity (the durable principal record id from
+     `exporter_bindings` — unique across all scopes and tenants, never
+     scope-qualified or tenant-relative), and `app_discriminator` is a
+     validated resource attribute (bounded length, charset-restricted).
+     Scoped to the bound producer; two producers using the same
+     `service.name` yield two distinct ids. Cross-scope isolation is
+     therefore structural: identical `(producer_identity,
+     app_discriminator)` pairs cannot exist in two scopes because the
+     producer identity itself is global.
   4. *Authorized application ownership* — an operator/trusted-inventory
      binding that MAY later map a producer to a managed
      device/application record. The first verified slice does NOT create
@@ -124,7 +131,7 @@ The first authoritative projection is deliberately minimal:
 | Spoofed `service.name`/`host.name`/`peer.*` | Treated as claims only; may appear as `claimed_*` evidence. Cannot select canonical identity, cannot create `Device`/`Application` nodes, cannot satisfy ownership checks. |
 | Forwarded `X-Forwarded-For`/PROXY headers | Never consulted for identity (already true; must remain true on the TLS listener — `TlsConnectInfo` peer only). |
 | Credential revocation | Binding revocation/disable must deny *new* connections immediately; in-flight streams revalidate per message or per bounded epoch (reuse the ≤5 s epoch-stamped cache semantics from g-1 and document the max revocation window). |
-| Replay | Sequence/epoch fencing where the protocol provides it; duplicate deliveries are idempotent at the projection layer (dedup key includes principal + app id + span/metric identity). Out-of-order timestamps bounded by `sane_timestamp_ns`; no wall-clock fabrication. |
+| Replay | Sequence/epoch fencing where the protocol provides it; duplicate deliveries are idempotent at the projection layer. The replay-dedup key is `(stable producer identity, app id, span/metric identity)` — `producer_identity` is the globally unique bound principal id defined in §2.2, so dedup is global per producer, never scope-relative; two scopes can never collide on the same key because the producer identity differs. Out-of-order timestamps bounded by `sane_timestamp_ns`; no wall-clock fabrication. A collector-only credential (one authorized to forward/collect but not bound as a producer) can never perform the producer-authorized projection — it has no `producer_identity` binding and its deliveries remain `provisional`/`unverified` even when they describe their own application. |
 | Cardinality | Verified path inherits existing budgets (body 2 MiB, ≤32 resource groups, ≤1024 items/scope, ≤4096/request, ≤256 attrs scanned, ≤512-char strings). App-discriminator cardinality bounded per principal (proposed cap, e.g. 64 distinct app ids/principal — finalize at implementation). |
 | Retention | Verified and provisional evidence share the parquet archiver + graph-event durability path; verified projections are retained under the same graph retention policy. No separate unbounded store. |
 | Failure modes | TLS handshake failure, untrusted/expired cert, unbound fingerprint, revoked binding, ambiguous binding → reject before parsing payload (no oracle via error differentiation beyond connect-level). Authz-store failure → fail closed (deny), never provisional-upgrade. |
