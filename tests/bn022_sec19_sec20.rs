@@ -201,7 +201,7 @@ async fn tombstone_with_extra_credential_field_fails_certification() -> Result<(
         "password_hash": "smuggled-secret",
     });
     v.as_object_mut().unwrap().remove("password_hash"); // keep schema pure? no—
-                                                        // rebuild WITH the extra field deliberately:
+    // rebuild WITH the extra field deliberately:
     let content = serde_json::json!({
         "migrated_to": "auth_store",
         "migration": MIGRATION_MARKER,
