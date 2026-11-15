@@ -177,17 +177,15 @@ async fn tombstone_with_extra_credential_field_fails_certification() -> Result<(
     let dir = TempDir::new()?;
     let store = open_store(&dir);
     require_auth(&store).await;
-    store
-        .auth_store
-        .upsert_user(&AuthUser {
-            username: "real".into(),
-            password_hash: "verifier".into(),
-            role: "viewer".into(),
-            enabled: true,
-            last_login_ns: 0,
-            created_at_ns: 0,
-            updated_at_ns: 0,
-        })?;
+    store.auth_store.upsert_user(&AuthUser {
+        username: "real".into(),
+        password_hash: "verifier".into(),
+        role: "viewer".into(),
+        enabled: true,
+        last_login_ns: 0,
+        created_at_ns: 0,
+        updated_at_ns: 0,
+    })?;
 
     // Seed a legacy user then write a tombstone that smuggles an extra
     // credential-bearing field — strict schema must reject it.
@@ -265,7 +263,11 @@ async fn operator_cannot_write_routing_service_destination() -> Result<()> {
             .json(&body("routing_service_url"))
             .send()
             .await?;
-        assert_eq!(r.status().as_u16(), 403, "non-admin must not set routing_service_url");
+        assert_eq!(
+            r.status().as_u16(),
+            403,
+            "non-admin must not set routing_service_url"
+        );
     }
 
     // Admin can establish the legitimate destination.
@@ -291,7 +293,11 @@ async fn operator_cannot_write_routing_service_destination() -> Result<()> {
         .json(&bypass)
         .send()
         .await?;
-    assert_eq!(r.status().as_u16(), 403, "id-collision name laundering must fail");
+    assert_eq!(
+        r.status().as_u16(),
+        403,
+        "id-collision name laundering must fail"
+    );
 
     // And the stored destination is unchanged.
     let items = store.list_config_items(Some("app_config".into())).await?;

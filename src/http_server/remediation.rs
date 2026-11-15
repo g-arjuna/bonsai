@@ -1699,8 +1699,7 @@ pub(super) async fn upsert_config_item_handler(
     // inert credential-shaped rows; auth material is managed exclusively
     // through the dedicated /api/auth/* endpoints. `cert_config` remains
     // allowed (vault references, not key material).
-    const RETIRED_CREDENTIAL_CLASSES: &[&str] =
-        &crate::graph::RETIRED_CREDENTIAL_CLASSES;
+    const RETIRED_CREDENTIAL_CLASSES: &[&str] = &crate::graph::RETIRED_CREDENTIAL_CLASSES;
     if RETIRED_CREDENTIAL_CLASSES.contains(&eff_class) {
         return Err((
             StatusCode::GONE,

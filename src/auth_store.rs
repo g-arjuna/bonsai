@@ -312,7 +312,7 @@ impl AuthStore {
                         )
                     })?;
                 tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_meta (
+                    "CREATE TABLE IF NOT EXISTS schema_meta (
                key TEXT PRIMARY KEY,
                value TEXT NOT NULL
              );
@@ -397,13 +397,13 @@ impl AuthStore {
                created_at_ns INTEGER NOT NULL,
                updated_at_ns INTEGER NOT NULL
              );",
-        )
-        .with_context(|| {
-            format!(
-                "failed to initialize auth store schema at '{}'",
-                path.display()
-            )
-        })?;
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to initialize auth store schema at '{}'",
+                        path.display()
+                    )
+                })?;
 
                 // SEC-13: version-specific upgrades run INSIDE the same
                 // transaction, BEFORE the version marker is published.
@@ -485,10 +485,7 @@ impl AuthStore {
                 verify_version
             );
         }
-        for (col, _) in [
-            ("content_sha256", ""),
-            ("content_enc", ""),
-        ] {
+        for (col, _) in [("content_sha256", ""), ("content_enc", "")] {
             let col_exists: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_table_info('auth_quarantine') \
                  WHERE name = ?1)",
@@ -1679,10 +1676,7 @@ impl AuthStore {
     /// disposition and protected-counterpart (or durable migration-report)
     /// evidence. A row that fails any check is treated as pending
     /// credential material — certification fails closed.
-    async fn scan_pending_graph_credentials(
-        &self,
-        store: &GraphStore,
-    ) -> Result<(bool, bool)> {
+    async fn scan_pending_graph_credentials(&self, store: &GraphStore) -> Result<(bool, bool)> {
         let items = store
             .list_config_items(None)
             .await
@@ -1694,9 +1688,7 @@ impl AuthStore {
         let mut cred_pending = false;
         let mut prot_pending = false;
         for item in &items {
-            if is_migration_tombstone(item)
-                && self.certify_tombstone(item, &manifest_records)
-            {
+            if is_migration_tombstone(item) && self.certify_tombstone(item, &manifest_records) {
                 continue;
             }
             if matches!(
@@ -1811,7 +1803,10 @@ impl AuthStore {
                 .unwrap_or(false);
         }
         match item.config_class.as_str() {
-            "user" => self.get_user(&item.name).map(|u| u.is_some()).unwrap_or(false),
+            "user" => self
+                .get_user(&item.name)
+                .map(|u| u.is_some())
+                .unwrap_or(false),
             "api_key" => self
                 .api_key_verifier_row(&item.id)
                 .map(|r| r.is_some())
@@ -4316,11 +4311,10 @@ fn verify_encrypted_material(
         } else {
             // Pre-seal schema (v2): every quarantine row holds plaintext
             // content_json — report, do not verify as ciphertext.
-            counts.quarantine_plaintext = conn.query_row(
-                "SELECT COUNT(*) FROM auth_quarantine",
-                [],
-                |r| r.get::<_, i64>(0),
-            )? as usize;
+            counts.quarantine_plaintext =
+                conn.query_row("SELECT COUNT(*) FROM auth_quarantine", [], |r| {
+                    r.get::<_, i64>(0)
+                })? as usize;
         }
     }
     Ok(counts)
@@ -4495,9 +4489,7 @@ fn read_trusted_keyfile(key_path: &Path) -> Result<age::secrecy::SecretString> {
             key_path.display()
         );
     }
-    Ok(age::secrecy::SecretString::new(
-        trimmed.to_string().into(),
-    ))
+    Ok(age::secrecy::SecretString::new(trimmed.to_string().into()))
 }
 
 /// Allocate a unique staging path for `backup_to` AND create it

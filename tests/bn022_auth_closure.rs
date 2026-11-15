@@ -2055,8 +2055,7 @@ async fn older_auth_store_with_migrated_graph_fails_closed() -> Result<()> {
         .await
         .expect_err("tombstones without counterparts must abort migration");
     assert!(
-        format!("{err:#}").contains("counterpart")
-            || format!("{err:#}").contains("migration"),
+        format!("{err:#}").contains("counterpart") || format!("{err:#}").contains("migration"),
         "unexpected error: {err:#}"
     );
     Ok(())
@@ -2149,7 +2148,10 @@ fn wrong_key_fails_before_touching_plaintext_quarantine() -> Result<()> {
         Ok(_) => panic!("wrong key must fail closed"),
         Err(e) => e,
     };
-    assert!(format!("{err:#}").contains("decrypt") || format!("{err:#}").contains("key"), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("decrypt") || format!("{err:#}").contains("key"),
+        "{err:#}"
+    );
     // The plaintext row must be UNTOUCHED (content_enc still NULL).
     let conn = rusqlite::Connection::open(&auth_path)?;
     let enc_is_null: bool = conn.query_row(
@@ -2157,7 +2159,10 @@ fn wrong_key_fails_before_touching_plaintext_quarantine() -> Result<()> {
         [],
         |r| r.get(0),
     )?;
-    assert!(enc_is_null, "wrong-key open mutated the plaintext quarantine row");
+    assert!(
+        enc_is_null,
+        "wrong-key open mutated the plaintext quarantine row"
+    );
     Ok(())
 }
 
@@ -2195,7 +2200,10 @@ fn verify_backup_schema_compat_contract() -> Result<()> {
     let (sha, size) = {
         use sha2::Digest;
         let bytes = std::fs::read(&snap3)?;
-        (hex::encode(sha2::Sha256::digest(&bytes)), bytes.len() as u64)
+        (
+            hex::encode(sha2::Sha256::digest(&bytes)),
+            bytes.len() as u64,
+        )
     };
     let m3 = serde_json::json!({
         "format": "bonsai-auth-backup-v2",
@@ -2230,7 +2238,10 @@ fn verify_backup_schema_compat_contract() -> Result<()> {
     let (sha4, size4) = {
         use sha2::Digest;
         let bytes = std::fs::read(&snap3)?;
-        (hex::encode(sha2::Sha256::digest(&bytes)), bytes.len() as u64)
+        (
+            hex::encode(sha2::Sha256::digest(&bytes)),
+            bytes.len() as u64,
+        )
     };
     let mut m4: serde_json::Value = m3.clone();
     m4["schema_version"] = serde_json::json!(4);

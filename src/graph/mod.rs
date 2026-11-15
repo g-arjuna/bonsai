@@ -4406,7 +4406,8 @@ impl GraphStore {
             // classes — the only legitimate writer is a strictly verified
             // migration tombstone bound to that exact persisted record.
             let retired_class = RETIRED_CREDENTIAL_CLASSES.contains(&eff_class.as_str());
-            if retired_class || crate::auth_store::protected_config_disposition(&eff_name).is_some() {
+            if retired_class || crate::auth_store::protected_config_disposition(&eff_name).is_some()
+            {
                 let strict_schema =
                     crate::auth_store::validate_migration_tombstone_schema(&item).is_ok();
                 let identity_match = existing

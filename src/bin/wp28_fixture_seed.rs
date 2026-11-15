@@ -149,7 +149,11 @@ async fn main() -> Result<()> {
     for (id, name, content) in [
         ("cfg-svc-st", "service_token", "\"svc_legacy_orphan\""),
         ("cfg-svc-adminpw", "admin_password", "\"admin_legacy_pw\""),
-        ("cfg-svc-jwtsec", "jwt_secret", "\"appcfg_jwt_secret_material\""),
+        (
+            "cfg-svc-jwtsec",
+            "jwt_secret",
+            "\"appcfg_jwt_secret_material\"",
+        ),
     ] {
         store
             .upsert_config_item_unchecked(item(id, "app_config", name, content, true))
