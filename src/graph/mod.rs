@@ -2409,8 +2409,16 @@ impl GraphStore {
         )
         .context("create CONFIG_EMBEDDED_AS rel")?;
 
-        // StateChangeEvent: needs_embedding flag for syslog embedding worker
+        // StateChangeEvent: needs_embedding flag for syslog embedding worker.
+        // WP6.5A: the historical DEFAULT 1 marked EVERY event type pending;
+        // clear the flag on non-syslog rows so pending statistics describe
+        // actual eligible events (new writes set it explicitly).
         let _ = conn.query("ALTER TABLE StateChangeEvent ADD needs_embedding INT64 DEFAULT 1");
+        let _ = conn.query(
+            "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 \
+             AND (e.event_type IS NULL OR NOT e.event_type STARTS WITH 'syslog') \
+             SET e.needs_embedding = 0",
+        );
         let _ =
             conn.query("ALTER TABLE StateChangeEvent ADD incident_cluster_id STRING DEFAULT ''");
         // Device: needs_config_embedding flag
@@ -7279,11 +7287,17 @@ fn write_provisional_state_change_event(
     metrics::counter!("bonsai_graph_state_change_write_total", "event_type" => event_type.to_string(), "source" => source_type.to_string()).increment(1);
 
     let id = Uuid::new_v4().to_string();
+    // WP6.5A: explicit enrichment eligibility — only syslog events are
+    // pending for the text-embedding worker; every other event type is
+    // born with needs_embedding = 0 so pending statistics describe
+    // actual eligible events.
+    let needs_embedding = i64::from(event_type.starts_with("syslog"));
     let mut stmt = conn
         .prepare(
             "CREATE (e:StateChangeEvent {\
                 id: $id, device_address: $addr, event_type: $etype, \
-                detail: $detail, source_type: $src, occurred_at: $ts})",
+                detail: $detail, source_type: $src, occurred_at: $ts, \
+                needs_embedding: $ne})",
         )
         .context("prepare provisional StateChangeEvent insert")?;
     conn.execute(
@@ -7295,6 +7309,7 @@ fn write_provisional_state_change_event(
             ("detail", Value::String(detail.to_string())),
             ("src", Value::String(source_type.to_string())),
             ("ts", now),
+            ("ne", Value::Int64(needs_embedding)),
         ],
     )
     .context("execute provisional StateChangeEvent insert")?;
@@ -7334,12 +7349,16 @@ fn write_state_change_event(
     metrics::counter!("bonsai_graph_state_change_write_total", "event_type" => event_type.to_string(), "source" => source_type.to_string()).increment(1);
 
     let id = Uuid::new_v4().to_string();
+    // WP6.5A: explicit enrichment eligibility — only syslog events are
+    // pending for the text-embedding worker.
+    let needs_embedding = i64::from(event_type.starts_with("syslog"));
 
     let mut stmt = conn
         .prepare(
             "CREATE (e:StateChangeEvent {\
                 id: $id, device_address: $addr, event_type: $etype, \
-                detail: $detail, source_type: $src, occurred_at: $ts})",
+                detail: $detail, source_type: $src, occurred_at: $ts, \
+                needs_embedding: $ne})",
         )
         .context("prepare StateChangeEvent insert")?;
 
@@ -7352,6 +7371,7 @@ fn write_state_change_event(
             ("detail", Value::String(detail.to_string())),
             ("src", Value::String(source_type.to_string())),
             ("ts", now.clone()),
+            ("ne", Value::Int64(needs_embedding)),
         ],
     )
     .context("execute StateChangeEvent insert")?;

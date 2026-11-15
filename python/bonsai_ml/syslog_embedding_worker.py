@@ -194,6 +194,8 @@ def _embed_and_post(
         valid_texts = [p[2] for p in valid_pairs]
         vectors = dedup.resolve_batch(valid_texts)
     else:
+        from .message_templates import _validate_vector
+
         t0 = time.monotonic()
         all_vectors = embedder.embed_batch([p[2] for p in valid_pairs])
         latency_ms = (time.monotonic() - t0) * 1000.0
@@ -201,7 +203,12 @@ def _embed_and_post(
             "Embedded %d syslog texts in %.1fms (%.1fms/text)",
             len(valid_pairs), latency_ms, latency_ms / max(1, len(valid_pairs)),
         )
-        vectors = list(all_vectors)
+        dim = int(getattr(embedder, "dim", 0) or 0)
+        # Legacy path must apply the same provider-output validation as
+        # the dedup path: a malformed vector is never persisted.
+        vectors = [
+            v if _validate_vector(v, dim) else None for v in all_vectors
+        ]
 
     computed_at_ns = time.time_ns()
     embedding_records = []
@@ -234,9 +241,26 @@ def _embed_and_post(
             timeout=30,
         )
         resp.raise_for_status()
+        # Write-back acknowledgement: count only records the server
+        # reports as written, not merely what we submitted.
+        try:
+            written = int(resp.json().get("written", len(embedding_records)))
+        except Exception:
+            written = len(embedding_records)
+        if written != len(embedding_records):
+            log.warning(
+                "Embedding write-back partial: server wrote %d of %d "
+                "submitted records",
+                written, len(embedding_records),
+            )
+            return written
         if dedup is not None:
-            dedup.metrics.events_posted += len(embedding_records)
-        return len(embedding_records)
+            dedup.metrics.events_posted += written
+            # Occurrence counts commit only now that write-back is
+            # acknowledged — failed POSTs and retries cannot inflate
+            # template_occurrences.
+            dedup.commit_occurrences()
+        return written
     except Exception as exc:
         log.error("Failed to POST event embeddings: %s", exc)
         return 0

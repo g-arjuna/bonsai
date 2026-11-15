@@ -148,6 +148,8 @@ def run_benchmark(
         for i in range(0, len(texts), batch_size):
             vecs = dedup.resolve_batch(texts[i : i + batch_size])
             resolved += sum(1 for v in vecs if v is not None)
+            # Benchmark simulates acknowledged write-back each batch.
+            dedup.commit_occurrences()
         dedup_s = time.monotonic() - t0
         snap = dedup.stats_snapshot()
         reg.close()

@@ -493,23 +493,44 @@ class TemplateRegistry:
                 raise
 
     def complete_template(
-        self, cache_key: str, vector: np.ndarray, dim: int
-    ) -> None:
-        """Mark a claimed template ready with its validated vector."""
+        self,
+        cache_key: str,
+        vector: np.ndarray,
+        dim: int,
+        owner: Optional[str] = None,
+    ) -> bool:
+        """Mark a claimed template ready with its validated vector.
+
+        When ``owner`` is given the update is fenced to the active claim
+        owner: a worker whose lease expired and was reclaimed by another
+        worker matches zero rows and must NOT overwrite the newer claim's
+        state. Returns True when this caller's completion was recorded.
+        """
         now = self._now_ns()
         blob = np.ascontiguousarray(vector, dtype=np.float32).tobytes()
+        sql = (
+            "UPDATE templates SET status='ready', vector=?, dim=?, "
+            "claim_owner=NULL, claimed_at_ns=NULL, claim_expires_ns=NULL, "
+            "next_retry_ns=NULL, last_error=NULL, last_seen_ns=? "
+            "WHERE cache_key=?"
+        )
+        params: tuple = (blob, dim, now, cache_key)
+        if owner is not None:
+            sql += " AND claim_owner=?"
+            params = params + (owner,)
         with self._lock:
-            self._conn.execute(
-                "UPDATE templates SET status='ready', vector=?, dim=?, "
-                "claim_owner=NULL, claimed_at_ns=NULL, claim_expires_ns=NULL, "
-                "next_retry_ns=NULL, last_error=NULL, last_seen_ns=? "
-                "WHERE cache_key=?",
-                (blob, dim, now, cache_key),
-            )
+            cur = self._conn.execute(sql, params)
             self._conn.commit()
+            return cur.rowcount > 0
 
-    def fail_template(self, cache_key: str, error: str) -> None:
-        """Record a retryable provider failure; never stores a vector."""
+    def fail_template(
+        self, cache_key: str, error: str, owner: Optional[str] = None
+    ) -> bool:
+        """Record a retryable provider failure; never stores a vector.
+
+        Same claim-owner fencing as :meth:`complete_template`. Returns
+        True when this caller's failure was recorded.
+        """
         now = self._now_ns()
         with self._lock:
             row = self._conn.execute(
@@ -520,18 +541,23 @@ class TemplateRegistry:
             backoff = _FAIL_BACKOFF_SECS[
                 min(fail_count - 1, len(_FAIL_BACKOFF_SECS) - 1)
             ]
-            self._conn.execute(
+            sql = (
                 "UPDATE templates SET status='failed', fail_count=?, "
                 "next_retry_ns=?, last_error=?, claim_owner=NULL, "
-                "claimed_at_ns=NULL, claim_expires_ns=NULL WHERE cache_key=?",
-                (
-                    fail_count,
-                    now + backoff * 1_000_000_000,
-                    error[:MAX_ERROR_LEN],
-                    cache_key,
-                ),
+                "claimed_at_ns=NULL, claim_expires_ns=NULL WHERE cache_key=?"
             )
+            params: tuple = (
+                fail_count,
+                now + backoff * 1_000_000_000,
+                error[:MAX_ERROR_LEN],
+                cache_key,
+            )
+            if owner is not None:
+                sql += " AND claim_owner=?"
+                params = params + (owner,)
+            cur = self._conn.execute(sql, params)
             self._conn.commit()
+            return cur.rowcount > 0
 
     # ── occurrence bookkeeping ─────────────────────────────────────────────
 
@@ -750,16 +776,19 @@ class TemplateDedup:
 
         m.events_resolved = sum(1 for v in results if v is not None)
 
-        # Bookkeeping: exact->template mappings and occurrence counts. --------
+        # Bookkeeping: exact->template mappings are idempotent upserts and
+        # safe to write here.  Occurrence counts are deliberately NOT
+        # bumped yet — they are committed via commit_occurrences() only
+        # after the caller confirms the embeddings were accepted
+        # downstream, so failed POSTs and retries cannot inflate
+        # template_occurrences.
         try:
             now = self._now_ns()
             mappings = []
-            bumps: list[str] = []
             mw = dict(map_writes)
             for i, ck in enumerate(resolved_keys):
                 if ck is None:
                     continue
-                bumps.append(ck)
                 tpl_fp = mw.get(i)
                 if tpl_fp is not None:
                     mappings.append(
@@ -771,12 +800,29 @@ class TemplateDedup:
                         )
                     )
             self.registry.store_exact_mappings(mappings)
-            self.registry.bump_occurrences(bumps, now)
+            self._resolved_keys_pending = [
+                ck for ck in resolved_keys if ck is not None
+            ]
         except Exception as exc:
             log.debug("dedup bookkeeping failed: %s", exc)
+            self._resolved_keys_pending = []
 
         self._accumulate(m)
         return results
+
+    def commit_occurrences(self) -> int:
+        """Persist occurrence counts for the most recent resolve_batch.
+
+        Call ONLY after the caller confirms the resolved embeddings were
+        accepted by the downstream store.  Pending keys are cleared either
+        way so a later batch cannot double-count.  Returns the number of
+        template occurrences committed.
+        """
+        keys = getattr(self, "_resolved_keys_pending", None) or []
+        self._resolved_keys_pending = []
+        if keys:
+            self.registry.bump_occurrences(keys)
+        return len(keys)
 
     def stats_snapshot(self) -> dict[str, Any]:
         """Cumulative metrics plus registry cardinality for this scope/model."""
@@ -928,7 +974,9 @@ class TemplateDedup:
                 m.embed_latency_ms_total += latency
                 m.embed_texts_total += len(tpl_texts)
                 for ck in cache_keys:
-                    self.registry.fail_template(ck, f"provider_error: {exc}")
+                    self.registry.fail_template(
+                        ck, f"provider_error: {exc}", owner=self.owner
+                    )
                 log.warning(
                     "TemplateDedup: provider failed for %d templates: %s",
                     len(cache_keys), exc,
@@ -943,7 +991,8 @@ class TemplateDedup:
                 m.provider_failures += len(cache_keys)
                 for ck in cache_keys:
                     self.registry.fail_template(
-                        ck, "provider_error: embedding count mismatch"
+                        ck, "provider_error: embedding count mismatch",
+                        owner=self.owner,
                     )
                 log.warning(
                     "TemplateDedup: provider returned %d vectors for %d texts",
@@ -957,13 +1006,25 @@ class TemplateDedup:
             for fp, ck, vec in zip(fps, cache_keys, vectors):
                 if _validate_vector(vec, dim):
                     arr = np.asarray(vec, dtype=np.float32)
-                    self.registry.complete_template(ck, arr, dim)
-                    ok_vecs[fp] = arr
-                    m.templates_embedded += 1
+                    if self.registry.complete_template(
+                        ck, arr, dim, owner=self.owner
+                    ):
+                        ok_vecs[fp] = arr
+                        m.templates_embedded += 1
+                    else:
+                        # Claim was reclaimed by another worker while we
+                        # embedded: leave the row to the new owner and
+                        # keep this event unresolved for a later cycle.
+                        log.debug(
+                            "TemplateDedup: lost claim for %s before "
+                            "completion; deferring to claim owner",
+                            ck[:12],
+                        )
                 else:
                     m.invalid_vectors += 1
                     self.registry.fail_template(
-                        ck, "invalid_vector: dim/nonfinite/zero-norm"
+                        ck, "invalid_vector: dim/nonfinite/zero-norm",
+                        owner=self.owner,
                     )
 
             fp_to_ck = {fp: ck for fp, ck in zip(fps, cache_keys)}

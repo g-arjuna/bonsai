@@ -1504,13 +1504,13 @@ pub async fn events_unembedded_handler(
             format!(
                 "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 \
                  RETURN e.id, e.device_address, e.event_type, e.detail, e.occurred_at \
-                 ORDER BY e.occurred_at DESC LIMIT {limit}"
+                 ORDER BY e.occurred_at ASC LIMIT {limit}"
             )
         } else {
             format!(
                 "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 AND e.event_type STARTS WITH '{}' \
                  RETURN e.id, e.device_address, e.event_type, e.detail, e.occurred_at \
-                 ORDER BY e.occurred_at DESC LIMIT {limit}",
+                 ORDER BY e.occurred_at ASC LIMIT {limit}",
                 event_type.replace('\'', "")
             )
         };
@@ -1542,6 +1542,7 @@ pub struct EmbeddingItem {
     pub event_id: String,
     pub vector: Vec<f64>,
     pub model_name: String,
+    pub model_revision: Option<String>,
     pub computed_at_ns: i64,
     pub schema_hash: Option<String>,
     pub event_type: Option<String>,
@@ -1569,34 +1570,73 @@ pub async fn events_embeddings_handler(
     let result = tokio::task::spawn_blocking(move || {
         let _g = write_lock.lock().expect("write lock poisoned");
         let conn = Connection::new(&db)?;
+        // Idempotent write-back: a retried POST (HTTP timeout, worker
+        // restart) must not create duplicate EventEmbedding nodes for the
+        // same (event_id, model_name, model_revision) identity. Existing
+        // embeddings are reused for the EMBEDDED_AS link and the event is
+        // still marked embedded.
+        let existing: std::collections::HashMap<(String, String, String), String> = conn
+            .query(
+                "MATCH (emb:EventEmbedding) \
+                 RETURN emb.id, emb.event_id, emb.model_name, emb.model_revision",
+            )
+            .map(|rows| {
+                rows.filter_map(|r| {
+                    if let (
+                        Value::String(id),
+                        Value::String(eid),
+                        Value::String(mn),
+                        Value::String(mr),
+                    ) = (&r[0], &r[1], &r[2], &r[3])
+                    {
+                        Some(((eid.clone(), mn.clone(), mr.clone()), id.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+            })?;
         for item in &req.embeddings {
-            let id = Uuid::new_v4().to_string();
-            let dim = item.vector.len() as i64;
-            let vector_json = serde_json::to_string(&item.vector).unwrap_or_default();
-            let mut stmt = conn.prepare(
-                "CREATE (:EventEmbedding {id: $id, event_id: $eid, event_type: $et, \
-                 model_name: $mn, dim: $dim, vector_json: $vj, \
-                 computed_at_ns: $can, schema_hash: $sh})",
-            )?;
-            conn.execute(
-                &mut stmt,
-                vec![
-                    ("id", Value::String(id.clone())),
-                    ("eid", Value::String(item.event_id.clone())),
-                    (
-                        "et",
-                        Value::String(item.event_type.clone().unwrap_or_default()),
-                    ),
-                    ("mn", Value::String(item.model_name.clone())),
-                    ("dim", Value::Int64(dim)),
-                    ("vj", Value::String(vector_json)),
-                    ("can", Value::Int64(item.computed_at_ns)),
-                    (
-                        "sh",
-                        Value::String(item.schema_hash.clone().unwrap_or_default()),
-                    ),
-                ],
-            )?;
+            let model_revision = item.model_revision.clone().unwrap_or_default();
+            let key = (
+                item.event_id.clone(),
+                item.model_name.clone(),
+                model_revision.clone(),
+            );
+            let id = match existing.get(&key) {
+                Some(existing_id) => existing_id.clone(),
+                None => {
+                    let id = Uuid::new_v4().to_string();
+                    let dim = item.vector.len() as i64;
+                    let vector_json = serde_json::to_string(&item.vector).unwrap_or_default();
+                    let mut stmt = conn.prepare(
+                        "CREATE (:EventEmbedding {id: $id, event_id: $eid, event_type: $et, \
+                         model_name: $mn, model_revision: $mr, dim: $dim, vector_json: $vj, \
+                         computed_at_ns: $can, schema_hash: $sh})",
+                    )?;
+                    conn.execute(
+                        &mut stmt,
+                        vec![
+                            ("id", Value::String(id.clone())),
+                            ("eid", Value::String(item.event_id.clone())),
+                            (
+                                "et",
+                                Value::String(item.event_type.clone().unwrap_or_default()),
+                            ),
+                            ("mn", Value::String(item.model_name.clone())),
+                            ("mr", Value::String(model_revision)),
+                            ("dim", Value::Int64(dim)),
+                            ("vj", Value::String(vector_json)),
+                            ("can", Value::Int64(item.computed_at_ns)),
+                            (
+                                "sh",
+                                Value::String(item.schema_hash.clone().unwrap_or_default()),
+                            ),
+                        ],
+                    )?;
+                    id
+                }
+            };
             // Mark source event as embedded
             let mut mark_stmt =
                 conn.prepare("MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0")?;
