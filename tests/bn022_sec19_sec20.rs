@@ -11,11 +11,11 @@
 //!
 //! All credentials synthetic; all stores temporary.
 
-use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use bonsai::auth_store::{AuthUser, MIGRATION_MARKER};
 use bonsai::graph::{ConfigItemRecord, GraphStore, RETIRED_CREDENTIAL_CLASSES};
 use bonsai::http_server::build_public_routing_web_router;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 fn clear_auth_env() {
@@ -201,7 +201,7 @@ async fn tombstone_with_extra_credential_field_fails_certification() -> Result<(
         "password_hash": "smuggled-secret",
     });
     v.as_object_mut().unwrap().remove("password_hash"); // keep schema pure? no—
-    // rebuild WITH the extra field deliberately:
+                                                        // rebuild WITH the extra field deliberately:
     let content = serde_json::json!({
         "migrated_to": "auth_store",
         "migration": MIGRATION_MARKER,
@@ -520,10 +520,7 @@ async fn invoke_redirect_consumer(
         "routing_projection" => {
             let res =
                 bonsai::routing_service::project_remote_routing_events_to_graph(store, 10).await;
-            Ok((
-                res.is_err(),
-                vec![("GET", "/internal/routing/v1/events")],
-            ))
+            Ok((res.is_err(), vec![("GET", "/internal/routing/v1/events")]))
         }
         other => anyhow::bail!("unknown consumer '{other}'"),
     }
@@ -928,7 +925,10 @@ async fn failed_certification_blocks_graph_serving_and_preserves_confidentiality
         let (base, handle) = serve_tracked(store).await;
 
         // Unauthenticated → 401 (auth boundary intact).
-        let r = client.get(format!("{base}/api/config-items")).send().await?;
+        let r = client
+            .get(format!("{base}/api/config-items"))
+            .send()
+            .await?;
         assert_eq!(r.status().as_u16(), 401, "anon must be denied");
 
         for (label, jwt) in [("admin", &admin_jwt), ("viewer", &viewer_jwt)] {
@@ -948,11 +948,7 @@ async fn failed_certification_blocks_graph_serving_and_preserves_confidentiality
                                    "arguments": {"cypher": "MATCH (c:ConfigItem) RETURN c"}}
                     })),
                 ),
-                (
-                    "GET",
-                    "/api/db/export?node_type=Device".to_string(),
-                    None,
-                ),
+                ("GET", "/api/db/export?node_type=Device".to_string(), None),
             ] {
                 let req = match method {
                     "GET" => client.get(format!("{base}{path}")),
@@ -988,10 +984,16 @@ async fn failed_certification_blocks_graph_serving_and_preserves_confidentiality
 
         // Config-item listing: sensitive classes filtered, protected
         // names redacted — the smuggled field must not appear.
-        let r = client.get(format!("{base}/api/config-items")).send().await?;
+        let r = client
+            .get(format!("{base}/api/config-items"))
+            .send()
+            .await?;
         assert_eq!(r.status().as_u16(), 200);
         let body = r.text().await?;
-        assert!(!body.contains(SENTINEL), "insecure config-items leaked sentinel");
+        assert!(
+            !body.contains(SENTINEL),
+            "insecure config-items leaked sentinel"
+        );
         assert!(
             !body.contains("\"user\""),
             "insecure config-items exposed retired credential class"
@@ -1044,7 +1046,11 @@ async fn failed_certification_blocks_graph_serving_and_preserves_confidentiality
             .get(format!("{base}/api/db/export?node_type=ConfigItem"))
             .send()
             .await?;
-        assert_eq!(r.status().as_u16(), 400, "ConfigItem export must be rejected");
+        assert_eq!(
+            r.status().as_u16(),
+            400,
+            "ConfigItem export must be rejected"
+        );
 
         handle.abort();
     }
