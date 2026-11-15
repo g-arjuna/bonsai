@@ -1412,6 +1412,12 @@ pub(super) async fn run_auth_cli(command: AuthCliCommand) -> Result<()> {
             } else {
                 println!("  every token minted before this rotation is now invalid");
             }
+            println!(
+                "  NOTE: rotation is an offline/quiesced operation — a running server \
+                 caches JWT keys in-process and will keep accepting pre-rotation \
+                 tokens until restarted. Stop the service (or rotate on the \
+                 isolated staging copy per the runbook), then start."
+            );
         }
         AuthCliCommand::SetServiceToken { db, name } => {
             // Token material is read from stdin — never from argv, where
