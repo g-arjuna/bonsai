@@ -1657,15 +1657,37 @@ pub(super) async fn upsert_config_item_handler(
     role: Option<axum::Extension<crate::http_server::auth::Role>>,
     Json(item): Json<crate::graph::ConfigItemRecord>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // BN-022: writing credential-bearing classes (users, API keys, JWT
-    // material) is admin-only; otherwise an Operator could mint credentials.
+    // SEC-20: authorization applies to the EFFECTIVE PERSISTED identity,
+    // not merely the incoming fields. The store MERGE retains the stored
+    // `name`/`config_class` on id match, so a caller-supplied harmless
+    // name/class can never launder a write to a protected record — but
+    // the HTTP boundary must evaluate the same effective identity the
+    // store will persist, or an Operator could overwrite
+    // `routing_service_url` (the credential destination) by reusing its
+    // record id with innocuous incoming fields.
+    let existing = state
+        .store
+        .list_config_items(None)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
+        .into_iter()
+        .find(|i| i.id == item.id);
+    let (eff_name, eff_class) = existing
+        .as_ref()
+        .map(|e| (e.name.as_str(), e.config_class.as_str()))
+        .unwrap_or((item.name.as_str(), item.config_class.as_str()));
+    // BN-022/SEC-20: writing credential-bearing classes or protected
+    // names (service tokens, auth policy, the routing-service credential
+    // DESTINATION) is admin-only; otherwise an Operator could mint
+    // credentials or redirect protected service tokens to an
+    // attacker-chosen endpoint.
     let is_admin = matches!(
         role,
         Some(axum::Extension(crate::http_server::auth::Role::Admin))
     );
     if !is_admin
-        && (crate::graph::is_sensitive_config_class(&item.config_class)
-            || crate::graph::PROTECTED_CONFIG_NAMES.contains(&item.name.as_str()))
+        && (crate::graph::is_sensitive_config_class(eff_class)
+            || crate::graph::PROTECTED_CONFIG_NAMES.contains(&eff_name))
     {
         return Err((
             StatusCode::FORBIDDEN,
@@ -1678,8 +1700,8 @@ pub(super) async fn upsert_config_item_handler(
     // through the dedicated /api/auth/* endpoints. `cert_config` remains
     // allowed (vault references, not key material).
     const RETIRED_CREDENTIAL_CLASSES: &[&str] =
-        &["user", "session", "api_key", "jwt_secret", "jwt_revoked"];
-    if RETIRED_CREDENTIAL_CLASSES.contains(&item.config_class.as_str()) {
+        &crate::graph::RETIRED_CREDENTIAL_CLASSES;
+    if RETIRED_CREDENTIAL_CLASSES.contains(&eff_class) {
         return Err((
             StatusCode::GONE,
             "credential classes are managed by the protected auth store; \

@@ -1332,8 +1332,13 @@ async fn routing_v1_proxy_get_handler(
         _ => format!("{base_url}{internal_path}"),
     };
 
+    // SEC-20: never follow redirects on credential-bearing requests — a
+    // redirect could carry `x-bonsai-routing-token` to an unauthorized
+    // destination. The routing service contract does not use redirects;
+    // fail closed instead.
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     {
         Ok(c) => c,

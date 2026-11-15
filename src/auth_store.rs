@@ -1661,22 +1661,24 @@ impl AuthStore {
         Ok(())
     }
 
-    /// SEC-11: scan the attached graph for credential-bearing records
-    /// that are NOT validated migration tombstones.
+    /// SEC-11/SEC-19: scan the attached graph for credential-bearing records
+    /// that are NOT *certified* migration tombstones.
     ///
     /// Returns `(credential_pending, protected_pending)`:
-    /// - `credential_pending`: any non-tombstone record in the migrated
-    ///   credential classes (`user`, `api_key`, `jwt_secret`,
-    ///   `jwt_revoked`, `session`).
-    /// - `protected_pending`: any non-tombstone record whose name is a
-    ///   protected secret config name, in ANY class.
+    /// - `credential_pending`: any record in the migrated credential
+    ///   classes (`user`, `api_key`, `jwt_secret`, `jwt_revoked`,
+    ///   `session`) that is not a certified tombstone.
+    /// - `protected_pending`: any record whose name is a protected secret
+    ///   config name, in ANY class, that is not a certified tombstone.
     ///
-    /// A record that merely *resembles* a tombstone is not trusted here —
-    /// `is_migration_tombstone` is the cheap marker predicate; strict
-    /// schema + counterpart validation happens inside the migration
-    /// paths. For certification purposes a marker-bearing row is treated
-    /// as already-scrubbed evidence (the strict checks ran when it was
-    /// written and are re-run by any resumed migration).
+    /// SEC-19: `is_migration_tombstone` is only a cheap marker predicate —
+    /// a completion marker in this store must NOT cause malformed or
+    /// credential-bearing tombstone-shaped rows in a restored graph to be
+    /// trusted. Every marker-bearing row is re-certified here: strict
+    /// tombstone schema, persisted-identity binding, class-scoped
+    /// disposition and protected-counterpart (or durable migration-report)
+    /// evidence. A row that fails any check is treated as pending
+    /// credential material — certification fails closed.
     async fn scan_pending_graph_credentials(
         &self,
         store: &GraphStore,
@@ -1685,10 +1687,16 @@ impl AuthStore {
             .list_config_items(None)
             .await
             .context("migration certification: failed to list config items")?;
+        // Durable per-record migration evidence, parsed once. Records are
+        // `(class, item_id, disposition)` triples written atomically with
+        // the completion marker.
+        let manifest_records = self.migration_manifest_records()?;
         let mut cred_pending = false;
         let mut prot_pending = false;
         for item in &items {
-            if is_migration_tombstone(item) {
+            if is_migration_tombstone(item)
+                && self.certify_tombstone(item, &manifest_records)
+            {
                 continue;
             }
             if matches!(
@@ -1702,6 +1710,143 @@ impl AuthStore {
             }
         }
         Ok((cred_pending, prot_pending))
+    }
+
+    /// Parse the durable `migration_report` manifest into a set of
+    /// `(class, item_id, disposition)` triples. Returns an empty set when
+    /// no report exists (e.g. protected-config-only completion) — callers
+    /// then rely on live counterpart checks only.
+    fn migration_manifest_records(
+        &self,
+    ) -> Result<std::collections::HashSet<(String, String, String)>> {
+        let mut out = std::collections::HashSet::new();
+        let Some(raw) = self.get_auth_config("migration_report")? else {
+            return Ok(out);
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&raw).context("migration_report is not valid JSON")?;
+        if let Some(records) = v.get("records").and_then(|r| r.as_array()) {
+            for r in records {
+                let class = r.get("class").and_then(|c| c.as_str());
+                let id = r.get("id").and_then(|c| c.as_str());
+                let disp = r.get("disposition").and_then(|c| c.as_str());
+                if let (Some(c), Some(i), Some(d)) = (class, id, disp) {
+                    out.insert((c.to_string(), i.to_string(), d.to_string()));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// SEC-19: certify a marker-bearing graph row as genuine migration
+    /// evidence. Requires ALL of: strict tombstone schema, identity
+    /// binding (`record_class`/`item_id` match the row), a disposition
+    /// valid for the record's class+name, and verifiable protected
+    /// counterpart or durable manifest evidence.
+    ///
+    /// Historical-vs-active nuance: a user/API key legitimately disabled
+    /// or rotated after migration keeps its AuthStore row (deletion is
+    /// disable-only), a quarantined record is never deleted, and service
+    /// tokens are replace-not-delete — so counterpart checks remain valid
+    /// indefinitely. `jwt_revoked` entries are the exception: they are
+    /// non-secret denylist state that legitimately expires and is pruned;
+    /// for those, the durable migration manifest is the evidence.
+    fn certify_tombstone(
+        &self,
+        item: &ConfigItemRecord,
+        manifest_records: &std::collections::HashSet<(String, String, String)>,
+    ) -> bool {
+        if validate_migration_tombstone_schema(item).is_err() {
+            return false;
+        }
+        let Some((tclass, tid, disposition)) = tombstone_disposition(item) else {
+            return false;
+        };
+        if tclass != item.config_class || tid != item.id {
+            return false;
+        }
+        let cred_class = matches!(
+            item.config_class.as_str(),
+            "user" | "api_key" | "jwt_secret" | "jwt_revoked" | "session"
+        );
+        let disposition_allowed = if cred_class {
+            match (item.config_class.as_str(), disposition.as_str()) {
+                ("session", "retired") => true,
+                ("jwt_secret", "imported" | "quarantined" | "skipped_env_override") => true,
+                ("user" | "api_key" | "jwt_revoked", "imported" | "quarantined") => true,
+                _ => false,
+            }
+        } else {
+            protected_config_disposition(&item.name).is_some()
+                && matches!(disposition.as_str(), "imported" | "quarantined")
+        };
+        if !disposition_allowed {
+            return false;
+        }
+        match disposition.as_str() {
+            "imported" => self.certify_imported_counterpart(item, manifest_records),
+            "quarantined" => self
+                .verify_quarantined_counterpart(&item.config_class, item)
+                .is_ok(),
+            // retired / skipped_env_override / scrubbed carry no
+            // protected counterpart by design.
+            _ => true,
+        }
+    }
+
+    /// Counterpart check for certification. Same contract as
+    /// `verify_imported_counterpart` except `jwt_revoked`: revocation rows
+    /// legitimately expire and are pruned, so certification accepts the
+    /// durable migration-manifest record or a still-present row. A
+    /// revocation tombstone carries no secret material either way.
+    fn certify_imported_counterpart(
+        &self,
+        item: &ConfigItemRecord,
+        manifest_records: &std::collections::HashSet<(String, String, String)>,
+    ) -> bool {
+        if protected_config_disposition(&item.name) == Some("imported") {
+            return self
+                .get_service_token(&item.name)
+                .map(|t| t.is_some())
+                .unwrap_or(false);
+        }
+        match item.config_class.as_str() {
+            "user" => self.get_user(&item.name).map(|u| u.is_some()).unwrap_or(false),
+            "api_key" => self
+                .api_key_verifier_row(&item.id)
+                .map(|r| r.is_some())
+                .unwrap_or(false),
+            "jwt_secret" => {
+                let conn = match self.lock() {
+                    Ok(c) => c,
+                    Err(_) => return false,
+                };
+                conn.query_row("SELECT COUNT(*) FROM jwt_keys", [], |r| r.get::<_, i64>(0))
+                    .map(|n| n > 0)
+                    .unwrap_or(false)
+            }
+            "jwt_revoked" => {
+                let Some(jti) = item.id.strip_prefix("jwt-revoked-") else {
+                    return false;
+                };
+                if jti.is_empty() {
+                    return false;
+                }
+                if self
+                    .jwt_revoked_expiry(jti)
+                    .map(|e| e.is_some())
+                    .unwrap_or(false)
+                {
+                    return true;
+                }
+                manifest_records.contains(&(
+                    "jwt_revoked".to_string(),
+                    item.id.clone(),
+                    "imported".to_string(),
+                ))
+            }
+            _ => false,
+        }
     }
 
     /// Staged, idempotent migration from graph `ConfigItem` records.

@@ -310,7 +310,7 @@ async fn migration_storage_failure_denies_requests() -> Result<()> {
     // migration aborts → auth storage unavailable → 503 (fail closed).
     let pw = bonsai::http_server::hash_password("ConflictPassw0rd!1").unwrap();
     store
-        .upsert_config_item(ConfigItemRecord {
+        .upsert_config_item_unchecked(ConfigItemRecord {
             id: "user-conflict".into(),
             config_class: "user".into(),
             vendor: String::new(),
@@ -527,7 +527,7 @@ async fn quarantined_secret_is_sealed_and_recoverable() -> Result<()> {
     let store = open_store(&dir);
     let secret_content = "{\"password_hash\":\"$argon2id$v=19$m=19456,t=2,p=1$SECRET$HASH\"";
     store
-        .upsert_config_item(malformed_user_item("user-leaky", secret_content))
+        .upsert_config_item_unchecked(malformed_user_item("user-leaky", secret_content))
         .await?;
     let report = store.auth_store.migrate_from_graph(&store).await?;
     assert_eq!(report.quarantined_records, 1);
@@ -560,7 +560,7 @@ async fn conflicting_quarantine_record_aborts_migration() -> Result<()> {
     let dir = TempDir::new()?;
     let store = open_store(&dir);
     store
-        .upsert_config_item(malformed_user_item("user-clash", "{corrupt-A"))
+        .upsert_config_item_unchecked(malformed_user_item("user-clash", "{corrupt-A"))
         .await?;
     // Pre-seed a quarantine row for the same identity with DIFFERENT
     // content — must conflict, not be silently ignored.
@@ -587,7 +587,7 @@ async fn migration_resumes_with_existing_tombstones() -> Result<()> {
     let store = open_store(&dir);
     let pw = bonsai::http_server::hash_password("ResumePassw0rd!3").unwrap();
     store
-        .upsert_config_item(ConfigItemRecord {
+        .upsert_config_item_unchecked(ConfigItemRecord {
             id: "user-first".into(),
             config_class: "user".into(),
             vendor: String::new(),
@@ -611,7 +611,7 @@ async fn migration_resumes_with_existing_tombstones() -> Result<()> {
         .set_auth_config("migration_state", "interrupted")?;
     let pw2 = bonsai::http_server::hash_password("ResumePassw0rd!4").unwrap();
     store
-        .upsert_config_item(ConfigItemRecord {
+        .upsert_config_item_unchecked(ConfigItemRecord {
             id: "user-second".into(),
             config_class: "user".into(),
             vendor: String::new(),
@@ -957,7 +957,7 @@ async fn migration_tombstone_without_counterpart_aborts() -> Result<()> {
     // exist in the protected store — must not count as migration
     // evidence.
     store
-        .upsert_config_item(migration_tombstone(
+        .upsert_config_item_unchecked(migration_tombstone(
             "user-ghost",
             "ghost",
             "user",
@@ -992,7 +992,7 @@ async fn migration_tombstone_identity_mismatch_aborts() -> Result<()> {
         "quarantined_at_ns": 0,
     })
     .to_string();
-    store.upsert_config_item(item).await?;
+    store.upsert_config_item_unchecked(item).await?;
     store
         .auth_store
         .set_auth_config("migration_state", "interrupted")?;
@@ -1015,7 +1015,7 @@ async fn migration_changed_source_record_aborts_on_resume() -> Result<()> {
     let store = open_store(&dir);
     let pw = bonsai::http_server::hash_password("ChangedSrcPassw0rd!1").unwrap();
     store
-        .upsert_config_item(ConfigItemRecord {
+        .upsert_config_item_unchecked(ConfigItemRecord {
             id: "user-mut".into(),
             config_class: "user".into(),
             vendor: String::new(),
@@ -1051,7 +1051,7 @@ async fn migration_changed_source_record_aborts_on_resume() -> Result<()> {
         "last_login_ns": 0
     })
     .to_string();
-    store.upsert_config_item(row.clone()).await?;
+    store.upsert_config_item_unchecked(row.clone()).await?;
 
     let err = store
         .auth_store
@@ -1981,14 +1981,14 @@ async fn migration_marker_cannot_certify_older_graph() -> Result<()> {
         enabled: true,
         created_by: "test".into(),
     };
-    store.upsert_config_item(legacy.clone()).await?;
+    store.upsert_config_item_unchecked(legacy.clone()).await?;
     store.auth_store.migrate_from_graph(&store).await?;
     store.auth_store.migrate_protected_config(&store).await?;
     store.auth_store.ensure_migrated(&store).await?;
 
     // Simulate restoring an older graph state: the same credential row
     // is live again (id MERGE revives the tombstoned record).
-    store.upsert_config_item(legacy).await?;
+    store.upsert_config_item_unchecked(legacy).await?;
 
     // Fresh process-local migration state: the durable markers are
     // complete, but the attached graph no longer matches them.
@@ -2020,7 +2020,7 @@ async fn older_auth_store_with_migrated_graph_fails_closed() -> Result<()> {
     let store = open_store(&dir);
     let pw = bonsai::http_server::hash_password("InversePassw0rd!1").unwrap();
     store
-        .upsert_config_item(ConfigItemRecord {
+        .upsert_config_item_unchecked(ConfigItemRecord {
             id: "user-inv".into(),
             config_class: "user".into(),
             vendor: String::new(),

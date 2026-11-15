@@ -153,3 +153,31 @@ treat all of these as incomplete backups; do not restore.
 - No automatic reactivation of quarantined credentials.
 - No cross-node replication of revocation/key state (single-writer
   authority per node; see `docs/auth_storage.md` §6).
+
+## 7. Live-exercise addendum (2026-11-15, WP2.8)
+
+Executed against `feat/bn022-auth-storage` @ 8e02a59+fixes; evidence in
+`docs/merger/evidence/2026-11-15-bn022-live-recovery/`.
+
+- **Emergency rotation is an offline/quiesced operation.** The CLI
+  rotates `jwt_keys` in a separate process; the running server's
+  process-local JWT verification cache cannot observe cross-process key
+  changes, so a live-rotated store keeps accepting pre-rotation tokens
+  until restart (verified live). Procedure: rotate while the service is
+  stopped (or on the isolated staging copy per §3.4), then start.
+- **Restore predating rotation resurrects tokens.** Restoring a backup
+  older than an incident window restores the old signing key — tokens
+  minted before the incident verify again (verified live). Mandatory
+  reconciliation: `bonsai auth rotate-emergency --db <restored>` BEFORE
+  first start, exactly as §3.4 requires.
+- **Graph/AuthStore mismatch fails closed both directions** (verified
+  live): pre-migration graph + migrated AuthStore → startup certification
+  refuses auth; tombstoned graph + pre-migration AuthStore → migration
+  aborts on missing tombstone counterparts.
+- SEC-19/SEC-20 corrections (this branch): startup certification now
+  re-validates strict tombstone schema + class-scoped disposition +
+  counterpart/manifest evidence instead of trusting the weak marker
+  predicate; the store write boundary now covers all retired credential
+  classes; `routing_service_url` is admin-only effective-identity
+  configuration and credential-bearing routing requests never follow
+  redirects.

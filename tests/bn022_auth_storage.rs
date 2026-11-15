@@ -60,11 +60,11 @@ async fn migration_imports_users_keys_and_quarantines_graph_rows() -> Result<()>
     // Seed legacy graph credential records (synthetic values only).
     let pw_hash = bonsai::http_server::hash_password("LegacyPassw0rd!Xy").unwrap();
     store
-        .upsert_config_item(legacy_user_item("legacy-user", &pw_hash, "operator"))
+        .upsert_config_item_unchecked(legacy_user_item("legacy-user", &pw_hash, "operator"))
         .await?;
     let key_hash = hex::encode(sha2::Sha256::digest(b"bsk_synthetic_legacy_key_material"));
     store
-        .upsert_config_item(legacy_api_key_item(
+        .upsert_config_item_unchecked(legacy_api_key_item(
             "apikey-0123456789abcdef",
             "legacy-svc",
             &key_hash,
@@ -72,7 +72,7 @@ async fn migration_imports_users_keys_and_quarantines_graph_rows() -> Result<()>
         ))
         .await?;
     store
-        .upsert_config_item(ConfigItemRecord {
+        .upsert_config_item_unchecked(ConfigItemRecord {
             id: "jwt-secret-v1".to_string(),
             config_class: "jwt_secret".to_string(),
             vendor: String::new(),
@@ -84,7 +84,7 @@ async fn migration_imports_users_keys_and_quarantines_graph_rows() -> Result<()>
         })
         .await?;
     store
-        .upsert_config_item(ConfigItemRecord {
+        .upsert_config_item_unchecked(ConfigItemRecord {
             id: "jwt-revoked-testjti".to_string(),
             config_class: "jwt_revoked".to_string(),
             vendor: String::new(),
@@ -172,7 +172,7 @@ async fn migrated_graph_rows_cannot_authorize() -> Result<()> {
     // (even if re-enabled) cannot authenticate.
     let pw_hash = bonsai::http_server::hash_password("GraphOnlyPass1!").unwrap();
     store
-        .upsert_config_item(legacy_user_item("graph-only", &pw_hash, "admin"))
+        .upsert_config_item_unchecked(legacy_user_item("graph-only", &pw_hash, "admin"))
         .await?;
     store.auth_store.ensure_migrated(&store).await?;
 
@@ -187,7 +187,7 @@ async fn migrated_graph_rows_cannot_authorize() -> Result<()> {
         .next()
         .unwrap();
     item.enabled = true;
-    store.upsert_config_item(item).await?;
+    store.upsert_config_item_unchecked(item).await?;
 
     // auth_store has no such user only if we remove it — instead verify the
     // graph row is never read: disable in auth store, graph row enabled.
@@ -237,7 +237,7 @@ async fn malformed_legacy_records_are_counted_not_imported() -> Result<()> {
     // Malformed user (bad JSON), malformed api_key (bad hash), orphan
     // jwt_revoked id, plus one good user.
     store
-        .upsert_config_item(ConfigItemRecord {
+        .upsert_config_item_unchecked(ConfigItemRecord {
             id: "user-bad".into(),
             config_class: "user".into(),
             vendor: String::new(),
@@ -249,7 +249,7 @@ async fn malformed_legacy_records_are_counted_not_imported() -> Result<()> {
         })
         .await?;
     store
-        .upsert_config_item(ConfigItemRecord {
+        .upsert_config_item_unchecked(ConfigItemRecord {
             id: "apikey-bad".into(),
             config_class: "api_key".into(),
             vendor: String::new(),
@@ -262,7 +262,7 @@ async fn malformed_legacy_records_are_counted_not_imported() -> Result<()> {
         .await?;
     let pw_hash = bonsai::http_server::hash_password("GoodPassw0rd!12").unwrap();
     store
-        .upsert_config_item(legacy_user_item("good", &pw_hash, "viewer"))
+        .upsert_config_item_unchecked(legacy_user_item("good", &pw_hash, "viewer"))
         .await?;
 
     let report = store.auth_store.migrate_from_graph(&store).await?;
@@ -286,7 +286,7 @@ async fn migration_rejects_same_user_different_role() -> Result<()> {
     let store = open_store(&dir);
     let pw_hash = bonsai::http_server::hash_password("SamePassw0rd!123").unwrap();
     store
-        .upsert_config_item(legacy_user_item("conflict-user", &pw_hash, "operator"))
+        .upsert_config_item_unchecked(legacy_user_item("conflict-user", &pw_hash, "operator"))
         .await?;
     // Pre-existing auth-store row with same verifier but different role.
     store
@@ -322,7 +322,7 @@ async fn migration_rejects_same_key_id_different_verifier() -> Result<()> {
     let hash_a = hex::encode(sha2::Sha256::digest(b"key-material-A"));
     let hash_b = hex::encode(sha2::Sha256::digest(b"key-material-B"));
     store
-        .upsert_config_item(legacy_api_key_item(
+        .upsert_config_item_unchecked(legacy_api_key_item(
             "apikey-conflict",
             "svc",
             &hash_a,
@@ -347,10 +347,10 @@ async fn migration_rejects_duplicate_verifier_different_ids() -> Result<()> {
     let store = open_store(&dir);
     let hash = hex::encode(sha2::Sha256::digest(b"shared-verifier"));
     store
-        .upsert_config_item(legacy_api_key_item("apikey-one", "a", &hash, "read"))
+        .upsert_config_item_unchecked(legacy_api_key_item("apikey-one", "a", &hash, "read"))
         .await?;
     store
-        .upsert_config_item(legacy_api_key_item("apikey-two", "b", &hash, "read"))
+        .upsert_config_item_unchecked(legacy_api_key_item("apikey-two", "b", &hash, "read"))
         .await?;
     let err = store
         .auth_store
@@ -366,7 +366,7 @@ async fn migration_quarantines_malformed_without_loss() -> Result<()> {
     let dir = TempDir::new()?;
     let store = open_store(&dir);
     store
-        .upsert_config_item(ConfigItemRecord {
+        .upsert_config_item_unchecked(ConfigItemRecord {
             id: "user-broken".into(),
             config_class: "user".into(),
             vendor: String::new(),

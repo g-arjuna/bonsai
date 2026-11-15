@@ -52,7 +52,7 @@ async fn seed_credential_items(store: &GraphStore) {
         ),
     ] {
         store
-            .upsert_config_item(ConfigItemRecord {
+            .upsert_config_item_unchecked(ConfigItemRecord {
                 id: id.to_string(),
                 config_class: class.to_string(),
                 vendor: String::new(),

@@ -1,0 +1,15 @@
+{
+  "format": "bonsai-auth-backup-v2",
+  "schema_version": 4,
+  "created_at_ns": 1794713174860402128,
+  "snapshot_sha256": "9b5278d9feb3539cda024272bfa5df7044a0e982860f4fc434a2848892ae5e81",
+  "snapshot_size_bytes": 86016,
+  "key_source": "env:BONSAI_VAULT_PASSPHRASE",
+  "migration_state": "complete",
+  "user_count": 1,
+  "api_key_count": 1,
+  "jwt_key_count": 1,
+  "jwt_revoked_count": 1,
+  "quarantined_record_count": 6,
+  "service_token_count": 1
+}

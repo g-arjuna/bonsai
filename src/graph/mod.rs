@@ -275,7 +275,21 @@ pub const PROTECTED_CONFIG_NAMES: &[&str] = &[
     "jwt_secret",
     "admin_password",
     "bind_password",
+    // SEC-20: the routing-service credential DESTINATION is security
+    // authority — the proxy attaches protected service credentials to
+    // requests sent to this URL, so only admin/deployment configuration
+    // may establish or modify it.
+    "routing_service_url",
 ];
+
+/// ConfigItem classes retired by the BN-022 auth migration. Records in
+/// these classes are credential material that now lives exclusively in
+/// the protected `AuthStore`; the graph may only ever hold validated
+/// migration tombstones for them. Enforced at the store write boundary
+/// (`upsert_config_item`) so no generic writer — REST, MCP, internal —
+/// can reintroduce credential-shaped records after migration.
+pub const RETIRED_CREDENTIAL_CLASSES: &[&str] =
+    &["user", "session", "api_key", "jwt_secret", "jwt_revoked"];
 
 /// True when a ConfigItem (class + name) is protected from non-admin
 /// writes and redacted on non-admin reads.
@@ -4383,10 +4397,16 @@ impl GraphStore {
                 .next()
                 .map(|row| (read_str(&row[0]), read_str(&row[1])));
             // Effective persisted identity after this write.
-            let (eff_name, _eff_class) = existing
+            let (eff_name, eff_class) = existing
                 .clone()
                 .unwrap_or_else(|| (item.name.clone(), item.config_class.clone()));
-            if crate::auth_store::protected_config_disposition(&eff_name).is_some() {
+            // SEC-19: retired credential classes are a structural storage
+            // boundary, not just a REST-layer restriction. A generic graph
+            // write must never (re)create or mutate records in the retired
+            // classes — the only legitimate writer is a strictly verified
+            // migration tombstone bound to that exact persisted record.
+            let retired_class = RETIRED_CREDENTIAL_CLASSES.contains(&eff_class.as_str());
+            if retired_class || crate::auth_store::protected_config_disposition(&eff_name).is_some() {
                 let strict_schema =
                     crate::auth_store::validate_migration_tombstone_schema(&item).is_ok();
                 let identity_match = existing

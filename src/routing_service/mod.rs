@@ -3212,11 +3212,36 @@ pub async fn resolve_routing_service_endpoint_config(
             .ok()
             .filter(|s| !s.trim().is_empty())
     });
-    Ok((
-        url.trim_end_matches('/').to_string(),
-        token,
-        has_explicit_db_url,
-    ))
+    let url = url.trim_end_matches('/').to_string();
+    // SEC-20: the destination authority for protected service credentials
+    // must be a well-formed http(s) URL — no userinfo, no exotic schemes.
+    // An invalid configured destination fails closed: the credential is
+    // never transmitted to an unparseable or unintended target. Remote
+    // https endpoints are supported (operator-managed transport); plain
+    // http is permitted for the documented loopback/dev deployments.
+    validate_routing_service_url(&url)?;
+    Ok((url, token, has_explicit_db_url))
+}
+
+/// SEC-20: structural validation of the configured routing-service
+/// endpoint. Accepts `http`/`https` URLs with a host and no userinfo;
+/// rejects everything else (including empty/relative values) so a bad
+/// `routing_service_url` can never smuggle credentials to an
+/// unintended or unparseable destination.
+pub fn validate_routing_service_url(url: &str) -> anyhow::Result<()> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| anyhow::anyhow!("routing_service_url is not a valid URL: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => anyhow::bail!("routing_service_url scheme '{other}' is not supported"),
+    }
+    if parsed.host_str().is_none() {
+        anyhow::bail!("routing_service_url has no host");
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        anyhow::bail!("routing_service_url must not contain userinfo credentials");
+    }
+    Ok(())
 }
 
 /// Project new durable `RibEvent`s after `checkpoint.last_applied_sequence` into `GraphStore`.
@@ -3263,8 +3288,12 @@ pub async fn project_remote_routing_events_to_graph(
         "{base_url}/internal/routing/v1/events?after_seq={}&limit={limit}",
         cp.last_applied_sequence
     );
+    // SEC-20: credential-bearing request — never follow redirects (a
+    // redirect could transfer `x-bonsai-routing-token` to an
+    // unauthorized destination); fail closed instead.
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let mut req = client.get(&url);
     if let Some(t) = token {

@@ -1,0 +1,12 @@
+{
+  "format": "bonsai-auth-backup-v1",
+  "schema_version": 3,
+  "created_at_ns": 1794668692597738675,
+  "key_source": "env:BONSAI_VAULT_PASSPHRASE",
+  "migration_state": null,
+  "user_count": 0,
+  "api_key_count": 0,
+  "jwt_key_count": 0,
+  "jwt_revoked_count": 0,
+  "quarantined_record_count": 0
+}
