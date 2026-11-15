@@ -94,8 +94,12 @@ documents the planned BN-019 fixes and safer measurement procedure.
 ## Canonical Validation Gates (BN-019-B6)
 
 `scripts/ci/gates.sh` is the single fail-closed definition of the tiered
-gates; `just gate <tier>` and `just gate-all` are thin wrappers, and
-`.github/workflows/ci.yml` runs the same script in CI.
+gates; `just gate <tier>` and `just gate-all` are thin wrappers.
+`.github/workflows/ci.yml` runs the same script in CI, but **remote CI is
+DEFERRED BY OWNER POLICY** (local-first CI, effective 2026-11-15): the
+workflow is manual `workflow_dispatch` only and no automatic triggers run.
+The authoritative acceptance path is local execution via
+`scripts/ci/run-local.sh --trusted --shared-target l0 l1 l2 l3`.
 
 | Tier | Scope | Command |
 |------|-------|---------|
@@ -112,9 +116,15 @@ nonzero. Optional lab suites are reported as skipped, never as passed.
 Environment knobs: `GATE_BASE` (fmt-diff base ref, default `origin/main`),
 `CARGO_PROFILE` (default `ci`), `SKIP_UI_BUILD=1` (reuse `ui/dist`).
 
-### CI runners
+### CI runners — DEFERRED BY OWNER POLICY
 
-GitHub-hosted `ubuntu-latest` runners cannot build the full Bonsai test
+Remote CI is deferred under the local-first policy (2026-11-15). The
+following runner design is preserved for future activation; no hosted or
+self-hosted runner is currently required or registered, and
+`.github/workflows/ci.yml` only runs on manual `workflow_dispatch`.
+
+Historical context: GitHub-hosted `ubuntu-latest` runners cannot build
+the full Bonsai test
 suite: `target/` exceeds 100 GB and parallel test-binary links exceed 16 GB
 RAM. The `rust-gates` job therefore requires a **self-hosted runner**
 labelled `[self-hosted, linux, x64, bonsai-ci]` with: Rust 1.95.0
@@ -181,9 +191,18 @@ your account is locked due to a billing issue."* This is an account-level
 billing lock, not a workflow or test failure — owner action required. The
 self-hosted job remains queued (no `bonsai-ci` runner registered).
 
-### Local containerized CI (GitHub-billing workaround)
+### Local CI — authoritative acceptance path (local-first policy)
 
-While hosted runners are unavailable, `scripts/ci/run-local.sh` executes
+Under the owner-approved local-first CI policy (2026-11-15), remote
+hosted/self-hosted CI is **deferred**: GitHub remains the source-control
+and review platform, and the canonical technical acceptance command is
+LOCAL:
+
+```bash
+scripts/ci/run-local.sh --trusted --shared-target l0 l1 l2 l3
+```
+
+`scripts/ci/run-local.sh` executes
 the SAME canonical `scripts/ci/gates.sh` tiers inside the development-only
 image `docker/ci/Dockerfile` (`bonsai-ci:local`):
 
@@ -226,12 +245,13 @@ scripts/ci/run-local.sh --untrusted l0 l1   # cold-cache PR validation
 scripts/ci/run-local.sh --build --shared-target l0 l1 l2 l3
 ```
 
-This validates the gate commands and code, NOT GitHub billing, runner
-registration, hosted permissions or branch protection — remote CI status
-must still be reported truthfully. It also does not replace L4 lab
-acceptance. `actionlint` (or equivalent) should be run against
-`.github/workflows/ci.yml` before relying on workflow changes; the
-workflow itself is unchanged by this path.
+This validates the gate commands and code and constitutes **local
+technical acceptance**. It does not replace independent review, L4 lab
+acceptance, or a future remote-CI activation decision — remote CI status
+must still be reported truthfully when/if it runs (currently deferred by
+owner policy; the workflow is manual `workflow_dispatch` only). `actionlint`
+(or equivalent) should be run against `.github/workflows/ci.yml` after
+workflow changes.
 
 ## Canonical Local Helpers
 

@@ -18,10 +18,17 @@ name: ci
 #
 # All actions are pinned to immutable commit SHAs (CI-R6); update deliberately.
 
+# DEFERRED BY OWNER POLICY (local-first CI, 2026-11-15): this workflow no longer
+# runs automatically on pull_request or push. Remote hosted/self-hosted CI is
+# deferred until project maturity justifies the expenditure. The canonical
+# authoritative acceptance command is LOCAL:
+#   scripts/ci/run-local.sh --trusted --shared-target l0 l1 l2 l3
+# Job definitions below are preserved for future activation. Do not dispatch
+# this workflow without owner approval (it can consume paid GitHub-hosted
+# minutes and requires a registered self-hosted runner for rust-gates).
+
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
