@@ -11,8 +11,7 @@
 //!
 //! All credentials synthetic; all stores temporary.
 
-use std::sync::Arc;
-
+use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use bonsai::auth_store::{AuthUser, MIGRATION_MARKER};
 use bonsai::graph::{ConfigItemRecord, GraphStore, RETIRED_CREDENTIAL_CLASSES};
@@ -335,28 +334,52 @@ fn routing_service_url_validation_fails_closed() {
 // ── SEC-20/WP1.2: redirect regression — synthetic credential must reach
 // the authorized endpoint but NEVER a redirect destination, on every
 // credential-bearing routing client. ─────────────────────────────────
+//
+// RC-01 correction: each consumer is exercised with REAL Bonsai
+// authentication (default deployment policy requires it) so the request
+// actually reaches the routing consumer — an unauthenticated 401 can no
+// longer satisfy the assertions. The configured routing endpoint is a
+// loopback redirector that RECORDS every received request (method, path,
+// credential header) before returning the redirect; a second loopback
+// recorder is the redirect destination and must observe ZERO requests.
+// A pass therefore proves: consumer executed → authorized endpoint saw
+// the expected request carrying the synthetic credential → destination
+// saw nothing → consumer failed closed.
 
-use std::sync::Mutex;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordedHit {
+    method: String,
+    path: String,
+    query: Option<String>,
+    token: Option<String>,
+}
 
-type SeenRequests = Arc<Mutex<Vec<(String, String, Option<String>)>>>;
+type SeenRequests = Arc<Mutex<Vec<RecordedHit>>>;
 
-async fn spawn_recording_server() -> (String, SeenRequests) {
+fn record_hit(req: &axum::extract::Request, seen: &SeenRequests) {
+    let token = req
+        .headers()
+        .get("x-bonsai-routing-token")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    seen.lock().unwrap().push(RecordedHit {
+        method: req.method().to_string(),
+        path: req.uri().path().to_string(),
+        query: req.uri().query().map(String::from),
+        token,
+    });
+}
+
+/// Loopback destination behind the redirect — records everything, must
+/// stay empty for the credential-leak assertion.
+async fn spawn_recording_destination() -> (String, SeenRequests) {
     let seen: SeenRequests = Arc::new(Mutex::new(Vec::new()));
     let seen2 = seen.clone();
     let app =
         axum::Router::new().fallback(axum::routing::any(move |req: axum::extract::Request| {
             let seen = seen2.clone();
             async move {
-                let token = req
-                    .headers()
-                    .get("x-bonsai-routing-token")
-                    .and_then(|v| v.to_str().ok())
-                    .map(String::from);
-                seen.lock().unwrap().push((
-                    req.uri().path().to_string(),
-                    req.method().to_string(),
-                    token,
-                ));
+                record_hit(&req, &seen);
                 axum::Json(serde_json::json!({"ok": true}))
             }
         }));
@@ -366,15 +389,27 @@ async fn spawn_recording_server() -> (String, SeenRequests) {
     (format!("http://{addr}"), seen)
 }
 
-async fn spawn_redirector(location: String, status: axum::http::StatusCode) -> String {
-    let app = axum::Router::new().fallback(axum::routing::any(move || {
-        let location = location.clone();
-        async move { (status, [(axum::http::header::LOCATION, location)]) }
-    }));
+/// Loopback stand-in for the authorized routing endpoint: records the
+/// credential-bearing request, then returns the configured redirect.
+async fn spawn_redirector(
+    location: String,
+    status: axum::http::StatusCode,
+) -> (String, SeenRequests) {
+    let seen: SeenRequests = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let app =
+        axum::Router::new().fallback(axum::routing::any(move |req: axum::extract::Request| {
+            let seen = seen2.clone();
+            let location = location.clone();
+            async move {
+                record_hit(&req, &seen);
+                (status, [(axum::http::header::LOCATION, location)])
+            }
+        }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    format!("http://{addr}")
+    (format!("http://{addr}"), seen)
 }
 
 fn make_change_request(store: &GraphStore, id: &str) {
@@ -393,14 +428,119 @@ fn make_change_request(store: &GraphStore, id: &str) {
     .unwrap();
 }
 
+const REDIRECT_TOKEN: &str = "synthetic-sec20-redirect-token";
+
+/// One consumer invocation against the currently configured
+/// `routing_service_url`. Returns `(safe, expected_hits)` where `safe`
+/// is the documented fail-closed outcome and `expected_hits` lists the
+/// `(method, internal_path_prefix)` requests the authorized endpoint
+/// MUST have received — each carrying `x-bonsai-routing-token`.
+async fn invoke_redirect_consumer(
+    consumer: &str,
+    store: &Arc<bonsai::graph::GraphStore>,
+    app_base: &str,
+    admin_jwt: &str,
+    client: &reqwest::Client,
+) -> Result<(bool, Vec<(&'static str, &'static str)>)> {
+    match consumer {
+        // 1. Routing GET proxy — requires authenticated Bonsai principal.
+        "routing_get" => {
+            let r = client
+                .get(format!(
+                    "{app_base}/api/routing/v1/routes?speaker=198.51.100.1"
+                ))
+                .bearer_auth(admin_jwt)
+                .send()
+                .await?;
+            // Documented safe behavior: non-success routing_unavailable.
+            Ok((
+                !r.status().is_success(),
+                vec![("GET", "/internal/routing/v1/routes")],
+            ))
+        }
+        // 2. Routing POST proxy.
+        "routing_post" => {
+            let r = client
+                .post(format!("{app_base}/api/routing/v1/ingest-bmp"))
+                .bearer_auth(admin_jwt)
+                .json(&serde_json::json!({"speaker": "198.51.100.1", "payload": "x"}))
+                .send()
+                .await?;
+            Ok((
+                !r.status().is_success(),
+                vec![("POST", "/internal/routing/v1/ingest-bmp")],
+            ))
+        }
+        // 3. Remote MCP routing tool (in-process trusted call; the HTTP
+        //    /mcp transport is covered by the auth boundary tests).
+        "mcp_prefix_journey" => {
+            let res = bonsai::mcp_server::call_tool_with_store_and_routing(
+                store,
+                None,
+                "get_prefix_journey",
+                &serde_json::json!({
+                    "prefix": "10.99.0.0/24",
+                    "speaker": "198.51.100.1",
+                    "vrf_rd": "65000:99"
+                }),
+                &bonsai::mcp_server::ToolExecutionContext::global(
+                    bonsai::http_server::auth::Role::Admin,
+                ),
+            )
+            .await;
+            Ok((
+                res.is_err(),
+                vec![("GET", "/internal/routing/v1/prefix-journey")],
+            ))
+        }
+        // 4. Change-capture routing requests (baseline phase issues a
+        //    routes + peers pull per affected CI).
+        "change_capture" => {
+            let r = client
+                .post(format!("{app_base}/api/changes/chg-redir/capture"))
+                .bearer_auth(admin_jwt)
+                .json(&serde_json::json!({"phase": "baseline"}))
+                .send()
+                .await?;
+            assert_eq!(r.status().as_u16(), 200, "capture endpoint contract");
+            let body: serde_json::Value = r.json().await?;
+            // Safe behavior: per-device capture records the routing
+            // failure explicitly instead of succeeding silently.
+            let routes_ok = body["captured"][0]["routes_ok"].as_bool().unwrap_or(true);
+            let peers_ok = body["captured"][0]["peers_ok"].as_bool().unwrap_or(true);
+            Ok((
+                !routes_ok && !peers_ok,
+                vec![
+                    ("GET", "/internal/routing/v1/routes"),
+                    ("GET", "/internal/routing/v1/peers"),
+                ],
+            ))
+        }
+        // 5. Remote routing-event projection.
+        "routing_projection" => {
+            let res =
+                bonsai::routing_service::project_remote_routing_events_to_graph(store, 10).await;
+            Ok((
+                res.is_err(),
+                vec![("GET", "/internal/routing/v1/events")],
+            ))
+        }
+        other => anyhow::bail!("unknown consumer '{other}'"),
+    }
+}
+
 #[tokio::test]
 async fn credential_bearing_routing_clients_never_follow_redirects() -> Result<()> {
     clear_auth_env();
     let dir = TempDir::new()?;
     let store = open_store(&dir);
+    // Deterministic deployment policy: authentication is required, so
+    // every HTTP consumer invocation below carries a real credential.
+    store.set_auth_enforcement_override(Some(true));
     store
         .auth_store
-        .set_service_token("routing_service_token", "synthetic-sec20-redirect-token")?;
+        .set_service_token("routing_service_token", REDIRECT_TOKEN)?;
+    add_user(&store, "sec20-admin", "admin");
     make_change_request(&store, "chg-redir");
 
     let state = bonsai::http_server::AppState::new_minimal_with_runtime_dir(store.clone(), "/tmp");
@@ -411,92 +551,62 @@ async fn credential_bearing_routing_clients_never_follow_redirects() -> Result<(
     let app_base = format!("http://{app_addr}");
 
     let http = reqwest::Client::new();
-    let token = "synthetic-sec20-redirect-token";
+    let admin_jwt = login(&http, &app_base, "sec20-admin").await;
 
     // Representative redirect statuses for GET (301/302/303/307/308)
     // and POST (307/308 preserve method+body; 302 is the classic case).
     for status in [301u16, 302, 303, 307, 308] {
-        let (dest_url, dest_seen) = spawn_recording_server().await;
-        let redir_url = spawn_redirector(
-            format!("{dest_url}/stolen"),
-            axum::http::StatusCode::from_u16(status).unwrap(),
-        )
-        .await;
-        store
-            .upsert_config_item(cfg(
-                "app-cfg-routing-url",
-                "app_config",
-                "routing_service_url",
-                &format!("\"{redir_url}\""),
-            ))
-            .await?;
+        for consumer in [
+            "routing_get",
+            "routing_post",
+            "mcp_prefix_journey",
+            "change_capture",
+            "routing_projection",
+        ] {
+            let (dest_url, dest_seen) = spawn_recording_destination().await;
+            let (redir_url, redir_seen) = spawn_redirector(
+                format!("{dest_url}/stolen"),
+                axum::http::StatusCode::from_u16(status).unwrap(),
+            )
+            .await;
+            store
+                .upsert_config_item(cfg(
+                    "app-cfg-routing-url",
+                    "app_config",
+                    "routing_service_url",
+                    &format!("\"{redir_url}\""),
+                ))
+                .await?;
 
-        // 1. Routing GET proxy.
-        let r = http
-            .get(format!(
-                "{app_base}/api/routing/v1/routes?speaker=198.51.100.1"
-            ))
-            .send()
-            .await?;
-        assert!(!r.status().is_success(), "GET proxy status {status}");
+            let (safe, expected) =
+                invoke_redirect_consumer(consumer, &store, &app_base, &admin_jwt, &http).await?;
+            assert!(safe, "{consumer} status {status}: unsafe redirect outcome");
 
-        // 2. Routing POST proxy.
-        let r = http
-            .post(format!("{app_base}/api/routing/v1/ingest-bmp"))
-            .json(&serde_json::json!({"speaker": "198.51.100.1", "payload": "x"}))
-            .send()
-            .await?;
-        assert!(!r.status().is_success(), "POST proxy status {status}");
-
-        // 3. Remote MCP routing tool.
-        let mcp_res = bonsai::mcp_server::call_tool_with_store_and_routing(
-            &store,
-            None,
-            "get_prefix_journey",
-            &serde_json::json!({
-                "prefix": "10.99.0.0/24",
-                "speaker": "198.51.100.1",
-                "vrf_rd": "65000:99"
-            }),
-            &bonsai::mcp_server::ToolExecutionContext::global(
-                bonsai::http_server::auth::Role::Admin,
-            ),
-        )
-        .await;
-        assert!(mcp_res.is_err(), "MCP tool must fail on redirect {status}");
-
-        // 4. Change-capture routing request.
-        let _ = http
-            .post(format!("{app_base}/api/changes/chg-redir/capture"))
-            .json(&serde_json::json!({"phase": "baseline"}))
-            .send()
-            .await?;
-
-        // 5. Remote routing-event projection.
-        let proj =
-            bonsai::routing_service::project_remote_routing_events_to_graph(&store, 10).await;
-        assert!(proj.is_err(), "projection must fail on redirect {status}");
-
-        // ...but the redirect destination must NEVER see it.
-        {
-            let dest = dest_seen.lock().unwrap();
-            assert!(
-                dest.is_empty(),
-                "redirect status {status}: credential leaked to destination: {dest:?}"
-            );
+            // The authorized endpoint MUST have received each expected
+            // consumer request carrying the synthetic credential —
+            // proving the consumer actually executed.
+            {
+                let hits = redir_seen.lock().unwrap();
+                for (method, path_prefix) in &expected {
+                    assert!(
+                        hits.iter().any(|h| h.method == *method
+                            && h.path.starts_with(path_prefix)
+                            && h.token.as_deref() == Some(REDIRECT_TOKEN)),
+                        "{consumer} status {status}: authorized endpoint missing \
+                         {method} {path_prefix} with credential; saw {hits:?}"
+                    );
+                }
+            }
+            // ...and the redirect destination must NEVER see it.
+            {
+                let dest = dest_seen.lock().unwrap();
+                assert!(
+                    dest.is_empty(),
+                    "{consumer} redirect status {status}: credential leaked to \
+                     destination: {dest:?}"
+                );
+            }
         }
-
-        // Positive control: the authorized endpoint DOES receive the
-        // credential (non-following client observes the raw 3xx).
-        let no_redirect = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
-        let direct = no_redirect
-            .get(format!("{redir_url}/internal/routing/v1/routes"))
-            .header("x-bonsai-routing-token", token)
-            .send()
-            .await?;
-        assert_eq!(direct.status().as_u16(), status);
     }
     Ok(())
 }
@@ -742,27 +852,202 @@ async fn malformed_restored_tombstone_fails_closed_at_startup() -> Result<()> {
         err.contains("unmigrated") || err.contains("protected"),
         "{err}"
     );
+    Ok(())
+}
 
-    // No supported graph-serving interface may expose the smuggled
-    // credential material: non-admin config reads filter sensitive
-    // classes and redact protected names. Verify via the public read
-    // boundary (unauthenticated → non-admin filtering applies).
-    let store = open_store(&dir);
-    let state = bonsai::http_server::AppState::new_minimal_with_runtime_dir(store.clone(), "/tmp");
+/// Serve `store` on an ephemeral loopback port; returns base URL and the
+/// server task handle so tests can stop it before reopening stores.
+async fn serve_tracked(
+    store: Arc<bonsai::graph::GraphStore>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let state = bonsai::http_server::AppState::new_minimal_with_runtime_dir(store, "/tmp");
     let app = bonsai::http_server::router_from_state(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), handle)
+}
+
+/// RC-02: a graph carrying malformed restored credential evidence must
+/// not be reachable through ANY graph-serving interface — not via
+/// authenticated requests (certification failure denies them), not via
+/// MCP, not via exports, and not via explicitly insecure development
+/// mode (the structural confidentiality boundary still applies).
+#[tokio::test]
+async fn failed_certification_blocks_graph_serving_and_preserves_confidentiality() -> Result<()> {
+    clear_auth_env();
+    let dir = TempDir::new()?;
+    const SENTINEL: &str = "smuggled-password-hash";
+
+    let (admin_jwt, viewer_jwt);
+    {
+        // Phase 1 — legitimately migrated store: create principals and
+        // obtain real credentials BEFORE introducing the mismatch.
+        let store = migrated_store(&dir).await;
+        store.set_auth_enforcement_override(Some(true));
+        add_user(&store, "cert-admin", "admin");
+        add_user(&store, "cert-view", "viewer");
+        let (base, handle) = serve_tracked(store.clone()).await;
+        let client = reqwest::Client::new();
+        admin_jwt = login(&client, &base, "cert-admin").await;
+        viewer_jwt = login(&client, &base, "cert-view").await;
+        // Sanity: authenticated graph serving works pre-mismatch.
+        let r = client
+            .get(format!("{base}/api/config-items"))
+            .bearer_auth(&admin_jwt)
+            .send()
+            .await?;
+        assert_eq!(r.status().as_u16(), 200, "pre-mismatch admin read");
+        drop(r);
+
+        // Plant malformed restored credential evidence (isolated
+        // fixture mechanism) — a strict-schema tombstone violation.
+        store
+            .upsert_config_item_unchecked(tombstone(
+                "u-leg",
+                "user",
+                "legacy-user",
+                "imported",
+                Some(SENTINEL),
+            ))
+            .await?;
+        handle.abort();
+        drop(store);
+        // Let the aborted server task release its GraphStore Arc before
+        // reopening the same database files.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
     let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("http://{addr}/api/config-items"))
-        .send()
-        .await?;
-    let body = resp.text().await?;
-    assert!(
-        !body.contains("smuggled-password-hash"),
-        "protected credential material exposed via config-items"
-    );
+
+    // Phase 2 — auth-required serving on a FRESH store: startup
+    // certification fails, so every protected interface must deny.
+    {
+        let store = open_store(&dir);
+        store.set_auth_enforcement_override(Some(true));
+        let (base, handle) = serve_tracked(store).await;
+
+        // Unauthenticated → 401 (auth boundary intact).
+        let r = client.get(format!("{base}/api/config-items")).send().await?;
+        assert_eq!(r.status().as_u16(), 401, "anon must be denied");
+
+        for (label, jwt) in [("admin", &admin_jwt), ("viewer", &viewer_jwt)] {
+            for (method, path, body) in [
+                ("GET", "/api/config-items".to_string(), None),
+                (
+                    "POST",
+                    "/api/explorer/query".to_string(),
+                    Some(serde_json::json!({"cypher": "MATCH (d:Device) RETURN d LIMIT 5"})),
+                ),
+                (
+                    "POST",
+                    "/mcp".to_string(),
+                    Some(serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "query_graph",
+                                   "arguments": {"cypher": "MATCH (c:ConfigItem) RETURN c"}}
+                    })),
+                ),
+                (
+                    "GET",
+                    "/api/db/export?node_type=Device".to_string(),
+                    None,
+                ),
+            ] {
+                let req = match method {
+                    "GET" => client.get(format!("{base}{path}")),
+                    _ => client.post(format!("{base}{path}")),
+                }
+                .bearer_auth(jwt);
+                let req = match body {
+                    Some(b) => req.json(&b),
+                    None => req,
+                };
+                let resp = req.send().await?;
+                let status = resp.status().as_u16();
+                let text = resp.text().await?;
+                assert_eq!(
+                    status, 503,
+                    "{label} {method} {path}: failed certification must deny, got {status}: {text}"
+                );
+                assert!(!text.contains(SENTINEL), "{label} {path} leaked sentinel");
+            }
+        }
+        handle.abort();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // Phase 3 — explicitly insecure development mode: middleware auth is
+    // bypassed BY DESIGN, so the structural confidentiality boundary
+    // (non-admin filtering + label allowlist + no role extension) is the
+    // only thing standing between the malformed graph and a reader.
+    {
+        let store = open_store(&dir);
+        store.set_auth_enforcement_override(Some(false));
+        let (base, handle) = serve_tracked(store).await;
+
+        // Config-item listing: sensitive classes filtered, protected
+        // names redacted — the smuggled field must not appear.
+        let r = client.get(format!("{base}/api/config-items")).send().await?;
+        assert_eq!(r.status().as_u16(), 200);
+        let body = r.text().await?;
+        assert!(!body.contains(SENTINEL), "insecure config-items leaked sentinel");
+        assert!(
+            !body.contains("\"user\""),
+            "insecure config-items exposed retired credential class"
+        );
+
+        // Direct sensitive-class filter is denied for non-admin.
+        let r = client
+            .get(format!("{base}/api/config-items?class=user"))
+            .send()
+            .await?;
+        assert_eq!(r.status().as_u16(), 403, "sensitive class filter must deny");
+
+        // Explorer ad-hoc query: ConfigItem label is outside the
+        // Standard allowlist.
+        let r = client
+            .post(format!("{base}/api/explorer/query"))
+            .json(&serde_json::json!({"cypher": "MATCH (c:ConfigItem) RETURN c"}))
+            .send()
+            .await?;
+        let status = r.status();
+        let text = r.text().await?;
+        assert!(
+            status.is_client_error() || text.contains("not available"),
+            "explorer ConfigItem query must fail closed, got {status}: {text}"
+        );
+        assert!(!text.contains(SENTINEL));
+
+        // MCP tools/call has no authenticated principal in insecure
+        // mode — graph tools must refuse rather than guess a role.
+        let r = client
+            .post(format!("{base}/mcp"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "query_graph",
+                           "arguments": {"cypher": "MATCH (c:ConfigItem) RETURN c"}}
+            }))
+            .send()
+            .await?;
+        let text = r.text().await?;
+        assert!(
+            text.contains("missing authenticated tool principal")
+                || text.contains("not available")
+                || text.contains("rejected"),
+            "MCP graph tool must fail closed in insecure mode: {text}"
+        );
+        assert!(!text.contains(SENTINEL));
+
+        // Export allowlist does not include ConfigItem at all.
+        let r = client
+            .get(format!("{base}/api/db/export?node_type=ConfigItem"))
+            .send()
+            .await?;
+        assert_eq!(r.status().as_u16(), 400, "ConfigItem export must be rejected");
+
+        handle.abort();
+    }
     Ok(())
 }
 

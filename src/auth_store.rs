@@ -4635,6 +4635,14 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    /// Poison recovery: a panicking test must not cascade PoisonError
+    /// failures into unrelated tests sharing the env lock — the guard
+    /// only serializes env mutation, it protects no invariant that a
+    /// panic could leave corrupt.
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        env_lock().lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Open a store with a deterministic secret key: env overrides are
     /// cleared under the process-wide env lock (returned to the caller so
     /// the vars stay cleared for the test's duration).
@@ -4643,7 +4651,7 @@ mod tests {
         AuthStore,
         std::sync::MutexGuard<'static, ()>,
     ) {
-        let guard = env_lock().lock().unwrap();
+        let guard = env_guard();
         unsafe {
             std::env::remove_var("BONSAI_VAULT_PASSPHRASE");
             std::env::remove_var("BONSAI_JWT_SECRET");
@@ -4683,12 +4691,22 @@ mod tests {
         let s1 = store.jwt_secret().expect("jwt secret");
         let keyfile = dir.path().join("bonsai_auth.db.key");
         assert!(keyfile.exists(), "keyfile should be auto-created");
-        // Corrupt the keyfile: decryption must fail, never fall back.
+        // Corrupt the keyfile: SEC-14 fails closed at OPEN — the resolved
+        // key is proven against every pre-existing encrypted credential
+        // class before the store is usable, so decryption must never
+        // succeed and plaintext quarantine sealing must never run under
+        // an unverified key.
         std::fs::write(&keyfile, format!("{}\n", "f".repeat(64))).unwrap();
         drop(store);
         let path = AuthStore::path_for_graph(&dir.path().join("bonsai.db").to_string_lossy());
-        let store2 = AuthStore::open(&path).expect("reopen");
-        assert!(store2.jwt_secret().is_err());
+        let err = match AuthStore::open(&path) {
+            Ok(_) => panic!("open must fail closed on wrong key material"),
+            Err(e) => e,
+        };
+        assert!(
+            format!("{err:#}").contains("does not verify"),
+            "unexpected open error: {err:#}"
+        );
         let _ = s1;
     }
 
