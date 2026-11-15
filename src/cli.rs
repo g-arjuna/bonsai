@@ -1241,8 +1241,10 @@ impl AuthCliCommand {
                     }
                 }
                 Ok(Some(Self::SetServiceToken {
-                    db: db.ok_or_else(|| anyhow::anyhow!("auth set-service-token requires --db"))?,
-                    name: name.ok_or_else(|| anyhow::anyhow!("auth set-service-token requires --name"))?,
+                    db: db
+                        .ok_or_else(|| anyhow::anyhow!("auth set-service-token requires --db"))?,
+                    name: name
+                        .ok_or_else(|| anyhow::anyhow!("auth set-service-token requires --name"))?,
                 }))
             }
             "list-service-tokens" => {
@@ -1252,11 +1254,14 @@ impl AuthCliCommand {
                     match arg.as_str() {
                         "--db" => db = Some(take(&mut iter, "--db")?),
                         "--help" | "-h" => return Ok(Some(Self::Help)),
-                        other => anyhow::bail!("unknown auth list-service-tokens argument '{other}'"),
+                        other => {
+                            anyhow::bail!("unknown auth list-service-tokens argument '{other}'")
+                        }
                     }
                 }
                 Ok(Some(Self::ListServiceTokens {
-                    db: db.ok_or_else(|| anyhow::anyhow!("auth list-service-tokens requires --db"))?,
+                    db: db
+                        .ok_or_else(|| anyhow::anyhow!("auth list-service-tokens requires --db"))?,
                 }))
             }
             "help" | "--help" | "-h" => Ok(Some(Self::Help)),
@@ -1276,7 +1281,9 @@ fn digest_file(path: &std::path::Path) -> Result<(String, u64)> {
     use std::io::Read;
     loop {
         let n = f.read(&mut buf)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
         total += n as u64;
     }
@@ -1288,13 +1295,17 @@ pub(super) async fn run_auth_cli(command: AuthCliCommand) -> Result<()> {
 
     match command {
         AuthCliCommand::Help => {
-            println!("usage: bonsai auth <backup|verify-backup|rotate-emergency|set-service-token|list-service-tokens>");
+            println!(
+                "usage: bonsai auth <backup|verify-backup|rotate-emergency|set-service-token|list-service-tokens>"
+            );
             println!("  backup --db <bonsai_auth.db> --dest <backup-path>");
             println!(
                 "  verify-backup --snapshot <bonsai_auth.db> [--manifest <path>] [--keyfile <bonsai_auth.db.key>]"
             );
             println!("  rotate-emergency --db <bonsai_auth.db>");
-            println!("  set-service-token --db <bonsai_auth.db> --name <token-name>   (token read from stdin)");
+            println!(
+                "  set-service-token --db <bonsai_auth.db> --name <token-name>   (token read from stdin)"
+            );
             println!("  list-service-tokens --db <bonsai_auth.db>   (names only, never values)");
         }
         AuthCliCommand::Backup { db, dest } => {
@@ -1339,11 +1350,7 @@ pub(super) async fn run_auth_cli(command: AuthCliCommand) -> Result<()> {
             let keyfile_path = keyfile.as_deref().map(std::path::Path::new);
 
             let (sha_before, size_before) = digest_file(snapshot_path)?;
-            let report = AuthStore::verify_backup(
-                snapshot_path,
-                &manifest_path,
-                keyfile_path,
-            )?;
+            let report = AuthStore::verify_backup(snapshot_path, &manifest_path, keyfile_path)?;
             let (sha_after, size_after) = digest_file(snapshot_path)?;
             if sha_before != sha_after || size_before != size_after {
                 anyhow::bail!("verification mutated the snapshot artifact");
@@ -1353,25 +1360,37 @@ pub(super) async fn run_auth_cli(command: AuthCliCommand) -> Result<()> {
             println!("  manifest: {}", manifest_path.display());
             println!(
                 "  sha256={} size={} schema_version={} migration_state={:?}",
-                report.snapshot_sha256, report.size_bytes, report.schema_version, report.migration_state
+                report.snapshot_sha256,
+                report.size_bytes,
+                report.schema_version,
+                report.migration_state
             );
             println!(
                 "  users={} api_keys={} jwt_keys={} (active={} retired={}) jwt_revoked={} quarantined={}",
-                report.user_count, report.api_key_count, report.jwt_key_count,
-                report.active_jwt_keys, report.retired_jwt_keys,
-                report.jwt_revoked_count, report.quarantined_record_count
+                report.user_count,
+                report.api_key_count,
+                report.jwt_key_count,
+                report.active_jwt_keys,
+                report.retired_jwt_keys,
+                report.jwt_revoked_count,
+                report.quarantined_record_count
             );
             println!(
                 "  integrity_check={} foreign_key_violations={}",
                 report.integrity_check, report.foreign_key_violations
             );
             if report.key_material_verified {
-                println!("  encrypted credential material: all {} record(s) across jwt_keys, service_tokens and sealed quarantine decrypt OK (secrets not printed)", report.encrypted_records_verified);
+                println!(
+                    "  encrypted credential material: all {} record(s) across jwt_keys, service_tokens and sealed quarantine decrypt OK (secrets not printed)",
+                    report.encrypted_records_verified
+                );
             } else {
                 println!("  encrypted credential material: no encrypted records present to verify");
             }
             if report.jwt_env_override_active {
-                println!("  WARNING: BONSAI_JWT_SECRET env override is set — runtime JWT verification uses the env secret, not necessarily the verified DB keys");
+                println!(
+                    "  WARNING: BONSAI_JWT_SECRET env override is set — runtime JWT verification uses the env secret, not necessarily the verified DB keys"
+                );
             }
             for w in &report.warnings {
                 println!("  WARNING: {w}");

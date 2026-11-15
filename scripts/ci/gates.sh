@@ -211,6 +211,7 @@ L2_INTEGRATION_TESTS="
   bn022_graph_read_boundary
   bn022_auth_storage
   bn022_auth_closure
+  bn022_sec19_sec20
 "
 
 gate_l2() {

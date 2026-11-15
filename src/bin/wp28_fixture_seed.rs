@@ -31,11 +31,41 @@ fn sha256_hex(s: &str) -> String {
     hex::encode(Sha256::digest(s.as_bytes()))
 }
 
+#[cfg(not(feature = "test-fixtures"))]
+compile_error!("wp28_fixture_seed requires the 'test-fixtures' cargo feature");
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let path = std::env::args()
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("usage: wp28_fixture_seed <graph.db path>"))?;
+    // Disposable-fixture guard: this tool writes synthetic legacy
+    // credentials through the unchecked fixture path. It must never
+    // operate on an existing database — require a fresh path inside a
+    // directory that does not already contain a graph file, so it
+    // cannot accidentally target the owner's live database.
+    let db_path = std::path::Path::new(&path);
+    if db_path.exists() {
+        anyhow::bail!(
+            "refusing to seed fixture credentials into existing database '{}' — \
+             use a fresh disposable path",
+            path
+        );
+    }
+    if let Some(parent) = db_path.parent() {
+        if parent.exists()
+            && std::fs::read_dir(parent)?.filter_map(|e| e.ok()).any(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.ends_with(".db") || n == "bonsai_auth.db"
+            })
+        {
+            anyhow::bail!(
+                "refusing to seed into directory '{}' containing an existing \
+                 database — use a dedicated disposable directory",
+                parent.display()
+            );
+        }
+    }
     let store = GraphStore::open(&path, 512 * 1024 * 1024)?;
 
     // Legacy user (SHA-256 verifier — the pre-Argon2 format the migration

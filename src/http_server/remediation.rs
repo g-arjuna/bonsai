@@ -1657,71 +1657,15 @@ pub(super) async fn upsert_config_item_handler(
     role: Option<axum::Extension<crate::http_server::auth::Role>>,
     Json(item): Json<crate::graph::ConfigItemRecord>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // SEC-20: authorization applies to the EFFECTIVE PERSISTED identity,
-    // not merely the incoming fields. The store MERGE retains the stored
-    // `name`/`config_class` on id match, so a caller-supplied harmless
-    // name/class can never launder a write to a protected record — but
-    // the HTTP boundary must evaluate the same effective identity the
-    // store will persist, or an Operator could overwrite
-    // `routing_service_url` (the credential destination) by reusing its
-    // record id with innocuous incoming fields.
-    let existing = state
-        .store
-        .list_config_items(None)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?
-        .into_iter()
-        .find(|i| i.id == item.id);
-    let (eff_name, eff_class) = existing
-        .as_ref()
-        .map(|e| (e.name.as_str(), e.config_class.as_str()))
-        .unwrap_or((item.name.as_str(), item.config_class.as_str()));
-    // BN-022/SEC-20: writing credential-bearing classes or protected
-    // names (service tokens, auth policy, the routing-service credential
-    // DESTINATION) is admin-only; otherwise an Operator could mint
-    // credentials or redirect protected service tokens to an
-    // attacker-chosen endpoint.
+    // SEC-20/WP1.3: authorization is enforced INSIDE the store's write
+    // boundary (`upsert_config_item_authorized`): the effective persisted
+    // identity is resolved by a targeted id lookup under the same write
+    // lock that performs the MERGE, so there is no check/write race and
+    // no full-table scan. `admin` is the caller's authenticated role.
     let is_admin = matches!(
         role,
         Some(axum::Extension(crate::http_server::auth::Role::Admin))
     );
-    if !is_admin
-        && (crate::graph::is_sensitive_config_class(eff_class)
-            || crate::graph::PROTECTED_CONFIG_NAMES.contains(&eff_name))
-    {
-        return Err((
-            StatusCode::FORBIDDEN,
-            "config item is restricted to admin principals".to_string(),
-        ));
-    }
-    // BN-022: credential-bearing classes moved to AuthStore. Writing them
-    // through the generic config API would re-pollute the graph with
-    // inert credential-shaped rows; auth material is managed exclusively
-    // through the dedicated /api/auth/* endpoints. `cert_config` remains
-    // allowed (vault references, not key material).
-    const RETIRED_CREDENTIAL_CLASSES: &[&str] = &crate::graph::RETIRED_CREDENTIAL_CLASSES;
-    if RETIRED_CREDENTIAL_CLASSES.contains(&eff_class) {
-        return Err((
-            StatusCode::GONE,
-            "credential classes are managed by the protected auth store; \
-             use /api/auth/* endpoints"
-                .to_string(),
-        ));
-    }
-    // F7/F8: secret-bearing names (service tokens, legacy passwords)
-    // migrated to AuthStore `service_tokens`. Writing them here would
-    // re-pollute the graph with plaintext credentials; operators set
-    // them via `bonsai auth set-service-token` or the documented env
-    // overrides. `require_auth` is unaffected (safe metadata).
-    if crate::auth_store::PROTECTED_SECRET_CONFIG_NAMES.contains(&item.name.as_str()) {
-        return Err((
-            StatusCode::GONE,
-            "secret-bearing config names are managed by the protected auth \
-             store; use `bonsai auth set-service-token` or the documented \
-             environment override"
-                .to_string(),
-        ));
-    }
     if item.id.is_empty() || item.id.len() > 256 {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -1745,8 +1689,17 @@ pub(super) async fn upsert_config_item_handler(
     }
     state
         .store
-        .upsert_config_item(item)
+        .upsert_config_item_authorized(item, is_admin)
         .await
         .map(|_| StatusCode::NO_CONTENT)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+        .map_err(|e| match e {
+            crate::graph::ConfigWriteRejection::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "config item is restricted to admin principals".to_string(),
+            ),
+            crate::graph::ConfigWriteRejection::Gone(msg) => (StatusCode::GONE, msg.to_string()),
+            crate::graph::ConfigWriteRejection::Store(e) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
+            }
+        })
 }

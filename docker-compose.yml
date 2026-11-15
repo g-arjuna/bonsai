@@ -35,6 +35,9 @@ services:
       - RUST_LOG=info,bonsai=debug
       - BONSAI_VAULT_PASSPHRASE=${BONSAI_VAULT_PASSPHRASE:?BONSAI_VAULT_PASSPHRASE is required — see .env.example}
       - BONSAI_ROUTING_SERVICE_URL=http://bonsai-routing:8081
+      # Plain http to the sibling container is permitted only via this
+      # documented internal-deployment override (see validate_routing_service_url).
+      - BONSAI_ROUTING_ALLOW_INSECURE_HTTP=1
       - BONSAI_ROUTING_SERVICE_TOKEN=${BONSAI_ROUTING_SERVICE_TOKEN:?BONSAI_ROUTING_SERVICE_TOKEN is required — see .env.example}
     volumes:
       - bonsai_graph_dev:/app/runtime

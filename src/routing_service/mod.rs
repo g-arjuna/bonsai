@@ -3214,13 +3214,32 @@ pub async fn resolve_routing_service_endpoint_config(
     });
     let url = url.trim_end_matches('/').to_string();
     // SEC-20: the destination authority for protected service credentials
-    // must be a well-formed http(s) URL — no userinfo, no exotic schemes.
-    // An invalid configured destination fails closed: the credential is
-    // never transmitted to an unparseable or unintended target. Remote
-    // https endpoints are supported (operator-managed transport); plain
-    // http is permitted for the documented loopback/dev deployments.
+    // must be a well-formed http(s) URL — no userinfo, no exotic schemes,
+    // no ambiguous query/fragment components. An invalid configured
+    // destination fails closed: the credential is never transmitted to
+    // an unparseable or unintended target. Transport contract: https for
+    // non-loopback hosts; plain http only for loopback or under the
+    // documented BONSAI_ROUTING_ALLOW_INSECURE_HTTP override.
     validate_routing_service_url(&url)?;
     Ok((url, token, has_explicit_db_url))
+}
+
+/// SEC-20: every HTTP client that may carry `x-bonsai-routing-token`
+/// MUST be built through this helper. Redirects are disabled
+/// unconditionally: a redirect could transfer the protected service
+/// credential to an unauthorized destination. The routing-service
+/// contract does not use redirects; consumers fail closed on a 3xx
+/// instead of following it. New credential-bearing consumers inherit
+/// this policy by construction — do not hand-roll `reqwest::Client`
+/// builders for routing-service requests.
+pub fn routing_service_http_client(
+    timeout: std::time::Duration,
+) -> anyhow::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(Into::into)
 }
 
 /// SEC-20: structural validation of the configured routing-service
@@ -3228,6 +3247,16 @@ pub async fn resolve_routing_service_endpoint_config(
 /// rejects everything else (including empty/relative values) so a bad
 /// `routing_service_url` can never smuggle credentials to an
 /// unintended or unparseable destination.
+///
+/// Transport contract: `https` is required for non-loopback
+/// destinations — protected service credentials must not cross a
+/// network in plaintext. Plain `http` is permitted only for loopback
+/// (`127.0.0.0/8`, `::1`, `localhost`) or when the operator sets the
+/// documented `BONSAI_ROUTING_ALLOW_INSECURE_HTTP=1` override for a
+/// trusted internal/dev deployment (e.g. the compose `bonsai-routing`
+/// sibling container). URLs carrying a query or fragment are rejected:
+/// they are ambiguous base components that would corrupt the
+/// `{base}/internal/routing/v1/...` join.
 pub fn validate_routing_service_url(url: &str) -> anyhow::Result<()> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|e| anyhow::anyhow!("routing_service_url is not a valid URL: {e}"))?;
@@ -3241,7 +3270,44 @@ pub fn validate_routing_service_url(url: &str) -> anyhow::Result<()> {
     if !parsed.username().is_empty() || parsed.password().is_some() {
         anyhow::bail!("routing_service_url must not contain userinfo credentials");
     }
+    if parsed.query().is_some() {
+        anyhow::bail!("routing_service_url must not contain a query component");
+    }
+    if parsed.fragment().is_some() {
+        anyhow::bail!("routing_service_url must not contain a fragment component");
+    }
+    if parsed.scheme() == "http" && !insecure_http_transport_permitted(&parsed) {
+        anyhow::bail!(
+            "routing_service_url uses plain http to a non-loopback host; \
+             use https, or set BONSAI_ROUTING_ALLOW_INSECURE_HTTP=1 for a \
+             trusted internal/development deployment"
+        );
+    }
     Ok(())
+}
+
+/// True when plain-HTTP transport to `parsed`'s host is permitted:
+/// loopback destinations always, anything else only under the explicit
+/// `BONSAI_ROUTING_ALLOW_INSECURE_HTTP` operator override.
+fn insecure_http_transport_permitted(parsed: &reqwest::Url) -> bool {
+    if std::env::var("BONSAI_ROUTING_ALLOW_INSECURE_HTTP")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    // url::Url::host_str keeps brackets on IPv6 literals.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    bare.eq_ignore_ascii_case("localhost")
 }
 
 /// Project new durable `RibEvent`s after `checkpoint.last_applied_sequence` into `GraphStore`.
@@ -3291,10 +3357,7 @@ pub async fn project_remote_routing_events_to_graph(
     // SEC-20: credential-bearing request — never follow redirects (a
     // redirect could transfer `x-bonsai-routing-token` to an
     // unauthorized destination); fail closed instead.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
+    let client = routing_service_http_client(std::time::Duration::from_secs(3))?;
     let mut req = client.get(&url);
     if let Some(t) = token {
         req = req.header("x-bonsai-routing-token", t);

@@ -33,10 +33,11 @@ async fn routing_get(state: &AppState, path: &str) -> Result<serde_json::Value, 
         return Err("routing service URL not configured".to_string());
     }
     let url = format!("{base}{path}");
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // SEC-20: shared no-redirect policy — this request carries
+    // `x-bonsai-routing-token` and must never follow a redirect.
+    let client =
+        crate::routing_service::routing_service_http_client(std::time::Duration::from_secs(20))
+            .map_err(|e| e.to_string())?;
     let mut req = client.get(&url);
     if let Some(t) = token {
         req = req.header("x-bonsai-routing-token", t);

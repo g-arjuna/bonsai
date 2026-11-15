@@ -581,26 +581,27 @@ impl AuthStore {
             });
         }
 
-        // AUTH-C4: any quarantine rows written before sealed content
-        // (schema v2, content_enc NULL) are re-encrypted in place now
-        // that the at-rest key is verified against existing material.
-        // Idempotent and transactional — a failure rolls back every row,
-        // so an interrupted seal can be safely resumed on the next open.
-        seal_legacy_quarantine_plaintext(&mut conn, &secret_key)?;
-
-        // Verify the RESULTING state: freshly sealed rows must decrypt
-        // and satisfy their sha256 integrity binding under the same key.
-        if let Err(e) = verify_encrypted_material(&conn, &secret_key) {
-            if keyfile_created {
-                let _ = std::fs::remove_file(&keyfile_path);
+        // AUTH-C4/SEC-14: seal legacy plaintext quarantine rows AND verify
+        // the RESULTING encrypted state in ONE transaction. A post-seal
+        // verification failure (wrong key material, pre-existing bad
+        // digest, seal defect) rolls the seal back — committed ciphertext
+        // can never depend on key material this open might delete, and
+        // plaintext evidence is never destroyed by a failed seal.
+        // Idempotent: sealed rows are skipped; an interrupted seal rolls
+        // back cleanly and resumes on the next open.
+        {
+            let tx = conn.transaction()?;
+            seal_legacy_quarantine_plaintext(&tx, &secret_key)?;
+            if let Err(e) = verify_encrypted_material(&tx, &secret_key) {
+                return Err(e).with_context(|| {
+                    format!(
+                        "auth store '{}' post-seal verification failed under \
+                         the resolved at-rest key",
+                        path.display()
+                    )
+                });
             }
-            return Err(e).with_context(|| {
-                format!(
-                    "auth store '{}' post-seal verification failed under \
-                     the resolved at-rest key",
-                    path.display()
-                )
-            });
+            tx.commit()?;
         }
 
         Ok(Self {
@@ -4121,14 +4122,14 @@ fn age_open(key: &age::secrecy::SecretString, ciphertext: &[u8]) -> Result<Strin
 /// Re-encrypt any `auth_quarantine` rows that still hold plaintext
 /// `content_json` with `content_enc IS NULL` (schema v2 leftovers,
 /// AUTH-C4). Runs at `AuthStore::open` once the at-rest key is resolved
-/// AND verified against existing encrypted material (SEC-14).
-/// Idempotent: sealed rows are skipped. All updates run in ONE
-/// transaction — an interrupted seal rolls back cleanly and resumes on
-/// the next open.
+/// AND verified against existing encrypted material (SEC-14), inside
+/// the caller's transaction together with post-seal verification so a
+/// failure rolls back atomically. Idempotent: sealed rows are skipped.
+/// Returns the number of rows sealed.
 fn seal_legacy_quarantine_plaintext(
-    conn: &mut Connection,
+    conn: &Connection,
     key: &age::secrecy::SecretString,
-) -> Result<()> {
+) -> Result<usize> {
     let rows: Vec<(i64, String, String)> = {
         let mut stmt = conn.prepare(
             "SELECT id, content_json, content_sha256 FROM auth_quarantine \
@@ -4143,10 +4144,7 @@ fn seal_legacy_quarantine_plaintext(
         })?;
         mapped.collect::<rusqlite::Result<Vec<_>>>()?
     };
-    if rows.is_empty() {
-        return Ok(());
-    }
-    let tx = conn.transaction()?;
+    let mut sealed = 0usize;
     for (id, content_json, sha) in rows {
         let enc = age_seal(key, &content_json)?;
         let sha = if sha.is_empty() {
@@ -4159,14 +4157,14 @@ fn seal_legacy_quarantine_plaintext(
             "original_sha256": sha,
         })
         .to_string();
-        tx.execute(
+        conn.execute(
             "UPDATE auth_quarantine SET content_json = ?1, content_sha256 = ?2, \
              content_enc = ?3 WHERE id = ?4",
             params![descriptor, sha, enc, id],
         )?;
+        sealed += 1;
     }
-    tx.commit()?;
-    Ok(())
+    Ok(sealed)
 }
 
 /// True when the store holds ANY encrypted credential material that

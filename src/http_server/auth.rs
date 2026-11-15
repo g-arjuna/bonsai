@@ -958,6 +958,9 @@ pub(super) async fn login_handler(
         crate::config::resolve_secret(&state.credentials, "bonsai-admin-pass", "BONSAI_ADMIN_PASS")
             .unwrap_or_default();
 
+    // Argon2id rehash computed inside the bounded blocking verify task
+    // for legacy SHA-256 verifiers (see below); `None` otherwise.
+    let mut verified_new_hash: Option<String> = None;
     let (role_str, is_env_admin, auth_source) = if !admin_user.is_empty()
         && bool::from(username.as_bytes().ct_eq(admin_user.as_bytes()))
         && bool::from(req.password.as_bytes().ct_eq(admin_pass.as_bytes()))
@@ -989,17 +992,40 @@ pub(super) async fn login_handler(
             .into_response());
         }
         // Argon2 verification is deliberately expensive — keep it off
-        // the async runtime's worker threads (AUTH-R6).
+        // the async runtime's worker threads (AUTH-R6). Failure
+        // accounting AND the legacy-verifier rehash run INSIDE the
+        // blocking task: spawn_blocking work is not cancellable, so a
+        // dropped HTTP request cannot evade the authentication-failure
+        // policy or skip bounded expensive work. The owned semaphore
+        // permit travels with the task for the same reason.
         let pw = req.password.clone();
         let stored = user.password_hash.clone();
-        let password_ok = tokio::task::spawn_blocking(move || {
+        let uname = username.clone();
+        let legacy_rehash = !stored.starts_with("$argon2");
+        let verify_outcome = tokio::task::spawn_blocking(move || {
             let _permit = verify_permit;
-            verify_password(&pw, &stored)
+            let ok = verify_password(&pw, &stored);
+            if !ok {
+                record_login_failure_from(&uname, peer_ip);
+            }
+            // Legacy SHA-256 verifiers are upgraded to Argon2id here,
+            // under the same concurrency bound, only after the password
+            // actually verified.
+            let new_hash = if ok && legacy_rehash {
+                hash_password(&pw).ok()
+            } else {
+                None
+            };
+            (ok, new_hash)
         })
-        .await
-        .unwrap_or(false);
+        .await;
+        let (password_ok, blocking_new_hash) = match verify_outcome {
+            Ok(v) => v,
+            // A panicked verifier is not a credential failure, but it
+            // must not mint a session either.
+            Err(_) => (false, None),
+        };
         if !password_ok {
-            record_login_failure_from(&username, peer_ip);
             return Ok(Json(LoginResponse {
                 success: false,
                 token: String::new(),
@@ -1009,6 +1035,7 @@ pub(super) async fn login_handler(
             })
             .into_response());
         }
+        verified_new_hash = blocking_new_hash;
         (user.role.clone(), false, "local")
     } else if disabled_local {
         // A local account record exists but is disabled: deny. It must
@@ -1091,8 +1118,11 @@ pub(super) async fn login_handler(
     if !is_env_admin {
         if let Some(user) = user_item {
             let needs_rehash = !user.password_hash.starts_with("$argon2");
+            // The Argon2id rehash already ran inside the bounded verify
+            // task above — never repeat expensive hashing on the async
+            // worker here.
             let new_hash = if needs_rehash {
-                hash_password(&req.password).ok()
+                verified_new_hash.as_deref()
             } else {
                 None
             };
@@ -1101,11 +1131,10 @@ pub(super) async fn login_handler(
             } else {
                 None
             };
-            if let Err(e) =
-                state
-                    .store
-                    .auth_store
-                    .record_login(&username, expected, new_hash.as_deref())
+            if let Err(e) = state
+                .store
+                .auth_store
+                .record_login(&username, expected, new_hash)
             {
                 tracing::warn!(username = %username, error = %e, "failed to update last_login");
             }

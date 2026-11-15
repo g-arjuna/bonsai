@@ -1335,12 +1335,11 @@ async fn routing_v1_proxy_get_handler(
     // SEC-20: never follow redirects on credential-bearing requests — a
     // redirect could carry `x-bonsai-routing-token` to an unauthorized
     // destination. The routing service contract does not use redirects;
-    // fail closed instead.
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    {
+    // fail closed instead. All routing-service clients are built through
+    // the shared helper so the policy cannot be forgotten.
+    let client = match crate::routing_service::routing_service_http_client(
+        std::time::Duration::from_secs(3),
+    ) {
         Ok(c) => c,
         Err(e) => return routing_unavailable_response(&e.to_string()),
     };
@@ -1556,10 +1555,12 @@ async fn routing_v1_proxy_post_handler(
         .replacen("/api/routing/v1/", "/internal/routing/v1/", 1);
     let target_url = format!("{base_url}{internal_path}");
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-    {
+    // SEC-20: same no-redirect credential policy as the GET proxy —
+    // POST bodies and the routing token must never be replayed to a
+    // redirect target.
+    let client = match crate::routing_service::routing_service_http_client(
+        std::time::Duration::from_secs(3),
+    ) {
         Ok(c) => c,
         Err(e) => return routing_unavailable_response(&e.to_string()),
     };

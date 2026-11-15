@@ -978,9 +978,9 @@ async fn fetch_remote_routing_tool_json(
             .await
             .map_err(|e| format!("routing credential resolution failed: {e:#}"))?;
     let url = format!("{base_url}/internal/routing/v1/{internal_subpath}");
-    let client = reqwest::Client::builder()
-        .timeout(TOOL_QUERY_TIMEOUT)
-        .build()
+    // SEC-20: shared no-redirect policy — this request carries
+    // `x-bonsai-routing-token` and must never follow a redirect.
+    let client = crate::routing_service::routing_service_http_client(TOOL_QUERY_TIMEOUT)
         .map_err(|e| format!("failed to build routing HTTP client: {e}"))?;
     let params: Vec<(&str, String)> = query_pairs
         .iter()

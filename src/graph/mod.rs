@@ -228,6 +228,34 @@ pub struct EnvironmentRecord {
     pub metadata_json: String,
 }
 
+/// Rejection from `upsert_config_item_authorized` — the request
+/// boundary maps these to HTTP statuses; variants never carry
+/// credential material.
+#[derive(Debug)]
+pub enum ConfigWriteRejection {
+    /// The EFFECTIVE persisted identity (existing row's name/class on
+    /// id match, else the incoming fields) is admin-only for this
+    /// principal — sensitive config class or protected config name.
+    Forbidden,
+    /// Retired credential class or protected secret-bearing name —
+    /// managed exclusively by the protected AuthStore endpoints.
+    Gone(&'static str),
+    /// Underlying storage or structural write-guard failure.
+    Store(anyhow::Error),
+}
+
+impl std::fmt::Display for ConfigWriteRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Forbidden => write!(f, "config item is restricted to admin principals"),
+            Self::Gone(msg) => write!(f, "{msg}"),
+            Self::Store(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+impl std::error::Error for ConfigWriteRejection {}
+
 /// D4-7 T1: Config item stored in the graph DB (replaces on-disk YAML config files).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItemRecord {
@@ -4388,45 +4416,45 @@ impl GraphStore {
         tokio::task::spawn_blocking(move || {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("upsert config item connection")?;
-            let mut lookup = conn.prepare(
-                "MATCH (c:ConfigItem {id: $id}) \
-                 RETURN c.name, c.config_class",
-            )?;
-            let existing: Option<(String, String)> = conn
-                .execute(&mut lookup, vec![("id", Value::String(item.id.clone()))])?
-                .next()
-                .map(|row| (read_str(&row[0]), read_str(&row[1])));
-            // Effective persisted identity after this write.
-            let (eff_name, eff_class) = existing
-                .clone()
-                .unwrap_or_else(|| (item.name.clone(), item.config_class.clone()));
-            // SEC-19: retired credential classes are a structural storage
-            // boundary, not just a REST-layer restriction. A generic graph
-            // write must never (re)create or mutate records in the retired
-            // classes — the only legitimate writer is a strictly verified
-            // migration tombstone bound to that exact persisted record.
-            let retired_class = RETIRED_CREDENTIAL_CLASSES.contains(&eff_class.as_str());
-            if retired_class || crate::auth_store::protected_config_disposition(&eff_name).is_some()
-            {
-                let strict_schema =
-                    crate::auth_store::validate_migration_tombstone_schema(&item).is_ok();
-                let identity_match = existing
-                    .as_ref()
-                    .is_some_and(|(n, c)| *n == item.name && *c == item.config_class);
-                if !(strict_schema && identity_match && tombstone_counterpart_ok) {
-                    anyhow::bail!(
-                        "config item id '{}' resolves to protected secret name \
-                         '{}'; only a verified migration tombstone bound to \
-                         that record may write it",
-                        item.id,
-                        eff_name
-                    );
-                }
-            }
-            merge_config_item(&conn, &item)
+            upsert_config_item_guarded(&conn, &item, tombstone_counterpart_ok, None)
+                .map_err(|e| anyhow::anyhow!("{e}"))
         })
         .await
         .context("upsert_config_item task")?
+    }
+
+    /// SEC-20/WP1.3: authorized configuration mutation boundary for the
+    /// generic config API. The effective persisted identity is resolved
+    /// by a TARGETED id lookup and every authorization decision —
+    /// admin-only sensitive classes/protected names, retired credential
+    /// classes, protected secret names — is enforced INSIDE the same
+    /// write lock that performs the MERGE, so no check/write race can
+    /// smuggle a protected write (e.g. an Operator reusing the id of
+    /// `routing_service_url` with innocuous incoming fields, or a
+    /// concurrent mutation between authorization and write).
+    ///
+    /// `admin` is the caller's already-authenticated authority level;
+    /// `false` restricts writes whose effective identity is sensitive
+    /// or protected. Structural protections (retired classes, protected
+    /// secret names, verified-tombstone binding) apply to every caller.
+    pub async fn upsert_config_item_authorized(
+        &self,
+        item: ConfigItemRecord,
+        admin: bool,
+    ) -> Result<(), ConfigWriteRejection> {
+        let tombstone_counterpart_ok = crate::auth_store::is_migration_tombstone(&item)
+            && self.auth_store.verify_tombstone_counterpart(&item).is_ok();
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db)
+                .context("upsert config item connection")
+                .map_err(ConfigWriteRejection::Store)?;
+            upsert_config_item_guarded(&conn, &item, tombstone_counterpart_ok, Some(admin))
+        })
+        .await
+        .map_err(|e| ConfigWriteRejection::Store(anyhow::anyhow!("upsert task join: {e}")))?
     }
 
     /// Write a ConfigItem bypassing the protected-name guard.
@@ -13194,6 +13222,90 @@ fn write_qos_policy_change(
     }
 
     Ok(())
+}
+
+/// Guarded ConfigItem write shared by `upsert_config_item` (internal
+/// callers) and `upsert_config_item_authorized` (request boundary).
+/// MUST be called with `write_lock` held and a live `Connection`.
+///
+/// Resolves the EFFECTIVE persisted identity via a targeted id lookup,
+/// applies the caller's authorization policy (`admin_gate`), then the
+/// structural SEC-19 boundary (retired classes / protected secret names
+/// require a verified migration tombstone bound to that exact record),
+/// and only then merges — all inside the same write boundary.
+fn upsert_config_item_guarded(
+    conn: &Connection,
+    item: &ConfigItemRecord,
+    tombstone_counterpart_ok: bool,
+    admin_gate: Option<bool>,
+) -> std::result::Result<(), ConfigWriteRejection> {
+    let store_err = |e: anyhow::Error| ConfigWriteRejection::Store(e);
+    let mut lookup = conn
+        .prepare(
+            "MATCH (c:ConfigItem {id: $id}) \
+             RETURN c.name, c.config_class",
+        )
+        .map_err(|e| store_err(anyhow::anyhow!("config item lookup prepare: {e}")))?;
+    let existing: Option<(String, String)> = conn
+        .execute(&mut lookup, vec![("id", Value::String(item.id.clone()))])
+        .map_err(|e| store_err(anyhow::anyhow!("config item lookup: {e}")))?
+        .next()
+        .map(|row| (read_str(&row[0]), read_str(&row[1])));
+    // Effective persisted identity after this write: the MERGE retains
+    // the stored name/class on id match.
+    let (eff_name, eff_class) = existing
+        .clone()
+        .unwrap_or_else(|| (item.name.clone(), item.config_class.clone()));
+
+    if let Some(admin) = admin_gate {
+        // SEC-20: sensitive classes and protected names (including the
+        // routing-service credential DESTINATION) are admin-only.
+        if !admin
+            && (is_sensitive_config_class(&eff_class)
+                || PROTECTED_CONFIG_NAMES.contains(&eff_name.as_str()))
+        {
+            return Err(ConfigWriteRejection::Forbidden);
+        }
+        // BN-022: retired credential classes and secret-bearing names
+        // are managed exclusively by the protected AuthStore — the
+        // generic config API must never (re)create them.
+        if RETIRED_CREDENTIAL_CLASSES.contains(&eff_class.as_str()) {
+            return Err(ConfigWriteRejection::Gone(
+                "credential classes are managed by the protected auth store; \
+                 use /api/auth/* endpoints",
+            ));
+        }
+        if crate::auth_store::PROTECTED_SECRET_CONFIG_NAMES.contains(&item.name.as_str()) {
+            return Err(ConfigWriteRejection::Gone(
+                "secret-bearing config names are managed by the protected auth \
+                 store; use `bonsai auth set-service-token` or the documented \
+                 environment override",
+            ));
+        }
+    }
+
+    // SEC-19: retired credential classes are a structural storage
+    // boundary, not just a REST-layer restriction. A generic graph
+    // write must never (re)create or mutate records in the retired
+    // classes — the only legitimate writer is a strictly verified
+    // migration tombstone bound to that exact persisted record.
+    let retired_class = RETIRED_CREDENTIAL_CLASSES.contains(&eff_class.as_str());
+    if retired_class || crate::auth_store::protected_config_disposition(&eff_name).is_some() {
+        let strict_schema = crate::auth_store::validate_migration_tombstone_schema(item).is_ok();
+        let identity_match = existing
+            .as_ref()
+            .is_some_and(|(n, c)| *n == item.name && *c == item.config_class);
+        if !(strict_schema && identity_match && tombstone_counterpart_ok) {
+            return Err(ConfigWriteRejection::Store(anyhow::anyhow!(
+                "config item id '{}' resolves to protected secret name \
+                 '{}'; only a verified migration tombstone bound to \
+                 that record may write it",
+                item.id,
+                eff_name
+            )));
+        }
+    }
+    merge_config_item(conn, item).map_err(ConfigWriteRejection::Store)
 }
 
 /// Raw ConfigItem MERGE shared by the guarded `upsert_config_item` and
