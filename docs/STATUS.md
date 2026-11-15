@@ -1160,6 +1160,17 @@ Secure-core milestone progress (14 November, stacked branches):
   account billing lock before any job started — hosted-job failures are
   infrastructure, not test results; Rust gates still await an isolated
   `bonsai-ci` runner.
+
+  15 November update — **owner-directed local-first CI policy**: zero
+  paid remote CI consumption; GitHub remains source-control/review only.
+  `.github/workflows/ci.yml` converted to manual `workflow_dispatch`
+  only (all job definitions preserved, no automatic triggers remain);
+  the canonical acceptance command is `scripts/ci/run-local.sh
+  --trusted --shared-target l0 l1 l2 l3` inside the pinned
+  `bonsai-ci:local` image. Remote CI activation is deferred to a future
+  project-maturity workstream. No branch protection or rulesets are
+  configured, so no required-check adjustment blocks promotion; remote
+  CI is never reported as passed.
 - **WP2/WP3 BN-022 protected auth storage (PR #17,
   `feat/bn022-auth-storage` @ 409aaba, stacked on PR #16):** new
   `AuthStore` (`src/auth_store.rs`) owns users, API-key verifiers,
