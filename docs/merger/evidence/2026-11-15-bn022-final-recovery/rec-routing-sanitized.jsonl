@@ -1,0 +1,4 @@
+{"method": "GET", "path": "/internal/routing/v1/health", "token": "present", "authorization": null}
+{"method": "GET", "path": "/internal/routing/v1/events?after_seq=0&limit=250", "token": "present", "authorization": null}
+{"method": "GET", "path": "/internal/routing/v1/events?after_seq=0&limit=250", "token": "present", "authorization": null}
+{"method": "GET", "path": "/internal/routing/v1/routes?speaker=10.0.0.1", "token": "present", "authorization": null}

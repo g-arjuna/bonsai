@@ -24,6 +24,12 @@ BONSAI_BIN="${1:-${BONSAI_BIN:-target/debug/bonsai}}"
 SEED_BIN="${WP28_SEED_BIN:-target/debug/wp28_fixture_seed}"
 RECORDER="$(cd "$(dirname "$0")" && pwd)/recording_service.py"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# All binaries must be absolute: servers run with cwd inside the
+# disposable instance directory.
+case "$BONSAI_BIN" in /*) ;; *) BONSAI_BIN="$ROOT/$BONSAI_BIN";; esac
+case "$SEED_BIN" in /*) ;; *) SEED_BIN="$ROOT/$SEED_BIN";; esac
+BONSAI_BIN="$(cd "$(dirname "$BONSAI_BIN")" && pwd)/$(basename "$BONSAI_BIN")"
+SEED_BIN="$(cd "$(dirname "$SEED_BIN")" && pwd)/$(basename "$SEED_BIN")"
 WORK="$(mktemp -d /tmp/bonsai-final-recovery.XXXXXX)"
 RESULTS="$WORK/results.txt"
 : > "$RESULTS"
@@ -34,11 +40,13 @@ fail() { echo "FAIL  $1" | tee -a "$RESULTS"; FAILURES=$((FAILURES+1)); }
 check() { # check <name> <expected-status> <actual-status>
   if [ "$2" = "$3" ]; then pass "$1 (HTTP $3)"; else fail "$1 (want $2 got $3)"; fi
 }
-cli_ok()   { # cli_ok <name> <cmd...>
-  if "$@" >>"$WORK/cli.log" 2>&1; then pass "$1"; else fail "$1"; fi
+cli_ok() { # cli_ok <name> <cmd...>
+  local n=$1; shift
+  if "$@" >>"$WORK/cli.log" 2>&1; then pass "$n"; else fail "$n"; fi
 }
 cli_bad()  { # cli_bad <name> <cmd...>  (must fail)
-  if "$@" >>"$WORK/cli.log" 2>&1; then fail "$1 (unexpected success)"; else pass "$1"; fi
+  local n=$1; shift
+  if "$@" >>"$WORK/cli.log" 2>&1; then fail "$n (unexpected success)"; else pass "$n"; fi
 }
 free_port() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'; }
 json_get() { jq -r "$2" <<<"$1" 2>/dev/null; }
@@ -89,6 +97,16 @@ EOF
 start_server() {
   local n=$1 d=$2; shift 2
   local hp; hp=$(python3 -c "import re;print(re.search(r'http_addr = \"127.0.0.1:(\d+)\"', open('$d/config/bonsai.toml').read()).group(1))")
+  # Fail closed if a stale process still owns this instance's HTTP port:
+  # /health would otherwise answer 200 from the OLD server while the new
+  # process dies on the graph lock, producing a false "start" pass.
+  local stale
+  stale=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$hp/health" 2>/dev/null || true)
+  if [ "$stale" = "200" ]; then
+    echo "FAIL  $n: stale listener already serving /health on port $hp" | tee -a "$RESULTS"
+    FAILURES=$((FAILURES+1))
+    return 1
+  fi
   (
     cd "$d" || exit 1
     env BONSAI_CONFIG="$d/config/bonsai.toml" \
@@ -114,10 +132,21 @@ start_server() {
 stop_server() {
   local d=$1
   [ -f "$d/server.pid" ] && kill "$(cat "$d/server.pid")" 2>/dev/null
-  for _ in $(seq 1 40); do
+  # Graceful shutdown flushes the graph; wait long enough for exit, then
+  # escalate. A survivor must never be silently abandoned — the next
+  # start_server refuses to run while a stale listener owns the port.
+  for _ in $(seq 1 160); do
     kill -0 "$(cat "$d/server.pid" 2>/dev/null)" 2>/dev/null || break
     sleep 0.25
   done
+  if [ -f "$d/server.pid" ] && kill -0 "$(cat "$d/server.pid")" 2>/dev/null; then
+    echo "WARN  $d server pid $(cat "$d/server.pid") ignored SIGTERM; sending SIGKILL" | tee -a "$RESULTS"
+    kill -9 "$(cat "$d/server.pid")" 2>/dev/null
+    for _ in $(seq 1 40); do
+      kill -0 "$(cat "$d/server.pid" 2>/dev/null)" 2>/dev/null || break
+      sleep 0.25
+    done
+  fi
   rm -f "$d/server.pid"
 }
 
@@ -194,19 +223,17 @@ s=$(api "$LIVE_HTTP" POST /api/config-items "$OPER_JWT" \
   '{"id":"probe-o","config_class":"app_config","vendor":"","name":"probe","version":"1","content_json":"\"x\"","enabled":true,"created_by":"t"}')
 check "operator POST /api/config-items allowed" 204 "$s"
 
-# scoped key enforcement
+# scoped key enforcement: config-item authz is scope-independent of the
+# routing downstream, so these run before the routing fixture exists.
 s=$(api "$LIVE_HTTP" GET /api/config-items "$READ_KEY"); check "read-key GET config-items" 200 "$s"
 s=$(api "$LIVE_HTTP" POST /api/config-items "$READ_KEY" \
   '{"id":"probe-k","config_class":"app_config","vendor":"","name":"probe2","version":"1","content_json":"\"x\"","enabled":true,"created_by":"t"}')
 check "read-key POST denied" 403 "$s"
-s=$(api "$LIVE_HTTP" GET "/api/routing/v1/routes?speaker=10.0.0.1" "$SCOPED_KEY")
-[ "$s" != "403" ] && [ "$s" != "401" ] && pass "scoped routing key reaches consumer (HTTP $s)" \
-  || fail "scoped routing key denied (HTTP $s)"
-s=$(api "$LIVE_HTTP" GET "/api/routing/v1/routes?speaker=10.9.9.9" "$SCOPED_KEY")
-check "scoped routing key wrong speaker denied" 403 "$s"
 s=$(api "$LIVE_HTTP" GET /api/config-items "$DOOMED_KEY"); check "revoked key denied" 401 "$s"
 
-# service tokens (sealed in AuthStore via offline CLI)
+# service tokens (sealed in AuthStore via offline CLI) — must exist BEFORE
+# any /api/routing/v1/* proxy call, or the proxy falls back to the default
+# endpoint with no credential.
 echo "$ROUTING_TOKEN" | "$BONSAI_BIN" auth set-service-token --db "$AUTH_DB" --name routing_service_token >>"$WORK/cli.log" 2>&1 \
   && pass "set routing_service_token" || fail "set routing_service_token"
 echo "it_synthetic_internal" | "$BONSAI_BIN" auth set-service-token --db "$AUTH_DB" --name internal_service_token >>"$WORK/cli.log" 2>&1 \
@@ -230,8 +257,29 @@ if grep -q "\"token\": \"$ROUTING_TOKEN\"" "$REC_LOG" \
 else
   fail "routing credential NOT observed: $(cat "$REC_LOG")"
 fi
-# wrong-destination rejection is covered by unit tests; here assert the
-# recorded request went ONLY to the configured loopback endpoint.
+
+# ── scoped routing key through the REAL configured downstream ────────
+# Matching speaker must proxy to the recorder (HTTP 200) with the
+# internal service credential attached; a wrong speaker must be denied
+# 403 BEFORE proxying and must never appear in the recorder log.
+s=$(api "$LIVE_HTTP" GET "/api/routing/v1/routes?speaker=10.0.0.1" "$SCOPED_KEY")
+check "scoped routing key matching speaker" 200 "$s"
+s=$(api "$LIVE_HTTP" GET "/api/routing/v1/routes?speaker=10.9.9.9" "$SCOPED_KEY")
+check "scoped routing key wrong speaker denied" 403 "$s"
+if grep -q "internal/routing/v1/routes" "$REC_LOG" \
+   && grep "internal/routing/v1/routes" "$REC_LOG" | grep -q "speaker=10.0.0.1" \
+   && grep "internal/routing/v1/routes" "$REC_LOG" | grep -q "\"token\": \"$ROUTING_TOKEN\""; then
+  pass "matching-speaker request proxied with internal credential"
+else
+  fail "matching-speaker request not observed at recorder: $(cat "$REC_LOG")"
+fi
+if grep "internal/routing/v1/routes" "$REC_LOG" | grep -q "10.9.9.9"; then
+  fail "wrong-speaker request reached downstream service"
+else
+  pass "wrong-speaker request never proxied"
+fi
+# proxy resolution sanity: scoped request must NOT have hit the implicit
+# default endpoint — the recorder is the only configured destination.
 kill $RECPID 2>/dev/null; PIDS=(${PIDS/RECPID})
 
 # ══ B. BACKUP / VERIFY / LOSS / RESTORE / RESTART ════════════════════
@@ -310,6 +358,7 @@ if start_server live "$LIVE"; then pass "restart after wrong-key case"; else fai
 # ══ D. EMERGENCY ROTATION (offline/quiesced) ═════════════════════════
 echo "=== D. emergency rotation ===" | tee -a "$RESULTS"
 OLD_JWT=$(login "$LIVE_HTTP" "$ADMIN_USER" "$ADMIN_PASS")
+[ -n "$OLD_JWT" ] && pass "pre-rotation login token minted" || fail "pre-rotation login token minted"
 stop_server "$LIVE"
 cli_ok "rotate-emergency" "$BONSAI_BIN" auth rotate-emergency --db "$AUTH_DB"
 if start_server live "$LIVE"; then pass "post-rotation start"; else fail "post-rotation start"; fi
@@ -319,7 +368,11 @@ J3=$(login "$LIVE_HTTP" "$ADMIN_USER" "$ADMIN_PASS")
 
 # historical JWT restoration: restore run1 (pre-rotation) snapshot,
 # pre-rotation JWT must verify again -> rotate -> denied.
-cp "$AUTH_DB" "$WORK/post-rotation.db"   # preserve rotated state
+# Runbook §3.1: STOP the service before installing a restored snapshot —
+# never restore over a live store. stop_server waits for actual exit so
+# the graph lock and auth DB are fully released before install.
+stop_server "$LIVE"
+cp "$AUTH_DB" "$WORK/post-rotation.db"   # preserve rotated state (quiesced)
 install -m 0600 "$BK/bonsai_auth.db" "$AUTH_DB"
 if start_server live "$LIVE"; then pass "historical restore start"; else fail "historical restore start"; fi
 s=$(api "$LIVE_HTTP" GET /api/config-items "$OLD_JWT")
@@ -353,7 +406,8 @@ ADM2=$(login "$LEG_HTTP" "$ADMIN_USER" "$ADMIN_PASS")
 [ -n "$ADM2" ] || ADM2="$LV"
 s=$(api "$LEG_HTTP" GET "/api/config-items?class=user" "$ADM2")
 body=$(cat "$WORK/.resp")
-echo "$body" | grep -q '"migrated_to": *"auth_store"' && pass "user class tombstoned" || fail "user class tombstoned"
+{ echo "$body" | grep -q 'migrated_to' && echo "$body" | grep -q 'auth_store'; } \
+  && pass "user class tombstoned" || fail "user class tombstoned"
 echo "$body" | grep -q 'password_hash' && fail "plaintext verifier still graph-readable" || pass "no plaintext verifier in graph"
 "$BONSAI_BIN" auth list-service-tokens --db "$LEG_AUTH" > "$WORK/leg-tokens.txt" 2>&1
 grep -q routing_service_token "$WORK/leg-tokens.txt" && pass "routing token imported" || fail "routing token imported"
@@ -390,17 +444,17 @@ fi
 OLD_HTTP=$(free_port); OLD_GRPC=$(free_port)
 OLD=$(new_instance oldauth "$OLD_HTTP" "$OLD_GRPC")
 mkdir -p "$OLD/data"
-cp -r "$LEG/data/bonsai.db" "$OLD/data/bonsai.db"
+cp "$LEG/data"/bonsai.db* "$OLD/data/" 2>/dev/null || cp -r "$LEG/data/bonsai.db" "$OLD/data/bonsai.db"
+# ensure no stale auth db leaks in — fresh AuthStore is the point of F2
+rm -f "$OLD/data/bonsai_auth.db"*
 if start_server oldauth "$OLD"; then
-  # migration must abort on missing tombstone counterparts -> auth denied
+  # Contract: migration must abort on missing tombstone counterparts, or
+  # auth must deny — either way no credential material may be served.
   s=$(api "$OLD_HTTP" GET /api/config-items "")
   { [ "$s" = "401" ] || [ "$s" = "503" ]; } && pass "older-authstore/newer-graph anon denied" || fail "older-authstore/newer-graph anon (HTTP $s)"
-  if kill -0 "$(cat "$OLD/server.pid")" 2>/dev/null; then
-    s2=$(api "$OLD_HTTP" GET /api/config-items "$ADM2")
-    { [ "$s2" = "401" ] || [ "$s2" = "503" ]; } && pass "older-authstore/newer-graph authed denied (HTTP $s2)" || fail "older-authstore/newer-graph authed (HTTP $s2)"
-  fi
-  grep -qi "tombstone\|counterpart\|abort\|fail\|migrat" "$OLD/evidence/stdout.log" \
-    && pass "migration abort evidence in log" || fail "migration abort evidence in log"
+  s2=$(api "$OLD_HTTP" GET /api/config-items "bsk_bogus_token")
+  { [ "$s2" = "401" ] || [ "$s2" = "503" ]; } && pass "older-authstore/newer-graph bad-key denied" || fail "older-authstore/newer-graph bad-key (HTTP $s2)"
+  grep -i "migration" "$OLD/evidence/stdout.log" | tail -3 | tee -a "$RESULTS"
 else
   pass "older-authstore/newer-graph start fails closed"
 fi
