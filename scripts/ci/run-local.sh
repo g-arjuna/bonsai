@@ -111,6 +111,12 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 case "$GATE_NET" in bridge|none) ;; *) echo "--net must be bridge|none" >&2; exit 2 ;; esac
+# Fail fast on prohibited trust-mode combinations before doing any work.
+if [ "$MODE" = "untrusted" ]; then
+  [ -z "$LBUG_NATIVE_DIR" ] || { echo "GATE FAIL: --lbug-native is only permitted in --trusted mode" >&2; exit 2; }
+  [ -z "$SHARED_TARGET_DIR" ] || { echo "GATE FAIL: --shared-target-dir is only permitted in --trusted mode" >&2; exit 2; }
+  [ "$SHARED_TARGET" = "0" ] || { echo "GATE FAIL: --shared-target is only permitted in --trusted mode" >&2; exit 2; }
+fi
 [ "${#TIERS[@]}" -gt 0 ] || TIERS=(l0 l1 l2 l3)
 
 SHA="$(git rev-parse HEAD)"
@@ -216,11 +222,56 @@ if [ -n "$LBUG_NATIVE_DIR" ]; then
   fi
   [ -f "$LBUG_NATIVE_DIR/env.sh" ] || { echo "GATE FAIL: $LBUG_NATIVE_DIR/env.sh missing — run scripts/ci/lbug-native-prepare.sh" >&2; exit 2; }
   LBUG_NATIVE_DIR="$(cd "$LBUG_NATIVE_DIR" && pwd)"
+  # Fail-closed provenance/integrity check (manifest v2: lbug version vs
+  # Cargo.lock, rustc commit/host ABI, per-archive content hash).
+  if ! NATIVE_VERDICT="$(bash "$ROOT/scripts/ci/lbug-native-prepare.sh" --verify "$LBUG_NATIVE_DIR")"; then
+    echo "GATE FAIL: --lbug-native dir failed verification:" >&2
+    printf '%s\n' "$NATIVE_VERDICT" >&2
+    exit 2
+  fi
   # shellcheck disable=SC1090
   . "$LBUG_NATIVE_DIR/env.sh"
   # env.sh paths are absolute under LBUG_NATIVE_DIR; bind-mount the dir at
   # the identical container path (read-only) so they resolve verbatim.
   MOUNTS+=(-v "$LBUG_NATIVE_DIR:$LBUG_NATIVE_DIR:ro")
+  # If lib/ entries are symlinks into a donor target tree, the identical
+  # donor paths must exist inside the container or the archives dangle.
+  # Mount each unique resolved target's donor root read-only at the same
+  # absolute path. hardlink/copy dirs need no extra mounts.
+  DONOR_MOUNTS="$(python3 - "$LBUG_NATIVE_DIR" <<'PY'
+import json, os, sys
+dest = sys.argv[1]
+mf = json.load(open(os.path.join(dest, "manifest.json")))
+donor = mf.get("donor_out") or ""
+roots = set()
+for n in sorted(os.listdir(os.path.join(dest, "lib"))):
+    p = os.path.join(dest, "lib", n)
+    if os.path.islink(p):
+        t = os.path.realpath(p)
+        # mount the deepest existing ancestor that contains the target
+        d = os.path.dirname(t)
+        while d and not os.path.isdir(d):
+            d = os.path.dirname(d)
+        if d:
+            roots.add(d)
+# prefer the manifest donor_out when it covers the targets
+covered = donor and all(r == donor or r.startswith(donor + os.sep) or donor.startswith(r + os.sep) for r in roots)
+out = []
+if covered and os.path.isdir(donor):
+    out.append(donor)
+else:
+    out = sorted(roots)
+print("\n".join(out))
+PY
+)"
+  if [ -n "$DONOR_MOUNTS" ]; then
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      [ -d "$d" ] || { echo "GATE FAIL: lbug-native symlink donor $d missing on host" >&2; exit 2; }
+      MOUNTS+=(-v "$d:$d:ro")
+      echo "=== TRUSTED-LOCAL policy: lbug-native donor mount $d (ro) ==="
+    done <<< "$DONOR_MOUNTS"
+  fi
   BASE_ENV+=(
     -e "LBUG_LIBRARY_DIR=$LBUG_LIBRARY_DIR"
     -e "LBUG_INCLUDE_DIR=$LBUG_INCLUDE_DIR"
