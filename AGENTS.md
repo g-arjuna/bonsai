@@ -44,7 +44,10 @@
   CMake build reruns per cargo unit kind (~35–77 min); `--lbug-native`
   prebuilt mode reduces that to a ~10 s cxx bridge. See
   `docs/DEVELOPMENT.md` "Trusted build lanes". Never mix bundled/prebuilt
-  lbug modes on one target dir.
+  lbug modes on one target dir — the lane fails closed on a mode mismatch;
+  `--lbug-native` dirs are content-verified (`lbug-native-prepare.sh
+  --verify`) before use, and `scripts/ci/build_lane_selftest.sh` covers
+  the negative cases.
 - sccache is the configured `rustc-wrapper` (`.cargo/config.toml`) and its
   server persists across sessions — sccache is MANDATORY, not optional. Never
   prefix cargo with `RUSTC_WRAPPER=` and never bypass the wrapper: if sccache
