@@ -109,7 +109,10 @@ async fn b11_routing_api_contract_prefix_history_and_graceful_degradation() {
     // graph ConfigItem write for a protected secret name is rejected.
     store
         .auth_store
-        .set_service_token("routing_service_token", "test-internal-routing-secret-token")
+        .set_service_token(
+            "routing_service_token",
+            "test-internal-routing-secret-token",
+        )
         .expect("set routing service token");
     // F1: auth policy is deployment-level, not a graph ConfigItem — use
     // the per-store test override for this isolated no-auth workflow.
