@@ -4366,6 +4366,28 @@ impl GraphStore {
         .context("list_config_items task")?
     }
 
+    /// Targeted `(name, config_class)` lookup for a single ConfigItem id.
+    /// Used by the request boundary to select the correct rejection
+    /// status for credential classes before the allowlist check; the
+    /// authoritative authorization decision still happens inside
+    /// `upsert_config_item_authorized` under the write lock.
+    pub async fn config_item_identity(&self, id: &str) -> Result<Option<(String, String)>> {
+        let db = Arc::clone(&self.db);
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("config item identity connection")?;
+            let mut stmt = conn.prepare(
+                "MATCH (c:ConfigItem {id: $id}) RETURN c.name, c.config_class",
+            )?;
+            Ok(conn
+                .execute(&mut stmt, vec![("id", Value::String(id))])?
+                .next()
+                .map(|row| (read_str(&row[0]), read_str(&row[1]))))
+        })
+        .await
+        .context("config_item_identity task")?
+    }
+
     /// D4-7 T4: Load raw YAML content strings for a config_class.
     /// Returns `Vec<(name, yaml_content)>` for enabled items only.
     /// The content_json field is a JSON-escaped YAML string; this unwraps it.

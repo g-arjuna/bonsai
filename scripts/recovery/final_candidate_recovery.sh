@@ -109,7 +109,13 @@ start_server() {
   fi
   (
     cd "$d" || exit 1
-    env BONSAI_CONFIG="$d/config/bonsai.toml" \
+    # env -i: the recovery instance must NOT inherit dev-host settings —
+    # JWT overrides, routing-service destinations/credentials, production
+    # config paths or any other BONSAI_* that would invalidate isolation
+    # (a previous run accidentally reached a live dev routing service on
+    # the default 127.0.0.1:8081 endpoint).
+    env -i PATH="$PATH" HOME="${HOME:-/tmp}" LANG="${LANG:-C.UTF-8}" \
+        BONSAI_CONFIG="$d/config/bonsai.toml" \
         BONSAI_VAULT_PASSPHRASE="$VAULT_PASS" \
         BONSAI_REQUIRE_AUTH=1 \
         BONSAI_ADMIN_USER="$ADMIN_USER" \
@@ -119,11 +125,24 @@ start_server() {
     echo $! > "$d/server.pid"
   )
   PIDS+=($(cat "$d/server.pid"))
-  # wait for readiness (max ~60s)
+  # wait for readiness (max ~60s). A 200 alone is not proof: it must come
+  # from the process we just launched — verify the recorded pid is alive
+  # AND owns the listener on this instance's port.
+  local child_pid
+  child_pid=$(cat "$d/server.pid")
   for _ in $(seq 1 120); do
     code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$hp/health" 2>/dev/null || true)
-    [ "$code" = "200" ] && { echo "$hp" > "$d/http_port"; return 0; }
-    kill -0 "$(cat "$d/server.pid")" 2>/dev/null || return 1
+    if [ "$code" = "200" ]; then
+      kill -0 "$child_pid" 2>/dev/null || return 1
+      local lp; lp=$(listener_pid "$hp")
+      if [ -n "$lp" ] && [ "$lp" != "$child_pid" ]; then
+        echo "FAIL  $n: /health answered by pid $lp, expected child $child_pid" | tee -a "$RESULTS"
+        FAILURES=$((FAILURES+1))
+        return 1
+      fi
+      echo "$hp" > "$d/http_port"; return 0
+    fi
+    kill -0 "$child_pid" 2>/dev/null || return 1
     sleep 0.5
   done
   return 1
@@ -131,23 +150,40 @@ start_server() {
 
 stop_server() {
   local d=$1
-  [ -f "$d/server.pid" ] && kill "$(cat "$d/server.pid")" 2>/dev/null
+  local pid=""
+  [ -f "$d/server.pid" ] && pid=$(cat "$d/server.pid")
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null
   # Graceful shutdown flushes the graph; wait long enough for exit, then
   # escalate. A survivor must never be silently abandoned — the next
   # start_server refuses to run while a stale listener owns the port.
   for _ in $(seq 1 160); do
-    kill -0 "$(cat "$d/server.pid" 2>/dev/null)" 2>/dev/null || break
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || break
     sleep 0.25
   done
-  if [ -f "$d/server.pid" ] && kill -0 "$(cat "$d/server.pid")" 2>/dev/null; then
-    echo "WARN  $d server pid $(cat "$d/server.pid") ignored SIGTERM; sending SIGKILL" | tee -a "$RESULTS"
-    kill -9 "$(cat "$d/server.pid")" 2>/dev/null
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    echo "WARN  $d server pid $pid ignored SIGTERM; sending SIGKILL" | tee -a "$RESULTS"
+    kill -9 "$pid" 2>/dev/null
     for _ in $(seq 1 40); do
-      kill -0 "$(cat "$d/server.pid" 2>/dev/null)" 2>/dev/null || break
+      kill -0 "$pid" 2>/dev/null || break
       sleep 0.25
     done
   fi
+  # Fail closed: if the child is still alive after SIGKILL we must NOT
+  # delete the pid file and let the caller proceed as if the instance
+  # were quiesced — the caller records the failure instead.
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    echo "FAIL  $d server pid $pid survived SIGKILL — instance NOT quiesced" | tee -a "$RESULTS"
+    FAILURES=$((FAILURES+1))
+    return 1
+  fi
   rm -f "$d/server.pid"
+  return 0
+}
+
+# TCP listener pid for 127.0.0.1:<port>, if resolvable via ss(8).
+listener_pid() {
+  ss -ltnpH "sport = :$1" 2>/dev/null \
+    | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2
 }
 
 api() { # api <port> <method> <path> <token-or-empty> [json-body]
@@ -280,7 +316,7 @@ else
 fi
 # proxy resolution sanity: scoped request must NOT have hit the implicit
 # default endpoint — the recorder is the only configured destination.
-kill $RECPID 2>/dev/null; PIDS=(${PIDS/RECPID})
+kill $RECPID 2>/dev/null
 
 # ══ B. BACKUP / VERIFY / LOSS / RESTORE / RESTART ════════════════════
 echo "=== B. backup-restore roundtrip ===" | tee -a "$RESULTS"
@@ -291,7 +327,7 @@ cli_ok "verify-backup" env BONSAI_VAULT_PASSPHRASE="$VAULT_PASS" \
   "$BONSAI_BIN" auth verify-backup --snapshot "$BK/bonsai_auth.db"
 PRE_JWT="$ADM_JWT"   # JWT minted before backup must survive restore
 
-stop_server "$LIVE"
+stop_server "$LIVE" || fail "live server did not stop before simulated loss"
 # simulated loss
 mv "$AUTH_DB" "$WORK/bonsai_auth.db.lost"
 install -m 0600 "$BK/bonsai_auth.db" "$AUTH_DB"
@@ -315,6 +351,38 @@ check "post-restore viewer write denied" 403 "$s"
 grep -q routing_service_token "$WORK/tokens.txt" && pass "routing token present" || fail "routing token present"
 grep -q internal_service_token "$WORK/tokens.txt" && pass "internal token present" || fail "internal token present"
 mode=$(stat -c %a "$AUTH_DB"); [ "$mode" = "600" ] && pass "auth db mode 600" || fail "auth db mode 600 (got $mode)"
+
+# ── post-restore scoped routing credential consumption ──────────────
+# The restored sealed service token and scoped API key must still drive
+# real credential consumption through the configured downstream: the
+# matching speaker reaches the recorder with the internal token attached,
+# the wrong speaker is denied before proxying.
+REC_PORT=$(free_port)
+REC_LOG="$WORK/rec-routing-post-restore.jsonl"; : > "$REC_LOG"
+RECORDER_LOG="$REC_LOG" python3 "$RECORDER" "$REC_PORT" &
+RECPID=$!; PIDS+=($RECPID)
+sleep 0.5
+# Repoint routing_service_url at the new recorder (admin-only protected name).
+api "$LIVE_HTTP" POST /api/config-items "$J2" \
+  "{\"id\":\"cfg-routing-url\",\"config_class\":\"app_config\",\"vendor\":\"\",\"name\":\"routing_service_url\",\"version\":\"1\",\"content_json\":\"\\\"http://127.0.0.1:$REC_PORT\\\"\",\"enabled\":true,\"created_by\":\"t\"}" >/dev/null
+s=$(api "$LIVE_HTTP" GET "/api/routing/v1/routes?speaker=10.0.0.1" "$SCOPED_KEY")
+check "post-restore scoped key matching speaker" 200 "$s"
+s=$(api "$LIVE_HTTP" GET "/api/routing/v1/routes?speaker=10.9.9.9" "$SCOPED_KEY")
+check "post-restore scoped key wrong speaker denied" 403 "$s"
+sleep 0.5
+if grep -q "internal/routing/v1/routes" "$REC_LOG" \
+   && grep "internal/routing/v1/routes" "$REC_LOG" | grep -q "speaker=10.0.0.1" \
+   && grep "internal/routing/v1/routes" "$REC_LOG" | grep -q "\"token\": \"$ROUTING_TOKEN\""; then
+  pass "post-restore routing credential consumed by restored store"
+else
+  fail "post-restore routing credential NOT observed: $(cat "$REC_LOG")"
+fi
+if grep "internal/routing/v1/routes" "$REC_LOG" | grep -q "10.9.9.9"; then
+  fail "post-restore wrong-speaker request reached downstream"
+else
+  pass "post-restore wrong-speaker request never proxied"
+fi
+kill $RECPID 2>/dev/null
 
 # ══ C. NEGATIVE / HISTORICAL CASES ═══════════════════════════════════
 echo "=== C. negatives ===" | tee -a "$RESULTS"
@@ -345,8 +413,69 @@ cli_bad "verify-backup missing manifest" env BONSAI_VAULT_PASSPHRASE="$VAULT_PAS
 sed 's/"format": *"v2"/"format": "v1"/' "$WORK/tampered.manifest.json" > "$WORK/v1.manifest.json" 2>/dev/null || true
 cli_bad "verify-backup unsupported format" env BONSAI_VAULT_PASSPHRASE="$VAULT_PASS" \
   "$BONSAI_BIN" auth verify-backup --snapshot "$BK/bonsai_auth.db" --manifest "$WORK/v1.manifest.json"
+# ── invalid permissions: permissive-mode auth DB must be tightened ──
+# The mode-600 check above is a positive invariant, NOT a negative test.
+# Contract (docs/auth_storage.md): AuthStore::open restricts the DB and
+# its sidecars to 0600 on open — a permissive install must be repaired,
+# never served with loose permissions. verify-backup deliberately does
+# NOT gate on mode bits (documented nuance); the live-open path is the
+# enforcement point.
+mkdir -p "$WORK/perms"
+install -m 0644 "$BK/bonsai_auth.db" "$WORK/perms/bonsai_auth.db"
+"$BONSAI_BIN" auth list-service-tokens --db "$WORK/perms/bonsai_auth.db" \
+  > "$WORK/perms-tokens.txt" 2>&1 \
+  && pass "permissive auth db opens (content valid)" || fail "permissive auth db open"
+pmode=$(stat -c %a "$WORK/perms/bonsai_auth.db")
+[ "$pmode" = "600" ] && pass "permissive auth db tightened to 600 on open" \
+  || fail "permissive auth db NOT tightened on open (mode $pmode)"
+
+# ── corrupt ciphertext: explicit decrypt-verify negative ────────────
+# verify-backup binds snapshot bytes via manifest SHA-256+size, so a
+# naive byte-flip fails at the digest check before decryption. To prove
+# the DECRYPT-VERIFY path itself rejects corrupt credential material,
+# craft a manifest whose digest matches the corrupted snapshot — the
+# rejection must then come from age decryption, not the digest gate.
+REAL_MANIFEST="$BK/bonsai_auth.db.manifest.json"
+[ -f "$REAL_MANIFEST" ] || REAL_MANIFEST="$BK/bonsai_auth.manifest.json"
+cp "$BK/bonsai_auth.db" "$WORK/ciphercorr.db"
+if python3 - "$WORK/ciphercorr.db" <<'PYEOF'
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+row = conn.execute("SELECT rowid, token_enc FROM service_tokens LIMIT 1").fetchone()
+tbl, col = "service_tokens", "token_enc"
+if row is None:
+    row = conn.execute("SELECT rowid, secret_enc FROM jwt_keys LIMIT 1").fetchone()
+    tbl, col = "jwt_keys", "secret_enc"
+assert row is not None, "no encrypted credential material to corrupt"
+blob = bytearray(row[1]); blob[len(blob)//2] ^= 0xFF
+conn.execute(f"UPDATE {tbl} SET {col}=? WHERE rowid=?", (bytes(blob), row[0]))
+conn.commit(); conn.close()
+PYEOF
+then
+  # Rebind the manifest digest/size to the corrupted snapshot so the
+  # digest gate passes and only decrypt-verify can reject it.
+  python3 - "$WORK/ciphercorr.db" "$REAL_MANIFEST" "$WORK/ciphercorr.manifest.json" <<'PYEOF'
+import json, hashlib, os, sys
+snap, src, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+m = json.load(open(src))
+m["snapshot_sha256"] = hashlib.sha256(open(snap, 'rb').read()).hexdigest()
+m["snapshot_size_bytes"] = os.path.getsize(snap)
+json.dump(m, open(dst, 'w'))
+PYEOF
+  out=$(env BONSAI_VAULT_PASSPHRASE="$VAULT_PASS" \
+    "$BONSAI_BIN" auth verify-backup --snapshot "$WORK/ciphercorr.db" \
+    --manifest "$WORK/ciphercorr.manifest.json" 2>&1); rc=$?
+  if [ $rc -ne 0 ] && echo "$out" | grep -qiE "decrypt|age|cipher|integrity|secret|token|jwt"; then
+    pass "verify-backup corrupt ciphertext rejected by decrypt-verify"
+  else
+    fail "verify-backup corrupt ciphertext NOT rejected as intended (rc=$rc): $out"
+  fi
+else
+  fail "ciphertext corruption setup"
+fi
+
 # wrong key at startup (live instance, wrong passphrase)
-stop_server "$LIVE"
+stop_server "$LIVE" || fail "live server did not stop before wrong-key case"
 if start_server live "$LIVE" BONSAI_VAULT_PASSPHRASE="definitely-wrong"; then
   fail "wrong passphrase startup accepted"
 else
@@ -359,7 +488,7 @@ if start_server live "$LIVE"; then pass "restart after wrong-key case"; else fai
 echo "=== D. emergency rotation ===" | tee -a "$RESULTS"
 OLD_JWT=$(login "$LIVE_HTTP" "$ADMIN_USER" "$ADMIN_PASS")
 [ -n "$OLD_JWT" ] && pass "pre-rotation login token minted" || fail "pre-rotation login token minted"
-stop_server "$LIVE"
+stop_server "$LIVE" || fail "live server did not stop before emergency rotation"
 cli_ok "rotate-emergency" "$BONSAI_BIN" auth rotate-emergency --db "$AUTH_DB"
 if start_server live "$LIVE"; then pass "post-rotation start"; else fail "post-rotation start"; fi
 s=$(api "$LIVE_HTTP" GET /api/config-items "$OLD_JWT"); check "pre-rotation JWT denied after restart" 401 "$s"
@@ -371,19 +500,19 @@ J3=$(login "$LIVE_HTTP" "$ADMIN_USER" "$ADMIN_PASS")
 # Runbook §3.1: STOP the service before installing a restored snapshot —
 # never restore over a live store. stop_server waits for actual exit so
 # the graph lock and auth DB are fully released before install.
-stop_server "$LIVE"
+stop_server "$LIVE" || fail "live server did not stop before historical restore"
 cp "$AUTH_DB" "$WORK/post-rotation.db"   # preserve rotated state (quiesced)
 install -m 0600 "$BK/bonsai_auth.db" "$AUTH_DB"
 if start_server live "$LIVE"; then pass "historical restore start"; else fail "historical restore start"; fi
 s=$(api "$LIVE_HTTP" GET /api/config-items "$OLD_JWT")
 if [ "$s" = "200" ]; then pass "restored old JWT verifies (resurrection confirmed)"; else fail "restored old JWT not accepted (HTTP $s)"; fi
-stop_server "$LIVE"
+stop_server "$LIVE" || fail "live server did not stop before reconciliation rotation"
 cli_ok "rotate-emergency on restored" "$BONSAI_BIN" auth rotate-emergency --db "$AUTH_DB"
 if start_server live "$LIVE"; then pass "post-restore-rotation start"; else fail "post-restore-rotation start"; fi
 s=$(api "$LIVE_HTTP" GET /api/config-items "$OLD_JWT"); check "old JWT denied after reconciliation rotation" 401 "$s"
 J4=$(login "$LIVE_HTTP" "$ADMIN_USER" "$ADMIN_PASS")
 [ -n "$J4" ] && pass "login after reconciliation" || fail "login after reconciliation"
-stop_server "$LIVE"
+stop_server "$LIVE" || fail "live server did not stop after reconciliation"
 
 # ══ E. LEGACY MIGRATION INSTANCE ═════════════════════════════════════
 echo "=== E. legacy migration ===" | tee -a "$RESULTS"
@@ -419,7 +548,7 @@ cat "$WORK/.resp" | grep -q 'rt_legacy_routing_token_sealed_001' \
 
 # ══ F. GRAPH/AUTHSTORE MISMATCH BOTH DIRECTIONS ══════════════════════
 echo "=== F. mismatch cases ===" | tee -a "$RESULTS"
-stop_server legacy
+stop_server "$LEG" || fail "legacy server did not stop before mismatch cases"
 # F1: older graph (freshly seeded, unmigrated) + newer AuthStore (migrated)
 PRE_HTTP=$(free_port); PRE_GRPC=$(free_port)
 PRE=$(new_instance pregraph "$PRE_HTTP" "$PRE_GRPC")
@@ -432,14 +561,29 @@ if start_server pregraph "$PRE"; then
   s=$(api "$PRE_HTTP" GET /api/config-items "")
   [ "$s" = "401" ] && pass "older-graph/newer-authstore anon denied" || fail "older-graph/newer-authstore anon (HTTP $s)"
   if kill -0 "$(cat "$PRE/server.pid")" 2>/dev/null; then
+    # ensure_migrated runs BEFORE credential verification, so any bearer
+    # yields 503 while certification fails — a 401 here would mean the
+    # request was denied as a bad credential, NOT as a certification
+    # failure. Require 503 AND the explicit certification error in the log.
     s2=$(api "$PRE_HTTP" GET /api/config-items "$ADM2")
-    { [ "$s2" = "401" ] || [ "$s2" = "503" ]; } && pass "older-graph/newer-authstore authed denied (HTTP $s2)" || fail "older-graph/newer-authstore authed (HTTP $s2)"
+    [ "$s2" = "503" ] && pass "older-graph/newer-authstore authed denied by certification (HTTP 503)" \
+      || fail "older-graph/newer-authstore authed (HTTP $s2, want 503 certification denial)"
+    grep -q "refusing to serve auth" "$PRE/evidence/stdout.log" \
+      && pass "certification failure explicit in server log" \
+      || fail "certification failure NOT explicit in server log: $(grep -i 'migration\|certif' "$PRE/evidence/stdout.log" | tail -3)"
   else
     pass "older-graph/newer-authstore process exited"
+    grep -qi "refusing to serve auth\|unmigrated credential" "$PRE/evidence/stdout.log" \
+      && pass "certification failure explicit in startup log" \
+      || fail "process exited without explicit certification error"
   fi
 else
   pass "older-graph/newer-authstore fails closed at startup"
+  grep -qi "refusing to serve auth\|unmigrated credential\|migration" "$PRE/evidence/stdout.log" \
+    && pass "certification failure explicit in startup log" \
+    || fail "startup failed without explicit certification/migration error"
 fi
+stop_server "$PRE" || true
 # F2: older AuthStore (fresh) + newer graph (tombstoned legacy graph)
 OLD_HTTP=$(free_port); OLD_GRPC=$(free_port)
 OLD=$(new_instance oldauth "$OLD_HTTP" "$OLD_GRPC")
@@ -449,14 +593,34 @@ cp "$LEG/data"/bonsai.db* "$OLD/data/" 2>/dev/null || cp -r "$LEG/data/bonsai.db
 rm -f "$OLD/data/bonsai_auth.db"*
 if start_server oldauth "$OLD"; then
   # Contract: migration must abort on missing tombstone counterparts, or
-  # auth must deny — either way no credential material may be served.
+  # complete cleanly — either way no credential material may be served.
+  # Distinguish the two explicitly: a 503 means auth is fail-closed on a
+  # migration/certification error (verify it in the log, not merely a
+  # denied request); a 401 means migration completed and the bogus
+  # credential was genuinely rejected — then prove auth is actually
+  # live via a successful env-admin login (meaningful setup precondition).
   s=$(api "$OLD_HTTP" GET /api/config-items "")
-  { [ "$s" = "401" ] || [ "$s" = "503" ]; } && pass "older-authstore/newer-graph anon denied" || fail "older-authstore/newer-graph anon (HTTP $s)"
+  [ "$s" = "401" ] && pass "older-authstore/newer-graph anon denied" || fail "older-authstore/newer-graph anon (HTTP $s)"
   s2=$(api "$OLD_HTTP" GET /api/config-items "bsk_bogus_token")
-  { [ "$s2" = "401" ] || [ "$s2" = "503" ]; } && pass "older-authstore/newer-graph bad-key denied" || fail "older-authstore/newer-graph bad-key (HTTP $s2)"
+  if [ "$s2" = "503" ]; then
+    pass "older-authstore/newer-graph auth fail-closed (HTTP 503)"
+    grep -qi "migration\|tombstone" "$OLD/evidence/stdout.log" \
+      && pass "migration/certification failure explicit in server log" \
+      || fail "503 without explicit migration/certification error in log"
+  elif [ "$s2" = "401" ]; then
+    pass "older-authstore/newer-graph bogus key denied (HTTP 401 — migration completed)"
+    JX=$(login "$OLD_HTTP" "$ADMIN_USER" "$ADMIN_PASS")
+    [ -n "$JX" ] && pass "env-admin login works post-migration (setup precondition)" \
+      || fail "env-admin login failed after completed migration"
+  else
+    fail "older-authstore/newer-graph bad-key unexpected status (HTTP $s2)"
+  fi
   grep -i "migration" "$OLD/evidence/stdout.log" | tail -3 | tee -a "$RESULTS"
 else
   pass "older-authstore/newer-graph start fails closed"
+  grep -qi "migration\|tombstone" "$OLD/evidence/stdout.log" \
+    && pass "migration failure explicit in startup log" \
+    || fail "startup failed without explicit migration error"
 fi
 
 echo "=== DONE: $FAILURES failure(s) ===" | tee -a "$RESULTS"

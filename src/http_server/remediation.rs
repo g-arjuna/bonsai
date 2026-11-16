@@ -1662,10 +1662,48 @@ pub(super) async fn upsert_config_item_handler(
     // identity is resolved by a targeted id lookup under the same write
     // lock that performs the MERGE, so there is no check/write race and
     // no full-table scan. `admin` is the caller's authenticated role.
+    //
+    // The checks below only select the correct rejection STATUS for
+    // credential classes that can never be written through this API; the
+    // store remains the authoritative boundary for the effective
+    // persisted identity on id collisions.
     let is_admin = matches!(
         role,
         Some(axum::Extension(crate::http_server::auth::Role::Admin))
     );
+    let existing = state
+        .store
+        .config_item_identity(&item.id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let (eff_name, eff_class) = existing
+        .unwrap_or_else(|| (item.name.clone(), item.config_class.clone()));
+    if !is_admin
+        && (crate::graph::is_sensitive_config_class(&eff_class)
+            || crate::graph::PROTECTED_CONFIG_NAMES.contains(&eff_name.as_str()))
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "config item is restricted to admin principals".to_string(),
+        ));
+    }
+    if crate::graph::RETIRED_CREDENTIAL_CLASSES.contains(&eff_class.as_str()) {
+        return Err((
+            StatusCode::GONE,
+            "credential classes are managed by the protected auth store; \
+             use /api/auth/* endpoints"
+                .to_string(),
+        ));
+    }
+    if crate::auth_store::PROTECTED_SECRET_CONFIG_NAMES.contains(&item.name.as_str()) {
+        return Err((
+            StatusCode::GONE,
+            "secret-bearing config names are managed by the protected auth \
+             store; use `bonsai auth set-service-token` or the documented \
+             environment override"
+                .to_string(),
+        ));
+    }
     if item.id.is_empty() || item.id.len() > 256 {
         return Err((
             StatusCode::BAD_REQUEST,
