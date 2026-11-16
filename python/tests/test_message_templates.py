@@ -900,3 +900,165 @@ class TestEmbeddingAckValidation:
         recs = self._records()
         body = _ack_for(recs, ["rejected", "already_existing"])
         assert w._validate_embedding_ack(body, recs, 1) == []
+
+
+# ── WP65-20: worker cycle outcome visibility ─────────────────────────────────
+
+
+class _GetResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+def _run_once(monkeypatch, get_impl, post_impl, embedder=None):
+    """Drive run_syslog_embedding_worker(run_once=True) with stubs."""
+    import bonsai_ml.syslog_embedding_worker as w
+
+    monkeypatch.setattr("requests.get", get_impl)
+    monkeypatch.setattr("requests.post", post_impl)
+    monkeypatch.setattr(
+        "bonsai_ml.text_embeddings.load_from_config",
+        lambda cfg: embedder or FakeEmbedder(),
+    )
+    return w.run_syslog_embedding_worker(
+        api_url="http://x",
+        embedding_config={"dedup_enabled": False},
+        run_once=True,
+    )
+
+
+class TestWorkerCycleOutcomes:
+    def test_genuine_empty_queue(self, monkeypatch):
+        outcome = _run_once(
+            monkeypatch,
+            lambda *a, **k: _GetResp({"events": []}),
+            lambda *a, **k: pytest.fail("no post expected on empty queue"),
+        )
+        assert outcome["status"] == "empty"
+        assert outcome["fetched"] == 0
+
+    def test_fetch_http_failure_is_not_empty(self, monkeypatch):
+        def boom(*a, **k):
+            raise ConnectionError("connection refused")
+
+        outcome = _run_once(monkeypatch, boom, lambda *a, **k: None)
+        assert outcome["status"] == "fetch_failed"
+        assert "fetch" in outcome["detail"].lower() or outcome["detail"]
+
+    def test_provider_failure_status(self, monkeypatch):
+        events = {"events": [{"id": "e1", "message": "link down"}]}
+
+        def post_ok(url, json=None, headers=None, timeout=None):
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"submitted": 0, "accepted": 0,
+                            "already_existing": 0, "persisted": 0,
+                            "rejected": [], "items": []}
+
+            return R()
+
+        outcome = _run_once(
+            monkeypatch,
+            lambda *a, **k: _GetResp(events),
+            post_ok,
+            embedder=FakeEmbedder(fail=True),
+        )
+        assert outcome["status"] == "provider_error"
+        assert outcome["embedded"] == 0
+
+    def test_invalid_acknowledgement_status(self, monkeypatch):
+        events = {"events": [{"id": "e1", "message": "link down"}]}
+
+        def post_bad(url, json=None, headers=None, timeout=None):
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"persisted": "lots"}  # malformed
+
+            return R()
+
+        outcome = _run_once(
+            monkeypatch,
+            lambda *a, **k: _GetResp(events),
+            post_bad,
+        )
+        assert outcome["status"] == "ack_invalid"
+
+    def test_partial_write_status(self, monkeypatch):
+        events = {"events": [
+            {"id": "e1", "message": "link down"},
+            {"id": "e2", "message": "link up"},
+        ]}
+
+        def post_partial(url, json=None, headers=None, timeout=None):
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    # server persisted only 1 of 2 submitted records
+                    return {"submitted": 2, "accepted": 1,
+                            "already_existing": 0, "persisted": 1,
+                            "rejected": [{"index": 1,
+                                          "event_id": "e2",
+                                          "reason": "dup"}],
+                            "items": []}
+
+            return R()
+
+        outcome = _run_once(
+            monkeypatch,
+            lambda *a, **k: _GetResp(events),
+            post_partial,
+        )
+        assert outcome["status"] == "partial"
+        assert outcome["embedded"] == 1
+
+    def test_successful_cycle_status(self, monkeypatch):
+        events = {"events": [{"id": "e1", "message": "link down"}]}
+
+        def post_ok(url, json=None, headers=None, timeout=None):
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"submitted": 1, "accepted": 1,
+                            "already_existing": 0, "persisted": 1,
+                            "rejected": [],
+                            "items": [{"index": 0, "event_id": "e1",
+                                       "status": "accepted"}]}
+
+            return R()
+
+        outcome = _run_once(
+            monkeypatch,
+            lambda *a, **k: _GetResp(events),
+            post_ok,
+        )
+        assert outcome["status"] == "success"
+        assert outcome["embedded"] == 1
+
+    def test_post_http_failure_status(self, monkeypatch):
+        events = {"events": [{"id": "e1", "message": "link down"}]}
+
+        def post_fail(url, json=None, headers=None, timeout=None):
+            raise ConnectionError("write-back refused")
+
+        outcome = _run_once(
+            monkeypatch,
+            lambda *a, **k: _GetResp(events),
+            post_fail,
+        )
+        assert outcome["status"] == "post_failed"

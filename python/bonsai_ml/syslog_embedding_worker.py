@@ -48,10 +48,33 @@ LEGACY_NORMALIZATION_VERSION = "none"
 # Most recent dedup stats snapshot, for ops introspection and tests.
 _LAST_DEDUP_STATS: dict[str, Any] = {}
 
+# WP65-20: outcome of the most recent worker cycle, for ops introspection
+# and tests. Statuses: empty | fetch_failed | provider_error |
+# post_failed | ack_invalid | partial | success.
+_LAST_CYCLE: dict[str, Any] = {}
+
+#: Cycle statuses that represent an operational failure — the scheduler
+#: wrapper converts these into job failures so a broken fetch/provider/
+#: acknowledgement can never masquerade as a green empty cycle.
+FAILURE_STATUSES = frozenset(
+    {"fetch_failed", "provider_error", "post_failed", "ack_invalid"}
+)
+
 
 def get_dedup_stats() -> dict[str, Any]:
     """Return the most recent template-dedup metrics snapshot (or {})."""
     return dict(_LAST_DEDUP_STATS)
+
+
+def get_last_cycle() -> dict[str, Any]:
+    """Return the most recent embedding-worker cycle outcome (or {})."""
+    return dict(_LAST_CYCLE)
+
+
+def _record_cycle(outcome: dict[str, Any]) -> dict[str, Any]:
+    _LAST_CYCLE.clear()
+    _LAST_CYCLE.update(outcome)
+    return dict(outcome)
 
 
 def run_syslog_embedding_worker(
@@ -60,8 +83,15 @@ def run_syslog_embedding_worker(
     poll_interval: int = POLL_INTERVAL_SECS,
     run_once: bool = False,
     dedup: Any = None,
-) -> None:
+) -> Optional[dict[str, Any]]:
     """Run the syslog embedding background worker loop.
+
+    WP65-20: when ``run_once`` is true the cycle outcome dict is
+    returned — ``status`` is one of ``empty``, ``fetch_failed``,
+    ``provider_error``, ``post_failed``, ``ack_invalid``, ``partial`` or
+    ``success`` — so a scheduler/cron caller can distinguish a genuine
+    empty queue from HTTP, provider and acknowledgement failures. The
+    same outcome is always published via :func:`get_last_cycle`.
 
     Args:
         api_url: Bonsai core API base URL.
@@ -94,6 +124,7 @@ def run_syslog_embedding_worker(
 
     backoff_idx = 0
     total_embedded = 0
+    last_outcome: dict[str, Any] = {}
 
     try:
         while True:
@@ -101,11 +132,27 @@ def run_syslog_embedding_worker(
                 events = _fetch_unembedded_events(api_url, limit=FETCH_LIMIT)
 
                 if events:
-                    embedded_count = _embed_and_post(api_url, events, embedder, dedup)
+                    post_report: dict[str, Any] = {}
+                    embedded_count = _embed_and_post(
+                        api_url, events, embedder, dedup, report=post_report
+                    )
                     total_embedded += embedded_count
+                    fetched = len(events)
+                    status = post_report.get("status", "success")
+                    last_outcome = _record_cycle(
+                        {
+                            "status": status,
+                            "fetched": fetched,
+                            "embedded": embedded_count,
+                            "total_embedded": total_embedded,
+                            "detail": post_report.get("detail", ""),
+                        }
+                    )
                     log.info(
-                        "SyslogEmbeddingWorker: embedded %d events (total=%d, model=%s)",
-                        embedded_count, total_embedded, embedder.model_name,
+                        "SyslogEmbeddingWorker: cycle %s — fetched=%d "
+                        "embedded=%d (total=%d, model=%s)",
+                        status, fetched, embedded_count, total_embedded,
+                        embedder.model_name,
                     )
                     if dedup is not None:
                         snap = dedup.stats_snapshot()
@@ -123,9 +170,33 @@ def run_syslog_embedding_worker(
                         )
                     backoff_idx = 0
                 else:
+                    last_outcome = _record_cycle(
+                        {"status": "empty", "fetched": 0, "embedded": 0,
+                         "total_embedded": total_embedded, "detail": ""}
+                    )
                     log.debug("SyslogEmbeddingWorker: no unembedded events found")
 
+            except _FetchFailed as exc:
+                # WP65-20: a fetch failure is NOT an empty queue — surface
+                # it as an explicit failed cycle, never a false-green idle.
+                last_outcome = _record_cycle(
+                    {"status": "fetch_failed", "fetched": 0, "embedded": 0,
+                     "total_embedded": total_embedded,
+                     "detail": f"{type(exc).__name__}: {exc}"}
+                )
+                log.error("SyslogEmbeddingWorker: fetch failed: %s", exc)
+                if run_once:
+                    return last_outcome
+                sleep = BACKOFF_SECS[min(backoff_idx, len(BACKOFF_SECS) - 1)]
+                backoff_idx += 1
+                time.sleep(sleep)
+                continue
             except Exception as exc:
+                last_outcome = _record_cycle(
+                    {"status": "error", "fetched": 0, "embedded": 0,
+                     "total_embedded": total_embedded,
+                     "detail": f"{type(exc).__name__}: {exc}"}
+                )
                 sleep = BACKOFF_SECS[min(backoff_idx, len(BACKOFF_SECS) - 1)]
                 log.error(
                     "SyslogEmbeddingWorker: error (backing off %ds): %s", sleep, exc
@@ -137,7 +208,7 @@ def run_syslog_embedding_worker(
                 continue
 
             if run_once:
-                break
+                return last_outcome
 
             time.sleep(poll_interval)
     finally:
@@ -150,9 +221,17 @@ def run_syslog_embedding_worker(
                 pass
 
 
+class _FetchFailed(Exception):
+    """The unembedded-events fetch failed (HTTP/auth/network/parse).
+
+    WP65-20: distinct from a genuinely empty queue — callers must never
+    report a fetch failure as an idle cycle.
+    """
+
+
 def _fetch_unembedded_events(api_url: str, limit: int) -> list[dict[str, Any]]:
+    import requests
     try:
-        import requests
         resp = requests.get(
             f"{api_url}/api/events/unembedded",
             params={"type": "syslog", "limit": limit},
@@ -161,10 +240,12 @@ def _fetch_unembedded_events(api_url: str, limit: int) -> list[dict[str, Any]]:
         )
         resp.raise_for_status()
         data = resp.json()
-        return data.get("events", data) if isinstance(data, dict) else data
     except Exception as exc:
-        log.warning("Failed to fetch unembedded events: %s", exc)
-        return []
+        raise _FetchFailed(f"unembedded fetch failed: {exc}") from exc
+    events = data.get("events", data) if isinstance(data, dict) else data
+    if not isinstance(events, list):
+        raise _FetchFailed("unembedded fetch returned malformed payload")
+    return events
 
 
 def _extract_event_text(e: dict[str, Any]) -> str:
@@ -252,7 +333,22 @@ def _embed_and_post(
     events: list[dict[str, Any]],
     embedder: Any,
     dedup: Any = None,
+    report: Optional[dict[str, Any]] = None,
 ) -> int:
+    """Embed a batch and POST write-backs. Returns records persisted.
+
+    WP65-20: when ``report`` is given it is populated with the cycle
+    outcome — ``status`` is one of ``no_actionable``, ``provider_error``,
+    ``post_failed``, ``ack_invalid``, ``partial`` or ``success`` — plus
+    ``detail`` and per-class counts, so callers can distinguish a genuine
+    empty queue from HTTP/provider/acknowledgement failures.
+    """
+    def _out(status: str, detail: str = "", **counts: Any) -> int:
+        if report is not None:
+            report.clear()
+            report.update({"status": status, "detail": detail, **counts})
+        return 0
+
     texts = [_extract_event_text(e) for e in events]
     event_ids = [e.get("id") or e.get("event_id") for e in events]
     event_types = [e.get("event_type") or e.get("type") or "" for e in events]
@@ -286,7 +382,7 @@ def _embed_and_post(
         if eid and text and text.strip()
     ]
     if not valid_pairs and not invalid_reports:
-        return 0
+        return _out("no_actionable", events=len(events))
 
     # vectors[i] aligned with valid_pairs, or None for unresolved events.
     if dedup is not None:
@@ -375,7 +471,17 @@ def _embed_and_post(
     ]
 
     if not embedding_records and not deferred_reports and not invalid_reports:
-        return 0
+        return _out("no_actionable", events=len(events))
+
+    # WP65-20: provider_error = events were fetched and valid, but the
+    # provider/template path resolved ZERO embedding records — every one
+    # is reported deferred. Distinct from post/ack failures.
+    provider_failed = bool(deferred_reports) and not embedding_records
+    counts = {
+        "embedding_records": len(embedding_records),
+        "deferred_reports": len(deferred_reports),
+        "invalid_reports": len(invalid_reports),
+    }
 
     try:
         import requests
@@ -399,7 +505,7 @@ def _embed_and_post(
             body = resp.json()
         except Exception:
             log.error("Embedding write-back returned non-JSON acknowledgement")
-            return 0
+            return _out("ack_invalid", "non-JSON acknowledgement", **counts)
         persisted = body.get("persisted") if isinstance(body, dict) else None
         if persisted is None:
             # Legacy "written" field is accepted only when it is a real
@@ -411,7 +517,7 @@ def _embed_and_post(
                 "Embedding write-back acknowledgement malformed: %r",
                 body,
             )
-            return 0
+            return _out("ack_invalid", "malformed acknowledgement", **counts)
         written = persisted
         if written != len(embedding_records):
             rejected = body.get("rejected") if isinstance(body, dict) else None
@@ -433,11 +539,13 @@ def _embed_and_post(
         # commits NO occurrences (registry counts are enrichment
         # bookkeeping, not operational event authority — a lost ack can
         # undercount, which is documented and acceptable).
+        ack_fully_valid = True
         if dedup is not None and embedding_records:
             accepted_indexes = _validate_embedding_ack(
                 body, embedding_records, written
             )
             if accepted_indexes is None:
+                ack_fully_valid = False
                 log.warning(
                     "Embedding write-back acknowledgement failed full "
                     "validation; occurrence counts not committed"
@@ -455,10 +563,30 @@ def _embed_and_post(
                 if accepted_keys:
                     dedup.commit_occurrences(accepted_keys)
             dedup.metrics.events_posted += written
+        # WP65-20 cycle status, in precedence order: an acknowledgement we
+        # could not fully validate is the most severe (bookkeeping is
+        # uncommitted even if writes landed); then provider failure; then
+        # a partial write; otherwise a clean cycle.
+        if not ack_fully_valid:
+            status, detail = "ack_invalid", "acknowledgement failed full validation"
+        elif provider_failed:
+            status, detail = "provider_error", "no embedding records resolved"
+        elif written < len(embedding_records):
+            status, detail = "partial", (
+                f"persisted {written} of {len(embedding_records)} records"
+            )
+        else:
+            status, detail = "success", ""
+        if report is not None:
+            report.clear()
+            report.update(
+                {"status": status, "detail": detail, "written": written,
+                 **counts}
+            )
         return written
     except Exception as exc:
         log.error("Failed to POST event embeddings: %s", exc)
-        return 0
+        return _out("post_failed", f"{type(exc).__name__}: {exc}", **counts)
 
 
 if __name__ == "__main__":
