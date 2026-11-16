@@ -41,7 +41,7 @@ source inspection and CI green runs do not constitute formal acceptance
 | df30cb7 | L0 FAIL (rustfmt on remediation.rs) | fixed in 29d1497 |
 | 29d1497 | L0/L1/L2 PASS, **L3 FAIL** | `b11_..._graceful_degradation` fixture planted `routing_service_token` as plaintext app_config — rejected by SEC-19 structural guard (correct behavior); fixture fixed in 621955f+5570585 |
 | 621955f | L0 FAIL (rustfmt on b11 fixture) | fixed in 5570585 |
-| 5570585 | **in flight** at package time | `scripts/ci/run-local.sh --trusted --shared-target l0 l1 l2 l3`; result to be recorded on completion |
+| 5570585 | **L0/L1/L2/L3 ALL PASS** | `scripts/ci/run-local.sh --trusted --shared-target l0 l1 l2 l3`; 48 test-result lines, 0 failures; log `/tmp/final-gates-5570585.log`, run dir `target/ci/local-run-20261116-092619` |
 
 Focused verification already executed at 5570585-equivalent source:
 `cargo test --test bn022_graph_read_boundary` 5/5 PASS;
