@@ -84,7 +84,7 @@ from .memory_manager import _LruCache
 log = logging.getLogger(__name__)
 
 NORMALIZATION_VERSION = "syslog-tpl-v1"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_REGISTRY_PATH = "runtime/message_templates.db"
 DEFAULT_SCOPE = "local"
 DEFAULT_CLAIM_TTL_SECS = 600
@@ -272,6 +272,7 @@ CREATE TABLE IF NOT EXISTS templates (
     first_seen_ns INTEGER NOT NULL,
     last_seen_ns INTEGER NOT NULL,
     claim_owner TEXT,
+    claim_token TEXT,
     claimed_at_ns INTEGER,
     claim_expires_ns INTEGER,
     next_retry_ns INTEGER,
@@ -300,8 +301,8 @@ _TEMPLATE_COLS = (
     "cache_key", "scope", "model_id", "model_revision",
     "normalization_version", "fingerprint", "template_text", "vector",
     "dim", "status", "occurrence_count", "fail_count", "first_seen_ns",
-    "last_seen_ns", "claim_owner", "claimed_at_ns", "claim_expires_ns",
-    "next_retry_ns", "last_error",
+    "last_seen_ns", "claim_owner", "claim_token", "claimed_at_ns",
+    "claim_expires_ns", "next_retry_ns", "last_error",
 )
 
 
@@ -354,6 +355,14 @@ class TemplateRegistry:
                 raise RuntimeError(
                     f"message template registry schema v{version} is newer "
                     f"than supported v{SCHEMA_VERSION}: {self.path}"
+                )
+            if version == 1:
+                # v1 -> v2: claim-generation fencing column. Existing
+                # claims remain owned by claim_owner; new claims carry a
+                # unique claim_token so a stale operation from the SAME
+                # worker identity cannot overwrite a reclaimed generation.
+                self._conn.execute(
+                    "ALTER TABLE templates ADD COLUMN claim_token TEXT"
                 )
             self._conn.executescript(_SCHEMA_SQL)
             self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -436,7 +445,10 @@ class TemplateRegistry:
         """Atomically claim a template for embedding or report its state.
 
         Returns ``(state, row)`` where state is one of:
-          ``claimed``  — caller owns the embedding computation for this template.
+          ``claimed``  — caller owns the embedding computation for this
+          template; ``row`` carries ``claim_token``, the generation
+          fencing token required by :meth:`complete_template` /
+          :meth:`fail_template`.
           ``ready``    — row contains a usable vector.
           ``pending``  — another worker holds a live claim; retry later.
           ``backoff``  — last attempt failed; retry after ``next_retry_ns``.
@@ -444,6 +456,10 @@ class TemplateRegistry:
         key = _cache_key(scope, model_id, model_revision, norm_version, fingerprint)
         now = self._now_ns()
         expires = now + self.claim_ttl_ns
+        # WP65-14: every claim gets a fresh generation token. Owner-based
+        # fencing alone cannot distinguish a stale operation from an
+        # earlier claim generation held by the same worker identity.
+        token = f"{owner}:{uuid.uuid4().hex[:12]}"
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
@@ -457,16 +473,16 @@ class TemplateRegistry:
                         "INSERT INTO templates (cache_key, scope, model_id, "
                         "model_revision, normalization_version, fingerprint, "
                         "template_text, status, first_seen_ns, last_seen_ns, "
-                        "claim_owner, claimed_at_ns, claim_expires_ns) "
-                        "VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?)",
+                        "claim_owner, claim_token, claimed_at_ns, claim_expires_ns) "
+                        "VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?,?)",
                         (
                             key, scope, model_id, model_revision, norm_version,
                             fingerprint, template_text[:MAX_TEMPLATE_TEXT],
-                            now, now, owner, now, expires,
+                            now, now, owner, token, now, expires,
                         ),
                     )
                     self._conn.execute("COMMIT")
-                    return "claimed", None
+                    return "claimed", {"claim_token": token}
 
                 status, vector, dim, claim_exp, next_retry = row
                 if status == "ready" and vector is not None:
@@ -479,15 +495,16 @@ class TemplateRegistry:
                     self._conn.execute("COMMIT")
                     return "backoff", None
 
-                # Stale claim or retry-due failure: (re)claim.
+                # Stale claim or retry-due failure: (re)claim under a new
+                # generation token — prior tokens are fenced out.
                 self._conn.execute(
                     "UPDATE templates SET status='pending', claim_owner=?, "
-                    "claimed_at_ns=?, claim_expires_ns=?, last_error=NULL "
-                    "WHERE cache_key=?",
-                    (owner, now, expires, key),
+                    "claim_token=?, claimed_at_ns=?, claim_expires_ns=?, "
+                    "last_error=NULL WHERE cache_key=?",
+                    (owner, token, now, expires, key),
                 )
                 self._conn.execute("COMMIT")
-                return "claimed", None
+                return "claimed", {"claim_token": token}
             except Exception:
                 self._conn.execute("ROLLBACK")
                 raise
@@ -498,24 +515,30 @@ class TemplateRegistry:
         vector: np.ndarray,
         dim: int,
         owner: Optional[str] = None,
+        claim_token: Optional[str] = None,
     ) -> bool:
         """Mark a claimed template ready with its validated vector.
 
-        When ``owner`` is given the update is fenced to the active claim
-        owner: a worker whose lease expired and was reclaimed by another
-        worker matches zero rows and must NOT overwrite the newer claim's
-        state. Returns True when this caller's completion was recorded.
+        ``claim_token`` fences the update to the exact claim generation
+        that produced the vector: a worker whose lease expired and was
+        reclaimed — even under the SAME owner identity — matches zero
+        rows and must NOT overwrite the newer claim's state. ``owner``
+        remains as a weaker legacy fence for callers without a token.
+        Returns True when this caller's completion was recorded.
         """
         now = self._now_ns()
         blob = np.ascontiguousarray(vector, dtype=np.float32).tobytes()
         sql = (
             "UPDATE templates SET status='ready', vector=?, dim=?, "
-            "claim_owner=NULL, claimed_at_ns=NULL, claim_expires_ns=NULL, "
-            "next_retry_ns=NULL, last_error=NULL, last_seen_ns=? "
-            "WHERE cache_key=?"
+            "claim_owner=NULL, claim_token=NULL, claimed_at_ns=NULL, "
+            "claim_expires_ns=NULL, next_retry_ns=NULL, last_error=NULL, "
+            "last_seen_ns=? WHERE cache_key=?"
         )
         params: tuple = (blob, dim, now, cache_key)
-        if owner is not None:
+        if claim_token is not None:
+            sql += " AND claim_token=?"
+            params = params + (claim_token,)
+        elif owner is not None:
             sql += " AND claim_owner=?"
             params = params + (owner,)
         with self._lock:
@@ -524,12 +547,16 @@ class TemplateRegistry:
             return cur.rowcount > 0
 
     def fail_template(
-        self, cache_key: str, error: str, owner: Optional[str] = None
+        self,
+        cache_key: str,
+        error: str,
+        owner: Optional[str] = None,
+        claim_token: Optional[str] = None,
     ) -> bool:
         """Record a retryable provider failure; never stores a vector.
 
-        Same claim-owner fencing as :meth:`complete_template`. Returns
-        True when this caller's failure was recorded.
+        Same claim-generation fencing as :meth:`complete_template`.
+        Returns True when this caller's failure was recorded.
         """
         now = self._now_ns()
         with self._lock:
@@ -544,7 +571,8 @@ class TemplateRegistry:
             sql = (
                 "UPDATE templates SET status='failed', fail_count=?, "
                 "next_retry_ns=?, last_error=?, claim_owner=NULL, "
-                "claimed_at_ns=NULL, claim_expires_ns=NULL WHERE cache_key=?"
+                "claim_token=NULL, claimed_at_ns=NULL, "
+                "claim_expires_ns=NULL WHERE cache_key=?"
             )
             params: tuple = (
                 fail_count,
@@ -552,7 +580,10 @@ class TemplateRegistry:
                 error[:MAX_ERROR_LEN],
                 cache_key,
             )
-            if owner is not None:
+            if claim_token is not None:
+                sql += " AND claim_token=?"
+                params = params + (claim_token,)
+            elif owner is not None:
                 sql += " AND claim_owner=?"
                 params = params + (owner,)
             cur = self._conn.execute(sql, params)
@@ -800,26 +831,49 @@ class TemplateDedup:
                         )
                     )
             self.registry.store_exact_mappings(mappings)
+            # Aligned with the resolve_batch input: index i holds the
+            # template cache_key for texts[i] (None when unresolved).
+            # The worker uses this to attribute per-item acknowledgements
+            # to exactly the events the server accepted.
+            self._last_resolved_keys = list(resolved_keys)
             self._resolved_keys_pending = [
                 ck for ck in resolved_keys if ck is not None
             ]
         except Exception as exc:
             log.debug("dedup bookkeeping failed: %s", exc)
-            self._resolved_keys_pending = []
+            self._last_resolved_keys = [None] * len(texts)
 
         self._accumulate(m)
         return results
 
-    def commit_occurrences(self) -> int:
-        """Persist occurrence counts for the most recent resolve_batch.
+    def last_resolution_keys(self) -> list[Optional[str]]:
+        """Template cache_keys aligned with the most recent
+        :meth:`resolve_batch` input (None where unresolved)."""
+        return list(getattr(self, "_last_resolved_keys", []) or [])
 
-        Call ONLY after the caller confirms the resolved embeddings were
-        accepted by the downstream store.  Pending keys are cleared either
-        way so a later batch cannot double-count.  Returns the number of
-        template occurrences committed.
+    def commit_occurrences(
+        self, cache_keys: Optional[list[Optional[str]]] = None
+    ) -> int:
+        """Persist occurrence counts for resolved templates.
+
+        Call ONLY after the caller confirms which resolved embeddings
+        were accepted downstream. ``cache_keys`` selects exactly the
+        templates to count — the worker passes only the keys of items
+        the server acknowledged as ``accepted`` (newly persisted), so
+        idempotent replays and partial batches cannot inflate
+        ``template_occurrences``. When ``cache_keys`` is None the keys
+        pending from the last resolve_batch are used (legacy behavior).
+        Pending keys are cleared either way so a later batch cannot
+        double-count. Returns the number of template occurrences
+        committed.
         """
-        keys = getattr(self, "_resolved_keys_pending", None) or []
+        keys = (
+            list(cache_keys)
+            if cache_keys is not None
+            else (getattr(self, "_resolved_keys_pending", None) or [])
+        )
         self._resolved_keys_pending = []
+        keys = [k for k in keys if k]
         if keys:
             self.registry.bump_occurrences(keys)
         return len(keys)
@@ -909,8 +963,10 @@ class TemplateDedup:
         map_writes: list[tuple[int, str]],
         m: DedupMetrics,
     ) -> None:
-        # Group unresolved events by template fingerprint.
+        # Group unresolved events by template fingerprint, remembering
+        # the claim-generation token each template was claimed under.
         groups: dict[str, dict[str, Any]] = {}
+        claim_tokens: dict[str, str] = {}
         for i in still:
             tpl_text, tpl_fp = template_of[i]
             g = groups.setdefault(
@@ -922,7 +978,7 @@ class TemplateDedup:
                 self.norm_version, tpl_fp,
             )
 
-        to_embed: list[tuple[str, str, str]] = []  # (tpl_fp, tpl_text, cache_key)
+        to_embed: list[tuple[str, str, str, str]] = []  # fp, text, key, token
         with self._claim_lock:
             for tpl_fp, g in groups.items():
                 state, payload = self.registry.claim_or_get(
@@ -935,7 +991,9 @@ class TemplateDedup:
                     owner=self.owner,
                 )
                 if state == "claimed":
-                    to_embed.append((tpl_fp, g["text"], g["cache_key"]))
+                    token = (payload or {}).get("claim_token") or ""
+                    claim_tokens[tpl_fp] = token
+                    to_embed.append((tpl_fp, g["text"], g["cache_key"], token))
                     m.new_templates_claimed += 1
                 elif state == "ready" and payload and payload.get("vector"):
                     try:
@@ -963,6 +1021,7 @@ class TemplateDedup:
             fps = [t[0] for t in to_embed]
             tpl_texts = [t[1] for t in to_embed]
             cache_keys = [t[2] for t in to_embed]
+            tokens = [t[3] for t in to_embed]
 
             t0 = time.monotonic()
             try:
@@ -973,9 +1032,10 @@ class TemplateDedup:
                 m.provider_failures += len(cache_keys)
                 m.embed_latency_ms_total += latency
                 m.embed_texts_total += len(tpl_texts)
-                for ck in cache_keys:
+                for ck, tok in zip(cache_keys, tokens):
                     self.registry.fail_template(
-                        ck, f"provider_error: {exc}", owner=self.owner
+                        ck, f"provider_error: {exc}",
+                        claim_token=tok or None,
                     )
                 log.warning(
                     "TemplateDedup: provider failed for %d templates: %s",
@@ -989,10 +1049,10 @@ class TemplateDedup:
             m.embed_texts_total += len(tpl_texts)
             if len(vectors) != len(tpl_texts):
                 m.provider_failures += len(cache_keys)
-                for ck in cache_keys:
+                for ck, tok in zip(cache_keys, tokens):
                     self.registry.fail_template(
                         ck, "provider_error: embedding count mismatch",
-                        owner=self.owner,
+                        claim_token=tok or None,
                     )
                 log.warning(
                     "TemplateDedup: provider returned %d vectors for %d texts",
@@ -1003,11 +1063,11 @@ class TemplateDedup:
 
             dim = int(getattr(self.embedder, "dim", 0) or 0)
             ok_vecs: dict[str, np.ndarray] = {}
-            for fp, ck, vec in zip(fps, cache_keys, vectors):
+            for fp, ck, vec, tok in zip(fps, cache_keys, vectors, tokens):
                 if _validate_vector(vec, dim):
                     arr = np.asarray(vec, dtype=np.float32)
                     if self.registry.complete_template(
-                        ck, arr, dim, owner=self.owner
+                        ck, arr, dim, claim_token=tok or None
                     ):
                         ok_vecs[fp] = arr
                         m.templates_embedded += 1
@@ -1024,7 +1084,7 @@ class TemplateDedup:
                     m.invalid_vectors += 1
                     self.registry.fail_template(
                         ck, "invalid_vector: dim/nonfinite/zero-norm",
-                        owner=self.owner,
+                        claim_token=tok or None,
                     )
 
             fp_to_ck = {fp: ck for fp, ck in zip(fps, cache_keys)}

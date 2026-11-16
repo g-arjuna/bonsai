@@ -2375,6 +2375,7 @@ impl GraphStore {
                 event_type      STRING,\
                 model_name      STRING,\
                 model_revision  STRING,\
+                normalization_version STRING,\
                 dim             INT64,\
                 vector_json     STRING,\
                 computed_at_ns  INT64,\
@@ -2440,6 +2441,64 @@ impl GraphStore {
                     .context("EventEmbedding model_revision migration")?;
             }
         }
+        // WP65-12: normalization_version is part of the semantic embedding
+        // identity — without a persisted column, embeddings produced under
+        // different normalization contracts would be indistinguishable in
+        // similarity search. Same table_info-checked migration pattern.
+        {
+            let mut cols = std::collections::HashSet::new();
+            let info = conn.query("CALL table_info('EventEmbedding') RETURN name")?;
+            for row in info {
+                if let Value::String(n) = &row[0] {
+                    cols.insert(n.clone());
+                }
+            }
+            if !cols.contains("normalization_version") {
+                conn.query(
+                    "ALTER TABLE EventEmbedding ADD normalization_version STRING",
+                )
+                .context("EventEmbedding normalization_version migration")?;
+            }
+        }
+        // WP65-12: historical rows may carry NULL/empty provenance. Normalize
+        // missing model_revision / normalization_version / schema_hash to the
+        // explicit "unknown" sentinel so similarity candidate matching
+        // (equality on the full model-space tuple) treats unspecified
+        // provenance consistently instead of silently splitting or merging
+        // embedding spaces. New writes always persist an explicit value.
+        conn.query(
+            "MATCH (emb:EventEmbedding) WHERE emb.model_revision IS NULL \
+             OR emb.model_revision = '' SET emb.model_revision = 'unknown'",
+        )
+        .context("EventEmbedding model_revision provenance normalization")?;
+        conn.query(
+            "MATCH (emb:EventEmbedding) WHERE emb.normalization_version IS NULL \
+             OR emb.normalization_version = '' SET emb.normalization_version = 'unknown'",
+        )
+        .context("EventEmbedding normalization_version provenance normalization")?;
+        conn.query(
+            "MATCH (emb:EventEmbedding) WHERE emb.schema_hash IS NULL \
+             OR emb.schema_hash = '' SET emb.schema_hash = 'unknown'",
+        )
+        .context("EventEmbedding schema_hash provenance normalization")?;
+        // WP65-14: bounded enrichment lifecycle on StateChangeEvent.
+        // needs_embedding=1 remains the pending flag; embedding_retry_after_ns
+        // schedules the next eligible fetch (0/NULL = eligible now),
+        // embedding_attempts bounds deferred retries, and
+        // embedding_invalid(+reason) marks permanently ineligible events.
+        // ALTER TABLE ADD is idempotent in lbug.
+        let _ = conn.query(
+            "ALTER TABLE StateChangeEvent ADD embedding_retry_after_ns INT64 DEFAULT 0",
+        );
+        let _ = conn.query(
+            "ALTER TABLE StateChangeEvent ADD embedding_attempts INT64 DEFAULT 0",
+        );
+        let _ = conn.query(
+            "ALTER TABLE StateChangeEvent ADD embedding_invalid INT64 DEFAULT 0",
+        );
+        let _ = conn.query(
+            "ALTER TABLE StateChangeEvent ADD embedding_invalid_reason STRING DEFAULT ''",
+        );
         // Device: needs_config_embedding flag
         let _ = conn.query("ALTER TABLE Device ADD needs_config_embedding INT64 DEFAULT 0");
 

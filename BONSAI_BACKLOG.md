@@ -592,6 +592,25 @@ are not reclassified as absent.
   verification of the ml_jobs/graph changes, and the end-to-end syslog
   RFC pipeline assessment (RFC 3164/5424/5425/5426/6587) as a separate
   prioritized backlog.
+- **16 Nov follow-up (WP65-09…14 correctness + runtime acceptance):**
+  immutable embedding replay (identical vector+dim is a no-op; conflicting
+  vector/dim under one identity rejected — repair requires a new
+  model/normalization/schema identity), zero/non-finite-norm and
+  dim/provenance validation at the API boundary, authoritative
+  event_type + syslog-eligibility derived from the persisted event
+  (client type ignored), coherent versioned identity
+  (event, model, revision, normalization_version, schema_hash) with
+  explicit "unknown" provenance normalized on migration, per-item `items`
+  acknowledgement with occurrence commits attributed to `accepted` only,
+  claim-generation fencing tokens in the template registry (schema v2),
+  and a bounded enrichment lifecycle (`embedding_retry_after_ns`,
+  `embedding_attempts`, `embedding_invalid`) so deferred/failing events
+  cannot starve the oldest-first fetch. Provider contract: exact
+  cardinality enforced on the dedup-disabled path; zero-vector fallbacks
+  never persist. Runtime acceptance: `tests/wp65a_embedding_lifecycle.rs`
+  exercises the real handler against disposable Ladybug DBs. Still open:
+  retention/shared-vector redesign, per-event tenant scope, E2E
+  core/sidecar pipeline run, storage measurements, syslog RFC assessment.
 
 
 ## Verified foundation, not a new queue

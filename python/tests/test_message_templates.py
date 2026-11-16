@@ -392,6 +392,7 @@ class TestWorkerIntegration:
         import bonsai_ml.syslog_embedding_worker as w
 
         posted = []
+        calls = {"n": 0}
 
         class Resp:
             ok = True
@@ -401,7 +402,22 @@ class TestWorkerIntegration:
                 pass
 
             def json(self):
-                return {}
+                # Faithful per-item ack: first write is "accepted",
+                # the identical replay is "already_existing".
+                n = len(posted[-1]["embeddings"])
+                status = "accepted" if calls["n"] == 0 else "already_existing"
+                calls["n"] += 1
+                return {
+                    "submitted": n,
+                    "accepted": n if status == "accepted" else 0,
+                    "already_existing": 0 if status == "accepted" else n,
+                    "persisted": n,
+                    "rejected": [],
+                    "items": [
+                        {"index": i, "event_id": f"e{i+1}", "status": status}
+                        for i in range(n)
+                    ],
+                }
 
         monkeypatch.setattr(
             "requests.post",
@@ -420,6 +436,10 @@ class TestWorkerIntegration:
         assert n1 == 5
         assert len(emb.calls) == 1 and len(emb.calls[0]) == 1  # one template
         assert len(posted[0]["embeddings"]) == 5  # per-event records kept
+        # WP65-12 provenance fields are sent on every record.
+        for r in posted[0]["embeddings"]:
+            assert r["normalization_version"] == NORMALIZATION_VERSION
+            assert r["schema_hash"] == w.EMBEDDING_SCHEMA_ID
 
         # Identical second batch: cache hits only, still 5 records posted.
         n2 = w._embed_and_post("http://x", events, emb, dedup)
@@ -429,6 +449,10 @@ class TestWorkerIntegration:
         vecs2 = [r["vector"] for r in posted[1]["embeddings"]]
         assert vecs1 == vecs2
         assert all("model_revision" in r for r in posted[0]["embeddings"])
+        # WP65-13: occurrences committed only for "accepted" items — the
+        # replay batch contributed zero new occurrences.
+        card = dedup.registry.cardinality(scope="test-scope")
+        assert card["template_occurrences"] == 5
         dedup.registry.close()
 
     def test_unresolved_events_not_posted(self, tmp_path, monkeypatch):
@@ -455,5 +479,360 @@ class TestWorkerIntegration:
         events = [{"id": "e1", "message": "some syslog message"}]
         n = w._embed_and_post("http://x", events, emb, dedup)
         assert n == 0
-        assert posted == []  # provider failure -> nothing marked embedded
+        # provider failure -> nothing marked embedded; the event is
+        # reported deferred so core applies a bounded retry deadline.
+        assert len(posted) == 1
+        assert posted[0]["embeddings"] == []
+        assert posted[0]["deferred"] == [{"event_id": "e1"}]
         dedup.registry.close()
+
+
+# ── WP65-13/14: acknowledgement attribution + lifecycle reporting ─────────────
+
+
+def _ack_for(records, statuses):
+    """Build a faithful server ack for `records` with per-item statuses."""
+    accepted = sum(1 for s in statuses if s == "accepted")
+    existing = sum(1 for s in statuses if s == "already_existing")
+    rejected = [
+        {"index": i, "event_id": r["event_id"], "reason": "test"}
+        for i, (r, s) in enumerate(zip(records, statuses)) if s == "rejected"
+    ]
+    return {
+        "submitted": len(records),
+        "accepted": accepted,
+        "already_existing": existing,
+        "persisted": accepted + existing,
+        "rejected": rejected,
+        "items": [
+            {"index": i, "event_id": r["event_id"], "status": s}
+            for i, (r, s) in enumerate(zip(records, statuses))
+        ],
+    }
+
+
+class _SeqResp:
+    def __init__(self, bodies):
+        self._bodies = list(bodies)
+        self.requests = []
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.requests.append(json)
+        body = self._bodies.pop(0) if self._bodies else {"persisted": 0}
+        outer = self
+
+        class R:
+            ok = True
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                if callable(body):
+                    return body(outer.requests[-1])
+                return body
+
+        return R()
+
+
+class TestAckAttribution:
+    def test_already_existing_does_not_commit_occurrences(
+        self, tmp_path, monkeypatch
+    ):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        emb = FakeEmbedder()
+        dedup = _make_dedup(tmp_path, emb)
+        events = [
+            {"id": "e1", "message": "BGP hold timer expired for 10.0.0.1"},
+            {"id": "e2", "message": "BGP hold timer expired for 10.0.0.2"},
+        ]
+        # First POST: both accepted. Second POST (replay): both
+        # already_existing — occurrences must not double-count.
+        resp = _SeqResp(
+            [
+                lambda payload: _ack_for(
+                    payload["embeddings"], ["accepted"] * len(payload["embeddings"])
+                ),
+                lambda payload: _ack_for(
+                    payload["embeddings"],
+                    ["already_existing"] * len(payload["embeddings"]),
+                ),
+            ]
+        )
+        monkeypatch.setattr("requests.post", resp.post)
+
+        assert w._embed_and_post("http://x", events, emb, dedup) == 2
+        assert w._embed_and_post("http://x", events, emb, dedup) == 2
+        card = dedup.registry.cardinality(scope="test-scope")
+        assert card["template_occurrences"] == 2
+        dedup.registry.close()
+
+    def test_partial_ack_commits_only_accepted(
+        self, tmp_path, monkeypatch
+    ):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        emb = FakeEmbedder()
+        dedup = _make_dedup(tmp_path, emb)
+        events = [
+            {"id": "e1", "message": "alpha message one"},
+            {"id": "e2", "message": "beta message two"},
+            {"id": "e3", "message": "gamma message three"},
+        ]
+        resp = _SeqResp(
+            [
+                lambda payload: _ack_for(
+                    payload["embeddings"],
+                    ["accepted", "rejected", "already_existing"],
+                )
+            ]
+        )
+        monkeypatch.setattr("requests.post", resp.post)
+
+        n = w._embed_and_post("http://x", events, emb, dedup)
+        assert n == 2  # accepted + already_existing persisted
+        card = dedup.registry.cardinality(scope="test-scope")
+        # Only the single "accepted" item counted as a new occurrence.
+        assert card["template_occurrences"] == 1
+        dedup.registry.close()
+
+    def test_malformed_ack_commits_nothing(self, tmp_path, monkeypatch):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        emb = FakeEmbedder()
+        dedup = _make_dedup(tmp_path, emb)
+        events = [{"id": "e1", "message": "some syslog message"}]
+        resp = _SeqResp([{}])  # no persisted field -> malformed
+        monkeypatch.setattr("requests.post", resp.post)
+
+        assert w._embed_and_post("http://x", events, emb, dedup) == 0
+        card = dedup.registry.cardinality(scope="test-scope")
+        assert card["template_occurrences"] == 0
+        dedup.registry.close()
+
+    def test_missing_items_array_commits_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        emb = FakeEmbedder()
+        dedup = _make_dedup(tmp_path, emb)
+        events = [{"id": "e1", "message": "some syslog message"}]
+        # persisted present but no aligned items -> cannot attribute.
+        resp = _SeqResp([{"persisted": 1, "accepted": 1}])
+        monkeypatch.setattr("requests.post", resp.post)
+
+        assert w._embed_and_post("http://x", events, emb, dedup) == 1
+        card = dedup.registry.cardinality(scope="test-scope")
+        assert card["template_occurrences"] == 0
+        dedup.registry.close()
+
+    def test_deferred_and_invalid_reports_sent(
+        self, tmp_path, monkeypatch
+    ):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        emb = FakeEmbedder(fail=True)
+        dedup = _make_dedup(tmp_path, emb)
+        events = [
+            {"id": "e1", "message": "provider will fail"},
+            {"id": "e2", "message": "   "},  # no extractable text
+            {"id": "e3", "message": "another failing message"},
+        ]
+        resp = _SeqResp([{"persisted": 0, "deferred": 2, "invalid": 1}])
+        monkeypatch.setattr("requests.post", resp.post)
+
+        n = w._embed_and_post("http://x", events, emb, dedup)
+        assert n == 0
+        assert len(resp.requests) == 1
+        payload = resp.requests[0]
+        assert payload["embeddings"] == []
+        deferred_ids = {d["event_id"] for d in payload["deferred"]}
+        assert deferred_ids == {"e1", "e3"}
+        invalid_ids = {d["event_id"] for d in payload["invalid"]}
+        assert invalid_ids == {"e2"}
+        assert all(d["reason"] == "no_extractable_text" for d in payload["invalid"])
+        dedup.registry.close()
+
+
+class TestProviderContract:
+    def test_legacy_path_rejects_cardinality_mismatch(
+        self, monkeypatch
+    ):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        class ShortEmbedder:
+            model_name = "m"
+            model_revision = "r"
+            dim = 4
+
+            def embed_batch(self, texts):
+                # Returns fewer vectors than texts — must be rejected.
+                return np.ones((1, 4), dtype=np.float32)
+
+        posted = []
+
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"persisted": 0}
+
+        monkeypatch.setattr(
+            "requests.post",
+            lambda url, json=None, headers=None, timeout=None: (
+                posted.append(json) or Resp()
+            ),
+        )
+        events = [
+            {"id": "e1", "message": "one"},
+            {"id": "e2", "message": "two"},
+        ]
+        n = w._embed_and_post("http://x", events, ShortEmbedder(), None)
+        assert n == 0
+        # Nothing valid to persist; only deferred reports are sent.
+        assert all(not p["embeddings"] for p in posted)
+        assert len(posted[0]["deferred"]) == 2
+
+    def test_legacy_path_rejects_zero_vector(self, monkeypatch):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        class ZeroEmbedder:
+            model_name = "m"
+            model_revision = "r"
+            dim = 4
+
+            def embed_batch(self, texts):
+                return np.zeros((len(texts), 4), dtype=np.float32)
+
+        posted = []
+
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"persisted": 0}
+
+        monkeypatch.setattr(
+            "requests.post",
+            lambda url, json=None, headers=None, timeout=None: (
+                posted.append(json) or Resp()
+            ),
+        )
+        events = [{"id": "e1", "message": "zero vector message"}]
+        n = w._embed_and_post("http://x", events, ZeroEmbedder(), None)
+        assert n == 0
+        assert posted[0]["embeddings"] == []
+        assert len(posted[0]["deferred"]) == 1
+
+
+# ── WP65-14: claim-generation fencing ────────────────────────────────────────
+
+
+class TestClaimGenerationFencing:
+    def test_stale_token_cannot_complete_reclaimed_claim(self, tmp_path):
+        reg = TemplateRegistry(path=tmp_path / "reg.db", claim_ttl_ns=1)
+        kw = dict(
+            scope="s", model_id="m", model_revision="r",
+            norm_version=NORMALIZATION_VERSION, fingerprint="fp",
+            template_text="tpl",
+        )
+        state1, payload1 = reg.claim_or_get(owner="w1", **kw)
+        assert state1 == "claimed"
+        token1 = payload1["claim_token"]
+        # Lease expires (ttl=1ns); same owner reclaims -> new generation.
+        state2, payload2 = reg.claim_or_get(owner="w1", **kw)
+        assert state2 == "claimed"
+        token2 = payload2["claim_token"]
+        assert token1 != token2
+        # Stale generation-1 completion must NOT overwrite generation 2.
+        assert not reg.complete_template(
+            _cache_key("s", "m", "r", NORMALIZATION_VERSION, "fp"),
+            np.ones(4, dtype=np.float32), 4, claim_token=token1,
+        )
+        row = reg.get_template(
+            _cache_key("s", "m", "r", NORMALIZATION_VERSION, "fp")
+        )
+        assert row["status"] == "pending"
+        assert row["claim_token"] == token2
+        # Current generation completes normally.
+        assert reg.complete_template(
+            _cache_key("s", "m", "r", NORMALIZATION_VERSION, "fp"),
+            np.ones(4, dtype=np.float32), 4, claim_token=token2,
+        )
+        reg.close()
+
+    def test_stale_token_cannot_fail_reclaimed_claim(self, tmp_path):
+        reg = TemplateRegistry(path=tmp_path / "reg.db", claim_ttl_ns=1)
+        kw = dict(
+            scope="s", model_id="m", model_revision="r",
+            norm_version=NORMALIZATION_VERSION, fingerprint="fp",
+            template_text="tpl",
+        )
+        _, p1 = reg.claim_or_get(owner="w", **kw)
+        _, p2 = reg.claim_or_get(owner="w", **kw)
+        key = _cache_key("s", "m", "r", NORMALIZATION_VERSION, "fp")
+        assert not reg.fail_template(key, "stale", claim_token=p1["claim_token"])
+        assert reg.fail_template(key, "current", claim_token=p2["claim_token"])
+        row = reg.get_template(key)
+        assert row["status"] == "failed"
+        assert row["last_error"] == "current"
+        reg.close()
+
+    def test_registry_v1_to_v2_migration(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "old.db"
+        conn = sqlite3.connect(path)
+        conn.execute("PRAGMA user_version=1")
+        conn.executescript(
+            """
+            CREATE TABLE templates (
+                cache_key TEXT PRIMARY KEY,
+                scope TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                model_revision TEXT NOT NULL,
+                normalization_version TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                template_text TEXT NOT NULL,
+                vector BLOB,
+                dim INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                occurrence_count INTEGER NOT NULL DEFAULT 0,
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                first_seen_ns INTEGER NOT NULL,
+                last_seen_ns INTEGER NOT NULL,
+                claim_owner TEXT,
+                claimed_at_ns INTEGER,
+                claim_expires_ns INTEGER,
+                next_retry_ns INTEGER,
+                last_error TEXT
+            );
+            CREATE TABLE exact_map (
+                scope TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                model_revision TEXT NOT NULL,
+                normalization_version TEXT NOT NULL,
+                exact_fp TEXT NOT NULL,
+                cache_key TEXT NOT NULL,
+                last_seen_ns INTEGER NOT NULL,
+                PRIMARY KEY (scope, model_id, model_revision,
+                             normalization_version, exact_fp)
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+        reg = TemplateRegistry(path=path)
+        version = reg._conn.execute("PRAGMA user_version").fetchone()[0]
+        assert version == 2
+        cols = {
+            r[1]
+            for r in reg._conn.execute("PRAGMA table_info(templates)").fetchall()
+        }
+        assert "claim_token" in cols
+        reg.close()

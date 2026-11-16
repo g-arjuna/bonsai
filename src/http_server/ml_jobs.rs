@@ -1498,23 +1498,31 @@ pub async fn events_unembedded_handler(
     let db = state.store.db();
     let limit = q.limit.unwrap_or(200).min(1000);
     let event_type = q.event_type.clone().unwrap_or_default();
+    let now_ns = embedding_now_ns();
     let result = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db)?;
-        let cypher = if event_type.is_empty() {
-            format!(
-                "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 \
-                 RETURN e.id, e.device_address, e.event_type, e.detail, e.occurred_at \
-                 ORDER BY e.occurred_at ASC LIMIT {limit}"
-            )
+        // WP65-14: eligible pending = needs_embedding AND not permanently
+        // invalid AND retry deadline reached. Oldest-first with a stable
+        // identity tie-breaker; deferred/backed-off events cannot starve
+        // healthy newer events.
+        let type_clause = if event_type.is_empty() {
+            String::new()
         } else {
             format!(
-                "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 AND e.event_type STARTS WITH '{}' \
-                 RETURN e.id, e.device_address, e.event_type, e.detail, e.occurred_at \
-                 ORDER BY e.occurred_at ASC LIMIT {limit}",
+                " AND e.event_type STARTS WITH '{}'",
                 event_type.replace('\'', "")
             )
         };
-        let rows = conn.query(&cypher)
+        let cypher = format!(
+            "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 \
+             AND (e.embedding_invalid IS NULL OR e.embedding_invalid = 0) \
+             AND (e.embedding_retry_after_ns IS NULL OR e.embedding_retry_after_ns <= $now){type_clause} \
+             RETURN e.id, e.device_address, e.event_type, e.detail, e.occurred_at \
+             ORDER BY e.occurred_at ASC, e.id ASC LIMIT {limit}"
+        );
+        let mut stmt = conn.prepare(&cypher)?;
+        let rows = conn
+            .execute(&mut stmt, vec![("now", Value::Int64(now_ns))])
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .map(|r| {
                 let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
@@ -1542,15 +1550,52 @@ pub struct EmbeddingItem {
     pub event_id: String,
     pub vector: Vec<f64>,
     pub model_name: String,
+    /// Missing/empty revision is explicit UNKNOWN provenance — never
+    /// fabricated into a known revision string.
     pub model_revision: Option<String>,
+    /// Declared embedding dimension; when present it must equal
+    /// `vector.len()` exactly.
+    pub dim: Option<i64>,
     pub computed_at_ns: i64,
+    /// Normalization contract that produced the embedded text
+    /// (WP65-12). Missing/empty → explicit "unknown".
+    pub normalization_version: Option<String>,
+    /// Embedding record-schema identity. Missing/empty → "unknown".
     pub schema_hash: Option<String>,
+    /// DEPRECATED: the authoritative event_type is read from the
+    /// persisted StateChangeEvent; a client-supplied value is ignored
+    /// and can never redefine the source event (WP65-11).
     pub event_type: Option<String>,
+}
+
+/// WP65-14: an event the worker resolved but could not embed this cycle
+/// (template pending under another claim, provider backoff/failure).
+/// Reported so the fetch path can apply a bounded retry deadline instead
+/// of re-selecting the same stuck events ahead of healthy ones.
+#[derive(Debug, Deserialize)]
+pub struct EmbeddingDeferredItem {
+    pub event_id: String,
+    /// Optional client hint for the next eligible fetch (ns epoch).
+    /// The server applies its own attempt-bounded backoff on top.
+    pub retry_after_ns: Option<i64>,
+}
+
+/// WP65-14: an event that can never be enriched (e.g. no extractable
+/// message text). Marked permanently ineligible — raw evidence is
+/// retained, only the embedding obligation is closed.
+#[derive(Debug, Deserialize)]
+pub struct EmbeddingInvalidItem {
+    pub event_id: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct EmbeddingBatchRequest {
     pub embeddings: Vec<EmbeddingItem>,
+    #[serde(default)]
+    pub deferred: Vec<EmbeddingDeferredItem>,
+    #[serde(default)]
+    pub invalid: Vec<EmbeddingInvalidItem>,
 }
 
 /// POST /api/events/embeddings
@@ -1568,22 +1613,62 @@ pub struct EmbeddingBatchRequest {
 ///   no orphan embeddings. All of an item's writes run in one transaction.
 /// - Per-item outcomes are attributable: `accepted` (newly persisted),
 ///   `already_existing` (idempotent replay), `rejected` (validation or
-///   storage failure with reason). Storage failures roll back that item's
-///   transaction; validation rejections never reach the graph.
+///   storage failure with reason). The `items` array carries the same
+///   per-item status so callers can attribute partial batches exactly.
+/// - WP65-09: replay is a NO-OP. An existing embedding identity whose
+///   stored vector and dim are identical is left untouched — retry
+///   timestamps never rewrite computation provenance. A conflicting
+///   vector or dimension under the same identity is REJECTED (the
+///   documented repair path is a new model/normalization/schema
+///   identity, never silent overwrite of historical semantic evidence).
+/// - WP65-11: event eligibility and event_type are derived from the
+///   persisted StateChangeEvent — the client cannot redefine the source
+///   event or enrich a non-syslog event.
+/// - WP65-14: `deferred`/`invalid` reports drive a bounded enrichment
+///   lifecycle (retry deadline / permanent ineligibility) so failed
+///   events cannot starve healthy ones in the oldest-first fetch.
 /// - Batch size and vector dimension are bounded by
 ///   MAX_EMBEDDING_BATCH / MAX_EMBEDDING_DIM.
 const MAX_EMBEDDING_BATCH: usize = 512;
+const MAX_EMBEDDING_LIFECYCLE: usize = 1024;
 const MAX_EMBEDDING_DIM: usize = 4096;
+/// Deferred-retry ceiling: after this many reported deferrals an event
+/// is marked permanently ineligible rather than retrying forever.
+const MAX_EMBEDDING_ATTEMPTS: i64 = 100;
+/// Explicit "unknown" provenance sentinel — distinct from any real
+/// revision/normalization/schema string, never fabricated.
+const PROVENANCE_UNKNOWN: &str = "unknown";
+
+fn embedding_now_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
+}
+
+/// Bounded exponential backoff for deferred enrichment attempts:
+/// 60s, 120s, 240s … capped at 1h.
+fn embedding_retry_backoff_ns(attempts: i64) -> i64 {
+    let shift = (attempts - 1).clamp(0, 6) as u32;
+    (60i64 << shift).min(3600) * 1_000_000_000
+}
 
 fn embedding_node_id(
     event_id: &str,
     model_name: &str,
     model_revision: &str,
+    normalization_version: &str,
     schema_hash: &str,
 ) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
-    for part in [event_id, model_name, model_revision, schema_hash] {
+    for part in [
+        event_id,
+        model_name,
+        model_revision,
+        normalization_version,
+        schema_hash,
+    ] {
         h.update((part.len() as u64).to_le_bytes());
         h.update(part.as_bytes());
     }
@@ -1612,6 +1697,27 @@ fn validate_embedding_item(item: &EmbeddingItem) -> Result<(), String> {
     if item.vector.iter().any(|v| !v.is_finite()) {
         return Err("vector contains non-finite value".into());
     }
+    // WP65-10: a zero-norm vector carries no semantic content — it must
+    // never be persisted as successful enrichment (provider zero-vector
+    // fallbacks are rejected here at the API boundary).
+    let norm_sq: f64 = item.vector.iter().map(|v| v * v).sum();
+    if !norm_sq.is_finite() || norm_sq == 0.0 {
+        return Err("vector has zero or non-finite norm".into());
+    }
+    // Declared dim must match the actual vector exactly.
+    if let Some(d) = item.dim {
+        if d != item.vector.len() as i64 {
+            return Err(format!(
+                "declared dim {d} does not match vector len {}",
+                item.vector.len()
+            ));
+        }
+    }
+    // Computation provenance is required — a zero/negative timestamp is
+    // missing provenance, not a valid "unknown".
+    if item.computed_at_ns <= 0 {
+        return Err("missing computed_at_ns provenance".into());
+    }
     Ok(())
 }
 
@@ -1628,10 +1734,25 @@ pub async fn events_embeddings_handler(
         )
             .into_response();
     }
+    if req.deferred.len() > MAX_EMBEDDING_LIFECYCLE
+        || req.invalid.len() > MAX_EMBEDDING_LIFECYCLE
+    {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({
+                "error": format!(
+                    "lifecycle report size exceeds limit {MAX_EMBEDDING_LIFECYCLE}"
+                )
+            })),
+        )
+            .into_response();
+    }
     let db = state.store.db();
     let write_lock = state.store.write_lock();
     let ml_bus = state.ml_event_bus.clone();
     let submitted = req.embeddings.len() as i64;
+    let deferred_submitted = req.deferred.len() as i64;
+    let invalid_submitted = req.invalid.len() as i64;
     let model_name = req
         .embeddings
         .first()
@@ -1640,75 +1761,155 @@ pub async fn events_embeddings_handler(
     let result = tokio::task::spawn_blocking(move || {
         let _g = write_lock.lock().expect("write lock poisoned");
         let conn = Connection::new(&db)?;
+        let now_ns = embedding_now_ns();
 
         let mut accepted = 0i64;
         let mut already_existing = 0i64;
         let mut rejected: Vec<serde_json::Value> = Vec::new();
+        let mut items: Vec<serde_json::Value> = Vec::new();
 
         for (idx, item) in req.embeddings.iter().enumerate() {
-            let reject = |reason: &str, rejected: &mut Vec<serde_json::Value>| {
+            let item_status = |status: &str, reason: Option<&str>| {
+                let mut v = serde_json::json!({
+                    "index": idx,
+                    "event_id": item.event_id,
+                    "status": status,
+                });
+                if let Some(r) = reason {
+                    v["reason"] = serde_json::Value::String(r.to_string());
+                }
+                v
+            };
+            if let Err(reason) = validate_embedding_item(item) {
                 rejected.push(serde_json::json!({
                     "index": idx,
                     "event_id": item.event_id,
                     "reason": reason,
                 }));
-            };
-            if let Err(reason) = validate_embedding_item(item) {
-                reject(&reason, &mut rejected);
+                items.push(item_status("rejected", Some(&reason)));
                 continue;
             }
-            // Missing model revision is UNKNOWN provenance — never
-            // fabricate a known revision; "unknown" keeps the identity
-            // honest and distinct from any real revision string.
+            // WP65-12: coherent versioned semantic identity —
+            // (event, model, revision, normalization, schema). Missing
+            // provenance is the explicit "unknown" sentinel.
             let model_revision = item
                 .model_revision
                 .clone()
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "unknown".to_string());
-            let schema_hash = item.schema_hash.clone().unwrap_or_default();
+                .unwrap_or_else(|| PROVENANCE_UNKNOWN.to_string());
+            let normalization_version = item
+                .normalization_version
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| PROVENANCE_UNKNOWN.to_string());
+            let schema_hash = item
+                .schema_hash
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| PROVENANCE_UNKNOWN.to_string());
             let emb_id = embedding_node_id(
                 &item.event_id,
                 &item.model_name,
                 &model_revision,
+                &normalization_version,
                 &schema_hash,
             );
 
             // Per-item transaction: embedding node + relationship +
             // enrichment flag commit or roll back together.
             conn.query("BEGIN TRANSACTION")?;
-            // Returns (existed, reject_reason): reject_reason is Some only
-            // for pre-write validation failures inside the transaction
-            // (e.g. missing source event) — those roll back cleanly.
-            let item_result: Result<(bool, Option<String>), anyhow::Error> = (|| {
-                // Source event must exist — no orphan embeddings.
+            // Returns (outcome, reject_reason): outcome is "created" or
+            // "replayed"; reject_reason is Some only for pre-write
+            // validation failures inside the transaction — those roll
+            // back cleanly.
+            let item_result: Result<(Outcome, Option<String>), anyhow::Error> = (|| {
+                // WP65-11: derive authoritative identity from the persisted
+                // event — existence AND enrichment eligibility AND the
+                // event_type stored on the embedding all come from the
+                // graph, never from the client payload.
                 let mut ev = conn.prepare(
-                    "MATCH (e:StateChangeEvent {id: $eid}) RETURN e.id",
+                    "MATCH (e:StateChangeEvent {id: $eid}) \
+                     RETURN e.event_type",
                 )?;
-                let event_exists = conn
+                let event_row = conn
                     .execute(&mut ev, vec![("eid", Value::String(item.event_id.clone()))])?
-                    .next()
-                    .is_some();
-                if !event_exists {
-                    return Ok((false, Some("source event not found".to_string())));
+                    .next();
+                let persisted_event_type = match event_row {
+                    Some(r) => match &r[0] {
+                        Value::String(s) => s.clone(),
+                        _ => String::new(),
+                    },
+                    None => {
+                        return Ok((Outcome::Rejected, Some("source event not found".to_string())));
+                    }
+                };
+                if !persisted_event_type.starts_with("syslog") {
+                    return Ok((
+                        Outcome::Rejected,
+                        Some("event not eligible for embedding enrichment".to_string()),
+                    ));
                 }
 
                 // Indexed primary-key existence check — bounded per item.
-                let mut ex = conn.prepare("MATCH (emb:EventEmbedding {id: $id}) RETURN emb.id")?;
-                let existed = conn
+                let mut ex = conn.prepare(
+                    "MATCH (emb:EventEmbedding {id: $id}) \
+                     RETURN emb.vector_json, emb.dim",
+                )?;
+                let existing = conn
                     .execute(&mut ex, vec![("id", Value::String(emb_id.clone()))])?
                     .next()
-                    .is_some();
+                    .map(|r| {
+                        let s = |v: &Value| match v {
+                            Value::String(s) => s.clone(),
+                            _ => String::new(),
+                        };
+                        let d = match &r[1] {
+                            Value::Int64(n) => *n,
+                            _ => 0,
+                        };
+                        (s(&r[0]), d)
+                    });
 
                 let dim = item.vector.len() as i64;
                 let vector_json = serde_json::to_string(&item.vector)
                     .map_err(|e| anyhow::anyhow!("vector serialize: {e}"))?;
+
+                if let Some((stored_json, stored_dim)) = existing {
+                    // WP65-09: immutable replay. Identical vector+dim is a
+                    // no-op — computed_at_ns and relationship timestamps
+                    // keep their original provenance. A conflicting
+                    // vector or dimension under the same identity is
+                    // rejected; repair requires a new model/normalization/
+                    // schema identity, never a silent overwrite.
+                    let identical = stored_dim == dim
+                        && serde_json::from_str::<Vec<f64>>(&stored_json)
+                            .map(|v| v == item.vector)
+                            .unwrap_or(false);
+                    if !identical {
+                        return Ok((
+                            Outcome::Rejected,
+                            Some(
+                                "embedding identity conflict: stored vector/dim differs"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                    // Replay: ensure the relationship exists (covers
+                    // pre-WP65-03 partial writes) without touching its
+                    // timestamp, then close the enrichment flag.
+                    ensure_embedded_as_rel(
+                        &conn, &item.event_id, &emb_id, item.computed_at_ns,
+                    )?;
+                    mark_embedding_done(&conn, &item.event_id)?;
+                    return Ok((Outcome::Replayed, None));
+                }
+
                 let mut upsert = conn.prepare(
                     "MERGE (emb:EventEmbedding {id: $id}) \
                      ON CREATE SET emb.event_id = $eid, emb.event_type = $et, \
-                       emb.model_name = $mn, emb.model_revision = $mr, emb.dim = $dim, \
-                       emb.vector_json = $vj, emb.computed_at_ns = $can, emb.schema_hash = $sh \
-                     ON MATCH SET emb.dim = $dim, emb.vector_json = $vj, \
-                       emb.computed_at_ns = $can",
+                       emb.model_name = $mn, emb.model_revision = $mr, \
+                       emb.normalization_version = $nv, emb.dim = $dim, \
+                       emb.vector_json = $vj, emb.computed_at_ns = $can, emb.schema_hash = $sh",
                 )?;
                 conn.execute(
                     &mut upsert,
@@ -1717,10 +1918,11 @@ pub async fn events_embeddings_handler(
                         ("eid", Value::String(item.event_id.clone())),
                         (
                             "et",
-                            Value::String(item.event_type.clone().unwrap_or_default()),
+                            Value::String(persisted_event_type.clone()),
                         ),
                         ("mn", Value::String(item.model_name.clone())),
                         ("mr", Value::String(model_revision.clone())),
+                        ("nv", Value::String(normalization_version.clone())),
                         ("dim", Value::Int64(dim)),
                         ("vj", Value::String(vector_json)),
                         ("can", Value::Int64(item.computed_at_ns)),
@@ -1729,84 +1931,139 @@ pub async fn events_embeddings_handler(
                 )?;
 
                 // EMBEDDED_AS identity is (event, embedding) — computed_at_ns
-                // is metadata, never part of the MERGE key. Create only when
-                // absent, then refresh the timestamp on all matching rels.
-                let mut rel_check = conn.prepare(
-                    "MATCH (e:StateChangeEvent {id: $eid})-[r:EMBEDDED_AS]->(emb:EventEmbedding {id: $embid}) \
-                     RETURN count(r)",
+                // is metadata, never part of the MERGE key.
+                ensure_embedded_as_rel(
+                    &conn, &item.event_id, &emb_id, item.computed_at_ns,
                 )?;
-                let rel_count = conn
-                    .execute(
-                        &mut rel_check,
-                        vec![
-                            ("eid", Value::String(item.event_id.clone())),
-                            ("embid", Value::String(emb_id.clone())),
-                        ],
-                    )?
-                    .next()
-                    .map(|r| match &r[0] {
-                        Value::Int64(n) => *n,
-                        _ => 0,
-                    })
-                    .unwrap_or(0);
-                if rel_count == 0 {
-                    let mut rel = conn.prepare(
-                        "MATCH (e:StateChangeEvent {id: $eid}), (emb:EventEmbedding {id: $embid}) \
-                         CREATE (e)-[:EMBEDDED_AS {computed_at_ns: $can}]->(emb)",
-                    )?;
-                    conn.execute(
-                        &mut rel,
-                        vec![
-                            ("eid", Value::String(item.event_id.clone())),
-                            ("embid", Value::String(emb_id.clone())),
-                            ("can", Value::Int64(item.computed_at_ns)),
-                        ],
-                    )?;
-                } else {
-                    let mut rel_ts = conn.prepare(
-                        "MATCH (e:StateChangeEvent {id: $eid})-[r:EMBEDDED_AS]->(emb:EventEmbedding {id: $embid}) \
-                         SET r.computed_at_ns = $can",
-                    )?;
-                    conn.execute(
-                        &mut rel_ts,
-                        vec![
-                            ("eid", Value::String(item.event_id.clone())),
-                            ("embid", Value::String(emb_id.clone())),
-                            ("can", Value::Int64(item.computed_at_ns)),
-                        ],
-                    )?;
-                }
 
                 // Enrichment flag — write failures propagate (no `let _ =`).
-                let mut mark = conn.prepare(
-                    "MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0",
-                )?;
-                conn.execute(
-                    &mut mark,
-                    vec![("eid", Value::String(item.event_id.clone()))],
-                )?;
+                mark_embedding_done(&conn, &item.event_id)?;
 
-                Ok((existed, None))
+                Ok((Outcome::Created, None))
             })();
 
             match item_result {
-                Ok((_, Some(reason))) => {
+                Ok((Outcome::Rejected, reason)) => {
                     conn.query("ROLLBACK")?;
-                    reject(&reason, &mut rejected);
+                    let reason =
+                        reason.unwrap_or_else(|| "rejected".to_string());
+                    rejected.push(serde_json::json!({
+                        "index": idx,
+                        "event_id": item.event_id,
+                        "reason": reason,
+                    }));
+                    items.push(item_status("rejected", Some(&reason)));
                 }
-                Ok((existed, None)) => {
+                Ok((Outcome::Created, _)) => {
                     conn.query("COMMIT")?;
-                    if existed {
-                        already_existing += 1;
-                    } else {
-                        accepted += 1;
-                    }
+                    accepted += 1;
+                    items.push(item_status("accepted", None));
+                }
+                Ok((Outcome::Replayed, _)) => {
+                    conn.query("COMMIT")?;
+                    already_existing += 1;
+                    items.push(item_status("already_existing", None));
                 }
                 Err(e) => {
                     let _ = conn.query("ROLLBACK");
-                    reject(&format!("persistence failure: {e:#}"), &mut rejected);
+                    let reason = format!("persistence failure: {e:#}");
+                    rejected.push(serde_json::json!({
+                        "index": idx,
+                        "event_id": item.event_id,
+                        "reason": reason,
+                    }));
+                    items.push(item_status("rejected", Some(&reason)));
                 }
             }
+        }
+
+        // ── WP65-14: bounded enrichment lifecycle ──────────────────────
+        // Deferred events keep needs_embedding=1 but get a retry deadline
+        // so the oldest-first fetch cannot be starved by them; attempts
+        // are bounded and exhaustion marks the event permanently
+        // ineligible. Invalid events are closed immediately. Raw event
+        // evidence is never touched — only the enrichment obligation.
+        let mut deferred_applied = 0i64;
+        let mut invalid_applied = 0i64;
+        for d in &req.deferred {
+            let mut st = conn.prepare(
+                "MATCH (e:StateChangeEvent {id: $eid}) \
+                 RETURN e.embedding_attempts, e.embedding_invalid",
+            )?;
+            let row = conn
+                .execute(&mut st, vec![("eid", Value::String(d.event_id.clone()))])?
+                .next();
+            let Some(row) = row else { continue };
+            let attempts = match &row[0] {
+                Value::Int64(n) => *n,
+                _ => 0,
+            };
+            let already_invalid = match &row[1] {
+                Value::Int64(n) => *n != 0,
+                _ => false,
+            };
+            if already_invalid {
+                continue;
+            }
+            let new_attempts = attempts + 1;
+            if new_attempts > MAX_EMBEDDING_ATTEMPTS {
+                let mut up = conn.prepare(
+                    "MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0, \
+                     e.embedding_invalid = 1, \
+                     e.embedding_invalid_reason = 'embedding_retry_exhausted', \
+                     e.embedding_retry_after_ns = 0",
+                )?;
+                conn.execute(
+                    &mut up,
+                    vec![("eid", Value::String(d.event_id.clone()))],
+                )?;
+            } else {
+                let backoff = embedding_retry_backoff_ns(new_attempts);
+                let client_hint = d.retry_after_ns.unwrap_or(0);
+                let deadline = now_ns + backoff;
+                let deadline = if client_hint > deadline { client_hint } else { deadline };
+                let mut up = conn.prepare(
+                    "MATCH (e:StateChangeEvent {id: $eid}) SET e.embedding_attempts = $a, \
+                     e.embedding_retry_after_ns = $r",
+                )?;
+                conn.execute(
+                    &mut up,
+                    vec![
+                        ("eid", Value::String(d.event_id.clone())),
+                        ("a", Value::Int64(new_attempts)),
+                        ("r", Value::Int64(deadline)),
+                    ],
+                )?;
+            }
+            deferred_applied += 1;
+        }
+        for inv in &req.invalid {
+            if inv.event_id.is_empty() || inv.reason.len() > 500 {
+                continue;
+            }
+            let mut chk = conn.prepare(
+                "MATCH (e:StateChangeEvent {id: $eid}) RETURN e.id",
+            )?;
+            let exists = conn
+                .execute(&mut chk, vec![("eid", Value::String(inv.event_id.clone()))])?
+                .next()
+                .is_some();
+            if !exists {
+                continue;
+            }
+            let mut up = conn.prepare(
+                "MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0, \
+                 e.embedding_invalid = 1, e.embedding_invalid_reason = $reason, \
+                 e.embedding_retry_after_ns = 0",
+            )?;
+            conn.execute(
+                &mut up,
+                vec![
+                    ("eid", Value::String(inv.event_id.clone())),
+                    ("reason", Value::String(inv.reason.clone())),
+                ],
+            )?;
+            invalid_applied += 1;
         }
 
         Ok::<_, anyhow::Error>(serde_json::json!({
@@ -1815,6 +2072,11 @@ pub async fn events_embeddings_handler(
             "already_existing": already_existing,
             "persisted": accepted + already_existing,
             "rejected": rejected,
+            "items": items,
+            "deferred": deferred_applied,
+            "invalid": invalid_applied,
+            "deferred_submitted": deferred_submitted,
+            "invalid_submitted": invalid_submitted,
         }))
     })
     .await;
@@ -1832,6 +2094,69 @@ pub async fn events_embeddings_handler(
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Created,
+    Replayed,
+    Rejected,
+}
+
+/// Create the (event → embedding) EMBEDDED_AS relationship when absent.
+/// Relationship identity is (event, embedding); `computed_at_ns` is
+/// metadata refreshed only on creation — replay never rewrites the
+/// original computation provenance.
+fn ensure_embedded_as_rel(
+    conn: &Connection,
+    event_id: &str,
+    emb_id: &str,
+    computed_at_ns: i64,
+) -> Result<(), anyhow::Error> {
+    let mut rel_check = conn.prepare(
+        "MATCH (e:StateChangeEvent {id: $eid})-[r:EMBEDDED_AS]->(emb:EventEmbedding {id: $embid}) \
+         RETURN count(r)",
+    )?;
+    let rel_count = conn
+        .execute(
+            &mut rel_check,
+            vec![
+                ("eid", Value::String(event_id.to_string())),
+                ("embid", Value::String(emb_id.to_string())),
+            ],
+        )?
+        .next()
+        .map(|r| match &r[0] {
+            Value::Int64(n) => *n,
+            _ => 0,
+        })
+        .unwrap_or(0);
+    if rel_count == 0 {
+        let mut rel = conn.prepare(
+            "MATCH (e:StateChangeEvent {id: $eid}), (emb:EventEmbedding {id: $embid}) \
+             CREATE (e)-[:EMBEDDED_AS {computed_at_ns: $can}]->(emb)",
+        )?;
+        conn.execute(
+            &mut rel,
+            vec![
+                ("eid", Value::String(event_id.to_string())),
+                ("embid", Value::String(emb_id.to_string())),
+                ("can", Value::Int64(computed_at_ns)),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Close the enrichment obligation on the source event. Idempotent —
+/// replays and deferred-then-completed flows converge on the same state.
+fn mark_embedding_done(conn: &Connection, event_id: &str) -> Result<(), anyhow::Error> {
+    let mut mark = conn.prepare(
+        "MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0, \
+         e.embedding_retry_after_ns = 0",
+    )?;
+    conn.execute(&mut mark, vec![("eid", Value::String(event_id.to_string()))])?;
+    Ok(())
 }
 
 /// GET /api/devices/unembedded-config?limit=N
@@ -2200,11 +2525,13 @@ pub async fn ml_similar_events_handler(
         // 1. Fetch the query embedding. An event can carry embeddings
         //    from several model spaces; pick deterministically (most
         //    recent, then lowest node id) and compare ONLY within that
-        //    exact model space — model_name + model_revision + dim +
-        //    schema_hash must all match, or vectors are incomparable.
+        //    exact model space — model_name + model_revision +
+        //    normalization_version + dim + schema_hash must all match,
+        //    or vectors are incomparable (WP65-12).
         let mut qstmt = conn.prepare(
             "MATCH (emb:EventEmbedding {event_id: $eid}) \
-             RETURN emb.vector_json, emb.dim, emb.model_name, emb.model_revision, emb.schema_hash, emb.id \
+             RETURN emb.vector_json, emb.dim, emb.model_name, emb.model_revision, \
+                    emb.normalization_version, emb.schema_hash, emb.id \
              ORDER BY emb.computed_at_ns DESC, emb.id ASC \
              LIMIT 1",
         )?;
@@ -2226,10 +2553,22 @@ pub async fn ml_similar_events_handler(
             Value::String(s) => s.clone(),
             _ => String::new(),
         };
+        // WP65-12: empty/NULL provenance reads as the explicit "unknown"
+        // sentinel — the same normalization the schema migration applies
+        // — so legacy rows and new writes compare in one consistent space.
+        let prov = |v: &Value| {
+            let raw = s(v);
+            if raw.is_empty() {
+                PROVENANCE_UNKNOWN.to_string()
+            } else {
+                raw
+            }
+        };
         let query_vec_json = s(&query_row[0]);
         let model_name = s(&query_row[2]);
-        let model_revision = s(&query_row[3]);
-        let schema_hash = s(&query_row[4]);
+        let model_revision = prov(&query_row[3]);
+        let normalization_version = prov(&query_row[4]);
+        let schema_hash = prov(&query_row[5]);
         let query_dim = match &query_row[1] {
             Value::Int64(n) => *n,
             _ => 0,
@@ -2248,8 +2587,8 @@ pub async fn ml_similar_events_handler(
         let mut cstmt = conn.prepare(
             "MATCH (emb:EventEmbedding) \
              WHERE emb.event_id <> $eid AND emb.model_name = $mn \
-               AND emb.model_revision = $mr AND emb.dim = $dim \
-               AND emb.schema_hash = $sh \
+               AND emb.model_revision = $mr AND emb.normalization_version = $nv \
+               AND emb.dim = $dim AND emb.schema_hash = $sh \
              RETURN emb.event_id, emb.vector_json, emb.event_type, emb.computed_at_ns \
              ORDER BY emb.computed_at_ns DESC, emb.id ASC \
              LIMIT 5001",
@@ -2261,6 +2600,7 @@ pub async fn ml_similar_events_handler(
                     ("eid", Value::String(event_id.clone())),
                     ("mn", Value::String(model_name.clone())),
                     ("mr", Value::String(model_revision.clone())),
+                    ("nv", Value::String(normalization_version.clone())),
                     ("dim", Value::Int64(query_dim)),
                     ("sh", Value::String(schema_hash.clone())),
                 ],
@@ -2312,6 +2652,7 @@ pub async fn ml_similar_events_handler(
             "query_event_id": event_id,
             "model_name": model_name,
             "model_revision": model_revision,
+            "normalization_version": normalization_version,
             "dim": query_dim,
             "schema_hash": schema_hash,
             // Bounded recall contract: candidates are the most recent

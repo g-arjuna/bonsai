@@ -37,6 +37,14 @@ FETCH_LIMIT = 200
 BACKOFF_SECS = [60, 120, 300]
 DEFAULT_API_URL = "http://localhost:3000"
 
+# WP65-12: embedding record-schema identity sent with every write-back.
+# Combined with model_name/model_revision/normalization_version/dim this
+# forms the coherent versioned semantic identity persisted by core.
+EMBEDDING_SCHEMA_ID = "event-embedding-v1"
+# Legacy (dedup-disabled) path embeds raw text — no template
+# normalization is applied, which is itself provenance.
+LEGACY_NORMALIZATION_VERSION = "none"
+
 # Most recent dedup stats snapshot, for ops introspection and tests.
 _LAST_DEDUP_STATS: dict[str, Any] = {}
 
@@ -181,41 +189,73 @@ def _embed_and_post(
     event_ids = [e.get("id") or e.get("event_id") for e in events]
     event_types = [e.get("event_type") or e.get("type") or "" for e in events]
 
+    # WP65-14: events with an id but no extractable text can never be
+    # enriched — report them permanently invalid instead of letting them
+    # occupy the oldest-first fetch forever.
+    invalid_reports = [
+        {"event_id": str(eid), "reason": "no_extractable_text"}
+        for eid, text in zip(event_ids, texts)
+        if eid and not (text or "").strip()
+    ]
+
     valid_pairs = [
         (i, eid, text)
         for i, (eid, text) in enumerate(zip(event_ids, texts))
-        if eid and text
+        if eid and text and text.strip()
     ]
-    if not valid_pairs:
+    if not valid_pairs and not invalid_reports:
         return 0
 
     # vectors[i] aligned with valid_pairs, or None for unresolved events.
     if dedup is not None:
         valid_texts = [p[2] for p in valid_pairs]
         vectors = dedup.resolve_batch(valid_texts)
+        resolution_keys = dedup.last_resolution_keys()
+        normalization_version = str(getattr(dedup, "norm_version", "") or "")
     else:
         from .message_templates import _validate_vector
 
+        resolution_keys = []
+        normalization_version = LEGACY_NORMALIZATION_VERSION
         t0 = time.monotonic()
-        all_vectors = embedder.embed_batch([p[2] for p in valid_pairs])
+        try:
+            all_vectors = embedder.embed_batch([p[2] for p in valid_pairs])
+        except Exception as exc:
+            log.error("Provider embed_batch failed: %s", exc)
+            all_vectors = None
         latency_ms = (time.monotonic() - t0) * 1000.0
         log.debug(
             "Embedded %d syslog texts in %.1fms (%.1fms/text)",
             len(valid_pairs), latency_ms, latency_ms / max(1, len(valid_pairs)),
         )
         dim = int(getattr(embedder, "dim", 0) or 0)
-        # Legacy path must apply the same provider-output validation as
-        # the dedup path: a malformed vector is never persisted.
-        vectors = [
-            v if _validate_vector(v, dim) else None for v in all_vectors
-        ]
+        # WP65 provider contract (C7): the response must have EXACT
+        # cardinality aligned with the request — a short/long/missing
+        # response is a provider failure for the whole batch, never a
+        # partial success. Each vector must pass the same validation as
+        # the dedup path: dim, finite, non-zero norm — zero-vector
+        # provider fallbacks are never persisted as enrichment.
+        if all_vectors is None or len(all_vectors) != len(valid_pairs):
+            log.error(
+                "Provider returned %s vectors for %d texts — rejecting batch",
+                "no" if all_vectors is None else len(all_vectors),
+                len(valid_pairs),
+            )
+            vectors = [None] * len(valid_pairs)
+        else:
+            vectors = [
+                v if _validate_vector(v, dim) else None for v in all_vectors
+            ]
 
     computed_at_ns = time.time_ns()
     embedding_records = []
+    # record index -> position in valid_pairs (for ack attribution)
+    record_pairs: list[int] = []
     for pos, (i, eid, _text) in enumerate(valid_pairs):
         vec = vectors[pos] if pos < len(vectors) else None
         if vec is None:
             continue
+        record_pairs.append(pos)
         embedding_records.append(
             {
                 "event_id": str(eid),
@@ -225,26 +265,45 @@ def _embed_and_post(
                     getattr(embedder, "model_revision", "") or ""
                 ),
                 "dim": embedder.dim,
+                "normalization_version": normalization_version,
+                "schema_hash": EMBEDDING_SCHEMA_ID,
                 "computed_at_ns": computed_at_ns,
+                # Authoritative event_type is read from the persisted
+                # graph event server-side; this is informational only.
                 "event_type": event_types[i] if i < len(event_types) else "",
             }
         )
-    if not embedding_records:
+
+    # WP65-14: unresolved events are reported deferred so core applies a
+    # bounded retry deadline — failed/backed-off events cannot starve
+    # healthy events in the oldest-first fetch.
+    deferred_reports = [
+        {"event_id": str(valid_pairs[pos][1])}
+        for pos in range(len(valid_pairs))
+        if pos >= len(vectors) or vectors[pos] is None
+    ]
+
+    if not embedding_records and not deferred_reports and not invalid_reports:
         return 0
 
     try:
         import requests
+        payload: dict[str, Any] = {"embeddings": embedding_records}
+        if deferred_reports:
+            payload["deferred"] = deferred_reports
+        if invalid_reports:
+            payload["invalid"] = invalid_reports
         resp = requests.post(
             f"{api_url}/api/events/embeddings",
-            json={"embeddings": embedding_records},
+            json=payload,
             headers=auth_headers(),
             timeout=30,
         )
         resp.raise_for_status()
-        # Write-back acknowledgement contract (WP65-03): the server must
-        # return explicit attributable counts. A missing or malformed
-        # acknowledgement is a FAILURE — never manufacture a successful
-        # count from the submitted batch size.
+        # Write-back acknowledgement contract (WP65-03/13): the server
+        # must return explicit attributable counts AND per-item status.
+        # A missing or malformed acknowledgement is a FAILURE — never
+        # manufacture a successful count from the submitted batch size.
         try:
             body = resp.json()
         except Exception:
@@ -271,17 +330,39 @@ def _embed_and_post(
                 written, len(embedding_records),
                 len(rejected) if isinstance(rejected, list) else -1,
             )
-            # Occurrence commits are all-or-nothing per resolve_batch;
-            # on a partial acknowledgement we cannot attribute which
-            # template occurrences persisted, so we do NOT commit —
-            # conservative under-count beats inflated operational counts.
-            return written
-        if dedup is not None:
+        # WP65-13: occurrence commits are attributed per-item. Only
+        # records the server acknowledged as "accepted" (newly persisted
+        # embedding identities) count as new template occurrences —
+        # "already_existing" replays and rejected items never inflate
+        # template_occurrences. Without a per-item "items" array we
+        # cannot attribute the batch, so we conservatively commit nothing.
+        if dedup is not None and embedding_records:
+            items = body.get("items") if isinstance(body, dict) else None
+            if isinstance(items, list) and len(items) == len(embedding_records):
+                accepted_keys: list[Optional[str]] = []
+                for item_ack in items:
+                    if not isinstance(item_ack, dict):
+                        accepted_keys = []
+                        break
+                    if item_ack.get("status") == "accepted":
+                        rec_idx = item_ack.get("index")
+                        if isinstance(rec_idx, int) \
+                                and 0 <= rec_idx < len(record_pairs):
+                            pair_pos = record_pairs[rec_idx]
+                            key = (
+                                resolution_keys[pair_pos]
+                                if pair_pos < len(resolution_keys)
+                                else None
+                            )
+                            accepted_keys.append(key)
+                if accepted_keys:
+                    dedup.commit_occurrences(accepted_keys)
+            else:
+                log.warning(
+                    "Embedding write-back acknowledgement lacks aligned "
+                    "per-item status; occurrence counts not committed"
+                )
             dedup.metrics.events_posted += written
-            # Occurrence counts commit only now that write-back is
-            # acknowledged — failed POSTs and retries cannot inflate
-            # template_occurrences.
-            dedup.commit_occurrences()
         return written
     except Exception as exc:
         log.error("Failed to POST event embeddings: %s", exc)
