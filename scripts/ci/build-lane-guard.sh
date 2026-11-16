@@ -22,9 +22,11 @@
 #          [--label L]
 #          Atomically writes/updates .lane-compat.json for the lane.
 #   env    --dir BUNDLE
-#          Prints `export` lines for LBUG_LIBRARY_DIR/LBUG_INCLUDE_DIR/
-#          CXXFLAGS derived from the bundle's manifest.json (validated
-#          structured metadata — env.sh is never sourced by consumers).
+#          Prints TAB-separated KEY<TAB>VALUE lines for
+#          LBUG_LIBRARY_DIR/LBUG_INCLUDE_DIR/CXXFLAGS derived from the
+#          bundle's manifest.json (validated structured metadata —
+#          env.sh is never sourced by consumers). Consumers MUST apply
+#          these via structured read/export, never eval/sourcing.
 #   sanity
 #          Fails if the caller's environment already carries lbug-native
 #          settings (LBUG_LIBRARY_DIR/LBUG_INCLUDE_DIR or stale
@@ -80,9 +82,17 @@ cxx = mf.get("cxxflags") or ""
 if dest not in cxx:
     print(f"build-lane-guard: GATE FAIL — manifest cxxflags do not reference {dest}", file=sys.stderr)
     sys.exit(1)
-print(f'export LBUG_LIBRARY_DIR="{lib}"')
-print(f'export LBUG_INCLUDE_DIR="{inc}"')
-print(f'export CXXFLAGS="{cxx} ${{CXXFLAGS:-}}"')
+# Emit TAB-separated KEY<TAB>VALUE lines — consumers assign via
+# structured read/export, never eval, so manifest-controlled values
+# cannot inject shell. CXXFLAGS is resolved here (bundle roots +
+# inherited CXXFLAGS) so the emitted value is the effective one.
+resolved_cxx = f"{cxx} {os.environ.get('CXXFLAGS', '')}".strip()
+for k, v in (("LBUG_LIBRARY_DIR", lib), ("LBUG_INCLUDE_DIR", inc),
+             ("CXXFLAGS", resolved_cxx)):
+    if "\t" in v or "\n" in v or "\r" in v:
+        print(f"build-lane-guard: GATE FAIL — {k} contains unsafe characters", file=sys.stderr)
+        sys.exit(1)
+    print(f"{k}\t{v}")
 PY
   exit $?
 fi
@@ -115,10 +125,10 @@ lane_populated() {
 }
 
 if [ "$cmd" = "check" ]; then
-  python3 - "$DIR" "$MODE" "$NATIVE_ID" "$RESET" "$MARKER" <<'PY'
-import json, os, sys
+  python3 - "$DIR" "$MODE" "$NATIVE_ID" "$NATIVE_PATH" "$RESET" "$MARKER" <<'PY'
+import json, os, sys, hashlib
 
-d, mode, native_id, reset, marker = sys.argv[1:6]
+d, mode, native_id, native_path, reset, marker = sys.argv[1:7]
 reset = reset == "1"
 out = {"ok": False, "action": "fail", "reason": "", "warnings": []}
 
@@ -134,7 +144,9 @@ populated = os.path.isdir(d) and any(
 
 if not os.path.isfile(marker):
     if populated:
-        finish("fail", f"lane {d} is populated but has no .lane-compat.json marker — cannot prove lbug mode/fingerprint; use a new lane dir or remove the lane contents deliberately")
+        if reset:
+            finish("reset", f"lane {d} is populated but has no .lane-compat.json marker — explicit re-baseline requested")
+        finish("fail", f"lane {d} is populated but has no .lane-compat.json marker — cannot prove lbug mode/fingerprint; use a new lane dir, --reset-lbug-artifacts, or remove the lane contents deliberately")
     finish("proceed", "fresh lane")
 
 try:
@@ -154,6 +166,20 @@ if mv is None:
     mv = 0
 elif mv != 1:
     finish("fail", f"unsupported marker_version {mv}")
+
+# Lane identity: the marker must belong to THIS lane dir. lane_id is
+# sha256(realpath(dir))[:16], recorded by `record`. A marker copied or
+# symlinked from another lane must not be trusted.
+try:
+    expected_lane = hashlib.sha256(os.path.realpath(d).encode()).hexdigest()[:16]
+except Exception:
+    expected_lane = ""
+lane_id = m.get("lane_id") or ""
+if mv >= 1:
+    if not lane_id:
+        finish("fail", "lane marker missing lane_id (marker_version 1 requires it)")
+    if expected_lane and lane_id != expected_lane:
+        finish("fail", f"lane marker identity mismatch: marker lane_id {lane_id} != this lane {expected_lane}")
 
 lane_mode = m.get("lbug_mode")
 if lane_mode not in ("bundled", "prebuilt"):
@@ -178,6 +204,32 @@ else:
     if lane_native:
         finish("fail", "lane marker records a prebuilt native id but bundled mode requested — marker inconsistent")
 
+# Effective CXXFLAGS fingerprint (BUILD-08): CXXFLAGS is NOT
+# cargo-fingerprinted either, so an inherited flag change would
+# silently reuse stale bridge objects. The fingerprint covers the
+# bundle's recorded CXXFLAGS roots plus the caller's inherited
+# CXXFLAGS — exactly what `env` emits. A drifted fingerprint is a
+# reset-remediable mismatch (cargo clean -p lbug rebuilds the bridge).
+def _bundle_cxxflags():
+    if mode != "prebuilt" or not native_path:
+        return ""
+    try:
+        return json.load(open(os.path.join(native_path, "manifest.json"))).get("cxxflags") or ""
+    except Exception:
+        return ""
+
+eff_cxx = f"{_bundle_cxxflags()} {os.environ.get('CXXFLAGS', '')}".strip()
+cxx_fp = hashlib.sha256(eff_cxx.encode()).hexdigest()
+stored_fp = m.get("cxxflags_fp") or ""
+if not stored_fp:
+    if reset:
+        finish("reset", "lane marker predates cxxflags fingerprint — re-baseline requested")
+    finish("fail", "lane marker has no cxxflags_fp (predates fingerprint tracking); re-baseline with --reset-lbug-artifacts or a new lane")
+elif stored_fp != cxx_fp:
+    if reset:
+        finish("reset", "effective CXXFLAGS changed since lane was recorded")
+    finish("fail", "effective CXXFLAGS drifted on this lane (inherited CXXFLAGS or native bundle roots changed); CXXFLAGS is not cargo-fingerprinted — use --reset-lbug-artifacts or a different lane")
+
 # toolchain drift is diagnostic-only: cargo fingerprints already key on
 # rustc version/profile/features/rustflags, and `record` rewrites the
 # marker each run so drift is naturally refreshed.
@@ -198,9 +250,18 @@ try:
     lane_id = hashlib.sha256(os.path.realpath(d).encode()).hexdigest()[:16]
 except Exception:
     lane_id = ""
+bundle_cxx = ""
+if mode == "prebuilt" and npath:
+    try:
+        bundle_cxx = json.load(open(os.path.join(npath, "manifest.json"))).get("cxxflags") or ""
+    except Exception:
+        bundle_cxx = ""
+eff_cxx = f"{bundle_cxx} {os.environ.get('CXXFLAGS', '')}".strip()
+cxx_fp = hashlib.sha256(eff_cxx.encode()).hexdigest()
 m = {
     "marker_version": 1,
     "lane_id": lane_id,
+    "cxxflags_fp": cxx_fp,
     "created_utc": now,
     "updated_utc": now,
     "label": label or "",

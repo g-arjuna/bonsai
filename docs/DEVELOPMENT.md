@@ -234,14 +234,22 @@ Trust modes:
   `~/.cache/bonsai-ci`. `--shared-target` additionally bind-mounts the
   invoking checkout's Cargo `target/` — a writable shared target cache
   permitted **only** under this explicit trusted-local-development
-  policy, to avoid a second ~140 GB target tree.
+  policy. Deprecated: it now goes through the same lane-compat guard
+  as `--shared-target-dir` (see below); prefer `--shared-target-dir`
+  for new work.
 - `--untrusted`: fresh per-run cache root, cold sccache, ephemeral
   target inside the snapshot — for validating untrusted PR code with no
   shared executable caches or target state.
 - `--shared-target-dir PATH` (trusted only): bind-mounts a managed build
   lane as the container `target/` for both phases, so compatible trusted
   worktrees reuse warm dependency artifacts. A host-side `flock` on
-  `PATH/.lane.lock` enforces one build owner per lane.
+  `PATH/.lane.lock` enforces one build owner per lane. Both this and the
+  legacy `--shared-target` path run the shared `build-lane-guard.sh`
+  compatibility check (lane identity, `lbug_mode`, exact native
+  `bundle_id`, effective-CXXFLAGS fingerprint) and fail closed on
+  populated lanes without a valid marker; remediation is
+  `build-lane.sh --dir <lane> --reset-lbug-artifacts -- true` on the
+  host or a different lane dir.
 - `--lbug-native PATH` (trusted only): PATH is a directory prepared by
   `scripts/ci/lbug-native-prepare.sh`; it is bind-mounted read-only at
   the identical path and `LBUG_LIBRARY_DIR`/`LBUG_INCLUDE_DIR`/`CXXFLAGS`
@@ -294,18 +302,31 @@ worktrees/targets while a symlink-mode dir is in use (the manifest
 records `donor_out`; `run-local.sh` bind-mounts it read-only so links
 resolve in the container, and refuses dirs whose targets escape).
 
-`manifest.json` (version 2) records lbug crate version, donor path,
-cargo profile, host triple, rustc commit, cargo/cmake/cxx versions,
-linkage, CXXFLAGS, archive count/bytes and a **content** inventory hash
-(sha256 over each resolved archive — filename-list hashing cannot
-detect donor mutation). Both `build-lane.sh --lbug-native` and
-`run-local.sh --lbug-native` run `lbug-native-prepare.sh --verify`
-first: it fails closed on manifest version drift, lbug-version vs
-Cargo.lock mismatch, rustc host/commit (ABI) mismatch, missing or
-broken archives, content-hash drift and materialize-mode lies.
+`manifest.json` (version 4) records lbug crate version + Cargo.lock
+checksum, donor path, cargo profile, host triple, rustc commit,
+cargo/cmake/cxx versions, linkage, CXXFLAGS, archive count/bytes,
+donor build provenance (compiler, version, target triple, libc,
+flags, generator, build type) and **content** inventory hashes (sha256
+over each resolved archive and every header — filename-list hashing
+cannot detect donor mutation). `bundle_id` covers the inventories PLUS
+the effective build identity (provenance + bridge CXXFLAGS + linkage),
+so byte-identical archives from incompatible donors cannot share an
+identity. Both `build-lane.sh --lbug-native` and `run-local.sh
+--lbug-native` run `lbug-native-prepare.sh --verify` **while holding
+the bundle shared lock** (acquired before verification, held through
+consumption) so `lbug-native-prepare.sh` cannot replace archives
+mid-build. Verify fails closed on manifest version drift, lbug
+version/checksum vs Cargo.lock mismatch, rustc host/commit mismatch,
+missing or broken archives, content-hash drift, materialize-mode lies
+and env.sh inconsistency; `--gate-env` (run inside the gate container)
+additionally probes the LIVE native ABI — `c++ -dumpmachine`,
+`ldd --version` and C++ compiler major.minor must match donor
+provenance. The definitive ABI proof is the linked-runtime smoke test.
 `scripts/ci/build_lane_selftest.sh` covers the negative cases (content
-drift, broken links, manifest v1, toolchain mismatch, missing archives,
-mode-switch refusal, untrusted-mode refusal) without compiling Rust.
+drift, broken links, manifest version drift, toolchain/ABI mismatch,
+missing archives, mode/bundle/CXXFLAGS-switch refusal, lane-identity
+mismatch, bundle-lock blocking, prepare publish/restore lifecycle,
+untrusted-mode refusal) without compiling Rust.
 
 Measured on this host (2026-11-16, runs.csv): warm same-worktree rebuild
 ~3 min; compatible-worktree reuse via lane ~6 min with **zero** lbug

@@ -60,7 +60,7 @@
 #                         trusted consumers read manifest.json directly
 #   <dest>/manifest.json  provenance + content inventory (see below)
 #
-# Manifest fields (manifest_version 3 — ALL mandatory for --verify):
+# Manifest fields (manifest_version 4 — ALL mandatory for --verify):
 #   bundle_id            sha256 content identity over the full bundle
 #                        inventory (archives + headers + shim), hex
 #   lbug_version         crate version resolved from the cargo registry
@@ -98,7 +98,10 @@
 #      hash is a failure, never a skipped check.
 #   2. lbug_version AND lbug_crate_sha256 match this repo's Cargo.lock.
 #   3. host_triple matches `rustc -vV` host (always). rustc_commit
-#      matches current rustc unless --gate-env.
+#      matches current rustc unless --gate-env. --gate-env ADDITIONALLY
+#      probes the live environment's native ABI: c++ target triple,
+#      libc identity and C++ compiler major.minor must match the donor
+#      provenance — recorded metadata alone is not accepted as proof.
 #   4. Recomputed lib AND include inventories equal the manifest
 #      hashes; bundle_id recomputes equal. Every lib/ entry exists,
 #      resolves (no broken symlink) and is a regular file.
@@ -174,8 +177,8 @@ for k in ("bundle_id", "lib_inventory_sha256", "include_inventory_sha256",
     v = mf.get(k)
     if isinstance(v, str) and v.strip() and not is_hex64(v):
         fail(f"field {k} is not a sha256 hex digest")
-if mf.get("manifest_version") != 3:
-    fail("manifest_version != 3 (re-run lbug-native-prepare.sh)")
+if mf.get("manifest_version") != 4:
+    fail("manifest_version != 4 (re-run lbug-native-prepare.sh)")
 if mf.get("linkage") not in (None, "") and mf.get("linkage") != "static":
     fail(f"linkage {mf.get('linkage')!r} != 'static'")
 if mf.get("materialize") not in (None, "") and mf.get("materialize") not in ("symlink", "hardlink", "copy"):
@@ -184,8 +187,8 @@ dp = mf.get("donor_provenance")
 if not isinstance(dp, dict):
     fail("donor_provenance missing/not an object")
 else:
-    for k in ("cmake_cxx_compiler", "cmake_build_type", "cmake_generator",
-              "cxx_dumpmachine", "libc_version"):
+    for k in ("cmake_cxx_compiler", "cmake_cxx_version", "cmake_build_type",
+              "cmake_generator", "cxx_dumpmachine", "libc_version"):
         if not isinstance(dp.get(k), str) or not dp[k].strip():
             fail(f"donor_provenance.{k} missing/empty")
     if not isinstance(dp.get("cmake_cxx_flags"), str):
@@ -221,6 +224,49 @@ try:
             fail(f"rustc_commit {mf.get('rustc_commit')} != current {kv.get('commit-hash')}")
 except Exception as e:
     fail(f"rustc -vV probe failed: {e}")
+
+# ── 3b. gate-env: probe ACTUAL native ABI compatibility ───────────────
+# Recorded provenance alone does not establish that these archives can
+# link in the gate container. Probe the LIVE toolchain: compiler target
+# triple, libc identity and C++ compiler version must match the donor
+# build or the static archives/bridge may be ABI-incompatible. The
+# definitive proof remains the linked-runtime acceptance test; this
+# check rejects obviously incompatible donors before any build starts.
+if gate_env and isinstance(dp, dict):
+    def _probe(cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=30).stdout
+        except Exception:
+            return ""
+    cur_dump = (_probe(["c++", "-dumpmachine"]).strip()
+                or _probe(["cc", "-dumpmachine"]).strip())
+    if not cur_dump:
+        fail("gate-env ABI: cannot probe c++ -dumpmachine")
+    elif dp.get("cxx_dumpmachine") and cur_dump != dp["cxx_dumpmachine"]:
+        fail(f"gate-env ABI: compiler target {cur_dump} != donor {dp['cxx_dumpmachine']}")
+    libc_lines = _probe(["ldd", "--version"]).splitlines()
+    cur_libc = libc_lines[0].strip() if libc_lines else ""
+    if not cur_libc:
+        fail("gate-env ABI: cannot probe ldd --version")
+    elif dp.get("libc_version") and cur_libc != dp["libc_version"]:
+        fail(f"gate-env ABI: libc '{cur_libc}' != donor '{dp['libc_version']}'")
+    def _mm(ver):
+        m = re.search(r"(\d+)\.(\d+)", ver or "")
+        return f"{m.group(1)}.{m.group(2)}" if m else ""
+    cur_cxxv = ""
+    for line in _probe(["c++", "--version"]).splitlines():
+        if line.strip():
+            f = line.split()
+            cur_cxxv = f[3] if len(f) > 3 else f[-1]
+            break
+    donor_mm = _mm(dp.get("cmake_cxx_version"))
+    cur_mm = _mm(cur_cxxv)
+    if not donor_mm or not cur_mm:
+        fail("gate-env ABI: cannot determine C++ compiler version")
+    elif donor_mm != cur_mm:
+        fail(f"gate-env ABI: C++ {cur_mm} != donor compiler {donor_mm} "
+             f"({dp.get('cmake_cxx_version')}) — archives may be ABI-incompatible")
 
 # ── 4. dest_path must equal the verified dir's realpath ───────────────
 # (skipped for staging self-verify: manifest already records the final
@@ -294,9 +340,17 @@ if is_hex64(mf.get("lib_inventory_sha256") or "") and inv != mf["lib_inventory_s
 iinv = hashlib.sha256("\n".join(sorted(ilines)).encode()).hexdigest()
 if is_hex64(mf.get("include_inventory_sha256") or "") and iinv != mf["include_inventory_sha256"]:
     fail("include inventory content hash mismatch (headers mutated)")
-bundle = hashlib.sha256(f"{mf.get('lbug_version')}|{inv}|{iinv}".encode()).hexdigest()
+# bundle_id v4: content inventories PLUS effective build identity —
+# donor ABI provenance, bridge CXXFLAGS roots and linkage. Two bundles
+# with identical archive/header bytes but different build provenance
+# MUST NOT share an identity.
+prov_lines = [f"{k}={v}" for k, v in sorted(dp.items())] if isinstance(dp, dict) else []
+prov_lines += [f"cxxflags={mf.get('cxxflags') or ''}",
+               f"linkage={mf.get('linkage') or ''}"]
+prov_hash = hashlib.sha256("\n".join(sorted(prov_lines)).encode()).hexdigest()
+bundle = hashlib.sha256(f"{mf.get('lbug_version')}|{inv}|{iinv}|{prov_hash}".encode()).hexdigest()
 if is_hex64(mf.get("bundle_id") or "") and bundle != mf["bundle_id"]:
-    fail("bundle_id mismatch (content identity drift)")
+    fail("bundle_id mismatch (content/provenance identity drift)")
 
 # ── 6. materialize mode agrees with entry types ───────────────────────
 mode = mf.get("materialize")
@@ -373,7 +427,10 @@ done
 [ -n "$FROM" ] && [ -n "$DEST" ] || { echo "both --from and --dest required" >&2; exit 2; }
 case "$MATERIALIZE" in auto|symlink|hardlink|copy) ;; *) echo "bad --materialize $MATERIALIZE" >&2; exit 2 ;; esac
 [ -d "$FROM/build" ] || { echo "donor $FROM/build not found — pass the lbug OUT dir (contains build/)" >&2; exit 1; }
-DEST="$(cd "$(dirname "$DEST")" 2>/dev/null && pwd)/$(basename "$DEST")"
+# Canonicalize DEST (physical path) so the publication lock, manifest
+# dest_path and every consumer's <dest>.lock resolve to the same inode
+# even when the caller passes a symlinked path.
+DEST="$(cd "$(dirname "$DEST")" 2>/dev/null && pwd -P)/$(basename "$DEST")"
 mkdir -p "$(dirname "$DEST")"
 
 # ── atomic publication lock: exclusive vs consumers' shared flock ─────
@@ -388,6 +445,17 @@ if [ -f "$DEST/manifest.json" ] && [ "$REPLACE" != "1" ]; then
   echo "lbug-native: $DEST already prepared — pass --replace to republish" >&2
   exit 1
 fi
+
+# Remove abandoned publication leftovers (.old.<pid> retired bundles,
+# .staging.<pid> staging dirs) from crashed prepares. The exclusive
+# flock held here guarantees no live prepare or consumer can still
+# reference them — consumers only ever use the canonical $DEST path.
+for stale in "$DEST".old.* "$DEST".staging.*; do
+  if [ -e "$stale" ] || [ -L "$stale" ]; then
+    echo "lbug-native: removing abandoned $stale" >&2
+    rm -rf "$stale"
+  fi
+done
 
 LBUG_SRC=""
 for c in "${CARGO_HOME:-$HOME/.cargo}" /ci-cache/cargo; do
@@ -416,7 +484,8 @@ DP_GENERATOR="$(cmake_get CMAKE_GENERATOR)"
 [ -n "$DP_COMPILER" ] && [ -n "$DP_BUILD_TYPE" ] \
   || { echo "CMakeCache missing CMAKE_CXX_COMPILER/CMAKE_BUILD_TYPE" >&2; exit 1; }
 DP_DUMPMACHINE="$("$DP_COMPILER" -dumpmachine 2>/dev/null || echo unknown)"
-DP_LIBC="$(ldd --version 2>/dev/null | head -1 || echo unknown)"
+DP_CXX_VERSION="$("$DP_COMPILER" --version 2>/dev/null | awk 'NR==1{print $4}' | tr -d ')' || echo unknown)"
+DP_LIBC="$(ldd --version 2>/dev/null | sed -n '1p')"
 
 # ── lib/: materialize every static archive produced by the bundled build ──
 MODE="$MATERIALIZE"
@@ -521,11 +590,12 @@ python3 - "$STAGE" "$FROM" "$LBUG_SRC" "$VERSION" "$count" "$MODE" \
         "$PROFILE" "$RUSTC_REL" "$RUSTC_COMMIT" "$HOST_TRIPLE" \
         "$CARGO_V" "$CMAKE_V" "$CXX_V" "$NOW" "$CXXFLAGS_OUT" "$DEST" \
         "$DP_COMPILER" "$DP_BUILD_TYPE" "$DP_CXXFLAGS" "$DP_GENERATOR" \
-        "$DP_DUMPMACHINE" "$DP_LIBC" "$LOCK_SHA" <<'PY'
+        "$DP_DUMPMACHINE" "$DP_CXX_VERSION" "$DP_LIBC" "$LOCK_SHA" <<'PY'
 import json, sys, os, hashlib
 (stage, frm, src, ver, n, mode, profile, rustc, commit, triple,
  cargo, cmake, cxx, now, cxxflags, dest,
- dp_comp, dp_btype, dp_cflags, dp_gen, dp_dump, dp_libc, lock_sha) = sys.argv[1:]
+ dp_comp, dp_btype, dp_cflags, dp_gen, dp_dump, dp_cxxver, dp_libc,
+ lock_sha) = sys.argv[1:]
 
 def inv(root):
     lines = []
@@ -556,10 +626,29 @@ for name in sorted(os.listdir(libdir)):
     total += sz
 lib_inv = hashlib.sha256("\n".join(sorted(lib_lines)).encode()).hexdigest()
 inc_inv = hashlib.sha256(inv(os.path.join(stage, "include")).encode()).hexdigest()
-bundle_id = hashlib.sha256(f"{ver}|{lib_inv}|{inc_inv}".encode()).hexdigest()
+# Effective bundle identity (manifest v4): archive+header content is
+# NOT sufficient — two donors can emit byte-identical archives/headers
+# yet differ in the ABI inputs that produced them. The identity covers
+# the full recorded build provenance (donor compiler target/version,
+# libc, C++ flags, generator, build type), the bridge CXXFLAGS roots
+# and the linkage contract, so incompatible prebuilt A -> prebuilt B
+# reuse is a fingerprint mismatch even when bytes happen to match.
+donor_prov = {
+    "cmake_cxx_compiler": dp_comp,
+    "cmake_cxx_version": dp_cxxver,
+    "cmake_build_type": dp_btype,
+    "cmake_cxx_flags": dp_cflags,
+    "cmake_generator": dp_gen,
+    "cxx_dumpmachine": dp_dump,
+    "libc_version": dp_libc,
+}
+prov_lines = [f"{k}={v}" for k, v in sorted(donor_prov.items())]
+prov_lines += [f"cxxflags={cxxflags}", "linkage=static"]
+prov_hash = hashlib.sha256("\n".join(sorted(prov_lines)).encode()).hexdigest()
+bundle_id = hashlib.sha256(f"{ver}|{lib_inv}|{inc_inv}|{prov_hash}".encode()).hexdigest()
 
 json.dump({
-    "manifest_version": 3,
+    "manifest_version": 4,
     "created_utc": now,
     "created_by": "scripts/ci/lbug-native-prepare.sh",
     "bundle_id": bundle_id,
@@ -567,14 +656,7 @@ json.dump({
     "lbug_crate_sha256": lock_sha,
     "lbug_src": src,
     "donor_out": frm,
-    "donor_provenance": {
-        "cmake_cxx_compiler": dp_comp,
-        "cmake_build_type": dp_btype,
-        "cmake_cxx_flags": dp_cflags,
-        "cmake_generator": dp_gen,
-        "cxx_dumpmachine": dp_dump,
-        "libc_version": dp_libc,
-    },
+    "donor_provenance": donor_prov,
     "materialize": mode,
     "cargo_profile": profile,
     "dest_path": os.path.realpath(dest),
@@ -608,26 +690,42 @@ if ! LBUG_VERIFY_STAGE=1 verify_dir "$STAGE" 0 >/dev/null; then
   exit 1
 fi
 
-# ── publish: retire old dest, atomic rename ───────────────────────────
+# ── publish: retire old dest only around a VERIFIED replacement ───────
+# Lifecycle contract:
+#   1. The staged bundle already passed self-verify (above).
+#   2. The previous valid bundle is moved aside, never deleted up front.
+#   3. If the rename or the final verify fails, the previous bundle is
+#      restored — a failed publication must not leave a broken or
+#      unverified bundle live.
+#   4. Only after the published bundle verifies AND the exclusive
+#      bundle lock is still held (no consumer can hold a shared lock
+#      referencing the retired dir) is the retired bundle removed.
+OLD=""
 if [ -d "$DEST" ]; then
   OLD="$DEST.old.$$"
-  mv "$DEST" "$OLD"
+  mv "$DEST" "$OLD" || { echo "lbug-native: cannot retire existing $DEST" >&2; exit 1; }
 fi
 if ! mv "$STAGE" "$DEST"; then
-  [ -n "$OLD" ] && mv "$OLD" "$DEST"
+  if [ -n "$OLD" ]; then mv "$OLD" "$DEST"; fi
+  echo "lbug-native: publish rename failed; previous bundle restored" >&2
   exit 1
 fi
-OLD=""
+# Final verify at the published path. On failure the new bundle is
+# unproven: remove it and restore the previous valid bundle.
+if ! verify_dir "$DEST" 0 >/dev/null; then
+  verify_dir "$DEST" 0 >&2 || true
+  rm -rf "$DEST"
+  if [ -n "$OLD" ]; then mv "$OLD" "$DEST"; fi
+  echo "lbug-native: published bundle failed final verify; previous bundle restored" >&2
+  exit 1
+fi
+# Success. Consumers verify under the SHARED side of this same lock
+# (build-lane.sh/run-local.sh acquire it before --verify, BUILD-07), so
+# holding the exclusive lock here proves no consumer can still reference
+# the retired bundle — it is now safe to remove.
+if [ -n "$OLD" ]; then rm -rf "$OLD"; fi
 trap - EXIT
 rm -rf "$STAGE" 2>/dev/null || true
-[ -n "$OLD" ] && rm -rf "$OLD"
-
-# Final verify at the published path.
-if ! verify_dir "$DEST" 0 >/dev/null; then
-  echo "lbug-native: published $DEST but final verify FAILED" >&2
-  verify_dir "$DEST" 0 >&2 || true
-  exit 1
-fi
 
 echo "lbug-native: prepared $DEST ($count archives, $MODE, lbug $VERSION, profile $PROFILE)"
 echo "lbug-native: bundle_id $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["bundle_id"][:16])' "$DEST/manifest.json")…"

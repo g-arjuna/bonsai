@@ -16,7 +16,7 @@
 #                 if absent and is NEVER deleted by this script.
 #   --label NAME  free-text lane label recorded in the compat marker.
 #   --lbug-native PATH  prepared dir from lbug-native-prepare.sh.
-#                 The bundle is verified fail-closed (manifest v3:
+#                 The bundle is verified fail-closed (manifest v4:
 #                 mandatory provenance fields, full archive+header content
 #                 inventory, bundle_id, donor ABI provenance) and its
 #                 content fingerprint is recorded in the lane marker —
@@ -88,7 +88,18 @@ bash "$GUARD" sanity
 
 NATIVE_ID=""
 if [ -n "$LBUG_NATIVE" ]; then
-  [ -f "$LBUG_NATIVE/manifest.json" ] || { echo "build-lane: $LBUG_NATIVE/manifest.json missing — run lbug-native-prepare.sh first" >&2; exit 2; }
+  # Canonicalize so <dir>.lock resolves to the same inode for every
+  # consumer/publisher regardless of symlinked invocation paths.
+  _native_in="$LBUG_NATIVE"
+  LBUG_NATIVE="$(cd "$_native_in" 2>/dev/null && pwd -P || true)"
+  [ -n "$LBUG_NATIVE" ] && [ -f "$LBUG_NATIVE/manifest.json" ] \
+    || { echo "build-lane: $_native_in/manifest.json missing — run lbug-native-prepare.sh first" >&2; exit 2; }
+  # Hold the bundle SHARED lock BEFORE verification and identity
+  # extraction, through environment construction and actual consumption
+  # (BUILD-07): prepare takes the exclusive side, so archives cannot be
+  # replaced between verify and the build that trusts them.
+  exec 7>"$LBUG_NATIVE.lock"
+  flock -s 7
   # Fail-closed provenance/integrity check before trusting the dir.
   if ! NATIVE_VERDICT="$(bash "$SCRIPT_DIR/lbug-native-prepare.sh" --verify "$LBUG_NATIVE")"; then
     echo "build-lane: GATE FAIL — lbug-native dir failed verification:" >&2
@@ -141,13 +152,15 @@ bash "$GUARD" record --dir "$DIR" --mode "$LBUG_MODE" \
     ${NATIVE_ID:+--native-id "$NATIVE_ID"} \
     ${LBUG_NATIVE:+--native-path "$LBUG_NATIVE"} --label "$LABEL"
 
-# Apply prebuilt env from validated manifest metadata; hold the bundle
-# shared lock for the duration of the child command so prepare cannot
-# replace archives mid-build.
+# Apply prebuilt env from validated manifest metadata. The bundle
+# shared lock (fd 7) has been held since before verification and stays
+# held through the child command so prepare cannot replace archives
+# mid-build. Env arrives as TAB-separated KEY<TAB>VALUE and is applied
+# via structured export — never eval (BUILD-12).
 if [ -n "$LBUG_NATIVE" ]; then
-  exec 7>"$LBUG_NATIVE.lock"
-  flock -s 7
-  eval "$(bash "$GUARD" env --dir "$LBUG_NATIVE")"
+  while IFS=$'\t' read -r _k _v; do
+    [ -n "$_k" ] && export "$_k=$_v"
+  done < <(bash "$GUARD" env --dir "$LBUG_NATIVE")
 fi
 
 echo "build-lane: CARGO_TARGET_DIR=$DIR lbug=$LBUG_MODE${NATIVE_ID:+ bundle=${NATIVE_ID:0:12}} cmd: $*" >&2
