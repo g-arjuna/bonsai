@@ -2165,49 +2165,79 @@ pub async fn events_embeddings_handler(
                 0
             };
             let contention = d.kind.as_deref() == Some("claim_contention");
-            if contention {
+            // WP65-21 atomic claim-and-set: the eligibility + claim
+            // predicate lives INSIDE the update's WHERE clause, so a
+            // concurrent lifecycle transition (completion, invalid
+            // close, attempt consume, newer fetch token) between the
+            // read above and this write makes the update match zero
+            // rows instead of double-applying. `RETURN e.id` lets us
+            // distinguish applied from fenced.
+            let token_clause = match d.claim_token.as_deref() {
+                Some(tok) if !tok.is_empty() => {
+                    "AND e.embedding_claim_token = $ctok"
+                }
+                _ => "",
+            };
+            let guard = format!(
+                "MATCH (e:StateChangeEvent {{id: $eid}}) \
+                 WHERE e.needs_embedding = 1 AND e.embedding_invalid = 0 \
+                 AND e.embedding_attempts = $expected {token_clause}"
+            );
+            let apply = |conn: &lbug::Connection<'_>,
+                         set_clause: &str,
+                         extra: Vec<(&str, Value)>|
+             -> Result<bool, anyhow::Error> {
+                let mut params = vec![
+                    ("eid", Value::String(d.event_id.clone())),
+                    ("expected", Value::Int64(attempts)),
+                ];
+                if !token_clause.is_empty()
+                    && let Some(tok) = d.claim_token.as_deref()
+                {
+                    params.push(("ctok", Value::String(tok.to_string())));
+                }
+                params.extend(extra);
+                let mut up = conn.prepare(&format!("{guard} SET {set_clause} RETURN e.id"))?;
+                let mut rows = conn.execute(&mut up, params)?;
+                Ok(rows.next().is_some())
+            };
+            let applied = if contention {
                 // Claim contention is not the event's fault: reschedule
                 // without consuming an attempt (WP65-17).
                 let deadline = (now_ns + CLAIM_CONTENTION_BACKOFF_NS).max(hint);
-                let mut up = conn.prepare(
-                    "MATCH (e:StateChangeEvent {id: $eid}) SET \
-                     e.embedding_retry_after_ns = $r",
-                )?;
-                conn.execute(
-                    &mut up,
-                    vec![
-                        ("eid", Value::String(d.event_id.clone())),
-                        ("r", Value::Int64(deadline)),
-                    ],
-                )?;
+                apply(
+                    &conn,
+                    "e.embedding_retry_after_ns = $r",
+                    vec![("r", Value::Int64(deadline))],
+                )?
             } else {
                 let new_attempts = attempts + 1;
                 if new_attempts > MAX_EMBEDDING_ATTEMPTS {
-                    let mut up = conn.prepare(
-                        "MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0, \
-                         e.embedding_invalid = 1, \
+                    apply(
+                        &conn,
+                        "e.needs_embedding = 0, e.embedding_invalid = 1, \
                          e.embedding_invalid_reason = 'embedding_retry_exhausted', \
                          e.embedding_retry_after_ns = 0",
-                    )?;
-                    conn.execute(&mut up, vec![("eid", Value::String(d.event_id.clone()))])?;
+                        vec![],
+                    )?
                 } else {
                     let backoff = embedding_retry_backoff_ns(new_attempts);
                     let deadline = (now_ns + backoff).max(hint);
-                    let mut up = conn.prepare(
-                        "MATCH (e:StateChangeEvent {id: $eid}) SET e.embedding_attempts = $a, \
-                         e.embedding_retry_after_ns = $r",
-                    )?;
-                    conn.execute(
-                        &mut up,
+                    apply(
+                        &conn,
+                        "e.embedding_attempts = $a, e.embedding_retry_after_ns = $r",
                         vec![
-                            ("eid", Value::String(d.event_id.clone())),
                             ("a", Value::Int64(new_attempts)),
                             ("r", Value::Int64(deadline)),
                         ],
-                    )?;
+                    )?
                 }
+            };
+            if applied {
+                deferred_applied += 1;
+            } else {
+                deferred_skipped += 1;
             }
-            deferred_applied += 1;
         }
         for inv in &req.invalid {
             if inv.event_id.is_empty()
@@ -2259,19 +2289,39 @@ pub async fn events_embeddings_handler(
                 invalid_skipped += 1;
                 continue;
             }
-            let mut up = conn.prepare(
-                "MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0, \
-                 e.embedding_invalid = 1, e.embedding_invalid_reason = $reason, \
-                 e.embedding_retry_after_ns = 0",
-            )?;
-            conn.execute(
-                &mut up,
-                vec![
-                    ("eid", Value::String(inv.event_id.clone())),
-                    ("reason", Value::String(inv.reason.clone())),
-                ],
-            )?;
-            invalid_applied += 1;
+            // Same atomic claim-and-set as the deferred path: the
+            // eligibility + claim predicate is inside the update WHERE
+            // so a concurrent transition fences the write.
+            let token_clause = match inv.claim_token.as_deref() {
+                Some(tok) if !tok.is_empty() => {
+                    "AND e.embedding_claim_token = $ctok"
+                }
+                _ => "",
+            };
+            let mut params = vec![
+                ("eid", Value::String(inv.event_id.clone())),
+                ("expected", Value::Int64(attempts)),
+                ("reason", Value::String(inv.reason.clone())),
+            ];
+            if !token_clause.is_empty()
+                && let Some(tok) = inv.claim_token.as_deref()
+            {
+                params.push(("ctok", Value::String(tok.to_string())));
+            }
+            let mut up = conn.prepare(&format!(
+                "MATCH (e:StateChangeEvent {{id: $eid}}) \
+                 WHERE e.needs_embedding = 1 AND e.embedding_invalid = 0 \
+                 AND e.embedding_attempts = $expected {token_clause} \
+                 SET e.needs_embedding = 0, e.embedding_invalid = 1, \
+                 e.embedding_invalid_reason = $reason, \
+                 e.embedding_retry_after_ns = 0 RETURN e.id"
+            ))?;
+            let mut rows = conn.execute(&mut up, params)?;
+            if rows.next().is_some() {
+                invalid_applied += 1;
+            } else {
+                invalid_skipped += 1;
+            }
         }
         Ok::<_, anyhow::Error>(serde_json::json!({
             "submitted": submitted,
