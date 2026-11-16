@@ -101,6 +101,7 @@ async fn start_lab(udp: bool, tcp: bool, collector_id: &str, targets: Vec<Target
         archive_path: archive_path.clone(),
         max_frame_bytes: 8192,
         collector_id: collector_id.to_string(),
+        ..SyslogConfig::default()
     };
     let bus = InProcessBus::new(1024);
     let rx = bus.subscribe();
@@ -116,7 +117,23 @@ async fn start_lab(udp: bool, tcp: bool, collector_id: &str, targets: Vec<Target
         None,
         None,
     ));
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    // Readiness: TCP labs probe-connect until the listener accepts
+    // (fixed sleeps race under parallel gate load); UDP keeps a short
+    // settle delay since datagrams cannot handshake.
+    if tcp {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match TcpStream::connect(&format!("127.0.0.1:{tcp_port}")).await {
+                Ok(_) => break,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(e) => panic!("syslog TCP listener not ready: {e}"),
+            }
+        }
+    } else {
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
     Lab {
         rx,
         udp_addr: format!("127.0.0.1:{udp_port}"),
