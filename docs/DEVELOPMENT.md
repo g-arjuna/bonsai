@@ -124,7 +124,6 @@ toolchain, disposable worktree, no Rust compiled); run it after any
 `gates.sh` change.
 
 ### CI runners — DEFERRED BY OWNER POLICY
-
 Remote CI is deferred under the local-first policy (2026-11-15). The
 following runner design is preserved for future activation; no hosted or
 self-hosted runner is currently required or registered, and
