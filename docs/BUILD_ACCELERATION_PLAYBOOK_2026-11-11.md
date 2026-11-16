@@ -157,3 +157,65 @@ Add one normal row to `docs/build-times/runs.csv` using the current schema. Stor
 - [cargo-nextest archive/reuse](https://nexte.st/docs/ci-features/archiving/), [execution partitioning](https://nexte.st/docs/ci-features/partitioning/): compile once, run in multiple partitions where appropriate.
 
 **Invariants:** the purpose is to reduce unproductive waiting **without reducing test integrity, user/data security, authoritativeness, or release evidence**. Every change must report what was measured, what was actually executed and what was deliberately deferred.
+
+## 8. Implemented build-lane reuse (16 November 2026, measured)
+
+Source-measured root cause of repeated LadybugDB rebuilds and the
+implemented reuse mechanism. Evidence: `docs/build-times/runs.csv`
+2026-11-16 rows; scripts `scripts/ci/build-lane.sh`,
+`scripts/ci/lbug-native-prepare.sh`, `run-local.sh --shared-target-dir`
+/ `--lbug-native`.
+
+### 8.1 Root cause (measured, not guessed)
+
+- `lbug 0.15.3` `build.rs` runs a full CMake build of the bundled
+  LadybugDB C++ tree (~500 TUs → `liblbug.a` = 2.36 GB) **once per
+  distinct Cargo unit fingerprint**. `cargo check` (rmeta-only unit),
+  `cargo build`/`cargo test` (rlib unit) and each profile are separate
+  units — the AGENTS.md `cargo check` inner loop therefore triggers a
+  second full native pipeline after every build/test.
+- Observed 2026-11-16 in `/tmp/bonsai-wp65a/target`: two complete CMake
+  pipelines, 76m35s (cold) and 35m28s (sccache-warm). lbug's own
+  CMakeLists auto-enables `sccache` via `find_program` — it IS the C++
+  cache launcher on host and in `bonsai-ci:local`; warm C++ rebuild is
+  ~2x faster but the configure/archive/bridge pipeline still reruns.
+- `run-local.sh --shared-target` only shares the *invoking* checkout's
+  `target/` — no cross-worktree reuse existed.
+
+### 8.2 Implemented mechanism
+
+- `build-lane.sh` — host lane: blocking `flock` single-owner scheduling,
+  `CARGO_TARGET_DIR=<lane>`, toolchain/`lbug_mode` compat marker.
+- `run-local.sh --shared-target-dir PATH` — same lane inside the CI
+  container (trusted only, host-side flock for the whole run).
+- `lbug-native-prepare.sh` + `--lbug-native` — assembles
+  `LBUG_LIBRARY_DIR`/`LBUG_INCLUDE_DIR`/`CXXFLAGS` from a completed
+  bundled OUT dir (19 archives + merged headers + `lbug.hpp` shim for
+  the non-`LBUG_BUNDLED` include branch). lbug's build.rs then compiles
+  only the small cxx bridge per unit — **no CMake at all**.
+
+### 8.3 Measured results (dev host, 2026-11-16)
+
+| Scenario | Wall | lbug native work |
+|---|---|---|
+| Warm same-worktree `cargo test --no-run` | 3m08s | none (fresh) |
+| Compatible-worktree reuse, shared lane | 5m52s | none — verified |
+| `cargo check -p bonsai --lib`, `--lbug-native` | 1m02s | bridge only (~10s crate) |
+| Bundled build-script run (observed) | 76m35s / 35m28s | full CMake ×2 |
+
+Peak RSS 4.1–4.7 GB; no OOM. Host↔container toolchains identical, so
+lane artifacts are interchangeable — but `.cargo/config.toml` rustflags,
+profile, features and toolchain must stay fixed or fingerprints fork.
+
+### 8.4 Remaining guidance
+
+- Canonical heavy lane: one managed dir (e.g.
+  `~/.cache/bonsai-ci/build-lane`) + `--lbug-native`; never two cargo
+  owners (flock enforces), never `cargo clean` on it.
+- `LBUG_SHARED=1` dylib mode remains an optional experiment only; not
+  needed now that prebuilt-native removes the CMake rerun cost.
+- Native lib provenance: prepared once from a bundled OUT dir of the
+  pinned `lbug 0.15.3`; `manifest.json` records version + inventory.
+  Re-prepare only on lbug version bump.
+- Disk: the 171 GB checkout `target/` plus per-worktree targets remain
+  the ENOSPC risk; prefer the shared lane over new cold targets.

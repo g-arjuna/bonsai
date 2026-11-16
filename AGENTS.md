@@ -58,6 +58,14 @@ prior parallel build OOM-killed the desktop session. Rules:
   `test-replay`) or focused targets — `cargo test -p <crate>` /
   `cargo test --test <name>`. Never bare `cargo build`/`cargo test` on the
   `bonsai` package: it compiles ~600 deps + dev-deps + a ~1 GB dev binary.
+- **Shared build lane (2026-11-16):** route heavyweight cargo through
+  `scripts/ci/build-lane.sh --dir <lane> [--lbug-native <dir>] -- <cmd>`
+  (flock single-owner + warm cross-worktree target reuse) and container
+  gates through `run-local.sh --shared-target-dir/--lbug-native`. lbug's
+  CMake build reruns per cargo unit kind (~35–77 min); `--lbug-native`
+  prebuilt mode reduces that to a ~10 s cxx bridge. See
+  `docs/DEVELOPMENT.md` "Trusted build lanes". Never mix bundled/prebuilt
+  lbug modes on one target dir.
 - sccache is the configured `rustc-wrapper` (`.cargo/config.toml`) and its
   server persists across sessions — sccache is MANDATORY, not optional. Never
   prefix cargo with `RUSTC_WRAPPER=` and never bypass the wrapper: if sccache
