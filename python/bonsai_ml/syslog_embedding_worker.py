@@ -179,6 +179,74 @@ def _extract_event_text(e: dict[str, Any]) -> str:
     return text
 
 
+_ACK_STATUSES = frozenset({"accepted", "already_existing", "rejected"})
+
+
+def _is_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _validate_embedding_ack(
+    body: Any, records: list[dict[str, Any]], written: int
+) -> Optional[list[int]]:
+    """Fully validate a write-back acknowledgement (WP65-18).
+
+    Returns the list of submitted-record indexes the server marked
+    ``accepted``, or ``None`` when the acknowledgement is malformed or
+    internally inconsistent — in which case NO occurrence bookkeeping
+    may be committed.
+    """
+    if not isinstance(body, dict):
+        return None
+    items = body.get("items")
+    if not isinstance(items, list) or len(items) != len(records):
+        return None
+    accepted: list[int] = []
+    seen: set[int] = set()
+    status_counts = {"accepted": 0, "already_existing": 0, "rejected": 0}
+    for item in items:
+        if not isinstance(item, dict):
+            return None
+        idx = item.get("index")
+        if not _is_int(idx) or idx < 0 or idx >= len(records) or idx in seen:
+            return None
+        seen.add(idx)
+        status = item.get("status")
+        if status not in _ACK_STATUSES:
+            return None
+        status_counts[status] += 1
+        if item.get("event_id") != records[idx].get("event_id"):
+            return None
+        if status == "accepted":
+            accepted.append(idx)
+    # Every submitted item must have exactly one attributable status.
+    if len(seen) != len(records):
+        return None
+    # Aggregate counts must reconcile with the per-item statuses.
+    for field in ("accepted", "already_existing", "persisted", "submitted"):
+        v = body.get(field)
+        if not _is_int(v) or v < 0:
+            return None
+    rejected_list = body.get("rejected")
+    if not isinstance(rejected_list, list):
+        return None
+    if body["accepted"] != status_counts["accepted"]:
+        return None
+    if body["already_existing"] != status_counts["already_existing"]:
+        return None
+    if body["persisted"] != status_counts["accepted"] + status_counts[
+        "already_existing"
+    ]:
+        return None
+    if body["persisted"] != written:
+        return None
+    if body["submitted"] != len(records):
+        return None
+    if len(rejected_list) != status_counts["rejected"]:
+        return None
+    return accepted
+
+
 def _embed_and_post(
     api_url: str,
     events: list[dict[str, Any]],
@@ -188,12 +256,26 @@ def _embed_and_post(
     texts = [_extract_event_text(e) for e in events]
     event_ids = [e.get("id") or e.get("event_id") for e in events]
     event_types = [e.get("event_type") or e.get("type") or "" for e in events]
+    # WP65-17: per-event processing-generation claim echoed from the
+    # unembedded fetch — the server applies lifecycle reports only
+    # while the stored attempt count still equals this claim, so
+    # duplicate deliveries and stale reports cannot double-consume
+    # attempts or alter completed enrichment.
+    claims = {
+        str(e.get("id") or e.get("event_id")): e.get("claim_attempts")
+        for e in events
+        if e.get("id") or e.get("event_id")
+    }
 
     # WP65-14: events with an id but no extractable text can never be
     # enriched — report them permanently invalid instead of letting them
     # occupy the oldest-first fetch forever.
     invalid_reports = [
-        {"event_id": str(eid), "reason": "no_extractable_text"}
+        {
+            "event_id": str(eid),
+            "reason": "no_extractable_text",
+            "claim_attempts": claims.get(str(eid)),
+        }
         for eid, text in zip(event_ids, texts)
         if eid and not (text or "").strip()
     ]
@@ -278,7 +360,16 @@ def _embed_and_post(
     # bounded retry deadline — failed/backed-off events cannot starve
     # healthy events in the oldest-first fetch.
     deferred_reports = [
-        {"event_id": str(valid_pairs[pos][1])}
+        {
+            "event_id": str(valid_pairs[pos][1]),
+            "claim_attempts": claims.get(str(valid_pairs[pos][1])),
+            # Unresolved lookups are reported as provider_error (the
+            # bounded-attempt default): under dedup they may be template
+            # claim contention, but per-item contention is not
+            # attributable here, and provider failures must still
+            # consume attempts so retry exhaustion stays reachable.
+            "kind": "provider_error",
+        }
         for pos in range(len(valid_pairs))
         if pos >= len(vectors) or vectors[pos] is None
     ]
@@ -330,38 +421,39 @@ def _embed_and_post(
                 written, len(embedding_records),
                 len(rejected) if isinstance(rejected, list) else -1,
             )
-        # WP65-13: occurrence commits are attributed per-item. Only
+        # WP65-13/18: occurrence commits are attributed per-item. Only
         # records the server acknowledged as "accepted" (newly persisted
         # embedding identities) count as new template occurrences —
         # "already_existing" replays and rejected items never inflate
-        # template_occurrences. Without a per-item "items" array we
-        # cannot attribute the batch, so we conservatively commit nothing.
+        # template_occurrences. The acknowledgement must FULLY validate
+        # before any occurrence bookkeeping: every submitted item needs
+        # exactly one attributable status with a valid unique non-
+        # Boolean index, matching event_id and a recognized status, and
+        # the aggregate counts must reconcile. An invalid acknowledgement
+        # commits NO occurrences (registry counts are enrichment
+        # bookkeeping, not operational event authority — a lost ack can
+        # undercount, which is documented and acceptable).
         if dedup is not None and embedding_records:
-            items = body.get("items") if isinstance(body, dict) else None
-            if isinstance(items, list) and len(items) == len(embedding_records):
+            accepted_indexes = _validate_embedding_ack(
+                body, embedding_records, written
+            )
+            if accepted_indexes is None:
+                log.warning(
+                    "Embedding write-back acknowledgement failed full "
+                    "validation; occurrence counts not committed"
+                )
+            else:
                 accepted_keys: list[Optional[str]] = []
-                for item_ack in items:
-                    if not isinstance(item_ack, dict):
-                        accepted_keys = []
-                        break
-                    if item_ack.get("status") == "accepted":
-                        rec_idx = item_ack.get("index")
-                        if isinstance(rec_idx, int) \
-                                and 0 <= rec_idx < len(record_pairs):
-                            pair_pos = record_pairs[rec_idx]
-                            key = (
-                                resolution_keys[pair_pos]
-                                if pair_pos < len(resolution_keys)
-                                else None
-                            )
-                            accepted_keys.append(key)
+                for rec_idx in accepted_indexes:
+                    pair_pos = record_pairs[rec_idx]
+                    key = (
+                        resolution_keys[pair_pos]
+                        if pair_pos < len(resolution_keys)
+                        else None
+                    )
+                    accepted_keys.append(key)
                 if accepted_keys:
                     dedup.commit_occurrences(accepted_keys)
-            else:
-                log.warning(
-                    "Embedding write-back acknowledgement lacks aligned "
-                    "per-item status; occurrence counts not committed"
-                )
             dedup.metrics.events_posted += written
         return written
     except Exception as exc:

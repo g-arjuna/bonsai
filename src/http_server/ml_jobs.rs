@@ -1517,7 +1517,8 @@ pub async fn events_unembedded_handler(
             "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 \
              AND (e.embedding_invalid IS NULL OR e.embedding_invalid = 0) \
              AND (e.embedding_retry_after_ns IS NULL OR e.embedding_retry_after_ns <= $now){type_clause} \
-             RETURN e.id, e.device_address, e.event_type, e.detail, e.occurred_at \
+             RETURN e.id, e.device_address, e.event_type, e.detail, e.occurred_at, \
+             e.embedding_attempts, e.embedding_invalid \
              ORDER BY e.occurred_at ASC, e.id ASC LIMIT {limit}"
         );
         let mut stmt = conn.prepare(&cypher)?;
@@ -1526,11 +1527,17 @@ pub async fn events_unembedded_handler(
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .map(|r| {
                 let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+                let attempts = match &r[5] {
+                    Value::Int64(n) => *n,
+                    _ => 0,
+                };
+                let _invalid = &r[6];
                 serde_json::json!({
                     "id": s(&r[0]),
                     "device_address": s(&r[1]),
                     "event_type": s(&r[2]),
                     "detail_json": s(&r[3]),
+                    "claim_attempts": attempts,
                 })
             })
             .collect::<Vec<_>>();
@@ -1576,8 +1583,22 @@ pub struct EmbeddingItem {
 pub struct EmbeddingDeferredItem {
     pub event_id: String,
     /// Optional client hint for the next eligible fetch (ns epoch).
-    /// The server applies its own attempt-bounded backoff on top.
+    /// The server applies its own attempt-bounded backoff on top and
+    /// clamps the hint to a bounded horizon — it can never schedule
+    /// arbitrarily far into the future.
     pub retry_after_ns: Option<i64>,
+    /// WP65-17 idempotency/processing-generation claim: the
+    /// `embedding_attempts` value the worker observed when it fetched
+    /// the event (returned as `claim_attempts` by the unembedded
+    /// endpoint). When present, the report is applied only if the
+    /// stored attempts still equal the claim — a duplicate delivery or
+    /// a stale report cannot consume another attempt or alter state.
+    pub claim_attempts: Option<i64>,
+    /// WP65-17 failure classification. "claim_contention" (template
+    /// pending under another worker's claim) reschedules WITHOUT
+    /// consuming an attempt; anything else (default) is a provider/
+    /// processing failure that consumes one bounded attempt.
+    pub kind: Option<String>,
 }
 
 /// WP65-14: an event that can never be enriched (e.g. no extractable
@@ -1587,6 +1608,10 @@ pub struct EmbeddingDeferredItem {
 pub struct EmbeddingInvalidItem {
     pub event_id: String,
     pub reason: String,
+    /// Same claim semantics as `EmbeddingDeferredItem::claim_attempts`:
+    /// stale or duplicate invalid reports cannot re-close or alter an
+    /// event whose lifecycle already moved on.
+    pub claim_attempts: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1635,6 +1660,13 @@ const MAX_EMBEDDING_DIM: usize = 4096;
 /// Deferred-retry ceiling: after this many reported deferrals an event
 /// is marked permanently ineligible rather than retrying forever.
 const MAX_EMBEDDING_ATTEMPTS: i64 = 100;
+/// Upper bound for a client-supplied retry_after_ns hint (24h). The
+/// server-side backoff stays the authority; the hint can only extend
+/// the deadline within this horizon, never beyond it.
+const MAX_LIFECYCLE_HINT_NS: i64 = 24 * 3600 * 1_000_000_000;
+/// Default reschedule for claim-contention deferrals (template pending
+/// under another worker): short, does not consume an attempt.
+const CLAIM_CONTENTION_BACKOFF_NS: i64 = 60 * 1_000_000_000;
 /// Explicit "unknown" provenance sentinel — distinct from any real
 /// revision/normalization/schema string, never fabricated.
 const PROVENANCE_UNKNOWN: &str = "unknown";
@@ -1977,78 +2009,205 @@ pub async fn events_embeddings_handler(
             }
         }
 
-        // ── WP65-14: bounded enrichment lifecycle ──────────────────────
-        // Deferred events keep needs_embedding=1 but get a retry deadline
-        // so the oldest-first fetch cannot be starved by them; attempts
-        // are bounded and exhaustion marks the event permanently
-        // ineligible. Invalid events are closed immediately. Raw event
-        // evidence is never touched — only the enrichment obligation.
+        // ── WP65-14/16/17: bounded enrichment lifecycle ───────────────
+        // Deferred events keep needs_embedding=1 but get a retry
+        // deadline so the oldest-first fetch cannot be starved by them;
+        // attempts are bounded and exhaustion marks the event
+        // permanently ineligible. Invalid events are closed immediately.
+        // Raw event evidence is never touched — only the enrichment
+        // obligation.
+        //
+        // WP65-16 allowed transitions: a lifecycle report applies ONLY
+        // when the event still needs enrichment (needs_embedding=1), is
+        // not already permanently invalid, has an authoritative eligible
+        // syslog source type, was not completed earlier in THIS batch,
+        // and — when the worker supplies claim_attempts — the stored
+        // attempt count still equals the claim (processing-generation
+        // idempotency). Stale deferred/invalid reports therefore cannot
+        // alter a completed or already-closed event, and duplicate
+        // deliveries cannot consume extra attempts.
+        //
+        // WP65-17 retry accounting: "claim_contention" deferrals
+        // reschedule without consuming an attempt; other deferrals
+        // consume exactly one attempt per distinct claim. Client retry
+        // hints are clamped to MAX_LIFECYCLE_HINT_NS. Operator retry
+        // contract: an event closed by 'embedding_retry_exhausted' (or
+        // an invalid report) is recoverable by resetting
+        // needs_embedding=1, embedding_invalid=0,
+        // embedding_attempts=0, embedding_retry_after_ns=0 on the
+        // StateChangeEvent — raw operational evidence is retained.
         let mut deferred_applied = 0i64;
+        let mut deferred_skipped = 0i64;
         let mut invalid_applied = 0i64;
+        let mut invalid_skipped = 0i64;
+
+        // Events whose embedding was accepted/replayed in THIS batch —
+        // lifecycle reports for them are stale by definition. `items`
+        // is fully built by the embeddings loop above, so the set is
+        // exact.
+        let mut deferred_seen: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        let mut invalid_seen: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        let mut completed_now: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for it in &items {
+            if let (Some(eid), Some(st)) = (
+                it.get("event_id").and_then(|v| v.as_str()),
+                it.get("status").and_then(|v| v.as_str()),
+            ) {
+                if st == "accepted" || st == "already_existing" {
+                    completed_now.insert(eid.to_string());
+                }
+            }
+        }
+
         for d in &req.deferred {
+            if d.event_id.is_empty() || !deferred_seen.insert(d.event_id.as_str()) {
+                deferred_skipped += 1;
+                continue;
+            }
             let mut st = conn.prepare(
                 "MATCH (e:StateChangeEvent {id: $eid}) \
-                 RETURN e.embedding_attempts, e.embedding_invalid",
+                 RETURN e.event_type, e.needs_embedding, e.embedding_invalid, \
+                 e.embedding_attempts",
             )?;
             let row = conn
                 .execute(&mut st, vec![("eid", Value::String(d.event_id.clone()))])?
                 .next();
-            let Some(row) = row else { continue };
-            let attempts = match &row[0] {
+            let Some(row) = row else {
+                deferred_skipped += 1;
+                continue;
+            };
+            let s = |v: &Value| match v {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            };
+            let i64v = |v: &Value| match v {
                 Value::Int64(n) => *n,
                 _ => 0,
             };
-            let already_invalid = match &row[1] {
-                Value::Int64(n) => *n != 0,
-                _ => false,
+            let event_type = s(&row[0]);
+            let needs_embedding = i64v(&row[1]);
+            let is_invalid = i64v(&row[2]) != 0;
+            let attempts = i64v(&row[3]);
+            // Allowed-state gate: eligible syslog source, still pending,
+            // not permanently invalid, not completed this batch, and
+            // claim-current when a claim was supplied.
+            let claim_ok = match d.claim_attempts {
+                Some(c) => c == attempts,
+                None => true,
             };
-            if already_invalid {
+            if !event_type.starts_with("syslog")
+                || needs_embedding != 1
+                || is_invalid
+                || completed_now.contains(&d.event_id)
+                || !claim_ok
+            {
+                deferred_skipped += 1;
                 continue;
             }
-            let new_attempts = attempts + 1;
-            if new_attempts > MAX_EMBEDDING_ATTEMPTS {
-                let mut up = conn.prepare(
-                    "MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0, \
-                     e.embedding_invalid = 1, \
-                     e.embedding_invalid_reason = 'embedding_retry_exhausted', \
-                     e.embedding_retry_after_ns = 0",
-                )?;
-                conn.execute(
-                    &mut up,
-                    vec![("eid", Value::String(d.event_id.clone()))],
-                )?;
+            // Bounded client hint: ignore non-future hints, clamp the
+            // horizon — the hint can extend but never replace the
+            // server-side backoff authority.
+            let raw_hint = d.retry_after_ns.unwrap_or(0);
+            let hint = if raw_hint > now_ns {
+                raw_hint.min(now_ns + MAX_LIFECYCLE_HINT_NS)
             } else {
-                let backoff = embedding_retry_backoff_ns(new_attempts);
-                let client_hint = d.retry_after_ns.unwrap_or(0);
-                let deadline = now_ns + backoff;
-                let deadline = if client_hint > deadline { client_hint } else { deadline };
+                0
+            };
+            let contention = d.kind.as_deref() == Some("claim_contention");
+            if contention {
+                // Claim contention is not the event's fault: reschedule
+                // without consuming an attempt (WP65-17).
+                let deadline = (now_ns + CLAIM_CONTENTION_BACKOFF_NS).max(hint);
                 let mut up = conn.prepare(
-                    "MATCH (e:StateChangeEvent {id: $eid}) SET e.embedding_attempts = $a, \
+                    "MATCH (e:StateChangeEvent {id: $eid}) SET \
                      e.embedding_retry_after_ns = $r",
                 )?;
                 conn.execute(
                     &mut up,
                     vec![
                         ("eid", Value::String(d.event_id.clone())),
-                        ("a", Value::Int64(new_attempts)),
                         ("r", Value::Int64(deadline)),
                     ],
                 )?;
+            } else {
+                let new_attempts = attempts + 1;
+                if new_attempts > MAX_EMBEDDING_ATTEMPTS {
+                    let mut up = conn.prepare(
+                        "MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0, \
+                         e.embedding_invalid = 1, \
+                         e.embedding_invalid_reason = 'embedding_retry_exhausted', \
+                         e.embedding_retry_after_ns = 0",
+                    )?;
+                    conn.execute(
+                        &mut up,
+                        vec![("eid", Value::String(d.event_id.clone()))],
+                    )?;
+                } else {
+                    let backoff = embedding_retry_backoff_ns(new_attempts);
+                    let deadline = (now_ns + backoff).max(hint);
+                    let mut up = conn.prepare(
+                        "MATCH (e:StateChangeEvent {id: $eid}) SET e.embedding_attempts = $a, \
+                         e.embedding_retry_after_ns = $r",
+                    )?;
+                    conn.execute(
+                        &mut up,
+                        vec![
+                            ("eid", Value::String(d.event_id.clone())),
+                            ("a", Value::Int64(new_attempts)),
+                            ("r", Value::Int64(deadline)),
+                        ],
+                    )?;
+                }
             }
             deferred_applied += 1;
         }
         for inv in &req.invalid {
-            if inv.event_id.is_empty() || inv.reason.len() > 500 {
+            if inv.event_id.is_empty()
+                || inv.reason.len() > 500
+                || !invalid_seen.insert(inv.event_id.as_str())
+                || deferred_seen.contains(inv.event_id.as_str())
+            {
+                invalid_skipped += 1;
                 continue;
             }
             let mut chk = conn.prepare(
-                "MATCH (e:StateChangeEvent {id: $eid}) RETURN e.id",
+                "MATCH (e:StateChangeEvent {id: $eid}) \
+                 RETURN e.event_type, e.needs_embedding, e.embedding_invalid, \
+                 e.embedding_attempts",
             )?;
-            let exists = conn
+            let row = conn
                 .execute(&mut chk, vec![("eid", Value::String(inv.event_id.clone()))])?
-                .next()
-                .is_some();
-            if !exists {
+                .next();
+            let Some(row) = row else {
+                invalid_skipped += 1;
+                continue;
+            };
+            let s = |v: &Value| match v {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            };
+            let i64v = |v: &Value| match v {
+                Value::Int64(n) => *n,
+                _ => 0,
+            };
+            let event_type = s(&row[0]);
+            let needs_embedding = i64v(&row[1]);
+            let is_invalid = i64v(&row[2]) != 0;
+            let attempts = i64v(&row[3]);
+            let claim_ok = match inv.claim_attempts {
+                Some(c) => c == attempts,
+                None => true,
+            };
+            if !event_type.starts_with("syslog")
+                || needs_embedding != 1
+                || is_invalid
+                || completed_now.contains(&inv.event_id)
+                || !claim_ok
+            {
+                invalid_skipped += 1;
                 continue;
             }
             let mut up = conn.prepare(
@@ -2065,7 +2224,6 @@ pub async fn events_embeddings_handler(
             )?;
             invalid_applied += 1;
         }
-
         Ok::<_, anyhow::Error>(serde_json::json!({
             "submitted": submitted,
             "accepted": accepted,
@@ -2074,7 +2232,9 @@ pub async fn events_embeddings_handler(
             "rejected": rejected,
             "items": items,
             "deferred": deferred_applied,
+            "deferred_skipped": deferred_skipped,
             "invalid": invalid_applied,
+            "invalid_skipped": invalid_skipped,
             "deferred_submitted": deferred_submitted,
             "invalid_submitted": invalid_submitted,
         }))

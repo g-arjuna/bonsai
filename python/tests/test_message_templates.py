@@ -483,7 +483,13 @@ class TestWorkerIntegration:
         # reported deferred so core applies a bounded retry deadline.
         assert len(posted) == 1
         assert posted[0]["embeddings"] == []
-        assert posted[0]["deferred"] == [{"event_id": "e1"}]
+        assert posted[0]["deferred"] == [
+            {
+                "event_id": "e1",
+                "claim_attempts": None,
+                "kind": "provider_error",
+            }
+        ]
         dedup.registry.close()
 
 
@@ -836,3 +842,61 @@ class TestClaimGenerationFencing:
         }
         assert "claim_token" in cols
         reg.close()
+
+
+class TestEmbeddingAckValidation:
+    """WP65-18: full acknowledgement validation before occurrence commits."""
+
+    def _records(self):
+        return [
+            {"event_id": "e1", "vector": [0.1, 0.2]},
+            {"event_id": "e2", "vector": [0.3, 0.4]},
+        ]
+
+    def test_valid_ack_returns_accepted_indexes(self):
+        import bonsai_ml.syslog_embedding_worker as w
+        recs = self._records()
+        body = _ack_for(recs, ["accepted", "already_existing"])
+        assert w._validate_embedding_ack(body, recs, 2) == [0]
+
+    def test_duplicate_index_rejected(self):
+        import bonsai_ml.syslog_embedding_worker as w
+        recs = self._records()
+        body = _ack_for(recs, ["accepted", "rejected"])
+        body["items"][1]["index"] = 0
+        body["rejected"] = [{"index": 0, "event_id": "e2", "reason": "x"}]
+        assert w._validate_embedding_ack(body, recs, 1) is None
+
+    def test_boolean_index_rejected(self):
+        import bonsai_ml.syslog_embedding_worker as w
+        recs = self._records()
+        body = _ack_for(recs, ["accepted", "rejected"])
+        body["items"][0]["index"] = True
+        assert w._validate_embedding_ack(body, recs, 1) is None
+
+    def test_mismatched_event_id_rejected(self):
+        import bonsai_ml.syslog_embedding_worker as w
+        recs = self._records()
+        body = _ack_for(recs, ["accepted", "rejected"])
+        body["items"][1]["event_id"] = "other"
+        assert w._validate_embedding_ack(body, recs, 1) is None
+
+    def test_missing_status_rejected(self):
+        import bonsai_ml.syslog_embedding_worker as w
+        recs = self._records()
+        body = _ack_for(recs, ["accepted", "rejected"])
+        del body["items"][0]["status"]
+        assert w._validate_embedding_ack(body, recs, 1) is None
+
+    def test_inconsistent_counts_rejected(self):
+        import bonsai_ml.syslog_embedding_worker as w
+        recs = self._records()
+        body = _ack_for(recs, ["accepted", "rejected"])
+        body["persisted"] = 2  # lies: only 1 non-rejected
+        assert w._validate_embedding_ack(body, recs, 1) is None
+
+    def test_partial_valid_results_still_validate(self):
+        import bonsai_ml.syslog_embedding_worker as w
+        recs = self._records()
+        body = _ack_for(recs, ["rejected", "already_existing"])
+        assert w._validate_embedding_ack(body, recs, 1) == []
