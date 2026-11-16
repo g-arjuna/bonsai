@@ -72,7 +72,17 @@ async fn start_lab(
         None,
         None,
     ));
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    // Readiness: probe-connect until the listener accepts.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match TcpStream::connect(&format!("127.0.0.1:{tcp_port}")).await {
+            Ok(_) => break,
+            Err(_) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(e) => panic!("syslog TCP listener not ready: {e}"),
+        }
+    }
     Lab {
         rx,
         tcp_addr: format!("127.0.0.1:{tcp_port}"),
