@@ -15,19 +15,24 @@
 #                 ~/.cache/bonsai-ci/build-lane). The directory is created
 #                 if absent and is NEVER deleted by this script.
 #   --label NAME  free-text lane label recorded in the compat marker.
-#   --lbug-native PATH  source PATH/env.sh (from lbug-native-prepare.sh)
-#                 before running: LBUG_LIBRARY_DIR/LBUG_INCLUDE_DIR/
-#                 CXXFLAGS switch lbug's build.rs to prebuilt-native mode,
-#                 skipping the CMake rebuild for every cargo unit kind.
-#                 The dir is verified fail-closed first (manifest
-#                 provenance, content inventory, toolchain/ABI match).
+#   --lbug-native PATH  prepared dir from lbug-native-prepare.sh.
+#                 The bundle is verified fail-closed (manifest v3:
+#                 mandatory provenance fields, full archive+header content
+#                 inventory, bundle_id, donor ABI provenance) and its
+#                 content fingerprint is recorded in the lane marker —
+#                 switching bundles requires --reset-lbug-artifacts or a
+#                 new lane. LBUG_* env comes from manifest.json via
+#                 build-lane-guard.sh, never from an unchecked env.sh.
 #   --reset-lbug-artifacts
-#                 required to switch a lane between bundled and
-#                 prebuilt lbug modes: LBUG_* env vars are NOT
-#                 Cargo-fingerprinted, so cargo cannot detect the mode
-#                 change and would silently reuse stale build-script
-#                 outputs. This flag runs `cargo clean -p lbug` against
-#                 the lane first, forcing a fresh lbug build script.
+#                 required to switch a lane between bundled/prebuilt
+#                 lbug modes OR between different prebuilt bundles:
+#                 LBUG_* env vars and the native path are NOT
+#                 Cargo-fingerprinted, so cargo cannot detect the change
+#                 and would silently reuse stale build-script outputs.
+#                 This flag runs `cargo clean -p lbug` against the lane
+#                 first (which forces the lbug build script — and thus
+#                 every dependent crate — to rebuild against the new
+#                 mode/bundle).
 #
 # Scheduling contract:
 #   A blocking flock(2) on <dir>/.lane.lock is held for the duration of
@@ -35,14 +40,14 @@
 #   time; a second invocation waits instead of corrupting fingerprints.
 #   Cargo's own target lock still applies inside the lane.
 #
-# Compatibility:
-#   The lane records the toolchain identity (rustc/cargo/cmake/cxx
-#   versions + rustc commit hash) and the lbug mode in
-#   <dir>/.lane-compat.json on first use. lbug_mode mismatches FAIL
-#   CLOSED (cargo cannot fingerprint LBUG_* env); toolchain drift is
-#   still diagnostic-only because Cargo fingerprints already key on
-#   rustc version, profile, features and rustflags — do not bypass
-#   cargo fingerprints.
+# Compatibility (shared with run-local.sh via build-lane-guard.sh):
+#   The lane records lbug_mode + the exact native bundle_id fingerprint
+#   in <dir>/.lane-compat.json. Mismatches FAIL CLOSED unless
+#   --reset-lbug-artifacts is given; malformed/missing markers on
+#   populated lanes fail closed. Inherited LBUG_* env or stale
+#   lbug-native CXXFLAGS -I roots are rejected (build-lane-guard.sh
+#   sanity) so a bundled build can never silently inherit prebuilt
+#   settings.
 #
 # Trust boundary:
 #   ONLY use this for trusted, committed-source builds. Never point it
@@ -76,18 +81,21 @@ done
 [ "$#" -gt 0 ] || { echo "build-lane: no command given" >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+GUARD="$SCRIPT_DIR/build-lane-guard.sh"
 
-LBUG_NATIVE_VERDICT=""
+# Fail closed on inherited lbug-native settings leaking into this run.
+bash "$GUARD" sanity
+
+NATIVE_ID=""
 if [ -n "$LBUG_NATIVE" ]; then
-  [ -f "$LBUG_NATIVE/env.sh" ] || { echo "build-lane: $LBUG_NATIVE/env.sh missing — run lbug-native-prepare.sh first" >&2; exit 2; }
+  [ -f "$LBUG_NATIVE/manifest.json" ] || { echo "build-lane: $LBUG_NATIVE/manifest.json missing — run lbug-native-prepare.sh first" >&2; exit 2; }
   # Fail-closed provenance/integrity check before trusting the dir.
-  if ! LBUG_NATIVE_VERDICT="$(bash "$SCRIPT_DIR/lbug-native-prepare.sh" --verify "$LBUG_NATIVE")"; then
+  if ! NATIVE_VERDICT="$(bash "$SCRIPT_DIR/lbug-native-prepare.sh" --verify "$LBUG_NATIVE")"; then
     echo "build-lane: GATE FAIL — lbug-native dir failed verification:" >&2
-    printf '%s\n' "$LBUG_NATIVE_VERDICT" >&2
+    printf '%s\n' "$NATIVE_VERDICT" >&2
     exit 1
   fi
-  # shellcheck disable=SC1090
-  . "$LBUG_NATIVE/env.sh"
+  NATIVE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bundle_id"])' "$LBUG_NATIVE/manifest.json")"
   LBUG_MODE="prebuilt"
 else
   LBUG_MODE="bundled"
@@ -99,74 +107,49 @@ echo "build-lane: waiting for lock on $DIR" >&2
 flock 9
 echo "build-lane: lock acquired on $DIR" >&2
 
-COMPAT="$DIR/.lane-compat.json"
-CUR_RUSTC="$(rustc -vV 2>/dev/null | awk '/^release:/{print $2}')"
-CUR_COMMIT="$(rustc -vV 2>/dev/null | awk '/^commit-hash:/{print $2}')"
-CUR_CARGO="$(cargo --version 2>/dev/null | awk '{print $2}')"
-CUR_CMAKE="$(cmake --version 2>/dev/null | awk 'NR==1{print $3}')"
-CUR_CXX="$(c++ --version 2>/dev/null | awk 'NR==1{print $4}' | tr -d ')')"
-NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-MODE_RESET_DONE=0
-if [ -f "$COMPAT" ]; then
-  # lbug_mode is NOT cargo-fingerprinted: a bundled/prebuilt switch on the
-  # same lane silently reuses stale lbug build-script outputs. Fail closed
-  # unless the operator explicitly resets the lbug artifacts first.
-  LANE_MODE="$(python3 - "$COMPAT" <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    print(json.load(open(sys.argv[1])).get("lbug_mode") or "")
-except Exception:
-    print("")
-PY
-)"
-  if [ -n "$LANE_MODE" ] && [ "$LANE_MODE" != "$LBUG_MODE" ]; then
-    if [ "$RESET_LBUG" != "1" ]; then
-      echo "build-lane: GATE FAIL — lane $DIR was last used in lbug mode" >&2
-      echo "  '$LANE_MODE' but this run requests '$LBUG_MODE'. LBUG_* env" >&2
-      echo "  vars are not Cargo-fingerprinted, so cargo would reuse stale" >&2
-      echo "  lbug build-script outputs. Either use a different --dir, or" >&2
-      echo "  re-run with --reset-lbug-artifacts (runs 'cargo clean -p lbug'" >&2
-      echo "  on the lane first)." >&2
-      exit 1
-    fi
-    echo "build-lane: lbug mode switch $LANE_MODE -> $LBUG_MODE; cleaning lbug artifacts in lane" >&2
+# Shared lane compatibility check (same guard run-local.sh uses).
+RESET_ARG=""
+[ "$RESET_LBUG" = "1" ] && RESET_ARG="--reset"
+VERDICT="$(bash "$GUARD" check --dir "$DIR" --mode "$LBUG_MODE" \
+    ${NATIVE_ID:+--native-id "$NATIVE_ID"} \
+    ${LBUG_NATIVE:+--native-path "$LBUG_NATIVE"} $RESET_ARG || true)"
+ACTION="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("action","fail"))' <<<"$VERDICT" 2>/dev/null || echo fail)"
+RC=$?
+case "$ACTION" in
+  proceed) ;;
+  reset)
+    [ "$RESET_LBUG" = "1" ] || { echo "build-lane: internal guard error" >&2; exit 1; }
+    echo "build-lane: $(python3 -c 'import json,sys; print(json.load(sys.stdin).get("reason",""))' <<<"$VERDICT")" >&2
+    echo "build-lane: running 'cargo clean -p lbug' on lane $DIR" >&2
     CARGO_TARGET_DIR="$DIR" cargo clean -p lbug
-    MODE_RESET_DONE=1
-  fi
+    ;;
+  *)
+    echo "build-lane: GATE FAIL — lane compatibility check failed:" >&2
+    printf '%s\n' "$VERDICT" >&2
+    exit 1
+    ;;
+esac
+
+# Record/refresh the marker for this run's mode + native fingerprint.
+GUARD_RUSTC="$(rustc -vV 2>/dev/null | awk '/^release:/{print $2}')" \
+GUARD_RUSTC_COMMIT="$(rustc -vV 2>/dev/null | awk '/^commit-hash:/{print $2}')" \
+GUARD_CARGO="$(cargo --version 2>/dev/null | awk '{print $2}')" \
+GUARD_CMAKE="$(cmake --version 2>/dev/null | awk 'NR==1{print $3}')" \
+GUARD_CXX="$(c++ --version 2>/dev/null | awk 'NR==1{print $4}' | tr -d ')')" \
+export GUARD_RUSTC GUARD_RUSTC_COMMIT GUARD_CARGO GUARD_CMAKE GUARD_CXX
+bash "$GUARD" record --dir "$DIR" --mode "$LBUG_MODE" \
+    ${NATIVE_ID:+--native-id "$NATIVE_ID"} \
+    ${LBUG_NATIVE:+--native-path "$LBUG_NATIVE"} --label "$LABEL"
+
+# Apply prebuilt env from validated manifest metadata; hold the bundle
+# shared lock for the duration of the child command so prepare cannot
+# replace archives mid-build.
+if [ -n "$LBUG_NATIVE" ]; then
+  exec 7>"$LBUG_NATIVE.lock"
+  flock -s 7
+  eval "$(bash "$GUARD" env --dir "$LBUG_NATIVE")"
 fi
 
-if [ ! -f "$COMPAT" ] || [ "$MODE_RESET_DONE" = "1" ]; then
-  cat > "$COMPAT" <<EOF
-{
-  "created_utc": "$NOW",
-  "label": "$LABEL",
-  "rustc": "$CUR_RUSTC",
-  "rustc_commit": "$CUR_COMMIT",
-  "cargo": "$CUR_CARGO",
-  "cmake": "$CUR_CMAKE",
-  "cxx": "$CUR_CXX",
-  "lbug_mode": "$LBUG_MODE",
-  "lbug_native": $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${LBUG_NATIVE:-}")
-}
-EOF
-else
-  python3 - "$COMPAT" "$CUR_RUSTC" "$CUR_COMMIT" "$CUR_CMAKE" "$CUR_CXX" <<'PY' || true
-import json, sys
-path, rustc, commit, cmake, cxx = sys.argv[1:6]
-try:
-    d = json.load(open(path))
-except Exception:
-    sys.exit(0)
-mismatch = [k for k, cur in (("rustc", rustc), ("rustc_commit", commit),
-                             ("cmake", cmake), ("cxx", cxx))
-            if d.get(k) not in (None, "", cur)]
-if mismatch:
-    print(f"build-lane: WARNING toolchain drift vs lane marker: {mismatch} "
-          f"(lane={ {k: d.get(k) for k in mismatch} })", file=sys.stderr)
-PY
-fi
-
-echo "build-lane: CARGO_TARGET_DIR=$DIR lbug=$LBUG_MODE cmd: $*" >&2
+echo "build-lane: CARGO_TARGET_DIR=$DIR lbug=$LBUG_MODE${NATIVE_ID:+ bundle=${NATIVE_ID:0:12}} cmd: $*" >&2
 export CARGO_TARGET_DIR="$DIR"
 exec "$@"

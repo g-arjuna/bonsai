@@ -119,6 +119,28 @@ if [ "$MODE" = "untrusted" ]; then
 fi
 [ "${#TIERS[@]}" -gt 0 ] || TIERS=(l0 l1 l2 l3)
 
+GUARD="$ROOT/scripts/ci/build-lane-guard.sh"
+PREPARE="$ROOT/scripts/ci/lbug-native-prepare.sh"
+
+# Fail closed on inherited lbug-native settings leaking into this run.
+bash "$GUARD" sanity
+
+# Early fail-closed verification of the native bundle (host side, strict
+# toolchain) so lane/env problems surface before any docker work. The
+# bundle is ALSO re-verified inside the gate container (phase A,
+# --gate-env) — the actual execution environment.
+NATIVE_ID=""
+if [ -n "$LBUG_NATIVE_DIR" ]; then
+  [ -f "$LBUG_NATIVE_DIR/env.sh" ] || { echo "GATE FAIL: $LBUG_NATIVE_DIR/env.sh missing — run scripts/ci/lbug-native-prepare.sh" >&2; exit 2; }
+  LBUG_NATIVE_DIR="$(cd "$LBUG_NATIVE_DIR" && pwd)"
+  if ! NATIVE_VERDICT="$(bash "$PREPARE" --verify "$LBUG_NATIVE_DIR")"; then
+    echo "GATE FAIL: --lbug-native dir failed verification:" >&2
+    printf '%s\n' "$NATIVE_VERDICT" >&2
+    exit 2
+  fi
+  NATIVE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bundle_id"])' "$LBUG_NATIVE_DIR/manifest.json")"
+fi
+
 SHA="$(git rev-parse HEAD)"
 GIT_COMMON="$(git rev-parse --path-format=absolute --git-common-dir)"
 SNAP="$(mktemp -d /tmp/bonsai-ci-src.XXXXXX)"
@@ -187,6 +209,31 @@ if [ -n "$SHARED_TARGET_DIR" ]; then
   exec 8>"$SHARED_TARGET_DIR/.lane.lock"
   echo "=== TRUSTED-LOCAL policy: shared build lane $SHARED_TARGET_DIR (flock held for run) ==="
   flock 8
+  # Shared lane compatibility check — the SAME guard build-lane.sh uses:
+  # lane identity, bundled/prebuilt mode, exact native bundle_id
+  # fingerprint, fail-closed on malformed/missing markers. There is no
+  # in-container remediation path: on mismatch run
+  #   scripts/ci/build-lane.sh --dir "$SHARED_TARGET_DIR" \
+  #     [--lbug-native DIR] --reset-lbug-artifacts -- true
+  # on the host, or choose a different --shared-target-dir.
+  LANE_MODE="bundled"; [ -n "$LBUG_NATIVE_DIR" ] && LANE_MODE="prebuilt"
+  if ! LANE_VERDICT="$(bash "$GUARD" check --dir "$SHARED_TARGET_DIR" \
+        --mode "$LANE_MODE" ${NATIVE_ID:+--native-id "$NATIVE_ID"} \
+        ${LBUG_NATIVE_DIR:+--native-path "$LBUG_NATIVE_DIR"})"; then
+    echo "GATE FAIL: shared build lane $SHARED_TARGET_DIR failed compatibility check:" >&2
+    printf '%s\n' "$LANE_VERDICT" >&2
+    echo "Remediate on the host: scripts/ci/build-lane.sh --dir '$SHARED_TARGET_DIR' --reset-lbug-artifacts -- true" >&2
+    exit 2
+  fi
+  GUARD_RUSTC="$(rustc -vV 2>/dev/null | awk '/^release:/{print $2}')" \
+  GUARD_RUSTC_COMMIT="$(rustc -vV 2>/dev/null | awk '/^commit-hash:/{print $2}')" \
+  GUARD_CARGO="$(cargo --version 2>/dev/null | awk '{print $2}')" \
+  GUARD_CMAKE="$(cmake --version 2>/dev/null | awk 'NR==1{print $3}')" \
+  GUARD_CXX="$(c++ --version 2>/dev/null | awk 'NR==1{print $4}' | tr -d ')')" \
+  export GUARD_RUSTC GUARD_RUSTC_COMMIT GUARD_CARGO GUARD_CMAKE GUARD_CXX
+  bash "$GUARD" record --dir "$SHARED_TARGET_DIR" --mode "$LANE_MODE" \
+      ${NATIVE_ID:+--native-id "$NATIVE_ID"} \
+      ${LBUG_NATIVE_DIR:+--native-path "$LBUG_NATIVE_DIR"} --label "run-local"
 fi
 if [ "$SHARED_TARGET" = "1" ]; then
   if [ "$MODE" != "trusted" ]; then
@@ -217,21 +264,15 @@ BASE_ENV=(
 )
 
 if [ -n "$LBUG_NATIVE_DIR" ]; then
-  if [ "$MODE" != "trusted" ]; then
-    echo "GATE FAIL: --lbug-native is only permitted in --trusted mode" >&2; exit 2
-  fi
-  [ -f "$LBUG_NATIVE_DIR/env.sh" ] || { echo "GATE FAIL: $LBUG_NATIVE_DIR/env.sh missing — run scripts/ci/lbug-native-prepare.sh" >&2; exit 2; }
-  LBUG_NATIVE_DIR="$(cd "$LBUG_NATIVE_DIR" && pwd)"
-  # Fail-closed provenance/integrity check (manifest v2: lbug version vs
-  # Cargo.lock, rustc commit/host ABI, per-archive content hash).
-  if ! NATIVE_VERDICT="$(bash "$ROOT/scripts/ci/lbug-native-prepare.sh" --verify "$LBUG_NATIVE_DIR")"; then
-    echo "GATE FAIL: --lbug-native dir failed verification:" >&2
-    printf '%s\n' "$NATIVE_VERDICT" >&2
-    exit 2
-  fi
-  # shellcheck disable=SC1090
-  . "$LBUG_NATIVE_DIR/env.sh"
-  # env.sh paths are absolute under LBUG_NATIVE_DIR; bind-mount the dir at
+  # Bundle already verified (strict) + bundle_id captured before the
+  # lane flock above; env comes from validated manifest.json via the
+  # shared guard — env.sh is never sourced by trusted consumers.
+  eval "$(bash "$GUARD" env --dir "$LBUG_NATIVE_DIR")"
+  # Hold the bundle shared lock for the whole container run so
+  # lbug-native-prepare.sh cannot replace archives mid-gate.
+  exec 7>"$LBUG_NATIVE_DIR.lock"
+  flock -s 7
+  # env paths are absolute under LBUG_NATIVE_DIR; bind-mount the dir at
   # the identical container path (read-only) so they resolve verbatim.
   MOUNTS+=(-v "$LBUG_NATIVE_DIR:$LBUG_NATIVE_DIR:ro")
   # If lib/ entries are symlinks into a donor target tree, the identical
@@ -306,6 +347,13 @@ docker run --rm \
     cd '$ROOT'
     echo \"rustc: \$(rustc --version)\"; echo \"cargo: \$(cargo --version)\"; echo \"sccache: \$(sccache --version)\"
     rustc -Vv
+    # Re-verify the native bundle INSIDE the actual gate environment
+    # (--gate-env: integrity/identity/ABI provenance enforced; the
+    # preparing host's rustc/cmake/cxx versions need not equal the
+    # container toolchain — the cxx bridge is compiled fresh here).
+    if [ -n '${LBUG_NATIVE_DIR:-}' ]; then
+      bash scripts/ci/lbug-native-prepare.sh --verify --gate-env '$LBUG_NATIVE_DIR'
+    fi
     # Locked dependency provisioning into the dedicated CARGO_HOME.
     cargo fetch --locked
     # Python venv (persistent via /ci-cache/venv; symlinked into snapshot
