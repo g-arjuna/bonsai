@@ -31,7 +31,7 @@ def test_validate_known_good_catalog_has_no_errors():
 
     errors, documents = validator.validate_catalog()
 
-    assert len(documents) == 9
+    assert len(documents) == 12
     assert errors == []
 
 
@@ -56,7 +56,7 @@ def test_validate_playbook_doc_flags_unknown_placeholder_and_label():
                 ],
                 "verification": {
                     "expected_graph_state": (
-                        "MATCH (n:OspfNeighbor {peer_address: $peer_address}) "
+                        "MATCH (n:NonexistentTestLabel {peer_address: $peer_address}) "
                         "RETURN count(n) > 0"
                     )
                 },
@@ -72,7 +72,7 @@ def test_validate_playbook_doc_flags_unknown_placeholder_and_label():
     )
 
     assert any("unknown {placeholder} 'neighbor_ip'" in error for error in errors)
-    assert any("unknown node label 'OspfNeighbor'" in error for error in errors)
+    assert any("unknown node label 'NonexistentTestLabel'" in error for error in errors)
 
 
 def test_validate_playbook_doc_flags_bad_precondition():

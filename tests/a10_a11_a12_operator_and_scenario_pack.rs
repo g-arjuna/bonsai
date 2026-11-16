@@ -138,9 +138,12 @@ async fn a10_operator_adjudication_separates_recommendation_acceptance_from_veri
     assert_eq!(bad_body["accepted"], false);
 
     // 5. Verify internal HTTP router endpoints `/internal/routing/v1/adjudicate-prefix` and `/internal/routing/v1/adjudications`.
-    let state = RoutingServiceState::new(RoutingServiceConfig::default())
-        .await
-        .unwrap();
+    let state = RoutingServiceState::new(RoutingServiceConfig {
+        internal_service_token: Some("a10-test-internal-token".to_string()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
     let app = build_internal_routing_router(state);
 
     let post_resp = app
@@ -150,6 +153,7 @@ async fn a10_operator_adjudication_separates_recommendation_acceptance_from_veri
                 .method("POST")
                 .uri("/internal/routing/v1/adjudicate-prefix")
                 .header("content-type", "application/json")
+                .header("x-bonsai-routing-token", "a10-test-internal-token")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
                         "prefix": "203.0.113.0/24",
@@ -175,6 +179,7 @@ async fn a10_operator_adjudication_separates_recommendation_acceptance_from_veri
             Request::builder()
                 .method("GET")
                 .uri("/internal/routing/v1/adjudications")
+                .header("x-bonsai-routing-token", "a10-test-internal-token")
                 .body(Body::empty())
                 .unwrap(),
         )

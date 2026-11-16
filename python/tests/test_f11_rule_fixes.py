@@ -30,6 +30,12 @@ class _FakeClient:
     def get_bgp_neighbors(self, _addr):
         return []
 
+    def device_vendor(self, _addr):
+        # Rules resolve vendor state semantics conservatively: an unknown
+        # vendor yields no detection. Return a mapped vendor so the
+        # up/down/admin_down transitions under test are evaluated.
+        return "nokia_srl"
+
 
 _CLIENT = _FakeClient()
 

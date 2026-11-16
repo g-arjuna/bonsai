@@ -30,13 +30,21 @@
 - Keep toolchain, features, profile, target-dir and `RUSTFLAGS` stable during an iteration; don't mix `dev` with `release` or flip `CARGO_INCREMENTAL` per invocation. sccache reuses cacheable crates, **not** incremental objects or the final linked Bonsai binary. Benchmark cache/profile changes in an isolated quota-bounded directory before proposing shared settings.
 - Avoid building release Docker images on each Rust edit. Use scoped tests while coding; do a pinned SHA-based image/lab/replay run when named by the acceptance criteria. Never label `cargo check`, `--no-run`, or a cached build as executed tests.
 - Capture actual wall time, build-versus-run time, sccache hits/misses, disk and peak RSS for expensive targets; append to `docs/build-times/runs.csv` and preserve extended evidence. Run `cargo ... --timings` to identify compiler/link critical paths before optimizing.
-- The existing `Makefile` has `|| true` in some test targets and no committed GitHub workflow; these are **not trustworthy mandatory green gates**. Do not suppress failures. Use explicit exit-code-checked commands and report all skipped/unexecuted checks. The canonical release gate remains the applicable `just` recipes and BN item acceptance, not a blanket assertion of passing CI.
+- The canonical fail-closed validation gates are `scripts/ci/gates.sh` tiers L0–L4 (`just gate <tier>` / `just gate-all` wrap them; `.github/workflows/ci.yml` runs the same script). A green gate means the named tests compiled, executed and passed — never infer L4 lab acceptance from L0–L3. See `docs/DEVELOPMENT.md` "Canonical Validation Gates".
 
 
 - Inner loop: prefer justfile recipes (`check-fast`, `test-protocol`,
   `test-replay`) or focused targets — `cargo test -p <crate>` /
   `cargo test --test <name>`. Never bare `cargo build`/`cargo test` on the
   `bonsai` package: it compiles ~600 deps + dev-deps + a ~1 GB dev binary.
+- **Shared build lane (2026-11-16):** route heavyweight cargo through
+  `scripts/ci/build-lane.sh --dir <lane> [--lbug-native <dir>] -- <cmd>`
+  (flock single-owner + warm cross-worktree target reuse) and container
+  gates through `run-local.sh --shared-target-dir/--lbug-native`. lbug's
+  CMake build reruns per cargo unit kind (~35–77 min); `--lbug-native`
+  prebuilt mode reduces that to a ~10 s cxx bridge. See
+  `docs/DEVELOPMENT.md` "Trusted build lanes". Never mix bundled/prebuilt
+  lbug modes on one target dir.
 - sccache is the configured `rustc-wrapper` (`.cargo/config.toml`) and its
   server persists across sessions — sccache is MANDATORY, not optional. Never
   prefix cargo with `RUSTC_WRAPPER=` and never bypass the wrapper: if sccache

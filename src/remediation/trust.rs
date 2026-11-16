@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -108,6 +108,7 @@ pub struct TrustStore {
     records: HashMap<String, TrustRecord>,
     path: PathBuf,
     config: RemediationConfig,
+    pending_writes: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 pub type SharedTrustStore = Arc<RwLock<TrustStore>>;
@@ -124,6 +125,18 @@ impl TrustStore {
             records,
             path,
             config,
+            pending_writes: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Block until every spawned persistence write has finished. Persistence
+    /// is asynchronous by design (Q-10); callers that need durability —
+    /// shutdown paths and tests — must flush explicitly instead of racing
+    /// the background thread.
+    pub fn flush_pending_writes(&self) {
+        let handles = std::mem::take(&mut *self.pending_writes.lock().unwrap());
+        for h in handles {
+            let _ = h.join();
         }
     }
 
@@ -133,11 +146,12 @@ impl TrustStore {
         match serde_json::to_string_pretty(&self.records) {
             Ok(json) => {
                 let path = self.path.clone();
-                std::thread::spawn(move || {
+                let handle = std::thread::spawn(move || {
                     if let Err(e) = std::fs::write(&path, &json) {
                         tracing::warn!("failed to persist trust_state.json: {e}");
                     }
                 });
+                self.pending_writes.lock().unwrap().push(handle);
             }
             Err(e) => warn!("failed to serialize trust state: {e}"),
         }
@@ -431,8 +445,9 @@ mod tests {
             let k = key("bgp-rule");
             store.record_approval(&k, 100);
             store.set_state(&k, TrustState::AutoWithNotification, 200);
-            // Background thread writes; give it a moment
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            // Persistence is asynchronous; join the writer instead of
+            // racing it with a fixed sleep (flaky under load).
+            store.flush_pending_writes();
         }
         // Re-load from the same dir
         let store2 = TrustStore::load(dir.path(), RemediationConfig::default());
