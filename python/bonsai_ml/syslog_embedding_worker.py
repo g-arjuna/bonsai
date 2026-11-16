@@ -241,18 +241,40 @@ def _embed_and_post(
             timeout=30,
         )
         resp.raise_for_status()
-        # Write-back acknowledgement: count only records the server
-        # reports as written, not merely what we submitted.
+        # Write-back acknowledgement contract (WP65-03): the server must
+        # return explicit attributable counts. A missing or malformed
+        # acknowledgement is a FAILURE — never manufacture a successful
+        # count from the submitted batch size.
         try:
-            written = int(resp.json().get("written", len(embedding_records)))
+            body = resp.json()
         except Exception:
-            written = len(embedding_records)
-        if written != len(embedding_records):
-            log.warning(
-                "Embedding write-back partial: server wrote %d of %d "
-                "submitted records",
-                written, len(embedding_records),
+            log.error("Embedding write-back returned non-JSON acknowledgement")
+            return 0
+        persisted = body.get("persisted") if isinstance(body, dict) else None
+        if persisted is None:
+            # Legacy "written" field is accepted only when it is a real
+            # integer report, not a fabricated default.
+            persisted = body.get("written") if isinstance(body, dict) else None
+        if not isinstance(persisted, int) or isinstance(persisted, bool) \
+                or persisted < 0 or persisted > len(embedding_records):
+            log.error(
+                "Embedding write-back acknowledgement malformed: %r",
+                body,
             )
+            return 0
+        written = persisted
+        if written != len(embedding_records):
+            rejected = body.get("rejected") if isinstance(body, dict) else None
+            log.warning(
+                "Embedding write-back partial: server persisted %d of %d "
+                "submitted records (rejected=%d)",
+                written, len(embedding_records),
+                len(rejected) if isinstance(rejected, list) else -1,
+            )
+            # Occurrence commits are all-or-nothing per resolve_batch;
+            # on a partial acknowledgement we cannot attribute which
+            # template occurrences persisted, so we do NOT commit —
+            # conservative under-count beats inflated operational counts.
             return written
         if dedup is not None:
             dedup.metrics.events_posted += written

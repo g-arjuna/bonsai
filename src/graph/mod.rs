@@ -2374,6 +2374,7 @@ impl GraphStore {
                 event_id        STRING,\
                 event_type      STRING,\
                 model_name      STRING,\
+                model_revision  STRING,\
                 dim             INT64,\
                 vector_json     STRING,\
                 computed_at_ns  INT64,\
@@ -2421,6 +2422,24 @@ impl GraphStore {
         );
         let _ =
             conn.query("ALTER TABLE StateChangeEvent ADD incident_cluster_id STRING DEFAULT ''");
+        // WP65-01: EventEmbedding.model_revision — added after the table
+        // shipped, so existing graphs need an explicit column migration.
+        // Check the live schema first (a blind ALTER errors on databases
+        // that already have the column); a failed migration is fatal —
+        // embedding provenance must never be silently dropped.
+        {
+            let mut cols = std::collections::HashSet::new();
+            let info = conn.query("CALL table_info('EventEmbedding') RETURN name")?;
+            for row in info {
+                if let Value::String(n) = &row[0] {
+                    cols.insert(n.clone());
+                }
+            }
+            if !cols.contains("model_revision") {
+                conn.query("ALTER TABLE EventEmbedding ADD model_revision STRING")
+                    .context("EventEmbedding model_revision migration")?;
+            }
+        }
         // Device: needs_config_embedding flag
         let _ = conn.query("ALTER TABLE Device ADD needs_config_embedding INT64 DEFAULT 0");
 
