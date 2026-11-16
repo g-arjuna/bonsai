@@ -138,36 +138,47 @@ def main() -> int:
     t0 = time.monotonic()
     peak_rss = rss_mb(args.core_pid)
     sent = 0
-    for i in range(0, len(msgs), args.batch):
-        chunk = msgs[i : i + args.batch]
-        payload = b"".join(m.encode() + b"\n" for m in chunk)
-        # UDP datagram per message keeps receiver semantics identical
-        # to real syslog sources.
-        for m in chunk:
-            sock.sendto(m.encode(), (host, int(port)))
-        sent += len(chunk)
-        peak_rss = max(peak_rss, rss_mb(args.core_pid))
+    # Pace datagrams: an un-paced 200k msg/s UDP burst overflows the
+    # receiver socket buffer and silently drops most of the corpus,
+    # which would fabricate an artificially fast "ingestion" number.
+    # ~10k msgs/s is still far above steady-state syslog rates.
+    pace = 0.0001  # 10k msgs/s
+    for m in msgs:
+        sock.sendto(m.encode(), (host, int(port)))
+        sent += 1
+        if sent % 500 == 0:
+            time.sleep(pace * 500)
+            peak_rss = max(peak_rss, rss_mb(args.core_pid))
     sock.close()
     ingest_wall = time.monotonic() - t0
-    # wait for write-coordinator drain (batch 256 / 1s flush)
-    drain_deadline = time.monotonic() + max(30, args.scale / 200)
-    while time.monotonic() < drain_deadline:
-        try:
-            import requests
+    # Settle: wait until the pending-unembedded count stops growing
+    # (write coordinator drains its 256-row/1s batches into the graph).
+    import requests
 
-            pend = requests.get(
-                f"{args.api_url}/api/events/unembedded?type=syslog&limit=1",
-                timeout=10,
+    def pending_count():
+        try:
+            r = requests.get(
+                f"{args.api_url}/api/events/unembedded?type=syslog&limit=1000",
+                timeout=15,
             ).json()
-            n_pend = len(pend.get("events", []))
+            return len(r.get("events", []))
         except Exception:
-            n_pend = -1
-        if args.enrichment == "off":
-            break
-        # for 'on' we keep ingesting measurement separate; stop early
-        # once graph write settles is hard to detect — fixed settle.
-        break
-    time.sleep(min(20, max(5, args.scale / 2000)))
+            return -1
+
+    settle_deadline = time.monotonic() + max(60, args.scale / 100)
+    last = -2
+    stable = 0
+    while time.monotonic() < settle_deadline:
+        cur = pending_count()
+        if cur >= 0 and cur == last:
+            stable += 1
+            if stable >= 3:
+                break
+        else:
+            stable = 0
+        last = cur
+        time.sleep(2)
+    time.sleep(2)
     peak_rss = max(peak_rss, rss_mb(args.core_pid))
 
     out["ingest"] = {
