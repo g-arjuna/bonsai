@@ -466,6 +466,12 @@ def _embed_and_post(
                 # Authoritative event_type is read from the persisted
                 # graph event server-side; this is informational only.
                 "event_type": event_types[i] if i < len(event_types) else "",
+                # WP65-21: echo the processing claim so lifecycle
+                # completion is fenced to the fetch generation that
+                # acquired it — a stale worker cannot close a newer
+                # obligation even with a successful write-back.
+                "claim_attempts": claims.get(str(eid)),
+                "claim_token": claim_tokens.get(str(eid)),
             }
         )
 
@@ -570,29 +576,61 @@ def _embed_and_post(
         # commits NO occurrences (registry counts are enrichment
         # bookkeeping, not operational event authority — a lost ack can
         # undercount, which is documented and acceptable).
+        # WP65-22: full acknowledgement validation applies to EVERY
+        # request shape — dedup on/off, embeddings-only, deferred-only,
+        # invalid-only and mixed. Occurrence commits remain dedup-only
+        # (registry bookkeeping), but a malformed ack is ack_invalid
+        # regardless of whether dedup is enabled.
         ack_fully_valid = True
-        if dedup is not None and embedding_records:
-            accepted_indexes = _validate_embedding_ack(
-                body, embedding_records, written
+        accepted_indexes = (
+            _validate_embedding_ack(body, embedding_records, written)
+            if embedding_records
+            else []
+        )
+        if embedding_records and accepted_indexes is None:
+            ack_fully_valid = False
+            log.warning(
+                "Embedding write-back acknowledgement failed full "
+                "validation; occurrence counts not committed"
             )
-            if accepted_indexes is None:
-                ack_fully_valid = False
-                log.warning(
-                    "Embedding write-back acknowledgement failed full "
-                    "validation; occurrence counts not committed"
+        # Lifecycle report outcomes: the server reports applied vs
+        # skipped per category — surface the AUTHORITATIVE applied
+        # counts, not just what we submitted. A missing/malformed
+        # lifecycle block when reports were sent invalidates the ack.
+        lifecycle_ok = True
+        for key, submitted in (
+            ("deferred", deferred_reports),
+            ("invalid", invalid_reports),
+        ):
+            if submitted:
+                applied = body.get(key)
+                skipped = body.get(f"{key}_skipped")
+                if not isinstance(applied, int) or isinstance(applied, bool) \
+                        or not isinstance(skipped, int) \
+                        or isinstance(skipped, bool):
+                    lifecycle_ok = False
+                else:
+                    counts[f"{key}_applied"] = applied
+                    counts[f"{key}_skipped"] = skipped
+        if not lifecycle_ok:
+            ack_fully_valid = False
+            log.warning(
+                "Embedding write-back lifecycle acknowledgement "
+                "malformed; applied/skipped counts unavailable"
+            )
+        if dedup is not None and accepted_indexes:
+            accepted_keys: list[Optional[str]] = []
+            for rec_idx in accepted_indexes:
+                pair_pos = record_pairs[rec_idx]
+                key = (
+                    resolution_keys[pair_pos]
+                    if pair_pos < len(resolution_keys)
+                    else None
                 )
-            else:
-                accepted_keys: list[Optional[str]] = []
-                for rec_idx in accepted_indexes:
-                    pair_pos = record_pairs[rec_idx]
-                    key = (
-                        resolution_keys[pair_pos]
-                        if pair_pos < len(resolution_keys)
-                        else None
-                    )
-                    accepted_keys.append(key)
-                if accepted_keys:
-                    dedup.commit_occurrences(accepted_keys)
+                accepted_keys.append(key)
+            if accepted_keys:
+                dedup.commit_occurrences(accepted_keys)
+        if dedup is not None:
             dedup.metrics.events_posted += written
         # WP65-20/22 cycle status, in precedence order: an acknowledgement
         # we could not fully validate is the most severe (bookkeeping is

@@ -108,14 +108,17 @@ def varied_corpus(n: int, seed: int = 11):
     ]
     for i in range(n):
         shape = shapes[i % len(shapes)]
+        # Vary ONLY normalizer-masked fields (IPs, interface names).
+        # PIDs, states and bare error codes are NOT masked — varying
+        # them would (correctly) create distinct templates.
         msgs.append(
             f"<134>Nov 16 12:{i//3600%24:02d}:{i//60%60:02d}:{i%60:02d} "
-            f"leaf-01 BGP[{1000 + i % 9000}]: "
+            f"leaf-01 BGP[1234]: "
             + shape.format(
                 ip=f"10.{rng.randint(0,255)}.{rng.randint(0,255)}.{rng.randint(1,254)}",
                 iface=f"Ethernet1/{rng.randint(1,48)}",
-                state=rng.choice(["up", "down"]),
-                code=rng.randint(0, 15),
+                state="down",
+                code=6,
             )
         )
     return msgs
@@ -224,13 +227,24 @@ def run_drain(api: str, embedder, dedup, max_cycles: int = 5000,
     embedded_total = 0
     latencies = []
     statuses = {}
+    fetch_failures = 0
     empty_streak = 0
     t0 = time.monotonic()
     last_embedded = -1
     stable = 0
     while time.monotonic() - t0 < deadline_s and cycles < max_cycles:
         c0 = time.monotonic()
-        events = worker._fetch_unembedded_events(api, limit=200)
+        try:
+            events = worker._fetch_unembedded_events(api, limit=200)
+        except Exception:
+            # Match real worker semantics: a failed fetch is a
+            # fetch_failed cycle, retried on the next pass — under
+            # concurrent ingestion the graph can briefly reject the
+            # query, and the scheduled worker survives via retry.
+            fetch_failures += 1
+            statuses["fetch_failed"] = statuses.get("fetch_failed", 0) + 1
+            time.sleep(5)
+            continue
         if not events:
             empty_streak += 1
             st = embedding_stats(api)

@@ -2422,13 +2422,17 @@ impl GraphStore {
         // readable database can never be classified enrichment-ready
         // while its lifecycle schema is incomplete.
         {
-            let required: [(&str, &str, &str); 7] = [
+            let required: [(&str, &str, &str); 8] = [
                 ("needs_embedding", "INT64", "1"),
                 ("embedding_retry_after_ns", "INT64", "0"),
                 ("embedding_attempts", "INT64", "0"),
                 ("embedding_invalid", "INT64", "0"),
                 ("embedding_invalid_reason", "STRING", "''"),
                 ("embedding_claim_token", "STRING", "''"),
+                // NULL default distinguishes NEVER-CLAIMED events
+                // (expires IS NULL) from claimed-then-released ones
+                // (expires = 0) — required for explicit legacy gating.
+                ("embedding_claim_expires_ns", "INT64", ""),
                 ("incident_cluster_id", "STRING", "''"),
             ];
             let mut cols = std::collections::HashMap::new();
@@ -2453,12 +2457,17 @@ impl GraphStore {
                         ))
                     }
                     None => {
-                        conn.query(&format!(
-                            "ALTER TABLE StateChangeEvent ADD {col} {ty} DEFAULT {default}"
-                        ))
-                        .with_context(|| {
-                            format!("StateChangeEvent {col} lifecycle migration")
-                        })?;
+                        let ddl = if default.is_empty() {
+                            format!("ALTER TABLE StateChangeEvent ADD {col} {ty}")
+                        } else {
+                            format!(
+                                "ALTER TABLE StateChangeEvent ADD {col} {ty} DEFAULT {default}"
+                            )
+                        };
+                        conn.query(&ddl)
+                            .with_context(|| {
+                                format!("StateChangeEvent {col} lifecycle migration")
+                            })?;
                     }
                 }
             }

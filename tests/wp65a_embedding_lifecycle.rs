@@ -604,13 +604,23 @@ async fn wp65_19_legacy_schema_upgrade() {
         "non-syslog event leaked: {ids:?}"
     );
 
+    // The fetch above acquired a processing claim — the write-back must
+    // echo its token (WP65-21 claim-fenced creation).
+    let claim_tok = body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"].as_str() == Some("ev-legacy-pending"))
+        .and_then(|e| e["claim_token"].as_str())
+        .unwrap()
+        .to_string();
     // New deterministic write-back on the migrated graph is accepted and
     // coexists with the legacy random-id embedding (different identity).
+    let mut item = embedding_item("ev-legacy-pending", vec![0.5, 0.5, 0.5, 0.5]);
+    item["claim_token"] = json!(claim_tok);
     let resp = client
         .post(format!("{base}/api/events/embeddings"))
-        .json(
-            &json!({"embeddings": [embedding_item("ev-legacy-pending", vec![0.5, 0.5, 0.5, 0.5])]}),
-        )
+        .json(&json!({"embeddings": [item]}))
         .send()
         .await
         .unwrap();
@@ -899,7 +909,7 @@ async fn wp65_21_claim_token_fencing() {
         let db = rig.store.db();
         let conn = lbug::Connection::new(&db).unwrap();
         let mut stmt = conn
-            .prepare("MATCH (e:StateChangeEvent {id: 'ev-t1'}) SET e.embedding_retry_after_ns = 0")
+            .prepare("MATCH (e:StateChangeEvent) WHERE e.id IN ['ev-t1', 'ev-t2'] SET e.embedding_retry_after_ns = 0, e.embedding_claim_expires_ns = 0")
             .unwrap();
         conn.execute(&mut stmt, vec![]).unwrap();
     }
@@ -940,12 +950,12 @@ async fn wp65_21_claim_token_fencing() {
         let db = rig.store.db();
         let conn = lbug::Connection::new(&db).unwrap();
         let mut stmt = conn
-            .prepare("MATCH (e:StateChangeEvent {id: 'ev-t2'}) SET e.embedding_retry_after_ns = 0")
+            .prepare("MATCH (e:StateChangeEvent {id: 'ev-t2'}) SET e.embedding_retry_after_ns = 0, e.embedding_claim_expires_ns = 0")
             .unwrap();
         conn.execute(&mut stmt, vec![]).unwrap();
     }
     let ev3 = fetch_unembedded(&rig).await;
-    let _tok3 = event_field(&ev3, "ev-t2", "claim_token").expect("claim_token missing");
+    let tok3 = event_field(&ev3, "ev-t2", "claim_token").expect("claim_token missing");
     let (_s, b) = post_embeddings(
         &rig,
         json!({"embeddings": [], "invalid": [
@@ -957,8 +967,10 @@ async fn wp65_21_claim_token_fencing() {
     assert_eq!(b["invalid_skipped"], 1, "{b}");
     assert_eq!(needs_embedding(&rig.store, "ev-t2"), 1);
 
-    // Missing-claim compatibility: a report with NEITHER token nor
-    // claim_attempts keeps the legacy unconditional behavior.
+    // Missing-claim compatibility (WP65-21 hardened): ev-t2 carries a
+    // live claim, so a report with NEITHER token nor claim_attempts is
+    // fenced — unconditional reports apply only to never-claimed
+    // events. The claim holder's token still closes it.
     let (_s, b) = post_embeddings(
         &rig,
         json!({"embeddings": [], "invalid": [
@@ -966,10 +978,18 @@ async fn wp65_21_claim_token_fencing() {
         ]}),
     )
     .await;
-    assert_eq!(
-        b["invalid"], 1,
-        "legacy no-claim report must still apply: {b}"
-    );
+    assert_eq!(b["invalid"], 0, "missing-claim report must be fenced: {b}");
+    assert_eq!(b["invalid_skipped"], 1, "{b}");
+    assert_eq!(needs_embedding(&rig.store, "ev-t2"), 1);
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "invalid": [
+            {"event_id": "ev-t2", "reason": "no_extractable_text",
+             "claim_token": tok3},
+        ]}),
+    )
+    .await;
+    assert_eq!(b["invalid"], 1, "claim holder invalid applies: {b}");
     assert_eq!(needs_embedding(&rig.store, "ev-t2"), 0);
 }
 
@@ -1064,4 +1084,200 @@ async fn wp65_24_unknown_provenance_unverified() {
         !ids.contains(&"ev-u1") && !ids.contains(&"ev-u2"),
         "{ids:?}"
     );
+}
+
+// ── WP65-21 hardened contract: claim lease, write-back fencing ────────────────
+
+#[tokio::test]
+async fn wp65_21_claim_lease_excludes_competing_fetch() {
+    let rig = rig().await;
+    seed_event(&rig.store, "ev-l1", "syslog/auth", 1);
+
+    // First fetch acquires the claim — event is returned with a token.
+    let ev1 = fetch_unembedded(&rig).await;
+    assert!(ev1.iter().any(|e| e["id"].as_str() == Some("ev-l1")));
+    let tok1 = event_field(&ev1, "ev-l1", "claim_token").expect("token");
+
+    // A SECOND fetch while the lease is live must NOT return ev-l1 —
+    // the claim is owned, not merely newest-wins.
+    let ev2 = fetch_unembedded(&rig).await;
+    assert!(
+        !ev2.iter().any(|e| e["id"].as_str() == Some("ev-l1")),
+        "live claim must exclude event from competing fetch: {ev2:?}"
+    );
+
+    // Force lease expiry → next fetch re-acquires with a NEW token.
+    {
+        let db = rig.store.db();
+        let conn = lbug::Connection::new(&db).unwrap();
+        let mut stmt = conn
+            .prepare("MATCH (e:StateChangeEvent {id: 'ev-l1'}) SET e.embedding_claim_expires_ns = 0")
+            .unwrap();
+        conn.execute(&mut stmt, vec![]).unwrap();
+    }
+    let ev3 = fetch_unembedded(&rig).await;
+    let tok3 = event_field(&ev3, "ev-l1", "claim_token").expect("token");
+    assert_ne!(tok1, tok3, "expired lease must yield a fresh claim");
+
+    // Stale token report fenced; current token applies.
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "deferred": [
+            {"event_id": "ev-l1", "claim_token": tok1, "kind": "provider_error"},
+        ]}),
+    )
+    .await;
+    assert_eq!(b["deferred"], 0, "{b}");
+    assert_eq!(b["deferred_skipped"], 1, "{b}");
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "deferred": [
+            {"event_id": "ev-l1", "claim_token": tok3, "kind": "provider_error"},
+        ]}),
+    )
+    .await;
+    assert_eq!(b["deferred"], 1, "{b}");
+}
+
+#[tokio::test]
+async fn wp65_21_stale_success_cannot_complete_newer_obligation() {
+    let rig = rig().await;
+    seed_event(&rig.store, "ev-s1", "syslog/auth", 1);
+
+    // Fetch A acquires claim tokA.
+    let evA = fetch_unembedded(&rig).await;
+    let tokA = event_field(&evA, "ev-s1", "claim_token").expect("token");
+
+    // Simulate operator re-enrichment / newer obligation: expire the
+    // lease and re-fetch → claim tokB supersedes.
+    {
+        let db = rig.store.db();
+        let conn = lbug::Connection::new(&db).unwrap();
+        let mut stmt = conn
+            .prepare("MATCH (e:StateChangeEvent {id: 'ev-s1'}) SET e.embedding_claim_expires_ns = 0")
+            .unwrap();
+        conn.execute(&mut stmt, vec![]).unwrap();
+    }
+    let evB = fetch_unembedded(&rig).await;
+    let tokB = event_field(&evB, "ev-s1", "claim_token").expect("token");
+    assert_ne!(tokA, tokB);
+
+    // Stale worker A posts a SUCCESSFUL embedding with tokA: creation
+    // is REJECTED as a stale processing claim — the immutable embedding
+    // is never created, so the rightful worker cannot hit an identity
+    // conflict. ev-s1 remains claimed by tokB.
+    let mut itemA = embedding_item("ev-s1", vec![0.5, 0.5, 0.5, 0.5]);
+    itemA["claim_token"] = json!(tokA);
+    let (_s, b) = post_embeddings(&rig, json!({"embeddings": [itemA]})).await;
+    assert_eq!(b["accepted"], 0, "stale creation must be rejected: {b}");
+    assert_eq!(emb_count(&rig.store, "ev-s1"), 0, "{b}");
+    assert_eq!(
+        needs_embedding(&rig.store, "ev-s1"),
+        1,
+        "stale success must NOT complete the newer obligation"
+    );
+
+    // Worker B posts the same vector with tokB: tokA's write was
+    // rejected so this is a fresh ACCEPTED create, and lifecycle
+    // completion under the live claim succeeds.
+    let mut itemB = embedding_item("ev-s1", vec![0.5, 0.5, 0.5, 0.5]);
+    itemB["claim_token"] = json!(tokB);
+    let (_s, b) = post_embeddings(&rig, json!({"embeddings": [itemB]})).await;
+    assert_eq!(b["accepted"], 1, "{b}");
+    assert_eq!(needs_embedding(&rig.store, "ev-s1"), 0, "{b}");
+}
+
+#[tokio::test]
+async fn wp65_21_missing_token_cannot_bypass_active_claim() {
+    let rig = rig().await;
+    seed_event(&rig.store, "ev-m1", "syslog/auth", 1);
+
+    let ev = fetch_unembedded(&rig).await;
+    let _tok = event_field(&ev, "ev-m1", "claim_token").expect("token");
+
+    // A write-back with NO claim fields while an active claim exists:
+    // creation itself is rejected as a stale processing claim — a
+    // missing claim cannot bypass active-generation authority.
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [embedding_item("ev-m1", vec![0.1, 0.2, 0.3, 0.4])]}),
+    )
+    .await;
+    assert_eq!(b["accepted"], 0, "{b}");
+    assert_eq!(emb_count(&rig.store, "ev-m1"), 0, "{b}");
+    assert_eq!(
+        needs_embedding(&rig.store, "ev-m1"),
+        1,
+        "missing claim must not bypass active-generation authority"
+    );
+
+    // Missing-claim reports under an ACTIVE/EXPIRED claim are fenced:
+    // unconditional reports require a never-claimed event, and
+    // claim_attempts requires no token authority. A deferred report
+    // with neither claim field is therefore SKIPPED here.
+    let (_s, b1) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "deferred": [
+            {"event_id": "ev-m1", "kind": "provider_error"},
+        ]}),
+    )
+    .await;
+    assert_eq!(b1["deferred"], 0, "missing-claim report must be fenced: {b1}");
+    assert_eq!(b1["deferred_skipped"], 1, "{b1}");
+    let a1 = get_i64(&rig.store, "ev-m1", "embedding_attempts");
+    assert_eq!(a1, 0, "fenced report must not consume an attempt");
+}
+
+#[tokio::test]
+async fn wp65_21_replay_after_operator_reset() {
+    let rig = rig().await;
+    seed_event(&rig.store, "ev-r1", "syslog/auth", 1);
+
+    let ev = fetch_unembedded(&rig).await;
+    let tok = event_field(&ev, "ev-r1", "claim_token").expect("token");
+    let mut item = embedding_item("ev-r1", vec![0.7, 0.1, 0.1, 0.1]);
+    item["claim_token"] = json!(tok);
+    let (_s, b) = post_embeddings(&rig, json!({"embeddings": [item]})).await;
+    assert_eq!(b["accepted"], 1, "{b}");
+    assert_eq!(needs_embedding(&rig.store, "ev-r1"), 0);
+
+    // Operator re-enrichment: reset lifecycle fields (documented
+    // contract) — claim token/lease are ALSO cleared so the next fetch
+    // starts a fresh generation.
+    {
+        let db = rig.store.db();
+        let conn = lbug::Connection::new(&db).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "MATCH (e:StateChangeEvent {id: 'ev-r1'}) SET \
+                 e.needs_embedding = 1, e.embedding_invalid = 0, \
+                 e.embedding_attempts = 0, e.embedding_retry_after_ns = 0, \
+                 e.embedding_claim_token = '', e.embedding_claim_expires_ns = 0",
+            )
+            .unwrap();
+        conn.execute(&mut stmt, vec![]).unwrap();
+    }
+
+    // Replay the OLD claim's write-back: embedding identity is
+    // already_existing (idempotent) but the stale token must NOT
+    // complete the reset obligation.
+    let mut stale = embedding_item("ev-r1", vec![0.7, 0.1, 0.1, 0.1]);
+    stale["claim_token"] = json!(tok);
+    let (_s, b) = post_embeddings(&rig, json!({"embeddings": [stale]})).await;
+    assert_eq!(b["already_existing"], 1, "{b}");
+    assert_eq!(
+        needs_embedding(&rig.store, "ev-r1"),
+        1,
+        "stale claim must not complete the reset obligation"
+    );
+
+    // Fresh fetch → new claim → completion succeeds.
+    let ev2 = fetch_unembedded(&rig).await;
+    let tok2 = event_field(&ev2, "ev-r1", "claim_token").expect("token");
+    assert_ne!(tok, tok2);
+    let mut fresh = embedding_item("ev-r1", vec![0.7, 0.1, 0.1, 0.1]);
+    fresh["claim_token"] = json!(tok2);
+    let (_s, b) = post_embeddings(&rig, json!({"embeddings": [fresh]})).await;
+    assert_eq!(b["already_existing"], 1, "{b}");
+    assert_eq!(needs_embedding(&rig.store, "ev-r1"), 0);
 }

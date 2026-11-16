@@ -1499,12 +1499,25 @@ pub async fn events_unembedded_handler(
     let limit = q.limit.unwrap_or(200).min(1000);
     let event_type = q.event_type.clone().unwrap_or_default();
     let now_ns = embedding_now_ns();
+    // WP65-21 claim acquisition is a MUTATION: it must serialize with
+    // the telemetry writer and embedding write-back through the shared
+    // graph write lock. Running the claim UPDATE without it raced
+    // concurrent graph writes and surfaced as HTTP 500s under load.
+    let write_lock = state.store.write_lock();
     let result = tokio::task::spawn_blocking(move || {
+        let _g = write_lock.lock().expect("write lock poisoned");
         let conn = Connection::new(&db)?;
         // WP65-14: eligible pending = needs_embedding AND not permanently
         // invalid AND retry deadline reached. Oldest-first with a stable
         // identity tie-breaker; deferred/backed-off events cannot starve
         // healthy newer events.
+        //
+        // WP65-21 ownership contract: an event with a LIVE claim
+        // (embedding_claim_expires_ns > now) is owned by another worker
+        // and is NOT returned — claims cannot be overwritten arbitrarily
+        // by competing fetches. When the lease expires (crashed worker),
+        // the next fetch re-acquires it. Legacy rows have expires NULL/0
+        // and are always claimable.
         let type_clause = if event_type.is_empty() {
             String::new()
         } else {
@@ -1516,64 +1529,95 @@ pub async fn events_unembedded_handler(
         let cypher = format!(
             "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 \
              AND (e.embedding_invalid IS NULL OR e.embedding_invalid = 0) \
-             AND (e.embedding_retry_after_ns IS NULL OR e.embedding_retry_after_ns <= $now){type_clause} \
+             AND (e.embedding_retry_after_ns IS NULL OR e.embedding_retry_after_ns <= $now) \
+             AND (e.embedding_claim_expires_ns IS NULL OR e.embedding_claim_expires_ns <= $now){type_clause} \
              RETURN e.id, e.device_address, e.event_type, e.detail, e.occurred_at, \
              e.embedding_attempts, e.embedding_invalid \
              ORDER BY e.occurred_at ASC, e.id ASC LIMIT {limit}"
         );
-        let mut stmt = conn.prepare(&cypher)?;
-        let mut rows = conn
-            .execute(&mut stmt, vec![("now", Value::Int64(now_ns))])
-            .map_err(|e| anyhow::anyhow!("{e}"))?
-            .map(|r| {
-                let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
-                let attempts = match &r[5] {
-                    Value::Int64(n) => *n,
-                    _ => 0,
-                };
-                let _invalid = &r[6];
-                serde_json::json!({
-                    "id": s(&r[0]),
-                    "device_address": s(&r[1]),
-                    "event_type": s(&r[2]),
-                    "detail_json": s(&r[3]),
-                    "claim_attempts": attempts,
+        conn.query("BEGIN TRANSACTION")?;
+        let claim_result = (|| -> Result<Vec<serde_json::Value>, anyhow::Error> {
+            let mut stmt = conn.prepare(&cypher)?;
+            let mut rows = conn
+                .execute(&mut stmt, vec![("now", Value::Int64(now_ns))])
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .map(|r| {
+                    let s = |v: &Value| match v { Value::String(s) => s.clone(), _ => String::new() };
+                    let attempts = match &r[5] {
+                        Value::Int64(n) => *n,
+                        _ => 0,
+                    };
+                    let _invalid = &r[6];
+                    serde_json::json!({
+                        "id": s(&r[0]),
+                        "device_address": s(&r[1]),
+                        "event_type": s(&r[2]),
+                        "detail_json": s(&r[3]),
+                        "claim_attempts": attempts,
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
-        // WP65-21 processing generation: this fetch ACQUIRES a unique
-        // claim token per event — the newest fetch wins, so reports
-        // from a superseded fetch are fenced out even when the attempt
-        // count happens to match. The token is fencing metadata only;
-        // it never changes eligibility and is overwritten by the next
-        // fetch, so a crashed worker cannot wedge an event.
-        let claim_token = format!(
-            "{:x}-{:x}-{:x}",
-            now_ns,
-            std::process::id(),
-            embedding_claim_seq()
-        );
-        if !rows.is_empty() {
-            let mut claim = conn.prepare(
-                "MATCH (e:StateChangeEvent {id: $eid}) \
-                 SET e.embedding_claim_token = $tok",
-            )?;
-            for row in &rows {
-                if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
-                    conn.execute(
-                        &mut claim,
-                        vec![
-                            ("eid", Value::String(id.to_string())),
-                            ("tok", Value::String(claim_token.clone())),
-                        ],
-                    )?;
+                .collect::<Vec<_>>();
+            // WP65-21 processing generation + bounded lease: this fetch
+            // ACQUIRES a unique claim token per event with an expiry.
+            // Reports must echo the token; a superseded or expired claim
+            // fences stale reports out. Selection and claim write happen
+            // in ONE transaction under the write lock, so eligibility is
+            // revalidated atomically with acquisition.
+            let claim_token = format!(
+                "{:x}-{:x}-{:x}",
+                now_ns,
+                std::process::id(),
+                embedding_claim_seq()
+            );
+            let claim_expires = now_ns + EMBEDDING_CLAIM_LEASE_NS;
+            if !rows.is_empty() {
+                let mut claim = conn.prepare(
+                    "MATCH (e:StateChangeEvent {id: $eid}) \
+                     WHERE e.needs_embedding = 1 \
+                     AND (e.embedding_invalid IS NULL OR e.embedding_invalid = 0) \
+                     AND (e.embedding_retry_after_ns IS NULL OR e.embedding_retry_after_ns <= $now) \
+                     AND (e.embedding_claim_expires_ns IS NULL OR e.embedding_claim_expires_ns <= $now) \
+                     SET e.embedding_claim_token = $tok, \
+                     e.embedding_claim_expires_ns = $exp RETURN e.id",
+                )?;
+                let mut claimed = Vec::with_capacity(rows.len());
+                for row in &rows {
+                    if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
+                        let mut res = conn.execute(
+                            &mut claim,
+                            vec![
+                                ("eid", Value::String(id.to_string())),
+                                ("tok", Value::String(claim_token.clone())),
+                                ("exp", Value::Int64(claim_expires)),
+                                ("now", Value::Int64(now_ns)),
+                            ],
+                        )?;
+                        // Eligibility revalidation: only rows still
+                        // claimable under the same predicates are
+                        // returned — a concurrent transition between
+                        // SELECT and SET fences the row out.
+                        if res.next().is_some() {
+                            claimed.push(row.clone());
+                        }
+                    }
                 }
+                rows = claimed;
             }
             for row in rows.iter_mut() {
                 row["claim_token"] = serde_json::json!(claim_token);
             }
+            Ok(rows)
+        })();
+        match claim_result {
+            Ok(rows) => {
+                conn.query("COMMIT")?;
+                Ok::<_, anyhow::Error>(rows)
+            }
+            Err(e) => {
+                let _ = conn.query("ROLLBACK");
+                Err(e)
+            }
         }
-        Ok::<_, anyhow::Error>(rows)
     })
     .await;
 
@@ -1605,6 +1649,18 @@ pub struct EmbeddingItem {
     /// persisted StateChangeEvent; a client-supplied value is ignored
     /// and can never redefine the source event (WP65-11).
     pub event_type: Option<String>,
+    /// WP65-21: the `claim_token` returned by the unembedded fetch that
+    /// acquired this event's processing claim. When the event carries
+    /// an ACTIVE claim, lifecycle completion (mark_embedding_done) is
+    /// applied only if this token matches the stored claim — a stale
+    /// worker's successful write-back cannot complete a newer
+    /// obligation. The immutable embedding record itself is still
+    /// persisted (content-addressed evidence, idempotent replay).
+    pub claim_token: Option<String>,
+    /// WP65-21 legacy compatibility: the `claim_attempts` snapshot.
+    /// Consulted only when the event has NO active claim token (legacy
+    /// rows) — it cannot bypass an active-generation claim.
+    pub claim_attempts: Option<i64>,
 }
 
 /// WP65-14: an event the worker resolved but could not embed this cycle
@@ -1709,6 +1765,13 @@ const MAX_LIFECYCLE_HINT_NS: i64 = 24 * 3600 * 1_000_000_000;
 /// Default reschedule for claim-contention deferrals (template pending
 /// under another worker): short, does not consume an attempt.
 const CLAIM_CONTENTION_BACKOFF_NS: i64 = 60 * 1_000_000_000;
+/// WP65-21 bounded claim lease: an unembedded fetch owns an event's
+/// processing claim for this long. A crashed worker's claim expires
+/// and the next fetch re-acquires; a live claim excludes the event
+/// from competing fetches (single-owner enforcement, not just
+/// newest-fetch-wins). Sized well above the worst legitimate worker
+/// cycle (~5s per 200-event batch) while staying bounded.
+const EMBEDDING_CLAIM_LEASE_NS: i64 = 15 * 60 * 1_000_000_000;
 /// Explicit "unknown" provenance sentinel — distinct from any real
 /// revision/normalization/schema string, never fabricated.
 const PROVENANCE_UNKNOWN: &str = "unknown";
@@ -1984,8 +2047,64 @@ pub async fn events_embeddings_handler(
                     // pre-WP65-03 partial writes) without touching its
                     // timestamp, then close the enrichment flag.
                     ensure_embedded_as_rel(&conn, &item.event_id, &emb_id, item.computed_at_ns)?;
-                    mark_embedding_done(&conn, &item.event_id)?;
+                    mark_embedding_done(&conn, &item.event_id, item.claim_token.as_deref(), item.claim_attempts)?;
                     return Ok((Outcome::Replayed, None));
+                }
+
+                // WP65-21: a stale worker must not CREATE a new
+                // immutable embedding — an obsolete claim could win the
+                // identity race and force the rightful worker into a
+                // conflicting-replay rejection. When the event carries
+                // an active claim token, creation requires the matching
+                // token; replay of an already-accepted identity above
+                // remains idempotent regardless of claim.
+                let mut cl = conn.prepare(
+                    "MATCH (e:StateChangeEvent {id: $eid}) \
+                     RETURN e.embedding_claim_token, e.embedding_claim_expires_ns, \
+                     e.needs_embedding",
+                )?;
+                let claim_row = conn
+                    .execute(&mut cl, vec![("eid", Value::String(item.event_id.clone()))])?
+                    .next();
+                let (stored_claim, claim_expires, needs_emb) = claim_row
+                    .map(|r| {
+                        let tok = match &r[0] {
+                            Value::String(s) => s.clone(),
+                            _ => String::new(),
+                        };
+                        let exp = matches!(r.get(1), Some(Value::Int64(_)));
+                        let need = match r.get(2) {
+                            Some(Value::Int64(n)) => *n,
+                            _ => 0,
+                        };
+                        (tok, exp, need)
+                    })
+                    .unwrap_or_default();
+                // Claim fencing applies only while the enrichment
+                // obligation is OPEN (needs_embedding=1). A completed
+                // event accepts additional immutable embeddings (new
+                // model identities) unconditionally — mark_embedding_done
+                // is already a no-op there.
+                //
+                // While open: expires IS NOT NULL means the event was
+                // claimed at least once — including the retired window
+                // between a lifecycle outcome and the next fetch, where
+                // stored_claim is '' and NO token can match, so stale
+                // creation is rejected until a fresh claim is acquired.
+                // expires IS NULL (never claimed) keeps legacy behavior.
+                let stale = needs_emb == 1
+                    && if claim_expires {
+                        stored_claim.is_empty()
+                            || item.claim_token.as_deref() != Some(stored_claim.as_str())
+                    } else {
+                        !stored_claim.is_empty()
+                            && item.claim_token.as_deref() != Some(stored_claim.as_str())
+                    };
+                if stale {
+                    return Ok((
+                        Outcome::Rejected,
+                        Some("stale processing claim".to_string()),
+                    ));
                 }
 
                 let mut upsert = conn.prepare(
@@ -2016,7 +2135,7 @@ pub async fn events_embeddings_handler(
                 ensure_embedded_as_rel(&conn, &item.event_id, &emb_id, item.computed_at_ns)?;
 
                 // Enrichment flag — write failures propagate (no `let _ =`).
-                mark_embedding_done(&conn, &item.event_id)?;
+                mark_embedding_done(&conn, &item.event_id, item.claim_token.as_deref(), item.claim_attempts)?;
 
                 Ok((Outcome::Created, None))
             })();
@@ -2113,7 +2232,7 @@ pub async fn events_embeddings_handler(
             let mut st = conn.prepare(
                 "MATCH (e:StateChangeEvent {id: $eid}) \
                  RETURN e.event_type, e.needs_embedding, e.embedding_invalid, \
-                 e.embedding_attempts, e.embedding_claim_token",
+                 e.embedding_attempts, e.embedding_claim_token, e.embedding_claim_expires_ns",
             )?;
             let row = conn
                 .execute(&mut st, vec![("eid", Value::String(d.event_id.clone()))])?
@@ -2135,15 +2254,19 @@ pub async fn events_embeddings_handler(
             let is_invalid = i64v(&row[2]) != 0;
             let attempts = i64v(&row[3]);
             let stored_token = s(&row[4]);
-            // WP65-21/17 claim gate: a supplied claim_token is the
-            // authoritative processing generation (newest fetch wins);
-            // without one, the legacy claim_attempts snapshot applies;
-            // with neither, the report is unconditional (compat).
+            // expires IS NULL marks a NEVER-CLAIMED event; =0 means the
+            // claim was released after a lifecycle outcome; >0 is a
+            // live-or-recent claim. Missing-claim reports are explicit
+            // legacy behavior: claim_attempts applies only when no
+            // token authority exists; unconditional reports apply only
+            // for never-claimed events — an obsolete missing-token
+            // request cannot bypass fencing after completion/reset.
+            let never_claimed = !matches!(row.get(5), Some(Value::Int64(_)));
             let claim_ok = match d.claim_token.as_deref() {
                 Some(tok) if !tok.is_empty() => stored_token == tok,
                 _ => match d.claim_attempts {
-                    Some(c) => c == attempts,
-                    None => true,
+                    Some(c) => stored_token.is_empty() && c == attempts,
+                    None => stored_token.is_empty() && never_claimed,
                 },
             };
             if !event_type.starts_with("syslog")
@@ -2172,11 +2295,21 @@ pub async fn events_embeddings_handler(
             // read above and this write makes the update match zero
             // rows instead of double-applying. `RETURN e.id` lets us
             // distinguish applied from fenced.
-            let token_clause = match d.claim_token.as_deref() {
+            let (token_clause, needs_ctok) = match d.claim_token.as_deref() {
                 Some(tok) if !tok.is_empty() => {
-                    "AND e.embedding_claim_token = $ctok"
+                    ("AND e.embedding_claim_token = $ctok", true)
                 }
-                _ => "",
+                _ => match d.claim_attempts {
+                    Some(_) => (
+                        "AND (e.embedding_claim_token IS NULL OR e.embedding_claim_token = '')",
+                        false,
+                    ),
+                    None => (
+                        "AND (e.embedding_claim_token IS NULL OR e.embedding_claim_token = '') \
+                         AND e.embedding_claim_expires_ns IS NULL",
+                        false,
+                    ),
+                },
             };
             let guard = format!(
                 "MATCH (e:StateChangeEvent {{id: $eid}}) \
@@ -2191,7 +2324,7 @@ pub async fn events_embeddings_handler(
                     ("eid", Value::String(d.event_id.clone())),
                     ("expected", Value::Int64(attempts)),
                 ];
-                if !token_clause.is_empty()
+                if needs_ctok
                     && let Some(tok) = d.claim_token.as_deref()
                 {
                     params.push(("ctok", Value::String(tok.to_string())));
@@ -2207,7 +2340,8 @@ pub async fn events_embeddings_handler(
                 let deadline = (now_ns + CLAIM_CONTENTION_BACKOFF_NS).max(hint);
                 apply(
                     &conn,
-                    "e.embedding_retry_after_ns = $r",
+                    "e.embedding_retry_after_ns = $r, e.embedding_claim_token = '', \
+                         e.embedding_claim_expires_ns = 0",
                     vec![("r", Value::Int64(deadline))],
                 )?
             } else {
@@ -2217,7 +2351,8 @@ pub async fn events_embeddings_handler(
                         &conn,
                         "e.needs_embedding = 0, e.embedding_invalid = 1, \
                          e.embedding_invalid_reason = 'embedding_retry_exhausted', \
-                         e.embedding_retry_after_ns = 0",
+                         e.embedding_retry_after_ns = 0, e.embedding_claim_token = '', \
+                         e.embedding_claim_expires_ns = 0",
                         vec![],
                     )?
                 } else {
@@ -2225,7 +2360,8 @@ pub async fn events_embeddings_handler(
                     let deadline = (now_ns + backoff).max(hint);
                     apply(
                         &conn,
-                        "e.embedding_attempts = $a, e.embedding_retry_after_ns = $r",
+                        "e.embedding_attempts = $a, e.embedding_retry_after_ns = $r, \
+                         e.embedding_claim_token = '', e.embedding_claim_expires_ns = 0",
                         vec![
                             ("a", Value::Int64(new_attempts)),
                             ("r", Value::Int64(deadline)),
@@ -2251,7 +2387,7 @@ pub async fn events_embeddings_handler(
             let mut chk = conn.prepare(
                 "MATCH (e:StateChangeEvent {id: $eid}) \
                  RETURN e.event_type, e.needs_embedding, e.embedding_invalid, \
-                 e.embedding_attempts, e.embedding_claim_token",
+                 e.embedding_attempts, e.embedding_claim_token, e.embedding_claim_expires_ns",
             )?;
             let row = conn
                 .execute(&mut chk, vec![("eid", Value::String(inv.event_id.clone()))])?
@@ -2273,11 +2409,12 @@ pub async fn events_embeddings_handler(
             let is_invalid = i64v(&row[2]) != 0;
             let attempts = i64v(&row[3]);
             let stored_token = s(&row[4]);
+            let never_claimed = !matches!(row.get(5), Some(Value::Int64(_)));
             let claim_ok = match inv.claim_token.as_deref() {
                 Some(tok) if !tok.is_empty() => stored_token == tok,
                 _ => match inv.claim_attempts {
-                    Some(c) => c == attempts,
-                    None => true,
+                    Some(c) => stored_token.is_empty() && c == attempts,
+                    None => stored_token.is_empty() && never_claimed,
                 },
             };
             if !event_type.starts_with("syslog")
@@ -2292,18 +2429,28 @@ pub async fn events_embeddings_handler(
             // Same atomic claim-and-set as the deferred path: the
             // eligibility + claim predicate is inside the update WHERE
             // so a concurrent transition fences the write.
-            let token_clause = match inv.claim_token.as_deref() {
+            let (token_clause, needs_ctok) = match inv.claim_token.as_deref() {
                 Some(tok) if !tok.is_empty() => {
-                    "AND e.embedding_claim_token = $ctok"
+                    ("AND e.embedding_claim_token = $ctok", true)
                 }
-                _ => "",
+                _ => match inv.claim_attempts {
+                    Some(_) => (
+                        "AND (e.embedding_claim_token IS NULL OR e.embedding_claim_token = '')",
+                        false,
+                    ),
+                    None => (
+                        "AND (e.embedding_claim_token IS NULL OR e.embedding_claim_token = '') \
+                         AND e.embedding_claim_expires_ns IS NULL",
+                        false,
+                    ),
+                },
             };
             let mut params = vec![
                 ("eid", Value::String(inv.event_id.clone())),
                 ("expected", Value::Int64(attempts)),
                 ("reason", Value::String(inv.reason.clone())),
             ];
-            if !token_clause.is_empty()
+            if needs_ctok
                 && let Some(tok) = inv.claim_token.as_deref()
             {
                 params.push(("ctok", Value::String(tok.to_string())));
@@ -2314,7 +2461,8 @@ pub async fn events_embeddings_handler(
                  AND e.embedding_attempts = $expected {token_clause} \
                  SET e.needs_embedding = 0, e.embedding_invalid = 1, \
                  e.embedding_invalid_reason = $reason, \
-                 e.embedding_retry_after_ns = 0 RETURN e.id"
+                 e.embedding_retry_after_ns = 0, e.embedding_claim_token = '', \
+                 e.embedding_claim_expires_ns = 0 RETURN e.id"
             ))?;
             let mut rows = conn.execute(&mut up, params)?;
             if rows.next().is_some() {
@@ -2409,16 +2557,67 @@ fn ensure_embedded_as_rel(
 
 /// Close the enrichment obligation on the source event. Idempotent —
 /// replays and deferred-then-completed flows converge on the same state.
-fn mark_embedding_done(conn: &Connection, event_id: &str) -> Result<(), anyhow::Error> {
-    let mut mark = conn.prepare(
-        "MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0, \
-         e.embedding_retry_after_ns = 0",
+fn mark_embedding_done(
+    conn: &Connection,
+    event_id: &str,
+    claim_token: Option<&str>,
+    claim_attempts: Option<i64>,
+) -> Result<bool, anyhow::Error> {
+    // WP65-21: lifecycle completion is claim-fenced. An event carrying
+    // an ACTIVE claim token completes only for the token's holder — a
+    // stale worker's successful write-back persists the immutable
+    // embedding but cannot close a newer obligation. With no active
+    // claim, the legacy claim_attempts snapshot applies; with neither,
+    // the write is unconditional (pre-claim compatibility).
+    let mut chk = conn.prepare(
+        "MATCH (e:StateChangeEvent {id: $eid}) \
+         RETURN e.needs_embedding, e.embedding_attempts, e.embedding_claim_token, \
+         e.embedding_claim_expires_ns",
     )?;
-    conn.execute(
+    let row = conn
+        .execute(&mut chk, vec![("eid", Value::String(event_id.to_string()))])?
+        .next();
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    let s = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        _ => String::new(),
+    };
+    let i64v = |v: &Value| match v {
+        Value::Int64(n) => *n,
+        _ => 0,
+    };
+    if i64v(&row[0]) != 1 {
+        return Ok(true); // already complete — idempotent no-op
+    }
+    let attempts = i64v(&row[1]);
+    let stored_token = s(&row[2]);
+    let never_claimed = !matches!(row.get(3), Some(Value::Int64(_)));
+    // Same three-tier rule as deferred/invalid: active token requires
+    // an exact match; claim_attempts applies only with no token
+    // authority; unconditional only for never-claimed events.
+    let claim_ok = if !stored_token.is_empty() {
+        claim_token == Some(stored_token.as_str())
+    } else {
+        match claim_attempts {
+            Some(c) => c == attempts,
+            None => never_claimed,
+        }
+    };
+    if !claim_ok {
+        return Ok(false);
+    }
+    let mut mark = conn.prepare(
+        "MATCH (e:StateChangeEvent {id: $eid}) WHERE e.needs_embedding = 1 \
+         SET e.needs_embedding = 0, e.embedding_retry_after_ns = 0, \
+         e.embedding_claim_token = '', e.embedding_claim_expires_ns = 0 RETURN e.id",
+    )?;
+    let mut res = conn.execute(
         &mut mark,
         vec![("eid", Value::String(event_id.to_string()))],
     )?;
-    Ok(())
+    Ok(res.next().is_some())
 }
 
 /// GET /api/devices/unembedded-config?limit=N

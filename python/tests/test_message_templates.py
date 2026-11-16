@@ -510,6 +510,10 @@ def _ack_for(records, statuses):
         "accepted": accepted,
         "already_existing": existing,
         "persisted": accepted + existing,
+        "deferred": 0,
+        "deferred_skipped": 0,
+        "invalid": 0,
+        "invalid_skipped": 0,
         "rejected": rejected,
         "items": [
             {"index": i, "event_id": r["event_id"], "status": s}
@@ -525,7 +529,7 @@ class _SeqResp:
 
     def post(self, url, json=None, headers=None, timeout=None):
         self.requests.append(json)
-        body = self._bodies.pop(0) if self._bodies else {"persisted": 0}
+        body = self._bodies.pop(0) if self._bodies else {"persisted": 0, "deferred": 0, "deferred_skipped": 0, "invalid": 0, "invalid_skipped": 0}
         outer = self
 
         class R:
@@ -648,7 +652,7 @@ class TestAckAttribution:
             {"id": "e2", "message": "   "},  # no extractable text
             {"id": "e3", "message": "another failing message"},
         ]
-        resp = _SeqResp([{"persisted": 0, "deferred": 2, "invalid": 1}])
+        resp = _SeqResp([{"persisted": 0, "deferred": 2, "deferred_skipped": 0, "invalid": 1, "invalid_skipped": 0}])
         monkeypatch.setattr("requests.post", resp.post)
 
         n = w._embed_and_post("http://x", events, emb, dedup)
@@ -686,7 +690,7 @@ class TestProviderContract:
                 pass
 
             def json(self):
-                return {"persisted": 0}
+                return {"persisted": 0, "deferred": 0, "deferred_skipped": 0, "invalid": 0, "invalid_skipped": 0}
 
         monkeypatch.setattr(
             "requests.post",
@@ -722,7 +726,7 @@ class TestProviderContract:
                 pass
 
             def json(self):
-                return {"persisted": 0}
+                return {"persisted": 0, "deferred": 0, "deferred_skipped": 0, "invalid": 0, "invalid_skipped": 0}
 
         monkeypatch.setattr(
             "requests.post",
@@ -963,6 +967,8 @@ class TestWorkerCycleOutcomes:
                 def json(self):
                     return {"submitted": 0, "accepted": 0,
                             "already_existing": 0, "persisted": 0,
+                            "deferred": 1, "deferred_skipped": 0,
+                            "invalid": 0, "invalid_skipped": 0,
                             "rejected": [], "items": []}
 
             return R()
@@ -1014,7 +1020,12 @@ class TestWorkerCycleOutcomes:
                             "rejected": [{"index": 1,
                                           "event_id": "e2",
                                           "reason": "dup"}],
-                            "items": []}
+                            "items": [
+                                {"index": 0, "event_id": "e1",
+                                 "status": "accepted"},
+                                {"index": 1, "event_id": "e2",
+                                 "status": "rejected"},
+                            ]}
 
             return R()
 
