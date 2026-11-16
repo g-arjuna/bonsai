@@ -228,8 +228,9 @@ async fn embedding_writeback_full_lifecycle() {
     for bad in [
         vec![],
         vec![0.0, 0.0, 0.0, 0.0],
-        vec![f64::NAN, 0.0, 0.0, 0.0],
-        vec![0.1, 0.2, 0.3], // dim mismatch vs declared? declared=3 len=3 ok -> use dim field
+        // norm overflows to non-finite — JSON cannot carry NaN/inf
+        vec![1e308, 1e308, 1e308, 1e308],
+        vec![0.1, 0.2, 0.3], // declared dim 4 != vector len 3
     ] {
         let mut item = embedding_item("ev-bad", bad);
         item["dim"] = json!(4); // declared dim != vector len for last case
