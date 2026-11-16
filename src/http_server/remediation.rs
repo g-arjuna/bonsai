@@ -1676,8 +1676,8 @@ pub(super) async fn upsert_config_item_handler(
         .config_item_identity(&item.id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-    let (eff_name, eff_class) = existing
-        .unwrap_or_else(|| (item.name.clone(), item.config_class.clone()));
+    let (eff_name, eff_class) =
+        existing.unwrap_or_else(|| (item.name.clone(), item.config_class.clone()));
     if !is_admin
         && (crate::graph::is_sensitive_config_class(&eff_class)
             || crate::graph::PROTECTED_CONFIG_NAMES.contains(&eff_name.as_str()))
