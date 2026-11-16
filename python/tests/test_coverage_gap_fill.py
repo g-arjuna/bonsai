@@ -170,9 +170,10 @@ def test_chaos_runner_heal_bfd(mock_dispatch):
     assert record["healed_at_ns"] is not None
     mock_dispatch.assert_called_once_with(targets, "h1", "ethernet-1/1.0", "topo")
 
+@patch("python.inject_fault._use_docker_transport", return_value=False)
 @patch("python.inject_fault.srl_bfd_disable")
-def test_inject_fault_dispatch_bfd_down_srl(mock_disable):
-    """Test SR Linux BFD disable dispatch."""
+def test_inject_fault_dispatch_bfd_down_srl(mock_disable, _mock_transport):
+    """Test SR Linux BFD disable dispatch (SSH transport path, deterministic)."""
     import python.inject_fault as inject_fault
 
     targets = {

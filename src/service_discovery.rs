@@ -41,53 +41,53 @@ pub struct TrafficThresholds {
 lazy_static::lazy_static! {
     static ref SERVICE_PATTERNS: Vec<(Regex, f64, String)> = vec![
         // API Gateway patterns
-        (Regex::new(r"(?i)api[_-]?gateway").unwrap(), 0.9, "api_gateway".to_string()),
-        (Regex::new(r"(?i)gateway[_-]?api").unwrap(), 0.9, "api_gateway".to_string()),
-        (Regex::new(r"(?i)api[_-]?endpoint").unwrap(), 0.8, "api_gateway".to_string()),
+        (Regex::new(r"(?i)api[ _-]?gateway").unwrap(), 0.9, "api_gateway".to_string()),
+        (Regex::new(r"(?i)gateway[ _-]?api").unwrap(), 0.9, "api_gateway".to_string()),
+        (Regex::new(r"(?i)api[ _-]?endpoint").unwrap(), 0.8, "api_gateway".to_string()),
 
         // Database patterns
-        (Regex::new(r"(?i)database[_-]?server").unwrap(), 0.9, "database".to_string()),
-        (Regex::new(r"(?i)db[_-]?server").unwrap(), 0.8, "database".to_string()),
-        (Regex::new(r"(?i)mysql[_-]?server").unwrap(), 0.9, "database".to_string()),
-        (Regex::new(r"(?i)postgres[_-]?server").unwrap(), 0.9, "database".to_string()),
-        (Regex::new(r"(?i)mongodb[_-]?server").unwrap(), 0.9, "database".to_string()),
+        (Regex::new(r"(?i)database[ _-]?server").unwrap(), 0.9, "database".to_string()),
+        (Regex::new(r"(?i)db[ _-]?server").unwrap(), 0.8, "database".to_string()),
+        (Regex::new(r"(?i)mysql[ _-]?server").unwrap(), 0.9, "database".to_string()),
+        (Regex::new(r"(?i)postgres[ _-]?server").unwrap(), 0.9, "database".to_string()),
+        (Regex::new(r"(?i)mongodb[ _-]?server").unwrap(), 0.9, "database".to_string()),
 
         // Cache patterns
-        (Regex::new(r"(?i)cache[_-]?server").unwrap(), 0.9, "cache".to_string()),
-        (Regex::new(r"(?i)redis[_-]?server").unwrap(), 0.9, "cache".to_string()),
-        (Regex::new(r"(?i)memcached[_-]?server").unwrap(), 0.9, "cache".to_string()),
+        (Regex::new(r"(?i)cache[ _-]?server").unwrap(), 0.9, "cache".to_string()),
+        (Regex::new(r"(?i)redis[ _-]?server").unwrap(), 0.9, "cache".to_string()),
+        (Regex::new(r"(?i)memcached[ _-]?server").unwrap(), 0.9, "cache".to_string()),
 
         // Load Balancer patterns
-        (Regex::new(r"(?i)load[_-]?balancer").unwrap(), 0.9, "load_balancer".to_string()),
-        (Regex::new(r"(?i)lb[_-]?frontend").unwrap(), 0.8, "load_balancer".to_string()),
-        (Regex::new(r"(?i)haproxy[_-]?frontend").unwrap(), 0.9, "load_balancer".to_string()),
+        (Regex::new(r"(?i)load[ _-]?balancer").unwrap(), 0.9, "load_balancer".to_string()),
+        (Regex::new(r"(?i)lb[ _-]?frontend").unwrap(), 0.8, "load_balancer".to_string()),
+        (Regex::new(r"(?i)haproxy[ _-]?frontend").unwrap(), 0.9, "load_balancer".to_string()),
 
         // Web Server patterns
-        (Regex::new(r"(?i)web[_-]?server").unwrap(), 0.7, "web_server".to_string()),
-        (Regex::new(r"(?i)nginx[_-]?frontend").unwrap(), 0.8, "web_server".to_string()),
-        (Regex::new(r"(?i)apache[_-]?frontend").unwrap(), 0.8, "web_server".to_string()),
+        (Regex::new(r"(?i)web[ _-]?server").unwrap(), 0.7, "web_server".to_string()),
+        (Regex::new(r"(?i)nginx[ _-]?frontend").unwrap(), 0.8, "web_server".to_string()),
+        (Regex::new(r"(?i)apache[ _-]?frontend").unwrap(), 0.8, "web_server".to_string()),
 
         // Application Server patterns
-        (Regex::new(r"(?i)application[_-]?server").unwrap(), 0.7, "application_server".to_string()),
-        (Regex::new(r"(?i)app[_-]?server").unwrap(), 0.7, "application_server".to_string()),
+        (Regex::new(r"(?i)application[ _-]?server").unwrap(), 0.7, "application_server".to_string()),
+        (Regex::new(r"(?i)app[ _-]?server").unwrap(), 0.7, "application_server".to_string()),
 
         // Message Queue patterns
-        (Regex::new(r"(?i)message[_-]?queue").unwrap(), 0.9, "message_queue".to_string()),
-        (Regex::new(r"(?i)kafka[_-]?broker").unwrap(), 0.9, "message_queue".to_string()),
-        (Regex::new(r"(?i)rabbitmq[_-]?server").unwrap(), 0.9, "message_queue".to_string()),
+        (Regex::new(r"(?i)message[ _-]?queue").unwrap(), 0.9, "message_queue".to_string()),
+        (Regex::new(r"(?i)kafka[ _-]?broker").unwrap(), 0.9, "message_queue".to_string()),
+        (Regex::new(r"(?i)rabbitmq[ _-]?server").unwrap(), 0.9, "message_queue".to_string()),
 
         // Service Mesh patterns
-        (Regex::new(r"(?i)envoy[_-]?proxy").unwrap(), 0.9, "service_mesh".to_string()),
-        (Regex::new(r"(?i)istio[_-]?proxy").unwrap(), 0.9, "service_mesh".to_string()),
-        (Regex::new(r"(?i)consul[_-]?agent").unwrap(), 0.8, "service_mesh".to_string()),
+        (Regex::new(r"(?i)envoy[ _-]?proxy").unwrap(), 0.9, "service_mesh".to_string()),
+        (Regex::new(r"(?i)istio[ _-]?proxy").unwrap(), 0.9, "service_mesh".to_string()),
+        (Regex::new(r"(?i)consul[ _-]?agent").unwrap(), 0.8, "service_mesh".to_string()),
 
         // Search Engine patterns
-        (Regex::new(r"(?i)elasticsearch[_-]?node").unwrap(), 0.9, "search_engine".to_string()),
-        (Regex::new(r"(?i)solr[_-]?server").unwrap(), 0.8, "search_engine".to_string()),
+        (Regex::new(r"(?i)elasticsearch[ _-]?node").unwrap(), 0.9, "search_engine".to_string()),
+        (Regex::new(r"(?i)solr[ _-]?server").unwrap(), 0.8, "search_engine".to_string()),
 
         // Monitoring patterns
-        (Regex::new(r"(?i)prometheus[_-]?exporter").unwrap(), 0.8, "monitoring".to_string()),
-        (Regex::new(r"(?i)grafana[_-]?server").unwrap(), 0.8, "monitoring".to_string()),
+        (Regex::new(r"(?i)prometheus[ _-]?exporter").unwrap(), 0.8, "monitoring".to_string()),
+        (Regex::new(r"(?i)grafana[ _-]?server").unwrap(), 0.8, "monitoring".to_string()),
     ];
 }
 
@@ -498,6 +498,30 @@ mod tests {
         let endpoint = endpoint.unwrap();
         assert_eq!(endpoint.service_type, "api_gateway");
         assert!(endpoint.confidence_score > 0.8);
+
+        // Separator normalization: underscore/hyphen/space forms of the
+        // same service name must match identically — interface
+        // descriptions routinely use spaces ("API Gateway - Frontend").
+        for desc in [
+            "api-gateway-prod",
+            "api_gateway_prod",
+            "apigateway-prod",
+            "API Gateway - Frontend",
+        ] {
+            let ep = discovery.analyze_interface_description("192.0.2.1", "eth0", desc, 1_000);
+            assert_eq!(
+                ep.as_ref().map(|e| e.service_type.as_str()),
+                Some("api_gateway"),
+                "description '{desc}' must classify as api_gateway"
+            );
+        }
+
+        // Unrelated descriptions must not fabricate a service.
+        assert!(
+            discovery
+                .analyze_interface_description("192.0.2.1", "eth0", "mgmt-oob", 1_000)
+                .is_none()
+        );
     }
 
     #[test]

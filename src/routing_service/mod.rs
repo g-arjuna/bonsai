@@ -3663,8 +3663,9 @@ pub fn sample_bmp_withdraw_frame(
 
 /// Compute a deterministic SHA-256 digest of all active routes in `RoutingServiceState`
 /// sorted by `(speaker_addr, peer_address, peer_distinguisher, view, prefix, path_id, next_hop, local_pref, as_path)`.
-pub async fn compute_rib_digest(state: &RoutingServiceState) -> (usize, String) {
-    use sha2::{Digest, Sha256};
+/// Canonical RIB rows in the same sorted order `compute_rib_digest` hashes.
+/// Exposed so tests and diagnostics can diff content, not just digests.
+pub async fn compute_rib_canonical_rows(state: &RoutingServiceState) -> Vec<String> {
     let rib = state.rib.read().await;
     let mut canonical_rows = Vec::new();
     for spk in rib.speakers() {
@@ -3697,6 +3698,12 @@ pub async fn compute_rib_digest(state: &RoutingServiceState) -> (usize, String) 
         }
     }
     canonical_rows.sort();
+    canonical_rows
+}
+
+pub async fn compute_rib_digest(state: &RoutingServiceState) -> (usize, String) {
+    use sha2::{Digest, Sha256};
+    let canonical_rows = compute_rib_canonical_rows(state).await;
     let count = canonical_rows.len();
     let joined = canonical_rows.join("\n");
     let digest = hex::encode(Sha256::digest(joined.as_bytes()));

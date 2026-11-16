@@ -122,6 +122,11 @@ def test_a15_stgnn_ablation_compares_full_model_against_no_topology_and_no_tempo
 
 
 def test_a15_pytorch_stgnn_held_out_experiment():
+    # Measured-mode verification requires the optional torch/torch_geometric
+    # stack, which is not part of the python[dev,ml] gate environment. Skip
+    # explicitly where absent; run it in the ML-enabled acceptance env.
+    pytest.importorskip("torch")
+    pytest.importorskip("torch_geometric")
     res = run_pytorch_stgnn_held_out_experiment(
         num_devices=8,
         temporal_steps=4,

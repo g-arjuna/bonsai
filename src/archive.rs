@@ -859,7 +859,7 @@ mod tests {
                 .map(|(index, target)| {
                     sample_update(
                         target,
-                        1_776_695_400_000_000_000 + (flush * 1_000_000_000) as i64,
+                        1_776_695_400_000_000_000 + flush as i64 * 1_000_000_000,
                         index as i64,
                     )
                 })
