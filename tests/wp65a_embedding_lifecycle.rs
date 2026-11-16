@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use bonsai::graph::GraphStore;
-use bonsai::http_server::{router_from_state, AppState};
-use serde_json::{json, Value};
+use bonsai::http_server::{AppState, router_from_state};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 
@@ -212,10 +212,12 @@ async fn embedding_writeback_full_lifecycle() {
     .await;
     assert_eq!(status, reqwest::StatusCode::OK);
     assert_eq!(body["rejected"].as_array().unwrap().len(), 1);
-    assert!(body["rejected"][0]["reason"]
-        .as_str()
-        .unwrap()
-        .contains("conflict"));
+    assert!(
+        body["rejected"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("conflict")
+    );
     assert_eq!(emb_count(&rig.store, "ev1"), 1);
 
     // conflicting dimension under same model identity → rejected
@@ -331,11 +333,13 @@ async fn embedding_writeback_full_lifecycle() {
     // ev1 has two embeddings (two normalization spaces); the most recent
     // deterministic pick compares only within that space — ev2 shares
     // the v1 space and must appear, nothing from v2 leaks in.
-    assert!(sim["similar"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|s| s["event_id"] == "ev2"));
+    assert!(
+        sim["similar"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["event_id"] == "ev2")
+    );
     let _ = conn;
 }
 
@@ -1111,7 +1115,9 @@ async fn wp65_21_claim_lease_excludes_competing_fetch() {
         let db = rig.store.db();
         let conn = lbug::Connection::new(&db).unwrap();
         let mut stmt = conn
-            .prepare("MATCH (e:StateChangeEvent {id: 'ev-l1'}) SET e.embedding_claim_expires_ns = 0")
+            .prepare(
+                "MATCH (e:StateChangeEvent {id: 'ev-l1'}) SET e.embedding_claim_expires_ns = 0",
+            )
             .unwrap();
         conn.execute(&mut stmt, vec![]).unwrap();
     }
@@ -1154,7 +1160,9 @@ async fn wp65_21_stale_success_cannot_complete_newer_obligation() {
         let db = rig.store.db();
         let conn = lbug::Connection::new(&db).unwrap();
         let mut stmt = conn
-            .prepare("MATCH (e:StateChangeEvent {id: 'ev-s1'}) SET e.embedding_claim_expires_ns = 0")
+            .prepare(
+                "MATCH (e:StateChangeEvent {id: 'ev-s1'}) SET e.embedding_claim_expires_ns = 0",
+            )
             .unwrap();
         conn.execute(&mut stmt, vec![]).unwrap();
     }
@@ -1222,7 +1230,10 @@ async fn wp65_21_missing_token_cannot_bypass_active_claim() {
         ]}),
     )
     .await;
-    assert_eq!(b1["deferred"], 0, "missing-claim report must be fenced: {b1}");
+    assert_eq!(
+        b1["deferred"], 0,
+        "missing-claim report must be fenced: {b1}"
+    );
     assert_eq!(b1["deferred_skipped"], 1, "{b1}");
     let a1 = get_i64(&rig.store, "ev-m1", "embedding_attempts");
     assert_eq!(a1, 0, "fenced report must not consume an attempt");

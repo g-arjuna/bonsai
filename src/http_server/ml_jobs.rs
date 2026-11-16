@@ -10,15 +10,15 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
-use axum::Json;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
+use tokio_stream::wrappers::BroadcastStream;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -2047,7 +2047,12 @@ pub async fn events_embeddings_handler(
                     // pre-WP65-03 partial writes) without touching its
                     // timestamp, then close the enrichment flag.
                     ensure_embedded_as_rel(&conn, &item.event_id, &emb_id, item.computed_at_ns)?;
-                    mark_embedding_done(&conn, &item.event_id, item.claim_token.as_deref(), item.claim_attempts)?;
+                    mark_embedding_done(
+                        &conn,
+                        &item.event_id,
+                        item.claim_token.as_deref(),
+                        item.claim_attempts,
+                    )?;
                     return Ok((Outcome::Replayed, None));
                 }
 
@@ -2135,7 +2140,12 @@ pub async fn events_embeddings_handler(
                 ensure_embedded_as_rel(&conn, &item.event_id, &emb_id, item.computed_at_ns)?;
 
                 // Enrichment flag — write failures propagate (no `let _ =`).
-                mark_embedding_done(&conn, &item.event_id, item.claim_token.as_deref(), item.claim_attempts)?;
+                mark_embedding_done(
+                    &conn,
+                    &item.event_id,
+                    item.claim_token.as_deref(),
+                    item.claim_attempts,
+                )?;
 
                 Ok((Outcome::Created, None))
             })();
@@ -2296,9 +2306,7 @@ pub async fn events_embeddings_handler(
             // rows instead of double-applying. `RETURN e.id` lets us
             // distinguish applied from fenced.
             let (token_clause, needs_ctok) = match d.claim_token.as_deref() {
-                Some(tok) if !tok.is_empty() => {
-                    ("AND e.embedding_claim_token = $ctok", true)
-                }
+                Some(tok) if !tok.is_empty() => ("AND e.embedding_claim_token = $ctok", true),
                 _ => match d.claim_attempts {
                     Some(_) => (
                         "AND (e.embedding_claim_token IS NULL OR e.embedding_claim_token = '')",
@@ -2324,9 +2332,7 @@ pub async fn events_embeddings_handler(
                     ("eid", Value::String(d.event_id.clone())),
                     ("expected", Value::Int64(attempts)),
                 ];
-                if needs_ctok
-                    && let Some(tok) = d.claim_token.as_deref()
-                {
+                if needs_ctok && let Some(tok) = d.claim_token.as_deref() {
                     params.push(("ctok", Value::String(tok.to_string())));
                 }
                 params.extend(extra);
@@ -2430,9 +2436,7 @@ pub async fn events_embeddings_handler(
             // eligibility + claim predicate is inside the update WHERE
             // so a concurrent transition fences the write.
             let (token_clause, needs_ctok) = match inv.claim_token.as_deref() {
-                Some(tok) if !tok.is_empty() => {
-                    ("AND e.embedding_claim_token = $ctok", true)
-                }
+                Some(tok) if !tok.is_empty() => ("AND e.embedding_claim_token = $ctok", true),
                 _ => match inv.claim_attempts {
                     Some(_) => (
                         "AND (e.embedding_claim_token IS NULL OR e.embedding_claim_token = '')",
@@ -2450,9 +2454,7 @@ pub async fn events_embeddings_handler(
                 ("expected", Value::Int64(attempts)),
                 ("reason", Value::String(inv.reason.clone())),
             ];
-            if needs_ctok
-                && let Some(tok) = inv.claim_token.as_deref()
-            {
+            if needs_ctok && let Some(tok) = inv.claim_token.as_deref() {
                 params.push(("ctok", Value::String(tok.to_string())));
             }
             let mut up = conn.prepare(&format!(
