@@ -690,6 +690,39 @@ already verified tasks or execute old destructive instructions verbatim.
 | EV1-8: Structural Uncertainty: NCT, Control-Weighted GNN, Conformal Prediction | BN-010; existing code requires intake verification |
 | EV1-9: Continuous Production Run: Sidecar Hardening + Watchdog | BN-009, BN-019; existing code requires intake verification |
 
+## 16 November 2026 — WP6.5A closeout + enterprise evidence architecture intake
+
+WP6.5A status (branch `feat/wp65a-template-dedup` @ `fe4071e`, merged
+with main `506595b`): WP65-16/17/18 lifecycle guards, WP65-19 historical
+schema upgrade and WP65-20 worker outcome visibility are implemented
+with runtime regressions in `tests/wp65a_embedding_lifecycle.rs` (now in
+the canonical L2 gate inventory) and `python/tests/test_message_templates.py`
+(46/46). Still open before merge: WP65-15 write-lock/ingestion
+measurement, mandatory core/sidecar E2E run, 10k/100k storage baseline
+(C5), and the canonical container gate at the integrated SHA.
+
+New architecture intake (design/backlog only — no implementation
+authorized):
+
+- **Syslog assessment** — `docs/architecture/SYSLOG_ASSESSMENT_2026-11-16.md`:
+  SYS-01…09 traced; generated items SYS-A…F assigned to BN-005/008/009/016/019.
+- **Connectivity Investigator + firewall evidence integration** —
+  `docs/architecture/CONNECTIVITY_INVESTIGATOR_AND_FIREWALL_INTEGRATION_2026-11-16.md`:
+  common UI/API/MCP request, five distinct evidence classes, epistemic
+  rules (permit ≠ delivery, missing log ≠ deny), bounded evidence
+  bundles; firewall strategy ordered SIEM-query → mgmt-plane read →
+  selective structured events → (full log ingestion out of scope);
+  SIEM read-only PoC contract defined. Extends BN-024/BN-013/BN-019.
+- **Resource/durability/archive/sizing review** —
+  `docs/architecture/RESOURCE_DURABILITY_ARCHIVE_SIZING_REVIEW_2026-11-16.md`:
+  AppFlow cardinality/TTL/semantics gaps, core-vs-collector graph roles,
+  governor per-class budget design, collector disk-queue durability
+  findings + segmented-journal direction, storage-surface inventory +
+  retention matrix proposal, sizing worksheet (measured vs illustrative),
+  outbound adapter defect confirmations (Splunk/Elastic dedup-before-ack,
+  cursor pagination, bulk per-item errors, HEC ack, Prometheus durability)
+  and the inbound evidence-query adapter contract.
+
 ## Definition of done
 
 A BN item closes only when its named acceptance is demonstrated at the required
