@@ -1522,7 +1522,7 @@ pub async fn events_unembedded_handler(
              ORDER BY e.occurred_at ASC, e.id ASC LIMIT {limit}"
         );
         let mut stmt = conn.prepare(&cypher)?;
-        let rows = conn
+        let mut rows = conn
             .execute(&mut stmt, vec![("now", Value::Int64(now_ns))])
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .map(|r| {
@@ -1541,6 +1541,38 @@ pub async fn events_unembedded_handler(
                 })
             })
             .collect::<Vec<_>>();
+        // WP65-21 processing generation: this fetch ACQUIRES a unique
+        // claim token per event — the newest fetch wins, so reports
+        // from a superseded fetch are fenced out even when the attempt
+        // count happens to match. The token is fencing metadata only;
+        // it never changes eligibility and is overwritten by the next
+        // fetch, so a crashed worker cannot wedge an event.
+        let claim_token = format!(
+            "{:x}-{:x}-{:x}",
+            now_ns,
+            std::process::id(),
+            embedding_claim_seq()
+        );
+        if !rows.is_empty() {
+            let mut claim = conn.prepare(
+                "MATCH (e:StateChangeEvent {id: $eid}) \
+                 SET e.embedding_claim_token = $tok",
+            )?;
+            for row in &rows {
+                if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
+                    conn.execute(
+                        &mut claim,
+                        vec![
+                            ("eid", Value::String(id.to_string())),
+                            ("tok", Value::String(claim_token.clone())),
+                        ],
+                    )?;
+                }
+            }
+            for row in rows.iter_mut() {
+                row["claim_token"] = serde_json::json!(claim_token);
+            }
+        }
         Ok::<_, anyhow::Error>(rows)
     })
     .await;
@@ -1594,6 +1626,13 @@ pub struct EmbeddingDeferredItem {
     /// stored attempts still equal the claim — a duplicate delivery or
     /// a stale report cannot consume another attempt or alter state.
     pub claim_attempts: Option<i64>,
+    /// WP65-21 processing generation: the `claim_token` returned by the
+    /// unembedded fetch that acquired this event's processing claim.
+    /// When present it is AUTHORITATIVE — the report applies only while
+    /// the stored token still equals it, so a superseded fetch's stale
+    /// reports are fenced out even when the attempt count matches.
+    /// Absent → legacy `claim_attempts` compatibility behavior.
+    pub claim_token: Option<String>,
     /// WP65-17 failure classification. "claim_contention" (template
     /// pending under another worker's claim) reschedules WITHOUT
     /// consuming an attempt; anything else (default) is a provider/
@@ -1610,8 +1649,11 @@ pub struct EmbeddingInvalidItem {
     pub reason: String,
     /// Same claim semantics as `EmbeddingDeferredItem::claim_attempts`:
     /// stale or duplicate invalid reports cannot re-close or alter an
-    /// event whose lifecycle already moved on.
+    /// event whose lifecycle already moved on. `claim_token` (WP65-21)
+    /// is the authoritative processing generation when present.
     pub claim_attempts: Option<i64>,
+    /// WP65-21: see `EmbeddingDeferredItem::claim_token`.
+    pub claim_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1676,6 +1718,14 @@ fn embedding_now_ns() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as i64)
         .unwrap_or(0)
+}
+
+/// Monotonic per-process sequence for WP65-21 claim tokens (combined
+/// with ns timestamp + pid → unique processing generation per fetch).
+fn embedding_claim_seq() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Bounded exponential backoff for deferred enrichment attempts:
@@ -2070,7 +2120,7 @@ pub async fn events_embeddings_handler(
             let mut st = conn.prepare(
                 "MATCH (e:StateChangeEvent {id: $eid}) \
                  RETURN e.event_type, e.needs_embedding, e.embedding_invalid, \
-                 e.embedding_attempts",
+                 e.embedding_attempts, e.embedding_claim_token",
             )?;
             let row = conn
                 .execute(&mut st, vec![("eid", Value::String(d.event_id.clone()))])?
@@ -2091,12 +2141,17 @@ pub async fn events_embeddings_handler(
             let needs_embedding = i64v(&row[1]);
             let is_invalid = i64v(&row[2]) != 0;
             let attempts = i64v(&row[3]);
-            // Allowed-state gate: eligible syslog source, still pending,
-            // not permanently invalid, not completed this batch, and
-            // claim-current when a claim was supplied.
-            let claim_ok = match d.claim_attempts {
-                Some(c) => c == attempts,
-                None => true,
+            let stored_token = s(&row[4]);
+            // WP65-21/17 claim gate: a supplied claim_token is the
+            // authoritative processing generation (newest fetch wins);
+            // without one, the legacy claim_attempts snapshot applies;
+            // with neither, the report is unconditional (compat).
+            let claim_ok = match d.claim_token.as_deref() {
+                Some(tok) if !tok.is_empty() => stored_token == tok,
+                _ => match d.claim_attempts {
+                    Some(c) => c == attempts,
+                    None => true,
+                },
             };
             if !event_type.starts_with("syslog")
                 || needs_embedding != 1
@@ -2176,7 +2231,7 @@ pub async fn events_embeddings_handler(
             let mut chk = conn.prepare(
                 "MATCH (e:StateChangeEvent {id: $eid}) \
                  RETURN e.event_type, e.needs_embedding, e.embedding_invalid, \
-                 e.embedding_attempts",
+                 e.embedding_attempts, e.embedding_claim_token",
             )?;
             let row = conn
                 .execute(&mut chk, vec![("eid", Value::String(inv.event_id.clone()))])?
@@ -2197,9 +2252,13 @@ pub async fn events_embeddings_handler(
             let needs_embedding = i64v(&row[1]);
             let is_invalid = i64v(&row[2]) != 0;
             let attempts = i64v(&row[3]);
-            let claim_ok = match inv.claim_attempts {
-                Some(c) => c == attempts,
-                None => true,
+            let stored_token = s(&row[4]);
+            let claim_ok = match inv.claim_token.as_deref() {
+                Some(tok) if !tok.is_empty() => stored_token == tok,
+                _ => match inv.claim_attempts {
+                    Some(c) => c == attempts,
+                    None => true,
+                },
             };
             if !event_type.starts_with("syslog")
                 || needs_embedding != 1
@@ -2739,7 +2798,10 @@ pub async fn ml_similar_events_handler(
         let q_norm = cosine_norm(&query_vec);
 
         if q_norm == 0.0 {
-            return Ok(serde_json::json!({"similar": []}));
+            return Ok(serde_json::json!({
+                "similar": [],
+                "provenance_verified": false,
+            }));
         }
 
         // 2. Fetch candidates from the SAME model space. Fetch one extra
@@ -2777,6 +2839,18 @@ pub async fn ml_similar_events_handler(
             Value::Int64(n) => *n,
             _ => 0,
         };
+
+        // WP65-24: unknown model provenance must never establish
+        // VERIFIED semantic compatibility. Candidates are already
+        // constrained to the query's exact (model_name, revision,
+        // normalization, dim, schema) space, so they share its
+        // provenance status — when any provenance field is the
+        // explicit "unknown" sentinel the whole comparison is
+        // UNVERIFIED and the response says so. Similarity remains a
+        // retrieval aid, never proof of model-space equivalence.
+        let provenance_verified = model_revision != PROVENANCE_UNKNOWN
+            && normalization_version != PROVENANCE_UNKNOWN
+            && schema_hash != PROVENANCE_UNKNOWN;
 
         let mut scored: Vec<(f64, String, String, i64)> = Vec::new();
         for row in all_rows {
@@ -2821,6 +2895,11 @@ pub async fn ml_similar_events_handler(
             // older same-space embeddings were not considered.
             "candidate_scan_limit": 5000,
             "scan_truncated": scan_truncated,
+            // WP65-24: false when the query model space carries
+            // "unknown" provenance — results are retrieval candidates
+            // only and must not be treated as verified-compatible
+            // embeddings.
+            "provenance_verified": provenance_verified,
             "similar": similar,
         }))
     })

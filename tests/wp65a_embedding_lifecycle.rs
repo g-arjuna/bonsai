@@ -783,3 +783,219 @@ async fn wp65_16_17_lifecycle_transition_guards() {
     assert!(!ids.contains(&"ev-g1"), "completed event must not refetch: {ids:?}");
     assert!(!ids.contains(&"ev-nonsys"), "non-syslog event must not refetch: {ids:?}");
 }
+
+// ── WP65-21: processing-generation claim token fencing ────────────────────────
+
+async fn fetch_unembedded(rig: &Rig) -> Vec<Value> {
+    let resp = rig
+        .client
+        .get(format!("{}/api/events/unembedded?type=syslog&limit=50", rig.base))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    body["events"].as_array().unwrap().clone()
+}
+
+fn event_field<'a>(events: &'a [Value], id: &str, field: &str) -> Option<String> {
+    events
+        .iter()
+        .find(|e| e["id"].as_str() == Some(id))
+        .and_then(|e| e[field].as_str().map(|s| s.to_string()))
+}
+
+#[tokio::test]
+async fn wp65_21_claim_token_fencing() {
+    let rig = rig().await;
+    seed_event(&rig.store, "ev-t1", "syslog/auth", 1);
+    seed_event(&rig.store, "ev-t2", "syslog/auth", 1);
+
+    // Fetch 1 acquires the processing claim — every eligible event gets
+    // a unique claim_token alongside the legacy claim_attempts.
+    let ev1 = fetch_unembedded(&rig).await;
+    let tok1 = event_field(&ev1, "ev-t1", "claim_token").expect("claim_token missing");
+    assert!(!tok1.is_empty());
+    let attempts1 = ev1
+        .iter()
+        .find(|e| e["id"].as_str() == Some("ev-t1"))
+        .and_then(|e| e["claim_attempts"].as_i64());
+    assert_eq!(attempts1, Some(0));
+
+    // Report under the live token applies and consumes one attempt.
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "deferred": [
+            {"event_id": "ev-t1", "claim_attempts": 0, "claim_token": tok1,
+             "kind": "provider_error"},
+        ]}),
+    )
+    .await;
+    assert_eq!(b["deferred"], 1, "{b}");
+    assert_eq!(get_i64(&rig.store, "ev-t1", "embedding_attempts"), 1);
+
+    // Make ev-t1 eligible again and fetch — a NEW generation token must
+    // be issued (the previous one is superseded).
+    {
+        let db = rig.store.db();
+        let conn = lbug::Connection::new(&db).unwrap();
+        let mut stmt = conn
+            .prepare("MATCH (e:StateChangeEvent {id: 'ev-t1'}) SET e.embedding_retry_after_ns = 0")
+            .unwrap();
+        conn.execute(&mut stmt, vec![]).unwrap();
+    }
+    let ev2 = fetch_unembedded(&rig).await;
+    let tok2 = event_field(&ev2, "ev-t1", "claim_token").expect("claim_token missing");
+    assert_ne!(tok1, tok2, "fetch must issue a fresh processing generation");
+    let tok2b = event_field(&ev2, "ev-t2", "claim_token").expect("claim_token missing");
+
+    // Stale generation: the OLD token's deferred report is fenced out
+    // even though claim_attempts still matches (attempts=1 was NOT
+    // consumed by the superseded fetch — the token is authoritative).
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "deferred": [
+            {"event_id": "ev-t1", "claim_attempts": 1, "claim_token": tok1,
+             "kind": "provider_error"},
+        ]}),
+    )
+    .await;
+    assert_eq!(b["deferred"], 0, "stale token must be fenced: {b}");
+    assert_eq!(b["deferred_skipped"], 1, "{b}");
+    assert_eq!(get_i64(&rig.store, "ev-t1", "embedding_attempts"), 1);
+
+    // Current generation applies.
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "deferred": [
+            {"event_id": "ev-t1", "claim_attempts": 1, "claim_token": tok2,
+             "kind": "provider_error"},
+        ]}),
+    )
+    .await;
+    assert_eq!(b["deferred"], 1, "{b}");
+    assert_eq!(get_i64(&rig.store, "ev-t1", "embedding_attempts"), 2);
+
+    // Stale token on an INVALID report is fenced too.
+    {
+        let db = rig.store.db();
+        let conn = lbug::Connection::new(&db).unwrap();
+        let mut stmt = conn
+            .prepare("MATCH (e:StateChangeEvent {id: 'ev-t2'}) SET e.embedding_retry_after_ns = 0")
+            .unwrap();
+        conn.execute(&mut stmt, vec![]).unwrap();
+    }
+    let ev3 = fetch_unembedded(&rig).await;
+    let _tok3 = event_field(&ev3, "ev-t2", "claim_token").expect("claim_token missing");
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "invalid": [
+            {"event_id": "ev-t2", "reason": "stale", "claim_token": tok2b},
+        ]}),
+    )
+    .await;
+    assert_eq!(b["invalid"], 0, "stale invalid token must be fenced: {b}");
+    assert_eq!(b["invalid_skipped"], 1, "{b}");
+    assert_eq!(needs_embedding(&rig.store, "ev-t2"), 1);
+
+    // Missing-claim compatibility: a report with NEITHER token nor
+    // claim_attempts keeps the legacy unconditional behavior.
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "invalid": [
+            {"event_id": "ev-t2", "reason": "no_extractable_text"},
+        ]}),
+    )
+    .await;
+    assert_eq!(b["invalid"], 1, "legacy no-claim report must still apply: {b}");
+    assert_eq!(needs_embedding(&rig.store, "ev-t2"), 0);
+}
+
+// ── WP65-24: unknown model provenance is explicitly unverified ────────────────
+
+fn embedding_item_prov(
+    event_id: &str,
+    vector: Vec<f64>,
+    model_revision: &str,
+    normalization_version: &str,
+    schema_hash: &str,
+) -> Value {
+    json!({
+        "event_id": event_id,
+        "vector": vector,
+        "model_name": "test-model",
+        "model_revision": model_revision,
+        "normalization_version": normalization_version,
+        "schema_hash": schema_hash,
+        "dim": vector.len() as i64,
+        "computed_at_ns": 1_700_000_000_000_000_001i64,
+    })
+}
+
+#[tokio::test]
+async fn wp65_24_unknown_provenance_unverified() {
+    let rig = rig().await;
+    seed_event(&rig.store, "ev-u1", "syslog/auth", 0);
+    seed_event(&rig.store, "ev-u2", "syslog/auth", 0);
+
+    // Historical/unknown provenance: empty revision + normalization +
+    // schema normalize to the explicit "unknown" sentinel.
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [
+            embedding_item_prov("ev-u1", vec![0.5, 0.5, 0.5, 0.5], "", "", ""),
+            embedding_item_prov("ev-u2", vec![0.5, 0.5, 0.5, 0.5], "", "", ""),
+        ]}),
+    )
+    .await;
+    assert_eq!(b["accepted"], 2, "{b}");
+
+    let resp = rig
+        .client
+        .get(format!(
+            "{}/api/ml/similar-events?event_id=ev-u1&min_similarity=0.0",
+            rig.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["provenance_verified"], false,
+        "unknown-provenance space must be explicitly unverified: {body}"
+    );
+    assert!(body["similar"].as_array().unwrap().len() >= 1);
+
+    // Known provenance in a DIFFERENT space: verified comparison.
+    seed_event(&rig.store, "ev-k1", "syslog/auth", 0);
+    seed_event(&rig.store, "ev-k2", "syslog/auth", 0);
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [
+            embedding_item_prov("ev-k1", vec![0.1, 0.2, 0.3, 0.4], "rev-b", "syslog-tpl-v1", "event-embedding-v1"),
+            embedding_item_prov("ev-k2", vec![0.1, 0.2, 0.3, 0.4], "rev-b", "syslog-tpl-v1", "event-embedding-v1"),
+        ]}),
+    )
+    .await;
+    assert_eq!(b["accepted"], 2, "{b}");
+    let resp = rig
+        .client
+        .get(format!(
+            "{}/api/ml/similar-events?event_id=ev-k1&min_similarity=0.0",
+            rig.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["provenance_verified"], true, "{body}");
+    // The unknown-provenance ev-u2 must NOT appear as a verified
+    // candidate — different model space entirely.
+    let ids: Vec<&str> = body["similar"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["event_id"].as_str())
+        .collect();
+    assert!(ids.contains(&"ev-k2"), "{ids:?}");
+    assert!(!ids.contains(&"ev-u1") && !ids.contains(&"ev-u2"), "{ids:?}");
+}

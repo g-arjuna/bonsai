@@ -487,6 +487,7 @@ class TestWorkerIntegration:
             {
                 "event_id": "e1",
                 "claim_attempts": None,
+                "claim_token": None,
                 "kind": "provider_error",
             }
         ]
@@ -1062,3 +1063,166 @@ class TestWorkerCycleOutcomes:
             post_fail,
         )
         assert outcome["status"] == "post_failed"
+
+
+class TestCycleOutcomeTruthfulness:
+    """WP65-22: mixed/partial worker outcomes must never be false-green."""
+
+    def _post_ok(self, monkeypatch, captured):
+        class Resp:
+            ok = True
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                payload = captured["last"]
+                n = len(payload.get("embeddings", []))
+                return _ack_for(payload.get("embeddings", []), ["accepted"] * n)
+
+        def post(url, json=None, headers=None, timeout=None):
+            captured["last"] = json
+            return Resp()
+
+        monkeypatch.setattr("requests.post", post)
+
+    def test_mixed_success_and_deferred_is_degraded(
+        self, tmp_path, monkeypatch
+    ):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        # One event resolves, one stays unresolved (provider fails only
+        # for the second template). FakeEmbedder fails per-text is not
+        # supported, so use bad_vectors selectively via a custom embedder.
+        class MixedEmbedder(FakeEmbedder):
+            def embed_batch(self, texts):
+                self.calls.append(list(texts))
+                out = []
+                for t in texts:
+                    if "FAILME" in t:
+                        out.append(np.zeros(self.dim, dtype=np.float32))
+                    else:
+                        digest = hashlib.sha256(t.encode()).digest()
+                        vals = [
+                            (digest[i % len(digest)] - 128) / 128.0
+                            for i in range(self.dim)
+                        ]
+                        arr = np.array(vals, dtype=np.float32)
+                        n = np.linalg.norm(arr)
+                        out.append(arr / n if n else arr)
+                return np.array(out, dtype=np.float32)
+
+        emb = MixedEmbedder()
+        dedup = _make_dedup(tmp_path, emb)
+        captured = {}
+        self._post_ok(monkeypatch, captured)
+        events = [
+            {"id": "e1", "message": "BGP hold timer expired for 10.0.0.1"},
+            {"id": "e2", "message": "FAILME interface Gi0/1 went down"},
+        ]
+        report = {}
+        n = w._embed_and_post("http://x", events, emb, dedup, report=report)
+        assert n == 1  # only e1 persisted
+        assert report["status"] == "degraded", report
+        assert "deferred" in report["detail"] or report.get("deferred_reports") == 1
+        dedup.registry.close()
+
+    def test_deferred_only_provider_error_status(
+        self, tmp_path, monkeypatch
+    ):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        emb = FakeEmbedder(fail=True)
+        dedup = _make_dedup(tmp_path, emb)
+        captured = {}
+        self._post_ok(monkeypatch, captured)
+        events = [{"id": "e1", "message": "some syslog message"}]
+        report = {}
+        n = w._embed_and_post("http://x", events, emb, dedup, report=report)
+        assert n == 0
+        assert report["status"] == "provider_error", report
+        dedup.registry.close()
+
+    def test_invalid_only_status(
+        self, tmp_path, monkeypatch
+    ):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        emb = FakeEmbedder()
+        dedup = _make_dedup(tmp_path, emb)
+        captured = {}
+        self._post_ok(monkeypatch, captured)
+        events = [{"id": "e1", "message": "   "}]
+        report = {}
+        n = w._embed_and_post("http://x", events, emb, dedup, report=report)
+        assert n == 0
+        assert report["status"] == "invalid_only", report
+        dedup.registry.close()
+
+    def test_claim_contention_kind_and_contended_status(
+        self, tmp_path, monkeypatch
+    ):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        # Hold a live claim on the template so the second worker sees
+        # STATE_PENDING → claim_contention, not provider_error.
+        emb1 = FakeEmbedder()
+        dedup1 = _make_dedup(tmp_path, emb1, name="reg1.db")
+        emb2 = FakeEmbedder()
+        dedup2 = _make_dedup(tmp_path, emb2, name="reg2.db")
+        # Force dedup2's registry to see dedup1's pending claim: share
+        # the same registry file via scope — simpler: claim via dedup1
+        # then resolve via dedup2 on the SAME registry path.
+        dedup2.registry.close()
+        dedup2 = _make_dedup(tmp_path, emb2, name="reg1.db")
+
+        msg = "concurrent claim status test message"
+        # dedup1 claims+embeds the template first.
+        v1 = dedup1.resolve_batch([msg])
+        assert v1[0] is not None
+        # Re-open a fresh dedup on the same registry; the template is
+        # ready now — to simulate pending, claim manually instead.
+        # Simpler path: directly verify kind mapping via unresolved
+        # states by stubbing last_unresolved_states.
+        captured = {}
+        self._post_ok(monkeypatch, captured)
+        events = [{"id": "e1", "message": msg}]
+
+        class StubDedup:
+            norm_version = "v1"
+            metrics = type("M", (), {"events_posted": 0})()
+
+            def resolve_batch(self, texts):
+                return [None]
+
+            def last_resolution_keys(self):
+                return [None]
+
+            def last_unresolved_states(self):
+                return ["pending"]
+
+            def commit_occurrences(self, keys):
+                return 0
+
+            def stats_snapshot(self):
+                return {}
+
+        report = {}
+        n = w._embed_and_post("http://x", events, emb2, StubDedup(), report=report)
+        assert n == 0
+        assert report["status"] == "contended", report
+        assert captured["last"]["deferred"][0]["kind"] == "claim_contention"
+        dedup1.registry.close()
+        dedup2.registry.close()
+
+    def test_unresolved_states_accessor(self, tmp_path):
+        emb = FakeEmbedder(fail=True)
+        dedup = _make_dedup(tmp_path, emb)
+        vecs = dedup.resolve_batch(["provider down message one"])
+        assert vecs == [None]
+        states = dedup.last_unresolved_states()
+        assert states == ["unresolved"] or states[0] in (
+            "unresolved", "backoff", "pending"
+        ), states
+        dedup.registry.close()

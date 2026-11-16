@@ -2415,14 +2415,86 @@ impl GraphStore {
         // WP6.5A: the historical DEFAULT 1 marked EVERY event type pending;
         // clear the flag on non-syslog rows so pending statistics describe
         // actual eligible events (new writes set it explicitly).
-        let _ = conn.query("ALTER TABLE StateChangeEvent ADD needs_embedding INT64 DEFAULT 1");
-        let _ = conn.query(
+        // WP65-23: checked, idempotent lifecycle migration — the
+        // enrichment-lifecycle columns are validated against the live
+        // schema (name AND declared type) and every ALTER is error-
+        // checked. A failed migration aborts GraphStore::open, so a
+        // readable database can never be classified enrichment-ready
+        // while its lifecycle schema is incomplete.
+        {
+            let required: [(&str, &str, &str); 7] = [
+                ("needs_embedding", "INT64", "1"),
+                ("embedding_retry_after_ns", "INT64", "0"),
+                ("embedding_attempts", "INT64", "0"),
+                ("embedding_invalid", "INT64", "0"),
+                ("embedding_invalid_reason", "STRING", "''"),
+                ("embedding_claim_token", "STRING", "''"),
+                ("incident_cluster_id", "STRING", "''"),
+            ];
+            let mut cols = std::collections::HashMap::new();
+            let info = conn.query("CALL table_info('StateChangeEvent') RETURN name, type")?;
+            for row in info {
+                let name = match &row[0] {
+                    Value::String(s) => s.clone(),
+                    _ => continue,
+                };
+                let ty = match row.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                cols.insert(name, ty);
+            }
+            for (col, ty, default) in required {
+                match cols.get(col) {
+                    Some(t) if t.eq_ignore_ascii_case(ty) => {}
+                    Some(t) => {
+                        return Err(anyhow::anyhow!(
+                            "StateChangeEvent.{col} has incompatible type '{t}', expected '{ty}'"
+                        ))
+                    }
+                    None => {
+                        conn.query(&format!(
+                            "ALTER TABLE StateChangeEvent ADD {col} {ty} DEFAULT {default}"
+                        ))
+                        .with_context(|| {
+                            format!("StateChangeEvent {col} lifecycle migration")
+                        })?;
+                    }
+                }
+            }
+            // Post-migration validation: every required column must now
+            // be present with the expected declared type.
+            let mut cols2 = std::collections::HashMap::new();
+            let info2 = conn.query("CALL table_info('StateChangeEvent') RETURN name, type")?;
+            for row in info2 {
+                let name = match &row[0] {
+                    Value::String(s) => s.clone(),
+                    _ => continue,
+                };
+                let ty = match row.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                cols2.insert(name, ty);
+            }
+            for (col, ty, _default) in required {
+                match cols2.get(col) {
+                    Some(t) if t.eq_ignore_ascii_case(ty) => {}
+                    other => {
+                        return Err(anyhow::anyhow!(
+                            "StateChangeEvent.{col} lifecycle migration did not produce \
+                             expected type '{ty}' (found {other:?})"
+                        ))
+                    }
+                }
+            }
+        }
+        conn.query(
             "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 \
              AND (e.event_type IS NULL OR NOT e.event_type STARTS WITH 'syslog') \
              SET e.needs_embedding = 0",
-        );
-        let _ =
-            conn.query("ALTER TABLE StateChangeEvent ADD incident_cluster_id STRING DEFAULT ''");
+        )
+        .context("StateChangeEvent needs_embedding eligibility backfill")?;
         // WP65-01: EventEmbedding.model_revision — added after the table
         // shipped, so existing graphs need an explicit column migration.
         // Check the live schema first (a blind ALTER errors on databases
@@ -2486,19 +2558,8 @@ impl GraphStore {
         // schedules the next eligible fetch (0/NULL = eligible now),
         // embedding_attempts bounds deferred retries, and
         // embedding_invalid(+reason) marks permanently ineligible events.
-        // ALTER TABLE ADD is idempotent in lbug.
-        let _ = conn.query(
-            "ALTER TABLE StateChangeEvent ADD embedding_retry_after_ns INT64 DEFAULT 0",
-        );
-        let _ = conn.query(
-            "ALTER TABLE StateChangeEvent ADD embedding_attempts INT64 DEFAULT 0",
-        );
-        let _ = conn.query(
-            "ALTER TABLE StateChangeEvent ADD embedding_invalid INT64 DEFAULT 0",
-        );
-        let _ = conn.query(
-            "ALTER TABLE StateChangeEvent ADD embedding_invalid_reason STRING DEFAULT ''",
-        );
+        // WP65-23: these columns are created/validated by the checked
+        // idempotent migration above — no ALTER is issued here.
         // Device: needs_config_embedding flag
         let _ = conn.query("ALTER TABLE Device ADD needs_config_embedding INT64 DEFAULT 0");
 

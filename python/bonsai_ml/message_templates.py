@@ -785,6 +785,12 @@ class TemplateDedup:
 
         # Stage 2: normalized template fingerprint ---------------------------
         still: list[int] = []
+        # WP65-22: per-item unresolved reason, parallel to results —
+        # "pending" (template claimed by another worker), "backoff"
+        # (provider-failure retry window) or "unresolved" (new-template
+        # claim/embed failure). The worker maps these to truthful
+        # deferred kinds instead of labelling every miss provider_error.
+        unresolved_states: list[Optional[str]] = [None] * n
         for i in unresolved:
             tpl_text, tpl_fp = template_of[i]
             vec, state, ck = self._lookup_template(tpl_text, tpl_fp, m)
@@ -794,16 +800,22 @@ class TemplateDedup:
                 map_writes.append((i, tpl_fp))
             elif state == STATE_PENDING:
                 m.pending_skips += 1
+                unresolved_states[i] = "pending"
             elif state == STATE_BACKOFF:
                 m.backoff_skips += 1
+                unresolved_states[i] = "backoff"
             else:
                 still.append(i)
 
         # Stage 3: claim and embed unique new templates ----------------------
         if still:
             self._embed_new_templates(
-                texts, template_of, still, results, resolved_keys, map_writes, m
+                texts, template_of, still, results, resolved_keys, map_writes, m,
+                unresolved_states=unresolved_states,
             )
+        for i in still:
+            if results[i] is None and unresolved_states[i] is None:
+                unresolved_states[i] = "unresolved"
 
         m.events_resolved = sum(1 for v in results if v is not None)
 
@@ -836,12 +848,14 @@ class TemplateDedup:
             # The worker uses this to attribute per-item acknowledgements
             # to exactly the events the server accepted.
             self._last_resolved_keys = list(resolved_keys)
+            self._last_unresolved_states = list(unresolved_states)
             self._resolved_keys_pending = [
                 ck for ck in resolved_keys if ck is not None
             ]
         except Exception as exc:
             log.debug("dedup bookkeeping failed: %s", exc)
             self._last_resolved_keys = [None] * len(texts)
+            self._last_unresolved_states = [None] * len(texts)
 
         self._accumulate(m)
         return results
@@ -850,6 +864,14 @@ class TemplateDedup:
         """Template cache_keys aligned with the most recent
         :meth:`resolve_batch` input (None where unresolved)."""
         return list(getattr(self, "_last_resolved_keys", []) or [])
+
+    def last_unresolved_states(self) -> list[Optional[str]]:
+        """Per-item unresolved reason aligned with the most recent
+        :meth:`resolve_batch` input: ``"pending"`` (template claimed by
+        another worker — claim contention, not a provider failure),
+        ``"backoff"`` (provider-failure retry window), ``"unresolved"``
+        (new-template claim/embed failure) or ``None`` where resolved."""
+        return list(getattr(self, "_last_unresolved_states", []) or [])
 
     def commit_occurrences(
         self, cache_keys: Optional[list[Optional[str]]] = None
@@ -962,6 +984,7 @@ class TemplateDedup:
         resolved_keys: list[Optional[str]],
         map_writes: list[tuple[int, str]],
         m: DedupMetrics,
+        unresolved_states: Optional[list[Optional[str]]] = None,
     ) -> None:
         # Group unresolved events by template fingerprint, remembering
         # the claim-generation token each template was claimed under.
@@ -1012,8 +1035,14 @@ class TemplateDedup:
                         )
                 elif state == "pending":
                     m.pending_skips += len(g["members"])
+                    if unresolved_states is not None:
+                        for i in g["members"]:
+                            unresolved_states[i] = "pending"
                 else:
                     m.backoff_skips += len(g["members"])
+                    if unresolved_states is not None:
+                        for i in g["members"]:
+                            unresolved_states[i] = "backoff"
 
             if not to_embed:
                 return

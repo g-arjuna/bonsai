@@ -48,9 +48,10 @@ LEGACY_NORMALIZATION_VERSION = "none"
 # Most recent dedup stats snapshot, for ops introspection and tests.
 _LAST_DEDUP_STATS: dict[str, Any] = {}
 
-# WP65-20: outcome of the most recent worker cycle, for ops introspection
-# and tests. Statuses: empty | fetch_failed | provider_error |
-# post_failed | ack_invalid | partial | success.
+# WP65-20/22: outcome of the most recent worker cycle, for ops
+# introspection and tests. Statuses: empty | fetch_failed |
+# provider_error | contended | degraded | invalid_only | post_failed |
+# ack_invalid | partial | success | no_actionable | error.
 _LAST_CYCLE: dict[str, Any] = {}
 
 #: Cycle statuses that represent an operational failure — the scheduler
@@ -337,11 +338,12 @@ def _embed_and_post(
 ) -> int:
     """Embed a batch and POST write-backs. Returns records persisted.
 
-    WP65-20: when ``report`` is given it is populated with the cycle
+    WP65-20/22: when ``report`` is given it is populated with the cycle
     outcome — ``status`` is one of ``no_actionable``, ``provider_error``,
-    ``post_failed``, ``ack_invalid``, ``partial`` or ``success`` — plus
-    ``detail`` and per-class counts, so callers can distinguish a genuine
-    empty queue from HTTP/provider/acknowledgement failures.
+    ``contended``, ``degraded``, ``invalid_only``, ``post_failed``,
+    ``ack_invalid``, ``partial`` or ``success`` — plus ``detail`` and
+    per-class counts, so callers can distinguish a genuine empty queue
+    from HTTP/provider/acknowledgement failures and partial work.
     """
     def _out(status: str, detail: str = "", **counts: Any) -> int:
         if report is not None:
@@ -362,6 +364,14 @@ def _embed_and_post(
         for e in events
         if e.get("id") or e.get("event_id")
     }
+    # WP65-21: the fetch-acquired processing-generation token. When the
+    # server returns one it is authoritative — a superseded fetch's
+    # reports are fenced out even if the attempt count still matches.
+    claim_tokens = {
+        str(e.get("id") or e.get("event_id")): e.get("claim_token")
+        for e in events
+        if e.get("id") or e.get("event_id")
+    }
 
     # WP65-14: events with an id but no extractable text can never be
     # enriched — report them permanently invalid instead of letting them
@@ -371,6 +381,7 @@ def _embed_and_post(
             "event_id": str(eid),
             "reason": "no_extractable_text",
             "claim_attempts": claims.get(str(eid)),
+            "claim_token": claim_tokens.get(str(eid)),
         }
         for eid, text in zip(event_ids, texts)
         if eid and not (text or "").strip()
@@ -389,11 +400,17 @@ def _embed_and_post(
         valid_texts = [p[2] for p in valid_pairs]
         vectors = dedup.resolve_batch(valid_texts)
         resolution_keys = dedup.last_resolution_keys()
+        # WP65-22: per-item unresolved reason ("pending" = template
+        # claimed by another worker → claim contention, reschedules
+        # without consuming an attempt; anything else is a provider/
+        # processing failure that must consume a bounded attempt).
+        unresolved_states = dedup.last_unresolved_states()
         normalization_version = str(getattr(dedup, "norm_version", "") or "")
     else:
         from .message_templates import _validate_vector
 
         resolution_keys = []
+        unresolved_states = []
         normalization_version = LEGACY_NORMALIZATION_VERSION
         t0 = time.monotonic()
         try:
@@ -459,12 +476,17 @@ def _embed_and_post(
         {
             "event_id": str(valid_pairs[pos][1]),
             "claim_attempts": claims.get(str(valid_pairs[pos][1])),
-            # Unresolved lookups are reported as provider_error (the
-            # bounded-attempt default): under dedup they may be template
-            # claim contention, but per-item contention is not
-            # attributable here, and provider failures must still
-            # consume attempts so retry exhaustion stays reachable.
-            "kind": "provider_error",
+            "claim_token": claim_tokens.get(str(valid_pairs[pos][1])),
+            # WP65-22: unresolved items are classified truthfully —
+            # template claim contention reschedules WITHOUT consuming
+            # an attempt; provider/backoff/new-claim failures consume
+            # one bounded attempt so retry exhaustion stays reachable.
+            "kind": (
+                "claim_contention"
+                if pos < len(unresolved_states)
+                and unresolved_states[pos] == "pending"
+                else "provider_error"
+            ),
         }
         for pos in range(len(valid_pairs))
         if pos >= len(vectors) or vectors[pos] is None
@@ -476,7 +498,16 @@ def _embed_and_post(
     # WP65-20: provider_error = events were fetched and valid, but the
     # provider/template path resolved ZERO embedding records — every one
     # is reported deferred. Distinct from post/ack failures.
-    provider_failed = bool(deferred_reports) and not embedding_records
+    # WP65-22: pure claim contention is NOT a provider failure — every
+    # deferred item must be classified before deciding.
+    contention_only = bool(deferred_reports) and all(
+        d.get("kind") == "claim_contention" for d in deferred_reports
+    )
+    provider_failed = (
+        bool(deferred_reports)
+        and not embedding_records
+        and not contention_only
+    )
     counts = {
         "embedding_records": len(embedding_records),
         "deferred_reports": len(deferred_reports),
@@ -563,17 +594,32 @@ def _embed_and_post(
                 if accepted_keys:
                     dedup.commit_occurrences(accepted_keys)
             dedup.metrics.events_posted += written
-        # WP65-20 cycle status, in precedence order: an acknowledgement we
-        # could not fully validate is the most severe (bookkeeping is
-        # uncommitted even if writes landed); then provider failure; then
-        # a partial write; otherwise a clean cycle.
+        # WP65-20/22 cycle status, in precedence order: an acknowledgement
+        # we could not fully validate is the most severe (bookkeeping is
+        # uncommitted even if writes landed); then a partial write; then
+        # provider failure vs pure claim contention vs invalid-only when
+        # nothing resolved; then a mixed batch that wrote some records
+        # while others were deferred (degraded — never false-green
+        # success); otherwise a clean cycle.
         if not ack_fully_valid:
             status, detail = "ack_invalid", "acknowledgement failed full validation"
-        elif provider_failed:
-            status, detail = "provider_error", "no embedding records resolved"
         elif written < len(embedding_records):
             status, detail = "partial", (
                 f"persisted {written} of {len(embedding_records)} records"
+            )
+        elif provider_failed:
+            status, detail = "provider_error", "no embedding records resolved"
+        elif not embedding_records and deferred_reports and contention_only:
+            status, detail = "contended", (
+                f"{len(deferred_reports)} events deferred on template claims"
+            )
+        elif embedding_records and deferred_reports:
+            status, detail = "degraded", (
+                f"persisted {written} records; {len(deferred_reports)} deferred"
+            )
+        elif not embedding_records and not deferred_reports and invalid_reports:
+            status, detail = "invalid_only", (
+                f"{len(invalid_reports)} events closed as invalid"
             )
         else:
             status, detail = "success", ""
