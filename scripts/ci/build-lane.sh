@@ -165,4 +165,10 @@ fi
 
 echo "build-lane: CARGO_TARGET_DIR=$DIR lbug=$LBUG_MODE${NATIVE_ID:+ bundle=${NATIVE_ID:0:12}} cmd: $*" >&2
 export CARGO_TARGET_DIR="$DIR"
-exec "$@"
+# Run the command as a CHILD with the lock fds closed (BUILD-07): this
+# shell keeps holding .lane.lock (fd 9) and the bundle shared lock
+# (fd 7) for the command's whole duration, but grandchildren — notably
+# the persistent sccache server — must NOT inherit them, or the locks
+# would leak past this script's exit and deadlock the next lane user.
+"$@" 9>&- 7>&-
+exit $?

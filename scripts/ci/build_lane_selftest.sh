@@ -339,6 +339,12 @@ if timeout 2 env PATH="$STUB_BIN:$PATH" bash "$LANE" --dir "$WORK/lane9" --lbug-
 wait "$LOCK_HOLDER" 2>/dev/null || true
 PATH="$STUB_BIN:$PATH" bash "$LANE" --dir "$WORK/lane9" --lbug-native "$DA" -- true >/dev/null 2>&1 \
   && ok "build-lane proceeds after bundle lock released" || bad "build-lane proceeds after bundle lock released"
+# Lock fds must NOT leak into the child command's descendants: a
+# persistent helper (e.g. sccache) inheriting fd 9 would hold the lane
+# lock past build-lane.sh's exit and deadlock the next run.
+PATH="$STUB_BIN:$PATH" bash "$LANE" --dir "$WORK/lane9" --lbug-native "$DA" -- \
+  bash -c '[ ! -e /proc/self/fd/9 ] && [ ! -e /proc/self/fd/7 ]' >/dev/null 2>&1 \
+  && ok "lane/bundle lock fds not inherited by command" || bad "lane/bundle lock fds not inherited by command"
 
 # ── 15. lbug-native-prepare publish lifecycle (BUILD-11) ──────────────
 make_donor() { # $1=dir $2=content-salt
