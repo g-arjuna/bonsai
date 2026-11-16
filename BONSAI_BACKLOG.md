@@ -342,6 +342,17 @@ authorization on the existing collector→core gRPC channel.
 - **BN-021g-2 first verified original-source projection:** narrow OTLP
   case via direct authenticated producer identity or explicitly
   authorized attestation; no arbitrary remote-peer ownership inference.
+  **Contract prepared (14 November):** `docs/bn021g2-otlp-verified-source-contract.md`
+  defines the authenticated-producer vs forwarding-collector boundary,
+  the normative identity chain (certificate fingerprint → credential
+  binding → stable producer identity → producer-local application id;
+  application ids are keyed on the stable producer identity, never the
+  fingerprint), authoritative-vs-provisional semantics,
+  spoofing/revocation/replay/cardinality/retention rules and a 20-case
+  acceptance matrix (A1–A20, incl. credential rotation preserving
+  identity, old-credential rejection, cross-scope collision,
+  collector-vs-producer capability separation and replay idempotency)
+  requiring real TLS loopback acceptance. Implementation not started.
 - **BN-021g-3 trusted syslog acquisition.**
 - **BN-021g-4 NetFlow/IPFIX + sFlow acquisition.**
 - **BN-021g-5 SNMPv3 USM cryptographic verification (supported libs).**
