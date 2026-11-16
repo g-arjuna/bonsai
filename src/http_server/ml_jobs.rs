@@ -10,15 +10,15 @@
 
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::IntoResponse;
+use axum::Json;
 use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
-use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt as _;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -1774,7 +1774,10 @@ fn validate_embedding_item(item: &EmbeddingItem) -> Result<(), String> {
         return Err("empty vector".into());
     }
     if item.vector.len() > MAX_EMBEDDING_DIM {
-        return Err(format!("vector dim {} exceeds {MAX_EMBEDDING_DIM}", item.vector.len()));
+        return Err(format!(
+            "vector dim {} exceeds {MAX_EMBEDDING_DIM}",
+            item.vector.len()
+        ));
     }
     if item.vector.iter().any(|v| !v.is_finite()) {
         return Err("vector contains non-finite value".into());
@@ -1816,9 +1819,7 @@ pub async fn events_embeddings_handler(
         )
             .into_response();
     }
-    if req.deferred.len() > MAX_EMBEDDING_LIFECYCLE
-        || req.invalid.len() > MAX_EMBEDDING_LIFECYCLE
-    {
+    if req.deferred.len() > MAX_EMBEDDING_LIFECYCLE || req.invalid.len() > MAX_EMBEDDING_LIFECYCLE {
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(serde_json::json!({
@@ -1922,7 +1923,10 @@ pub async fn events_embeddings_handler(
                         _ => String::new(),
                     },
                     None => {
-                        return Ok((Outcome::Rejected, Some("source event not found".to_string())));
+                        return Ok((
+                            Outcome::Rejected,
+                            Some("source event not found".to_string()),
+                        ));
                     }
                 };
                 if !persisted_event_type.starts_with("syslog") {
@@ -1979,9 +1983,7 @@ pub async fn events_embeddings_handler(
                     // Replay: ensure the relationship exists (covers
                     // pre-WP65-03 partial writes) without touching its
                     // timestamp, then close the enrichment flag.
-                    ensure_embedded_as_rel(
-                        &conn, &item.event_id, &emb_id, item.computed_at_ns,
-                    )?;
+                    ensure_embedded_as_rel(&conn, &item.event_id, &emb_id, item.computed_at_ns)?;
                     mark_embedding_done(&conn, &item.event_id)?;
                     return Ok((Outcome::Replayed, None));
                 }
@@ -1998,10 +2000,7 @@ pub async fn events_embeddings_handler(
                     vec![
                         ("id", Value::String(emb_id.clone())),
                         ("eid", Value::String(item.event_id.clone())),
-                        (
-                            "et",
-                            Value::String(persisted_event_type.clone()),
-                        ),
+                        ("et", Value::String(persisted_event_type.clone())),
                         ("mn", Value::String(item.model_name.clone())),
                         ("mr", Value::String(model_revision.clone())),
                         ("nv", Value::String(normalization_version.clone())),
@@ -2014,9 +2013,7 @@ pub async fn events_embeddings_handler(
 
                 // EMBEDDED_AS identity is (event, embedding) — computed_at_ns
                 // is metadata, never part of the MERGE key.
-                ensure_embedded_as_rel(
-                    &conn, &item.event_id, &emb_id, item.computed_at_ns,
-                )?;
+                ensure_embedded_as_rel(&conn, &item.event_id, &emb_id, item.computed_at_ns)?;
 
                 // Enrichment flag — write failures propagate (no `let _ =`).
                 mark_embedding_done(&conn, &item.event_id)?;
@@ -2027,8 +2024,7 @@ pub async fn events_embeddings_handler(
             match item_result {
                 Ok((Outcome::Rejected, reason)) => {
                     conn.query("ROLLBACK")?;
-                    let reason =
-                        reason.unwrap_or_else(|| "rejected".to_string());
+                    let reason = reason.unwrap_or_else(|| "rejected".to_string());
                     rejected.push(serde_json::json!({
                         "index": idx,
                         "event_id": item.event_id,
@@ -2095,12 +2091,9 @@ pub async fn events_embeddings_handler(
         // lifecycle reports for them are stale by definition. `items`
         // is fully built by the embeddings loop above, so the set is
         // exact.
-        let mut deferred_seen: std::collections::HashSet<&str> =
-            std::collections::HashSet::new();
-        let mut invalid_seen: std::collections::HashSet<&str> =
-            std::collections::HashSet::new();
-        let mut completed_now: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut deferred_seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut invalid_seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut completed_now: std::collections::HashSet<String> = std::collections::HashSet::new();
         for it in &items {
             if let (Some(eid), Some(st)) = (
                 it.get("event_id").and_then(|v| v.as_str()),
@@ -2196,10 +2189,7 @@ pub async fn events_embeddings_handler(
                          e.embedding_invalid_reason = 'embedding_retry_exhausted', \
                          e.embedding_retry_after_ns = 0",
                     )?;
-                    conn.execute(
-                        &mut up,
-                        vec![("eid", Value::String(d.event_id.clone()))],
-                    )?;
+                    conn.execute(&mut up, vec![("eid", Value::String(d.event_id.clone()))])?;
                 } else {
                     let backoff = embedding_retry_backoff_ns(new_attempts);
                     let deadline = (now_ns + backoff).max(hint);
@@ -2374,7 +2364,10 @@ fn mark_embedding_done(conn: &Connection, event_id: &str) -> Result<(), anyhow::
         "MATCH (e:StateChangeEvent {id: $eid}) SET e.needs_embedding = 0, \
          e.embedding_retry_after_ns = 0",
     )?;
-    conn.execute(&mut mark, vec![("eid", Value::String(event_id.to_string()))])?;
+    conn.execute(
+        &mut mark,
+        vec![("eid", Value::String(event_id.to_string()))],
+    )?;
     Ok(())
 }
 

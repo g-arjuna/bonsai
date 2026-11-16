@@ -71,7 +71,10 @@ fn seed_event(store: &GraphStore, id: &str, event_type: &str, needs_embedding: i
             ("id", lbug::Value::String(id.to_string())),
             ("addr", lbug::Value::String("10.0.0.1".to_string())),
             ("etype", lbug::Value::String(event_type.to_string())),
-            ("detail", lbug::Value::String("{\"message\":\"test\"}".to_string())),
+            (
+                "detail",
+                lbug::Value::String("{\"message\":\"test\"}".to_string()),
+            ),
             (
                 "ts",
                 lbug::Value::TimestampNs(
@@ -108,7 +111,10 @@ async fn post_embeddings(rig: &Rig, body: Value) -> (reqwest::StatusCode, Value)
         .unwrap();
     let status = resp.status();
     let text = resp.text().await.unwrap();
-    (status, serde_json::from_str(&text).unwrap_or(json!({"raw": text})))
+    (
+        status,
+        serde_json::from_str(&text).unwrap_or(json!({"raw": text})),
+    )
 }
 
 fn query_count(store: &GraphStore, cypher: &str) -> i64 {
@@ -137,9 +143,7 @@ fn emb_count(store: &GraphStore, event_id: &str) -> i64 {
 fn needs_embedding(store: &GraphStore, event_id: &str) -> i64 {
     query_count(
         store,
-        &format!(
-            "MATCH (e:StateChangeEvent {{id: '{event_id}'}}) RETURN e.needs_embedding"
-        ),
+        &format!("MATCH (e:StateChangeEvent {{id: '{event_id}'}}) RETURN e.needs_embedding"),
     )
 }
 
@@ -285,7 +289,10 @@ async fn embedding_writeback_full_lifecycle() {
     // fetch must exclude it until the retry deadline.
     let resp = rig
         .client
-        .get(format!("{}/api/events/unembedded?type=syslog&limit=50", rig.base))
+        .get(format!(
+            "{}/api/events/unembedded?type=syslog&limit=50",
+            rig.base
+        ))
         .send()
         .await
         .unwrap();
@@ -296,7 +303,10 @@ async fn embedding_writeback_full_lifecycle() {
         .iter()
         .filter_map(|e| e["id"].as_str())
         .collect();
-    assert!(!ids.contains(&"ev-def"), "deferred event must not be re-fetched: {ids:?}");
+    assert!(
+        !ids.contains(&"ev-def"),
+        "deferred event must not be re-fetched: {ids:?}"
+    );
     assert!(!ids.contains(&"ev-inv"));
     assert!(needs_embedding(&rig.store, "ev-def") == 1);
 
@@ -321,7 +331,11 @@ async fn embedding_writeback_full_lifecycle() {
     // ev1 has two embeddings (two normalization spaces); the most recent
     // deterministic pick compares only within that space — ev2 shares
     // the v1 space and must appear, nothing from v2 leaks in.
-    assert!(sim["similar"].as_array().unwrap().iter().any(|s| s["event_id"] == "ev2"));
+    assert!(sim["similar"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["event_id"] == "ev2"));
     let _ = conn;
 }
 
@@ -400,8 +414,7 @@ fn seed_legacy_graph(path: &str) {
     .unwrap();
 
     let ts = lbug::Value::TimestampNs(
-        time::OffsetDateTime::UNIX_EPOCH
-            + time::Duration::nanoseconds(1_600_000_000_000_000_000),
+        time::OffsetDateTime::UNIX_EPOCH + time::Duration::nanoseconds(1_600_000_000_000_000_000),
     );
     let mk_event = |id: &str, etype: &str| {
         let mut stmt = conn
@@ -417,7 +430,10 @@ fn seed_legacy_graph(path: &str) {
                 ("id", lbug::Value::String(id.to_string())),
                 ("addr", lbug::Value::String("10.9.9.9".to_string())),
                 ("et", lbug::Value::String(etype.to_string())),
-                ("d", lbug::Value::String("{\"message\":\"legacy\"}".to_string())),
+                (
+                    "d",
+                    lbug::Value::String("{\"message\":\"legacy\"}".to_string()),
+                ),
                 ("ts", ts.clone()),
             ],
         )
@@ -495,7 +511,11 @@ async fn wp65_19_legacy_schema_upgrade() {
          RETURN emb.id, emb.model_name, emb.vector_json, emb.model_revision, \
          emb.normalization_version, emb.schema_hash",
     );
-    assert_eq!(rows.len(), 1, "legacy EMBEDDED_AS relationship lost: {rows:?}");
+    assert_eq!(
+        rows.len(),
+        1,
+        "legacy EMBEDDED_AS relationship lost: {rows:?}"
+    );
     let f: Vec<&str> = rows[0].split('|').collect();
     assert_eq!(f[0], "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d");
     assert_eq!(f[1], "legacy-model");
@@ -508,9 +528,10 @@ async fn wp65_19_legacy_schema_upgrade() {
     // needs_embedding migration: the column did not exist; DEFAULT 1 then
     // the non-syslog sweep. syslog events stay pending; bgp is cleared.
     let ne = |id: &str| -> String {
-        query_str(&store, &format!(
-            "MATCH (e:StateChangeEvent {{id: '{id}'}}) RETURN e.needs_embedding"
-        ))
+        query_str(
+            &store,
+            &format!("MATCH (e:StateChangeEvent {{id: '{id}'}}) RETURN e.needs_embedding"),
+        )
         .pop()
         .unwrap_or_default()
     };
@@ -526,7 +547,11 @@ async fn wp65_19_legacy_schema_upgrade() {
         "MATCH (e:StateChangeEvent {id: 'ev-legacy-pending'}) \
          RETURN e.embedding_attempts, e.embedding_invalid, e.embedding_retry_after_ns",
     );
-    assert_eq!(lc.len(), 1, "lifecycle columns missing after migration: {lc:?}");
+    assert_eq!(
+        lc.len(),
+        1,
+        "lifecycle columns missing after migration: {lc:?}"
+    );
 
     // ── restart: reopen the migrated file, state must persist ──
     drop(store);
@@ -536,7 +561,10 @@ async fn wp65_19_legacy_schema_upgrade() {
         "MATCH (e:StateChangeEvent {id: 'ev-legacy-embedded'})-[r:EMBEDDED_AS]->(emb:EventEmbedding) \
          RETURN emb.id",
     );
-    assert_eq!(rows, vec!["9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d".to_string()]);
+    assert_eq!(
+        rows,
+        vec!["9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d".to_string()]
+    );
 
     // ── real HTTP retrieval on the migrated graph ──
     env_once();
@@ -567,14 +595,22 @@ async fn wp65_19_legacy_schema_upgrade() {
         .iter()
         .filter_map(|e| e["id"].as_str())
         .collect();
-    assert!(ids.contains(&"ev-legacy-pending"), "pending syslog event missing: {ids:?}");
-    assert!(!ids.contains(&"ev-legacy-bgp"), "non-syslog event leaked: {ids:?}");
+    assert!(
+        ids.contains(&"ev-legacy-pending"),
+        "pending syslog event missing: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"ev-legacy-bgp"),
+        "non-syslog event leaked: {ids:?}"
+    );
 
     // New deterministic write-back on the migrated graph is accepted and
     // coexists with the legacy random-id embedding (different identity).
     let resp = client
         .post(format!("{base}/api/events/embeddings"))
-        .json(&json!({"embeddings": [embedding_item("ev-legacy-pending", vec![0.5, 0.5, 0.5, 0.5])]}))
+        .json(
+            &json!({"embeddings": [embedding_item("ev-legacy-pending", vec![0.5, 0.5, 0.5, 0.5])]}),
+        )
         .send()
         .await
         .unwrap();
@@ -594,7 +630,10 @@ async fn wp65_19_corrupt_graph_fails_closed() {
     let bad = dir.path().join("not-a-graph.db");
     std::fs::write(&bad, b"this is not a ladybug database file").unwrap();
     let res = GraphStore::open(&bad.to_string_lossy(), 64 * 1024 * 1024);
-    assert!(res.is_err(), "corrupt graph file must fail closed, not open");
+    assert!(
+        res.is_err(),
+        "corrupt graph file must fail closed, not open"
+    );
 }
 
 // ── WP65-16/17: lifecycle transition guards ─────────────────────────────
@@ -764,7 +803,10 @@ async fn wp65_16_17_lifecycle_transition_guards() {
     }
     let resp = rig
         .client
-        .get(format!("{}/api/events/unembedded?type=syslog&limit=50", rig.base))
+        .get(format!(
+            "{}/api/events/unembedded?type=syslog&limit=50",
+            rig.base
+        ))
         .send()
         .await
         .unwrap();
@@ -775,13 +817,28 @@ async fn wp65_16_17_lifecycle_transition_guards() {
         .iter()
         .filter_map(|e| e["id"].as_str())
         .collect();
-    assert!(ids.contains(&"ev-g2"), "recovered event not re-fetchable: {ids:?}");
+    assert!(
+        ids.contains(&"ev-g2"),
+        "recovered event not re-fetchable: {ids:?}"
+    );
     // claim_contention rescheduled ev-g3 ~60s out — still inside its
     // bounded deadline, so it must NOT be re-fetchable yet.
-    assert!(!ids.contains(&"ev-g3"), "contention event refetched early: {ids:?}");
-    assert!(!ids.contains(&"ev-g4"), "exhausted event must stay closed: {ids:?}");
-    assert!(!ids.contains(&"ev-g1"), "completed event must not refetch: {ids:?}");
-    assert!(!ids.contains(&"ev-nonsys"), "non-syslog event must not refetch: {ids:?}");
+    assert!(
+        !ids.contains(&"ev-g3"),
+        "contention event refetched early: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"ev-g4"),
+        "exhausted event must stay closed: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"ev-g1"),
+        "completed event must not refetch: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"ev-nonsys"),
+        "non-syslog event must not refetch: {ids:?}"
+    );
 }
 
 // ── WP65-21: processing-generation claim token fencing ────────────────────────
@@ -789,7 +846,10 @@ async fn wp65_16_17_lifecycle_transition_guards() {
 async fn fetch_unembedded(rig: &Rig) -> Vec<Value> {
     let resp = rig
         .client
-        .get(format!("{}/api/events/unembedded?type=syslog&limit=50", rig.base))
+        .get(format!(
+            "{}/api/events/unembedded?type=syslog&limit=50",
+            rig.base
+        ))
         .send()
         .await
         .unwrap();
@@ -906,7 +966,10 @@ async fn wp65_21_claim_token_fencing() {
         ]}),
     )
     .await;
-    assert_eq!(b["invalid"], 1, "legacy no-claim report must still apply: {b}");
+    assert_eq!(
+        b["invalid"], 1,
+        "legacy no-claim report must still apply: {b}"
+    );
     assert_eq!(needs_embedding(&rig.store, "ev-t2"), 0);
 }
 
@@ -997,5 +1060,8 @@ async fn wp65_24_unknown_provenance_unverified() {
         .filter_map(|s| s["event_id"].as_str())
         .collect();
     assert!(ids.contains(&"ev-k2"), "{ids:?}");
-    assert!(!ids.contains(&"ev-u1") && !ids.contains(&"ev-u2"), "{ids:?}");
+    assert!(
+        !ids.contains(&"ev-u1") && !ids.contains(&"ev-u2"),
+        "{ids:?}"
+    );
 }
