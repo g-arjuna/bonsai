@@ -2275,7 +2275,7 @@ pub async fn events_embeddings_handler(
             let claim_ok = match d.claim_token.as_deref() {
                 Some(tok) if !tok.is_empty() => stored_token == tok,
                 _ => match d.claim_attempts {
-                    Some(c) => stored_token.is_empty() && c == attempts,
+                    Some(c) => stored_token.is_empty() && never_claimed && c == attempts,
                     None => stored_token.is_empty() && never_claimed,
                 },
             };
@@ -2309,7 +2309,8 @@ pub async fn events_embeddings_handler(
                 Some(tok) if !tok.is_empty() => ("AND e.embedding_claim_token = $ctok", true),
                 _ => match d.claim_attempts {
                     Some(_) => (
-                        "AND (e.embedding_claim_token IS NULL OR e.embedding_claim_token = '')",
+                        "AND (e.embedding_claim_token IS NULL OR e.embedding_claim_token = '') \
+                         AND e.embedding_claim_expires_ns IS NULL",
                         false,
                     ),
                     None => (
@@ -2419,7 +2420,7 @@ pub async fn events_embeddings_handler(
             let claim_ok = match inv.claim_token.as_deref() {
                 Some(tok) if !tok.is_empty() => stored_token == tok,
                 _ => match inv.claim_attempts {
-                    Some(c) => stored_token.is_empty() && c == attempts,
+                    Some(c) => stored_token.is_empty() && never_claimed && c == attempts,
                     None => stored_token.is_empty() && never_claimed,
                 },
             };
@@ -2439,7 +2440,8 @@ pub async fn events_embeddings_handler(
                 Some(tok) if !tok.is_empty() => ("AND e.embedding_claim_token = $ctok", true),
                 _ => match inv.claim_attempts {
                     Some(_) => (
-                        "AND (e.embedding_claim_token IS NULL OR e.embedding_claim_token = '')",
+                        "AND (e.embedding_claim_token IS NULL OR e.embedding_claim_token = '') \
+                         AND e.embedding_claim_expires_ns IS NULL",
                         false,
                     ),
                     None => (
@@ -2603,7 +2605,7 @@ fn mark_embedding_done(
         claim_token == Some(stored_token.as_str())
     } else {
         match claim_attempts {
-            Some(c) => c == attempts,
+            Some(c) => never_claimed && c == attempts,
             None => never_claimed,
         }
     };

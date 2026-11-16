@@ -605,9 +605,18 @@ def _embed_and_post(
             if submitted:
                 applied = body.get(key)
                 skipped = body.get(f"{key}_skipped")
-                if not isinstance(applied, int) or isinstance(applied, bool) \
-                        or not isinstance(skipped, int) \
-                        or isinstance(skipped, bool):
+                # Applied/skipped must be nonnegative integers that
+                # reconcile EXACTLY with the submitted report count —
+                # every submitted item lands in exactly one bucket.
+                if (
+                    not isinstance(applied, int)
+                    or isinstance(applied, bool)
+                    or applied < 0
+                    or not isinstance(skipped, int)
+                    or isinstance(skipped, bool)
+                    or skipped < 0
+                    or applied + skipped != len(submitted)
+                ):
                     lifecycle_ok = False
                 else:
                     counts[f"{key}_applied"] = applied
@@ -618,7 +627,10 @@ def _embed_and_post(
                 "Embedding write-back lifecycle acknowledgement "
                 "malformed; applied/skipped counts unavailable"
             )
-        if dedup is not None and accepted_indexes:
+        # Occurrence bookkeeping commits only when the OVERALL ack is
+        # valid — a malformed lifecycle block invalidates the whole
+        # acknowledgement even if per-item embedding statuses parsed.
+        if ack_fully_valid and dedup is not None and accepted_indexes:
             accepted_keys: list[Optional[str]] = []
             for rec_idx in accepted_indexes:
                 pair_pos = record_pairs[rec_idx]

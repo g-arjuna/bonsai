@@ -1292,3 +1292,99 @@ async fn wp65_21_replay_after_operator_reset() {
     assert_eq!(b["already_existing"], 1, "{b}");
     assert_eq!(needs_embedding(&rig.store, "ev-r1"), 0);
 }
+
+#[tokio::test]
+async fn wp65_21_retired_claim_rejects_legacy_attempts() {
+    let rig = rig().await;
+    seed_event(&rig.store, "ev-l1", "syslog/auth", 1);
+
+    let ev = fetch_unembedded(&rig).await;
+    let tok = event_field(&ev, "ev-l1", "claim_token").expect("token");
+    // ev-l2 is seeded AFTER the fetch so it stays NEVER claimed
+    // (expires NULL) — the legacy claim_attempts compatibility control.
+    seed_event(&rig.store, "ev-l2", "syslog/auth", 1);
+
+    // Holder's deferred report applies: claim retired (token='',
+    // expires=0), attempts consumed to 1, retry deadline set.
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "deferred": [
+            {"event_id": "ev-l1", "claim_attempts": 0, "claim_token": tok,
+             "kind": "provider_error"},
+        ]}),
+    )
+    .await;
+    assert_eq!(b["deferred"], 1, "{b}");
+    assert_eq!(get_i64(&rig.store, "ev-l1", "embedding_attempts"), 1);
+
+    // Make the retired event eligible again WITHOUT a fresh claim —
+    // expires stays 0 (claimed history), token stays ''.
+    {
+        let db = rig.store.db();
+        let conn = lbug::Connection::new(&db).unwrap();
+        let mut stmt = conn
+            .prepare("MATCH (e:StateChangeEvent {id: 'ev-l1'}) SET e.embedding_retry_after_ns = 0")
+            .unwrap();
+        conn.execute(&mut stmt, vec![]).unwrap();
+    }
+
+    // A legacy report carrying ONLY claim_attempts (matching the stored
+    // count) must NOT bypass the retired-generation boundary — deferred,
+    // invalid and completion paths all fence it.
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "deferred": [
+            {"event_id": "ev-l1", "claim_attempts": 1,
+             "kind": "provider_error"},
+        ]}),
+    )
+    .await;
+    assert_eq!(
+        b["deferred"], 0,
+        "retired claim must fence legacy attempts: {b}"
+    );
+    assert_eq!(b["deferred_skipped"], 1, "{b}");
+    assert_eq!(get_i64(&rig.store, "ev-l1", "embedding_attempts"), 1);
+
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "invalid": [
+            {"event_id": "ev-l1", "reason": "stale", "claim_attempts": 1},
+        ]}),
+    )
+    .await;
+    assert_eq!(
+        b["invalid"], 0,
+        "retired claim must fence legacy invalid: {b}"
+    );
+    assert_eq!(b["invalid_skipped"], 1, "{b}");
+    assert_eq!(needs_embedding(&rig.store, "ev-l1"), 1);
+
+    // Completion path: a legacy-attempts embedding write cannot close
+    // the retired obligation — creation is fenced as a stale claim and
+    // even a persisted identity could not complete the lifecycle.
+    let mut item = embedding_item("ev-l1", vec![0.7, 0.1, 0.1, 0.1]);
+    item["claim_attempts"] = json!(1);
+    let (_s, b) = post_embeddings(&rig, json!({"embeddings": [item]})).await;
+    assert_eq!(
+        needs_embedding(&rig.store, "ev-l1"),
+        1,
+        "legacy claim_attempts must not complete a retired obligation: {b}"
+    );
+
+    // Positive control: never-claimed ev-l2 still honors legacy
+    // claim_attempts compatibility on the deferred path.
+    let (_s, b) = post_embeddings(
+        &rig,
+        json!({"embeddings": [], "deferred": [
+            {"event_id": "ev-l2", "claim_attempts": 0,
+             "kind": "provider_error"},
+        ]}),
+    )
+    .await;
+    assert_eq!(
+        b["deferred"], 1,
+        "never-claimed legacy report must apply: {b}"
+    );
+    assert_eq!(get_i64(&rig.store, "ev-l2", "embedding_attempts"), 1);
+}

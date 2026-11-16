@@ -640,6 +640,65 @@ class TestAckAttribution:
         assert card["template_occurrences"] == 0
         dedup.registry.close()
 
+    def test_inconsistent_lifecycle_counts_invalidate_ack(
+        self, tmp_path, monkeypatch
+    ):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        emb = FakeEmbedder()
+        dedup = _make_dedup(tmp_path, emb)
+        events = [
+            {"id": "e1", "message": "BGP hold timer expired for 10.0.0.9"},
+            {"id": "e2", "message": "   "},  # invalid report
+        ]
+
+        def bad_ack(payload):
+            ack = _ack_for(payload["embeddings"], ["accepted"] * len(payload["embeddings"]))
+            # Server claims zero invalid outcomes for the one submitted
+            # invalid report — applied+skipped (0) != submitted (1).
+            ack["invalid"] = 0
+            ack["invalid_skipped"] = 0
+            return ack
+
+        resp = _SeqResp([bad_ack])
+        monkeypatch.setattr("requests.post", resp.post)
+        report: dict = {}
+
+        n = w._embed_and_post("http://x", events, emb, dedup, report)
+        assert report["status"] == "ack_invalid"
+        # Occurrence bookkeeping must NOT commit on an invalid ack.
+        card = dedup.registry.cardinality(scope="test-scope")
+        assert card["template_occurrences"] == 0
+        dedup.registry.close()
+
+    def test_negative_lifecycle_counts_invalidate_ack(
+        self, tmp_path, monkeypatch
+    ):
+        import bonsai_ml.syslog_embedding_worker as w
+
+        emb = FakeEmbedder()
+        dedup = _make_dedup(tmp_path, emb)
+        events = [
+            {"id": "e1", "message": "BGP hold timer expired for 10.0.0.10"},
+            {"id": "e2", "message": "   "},
+        ]
+
+        def bad_ack(payload):
+            ack = _ack_for(payload["embeddings"], ["accepted"] * len(payload["embeddings"]))
+            ack["invalid"] = -1
+            ack["invalid_skipped"] = 2
+            return ack
+
+        resp = _SeqResp([bad_ack])
+        monkeypatch.setattr("requests.post", resp.post)
+        report: dict = {}
+
+        w._embed_and_post("http://x", events, emb, dedup, report)
+        assert report["status"] == "ack_invalid"
+        card = dedup.registry.cardinality(scope="test-scope")
+        assert card["template_occurrences"] == 0
+        dedup.registry.close()
+
     def test_deferred_and_invalid_reports_sent(
         self, tmp_path, monkeypatch
     ):
@@ -1090,7 +1149,16 @@ class TestCycleOutcomeTruthfulness:
             def json(self):
                 payload = captured["last"]
                 n = len(payload.get("embeddings", []))
-                return _ack_for(payload.get("embeddings", []), ["accepted"] * n)
+                ack = _ack_for(
+                    payload.get("embeddings", []), ["accepted"] * n
+                )
+                # Faithful lifecycle counts: every submitted report is
+                # applied, none skipped — matches the real server contract.
+                ack["deferred"] = len(payload.get("deferred", []))
+                ack["deferred_skipped"] = 0
+                ack["invalid"] = len(payload.get("invalid", []))
+                ack["invalid_skipped"] = 0
+                return ack
 
         def post(url, json=None, headers=None, timeout=None):
             captured["last"] = json
