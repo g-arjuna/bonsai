@@ -828,6 +828,22 @@ documents below supply the design rationale and source references for
 those same BN-owned items — they do not create duplicate programmes
 and do not relax any acceptance criteria:
 
+- **16 Nov follow-up (WP65-15, WP65-21…24 + runtime/measurement acceptance):**
+  processing-generation claim fencing (fetch-acquired `claim_token`,
+  newest fetch wins; legacy `claim_attempts` compat), truthful worker
+  cycle outcomes (`contended`/`degraded`/`invalid_only`; per-item
+  unresolved states distinguish template claim contention from provider
+  failure), checked idempotent StateChangeEvent lifecycle migration
+  (table_info name+type validation, failed migration blocks
+  enrichment-ready), explicit `provenance_verified=false` similarity
+  contract for unknown model provenance, real core/sidecar E2E over
+  UDP+TCP syslog (dedup reuse, provider failure/recovery, idempotent
+  replay, similarity retrieval, archive retention, restart persistence)
+  and 10k/100k measurements (ingest ~9.2k msg/s; write-back ~45 rec/s;
+  similarity p50 33–71ms; registry 11.7MB @18.6k occurrences). Decision:
+  retain bounded per-event vectors for supported scope; shared-vector
+  projection deferred to follow-up BN with documented limits.
+
 - **Syslog assessment** — `docs/architecture/SYSLOG_ASSESSMENT_2026-11-16.md`:
   SYS-01…09 traced and corrected at closeout (newline-framing P0
   availability defect, finite-but-exhaustible TCP pool, RFC 5424
