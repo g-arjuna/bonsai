@@ -209,6 +209,7 @@ L2_INTEGRATION_TESTS="
   bn021f_hardening
   bn021g_collector_trust_foundation
   bn022_graph_read_boundary
+  wp65a_embedding_lifecycle
 "
 
 gate_l2() {

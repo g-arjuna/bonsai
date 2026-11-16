@@ -1,0 +1,39 @@
+{
+  "scale": 10000,
+  "unique_frac": 0.05,
+  "enrichment": {
+    "cycles": 23,
+    "embedded_records": 4504,
+    "pending_at_start": 1000,
+    "drain_wall_s": 109.15,
+    "writeback_records_per_s": 41.3,
+    "cycle_latency_ms_p50": 4465.2,
+    "cycle_latency_ms_p95": 4739.9,
+    "cycle_latency_ms_p99": 4902.4,
+    "provider_calls": 23,
+    "provider_texts_embedded": 3293,
+    "template_cardinality": 3293,
+    "template_occurrences": 4504
+  },
+  "ingest": {
+    "messages": 10000,
+    "wall_s": 1.07,
+    "msgs_per_s": 9326.9,
+    "peak_core_rss_mb": 710.6
+  },
+  "bytes_after_ingest": {
+    "graph": 17502208,
+    "archive": 1757256
+  },
+  "bytes_after_enrichment": {
+    "graph": 23859200,
+    "archive": 1757256,
+    "registry": 3825664
+  },
+  "similarity_latency_ms": {
+    "p50": 32.6,
+    "p95": 40.1,
+    "max": 40.1
+  },
+  "peak_core_rss_mb": 831.1
+}

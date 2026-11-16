@@ -631,6 +631,66 @@ are not reclassified as absent.
 **Existing evidence/source limitations:** `docs/build_performance.md`'s early 2026 cold/warm figures and `runs.csv`'s varied November measurements are historical and have mixed profiles/hosts/commands; `AGENTS.md` already requires sccache and focused builds while older `docs/DEVELOPMENT.md` contradicted it. These documentation corrections are guidance only. Rust stable [timings](https://doc.rust-lang.org/cargo/reference/timings.html), [profiles](https://doc.rust-lang.org/cargo/reference/profiles.html), [cache](https://doc.rust-lang.org/cargo/reference/build-cache.html), [test selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html), [sccache](https://github.com/mozilla/sccache/blob/main/docs/Rust.md) and [nextest archives](https://nexte.st/docs/ci-features/archiving/) underpin the proposed experiments.
 
 
+### 14 November 2026 — WP6.5A persistent message-template dedup (BN-011/EV1-3 slice)
+
+- **Implemented + unit-tested:** local-first three-stage embedding dedup
+  (exact fingerprint → normalized template fingerprint → provider call on
+  miss) in `python/bonsai_ml/message_templates.py`, wired into
+  `syslog_embedding_worker.py` behind `dedup_enabled` (default on).
+  Persistent versioned SQLite template registry
+  (`runtime/message_templates.db`); cache key carries scope, model id,
+  model revision and normalization version; atomic claim leases prevent
+  duplicate concurrent embedding; provider outputs validated before caching
+  (failures back off, never poison). Conservative token normalizer — Drain/Drain3
+  evaluated and rejected (unvendored dependency, similarity-merge collapse
+  risk); bare numbers, error codes, thresholds and up/down/admin-vs-failure
+  wording are never masked.
+- **Evidence:** `docs/merger/evidence/2026-11-14-wp65a-template-dedup/` —
+  22 focused tests pass; 10k-message benchmark shows 57.8% provider-text
+  reduction on mixed corpus (bge-small: 106.3s → 54.7s wall).
+- **Open:** WP6.2 worker defects (zero-vector provider paths, fetch/write-back
+  error swallowing, newest-first ordering, per-retry UUIDs), Prometheus/core
+  metrics surfacing, per-event `EventEmbedding` storage amplification and
+  100/1k/10k-device capacity modeling (WP6.5), clustering/search quality
+  (WP6.6). 17 pre-existing `python/tests` failures on main e071cc7 unrelated
+  to this change.
+- **15 Nov follow-up (commit 9ea3143):** corrected confirmed defects —
+  claim-owner fencing on template completion/failure, occurrence counts
+  committed only after acknowledged write-back, idempotent
+  `EventEmbedding` write-back on (event_id, model_name, model_revision)
+  with `model_revision` now persisted end-to-end, oldest-first fetch
+  ordering (starvation fix), explicit `needs_embedding` eligibility
+  (syslog-only at creation + historical non-syslog rows cleared), and
+  provider-vector validation on the dedup-disabled path. Still open:
+  unbounded `EventEmbedding`/registry/exact_map growth (retention policy +
+  shared template-vector redesign need search/graph-semantics review),
+  per-tenant scope derivation inside a shared worker (currently a
+  deployment-wide `dedup_scope`; Bonsai ownership model has no per-event
+  tenant field on StateChangeEvent yet), Rust-side compile/test
+  verification of the ml_jobs/graph changes, and the end-to-end syslog
+  RFC pipeline assessment (RFC 3164/5424/5425/5426/6587) as a separate
+  prioritized backlog.
+- **16 Nov follow-up (WP65-09…14 correctness + runtime acceptance):**
+  immutable embedding replay (identical vector+dim is a no-op; conflicting
+  vector/dim under one identity rejected — repair requires a new
+  model/normalization/schema identity), zero/non-finite-norm and
+  dim/provenance validation at the API boundary, authoritative
+  event_type + syslog-eligibility derived from the persisted event
+  (client type ignored), coherent versioned identity
+  (event, model, revision, normalization_version, schema_hash) with
+  explicit "unknown" provenance normalized on migration, per-item `items`
+  acknowledgement with occurrence commits attributed to `accepted` only,
+  claim-generation fencing tokens in the template registry (schema v2),
+  and a bounded enrichment lifecycle (`embedding_retry_after_ns`,
+  `embedding_attempts`, `embedding_invalid`) so deferred/failing events
+  cannot starve the oldest-first fetch. Provider contract: exact
+  cardinality enforced on the dedup-disabled path; zero-vector fallbacks
+  never persist. Runtime acceptance: `tests/wp65a_embedding_lifecycle.rs`
+  exercises the real handler against disposable Ladybug DBs. Still open:
+  retention/shared-vector redesign, per-event tenant scope, E2E
+  core/sidecar pipeline run, storage measurements, syslog RFC assessment.
+
+
 ## Verified foundation, not a new queue
 
 - Imported routing crates and Bonsai routing service, public proxy/UI, scope-aware diagnostics, migration helpers and graph projector exist.
@@ -767,6 +827,22 @@ lifecycle delta"** section above (PR #21, merged `8f41a33`); the three
 documents below supply the design rationale and source references for
 those same BN-owned items — they do not create duplicate programmes
 and do not relax any acceptance criteria:
+
+- **16 Nov follow-up (WP65-15, WP65-21…24 + runtime/measurement acceptance):**
+  processing-generation claim fencing (fetch-acquired `claim_token`,
+  newest fetch wins; legacy `claim_attempts` compat), truthful worker
+  cycle outcomes (`contended`/`degraded`/`invalid_only`; per-item
+  unresolved states distinguish template claim contention from provider
+  failure), checked idempotent StateChangeEvent lifecycle migration
+  (table_info name+type validation, failed migration blocks
+  enrichment-ready), explicit `provenance_verified=false` similarity
+  contract for unknown model provenance, real core/sidecar E2E over
+  UDP+TCP syslog (dedup reuse, provider failure/recovery, idempotent
+  replay, similarity retrieval, archive retention, restart persistence)
+  and 10k/100k measurements (ingest ~9.2k msg/s; write-back ~45 rec/s;
+  similarity p50 33–71ms; registry 11.7MB @18.6k occurrences). Decision:
+  retain bounded per-event vectors for supported scope; shared-vector
+  projection deferred to follow-up BN with documented limits.
 
 - **Syslog assessment** — `docs/architecture/SYSLOG_ASSESSMENT_2026-11-16.md`:
   SYS-01…09 traced and corrected at closeout (newline-framing P0

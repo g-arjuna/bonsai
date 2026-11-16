@@ -1,0 +1,77 @@
+{
+  "scale": 100000,
+  "unique_frac": 0.05,
+  "corpus": "repetitive",
+  "mode": "drain",
+  "rate": 500.0,
+  "transport": "udp",
+  "pipeline": {
+    "bonsai_syslog_events_total": 100000.0,
+    "bonsai_syslog_archive_errors_total": 0.0,
+    "bonsai_syslog_noise_suppressed_total": 0.0,
+    "bonsai_syslog_shed_total": 0.0,
+    "bonsai_syslog_shunned_total": 0.0,
+    "bonsai_syslog_tcp_rejected_total": 0.0,
+    "bonsai_syslog_fact_join_total": 0.0,
+    "bonsai_archive_drops_total": 0.0,
+    "bonsai_broadcast_drops_total": 100000.0,
+    "bonsai_graph_write_errors_total": 0.0,
+    "bonsai_graph_state_change_write_total": 100000.0,
+    "bonsai_event_bus_router_drops_total": 0.0,
+    "bonsai_event_bus_subscriber_drops_total": 0.0,
+    "bonsai_queue_saturation_total": 0.0,
+    "bonsai_write_coordinator_queue_depth": 0.0,
+    "bonsai_rule_firings_total": 0.0,
+    "bonsai_graph_write_latency_seconds_mean": null,
+    "bonsai_graph_batch_write_latency_seconds_mean": 0.279183
+  },
+  "embedding_stats": {
+    "before": {
+      "config_embedded": 0,
+      "config_pending": 0,
+      "syslog_embedded": 0,
+      "syslog_pending": 0
+    },
+    "after": {
+      "config_embedded": 0,
+      "config_pending": 0,
+      "syslog_embedded": 100000,
+      "syslog_pending": 0
+    }
+  },
+  "ingest": {
+    "messages_offered": 100000,
+    "messages_sent_ok": 100000,
+    "send_errors": 0,
+    "bytes_sent": 8560000,
+    "offered_rate_msg_s": 477.6,
+    "send_jitter_ms_max": 1.64,
+    "wall_s": 209.36,
+    "peak_core_rss_mb": 1137.5,
+    "peak_worker_rss_mb": 48.7,
+    "peak_combined_rss_mb": 1186.2,
+    "rss_mb_start": 542.8
+  },
+  "enrichment": {
+    "cycles": 500,
+    "embedded_records": 100000,
+    "cycle_statuses": {
+      "success": 500
+    },
+    "cycle_latency_ms": {
+      "p50": 3880.9,
+      "p95": 4313.8,
+      "p99": 4492.8
+    },
+    "wall_s": 1958.2,
+    "provider_calls": 1,
+    "provider_texts_embedded": 5,
+    "template_cardinality": 5,
+    "template_occurrences": 100000
+  },
+  "bytes": {
+    "graph": 258957312,
+    "archive": 37320000,
+    "registry": 4096
+  }
+}

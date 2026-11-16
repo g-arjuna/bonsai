@@ -1,0 +1,1 @@
+{"run_id":"r100k-rep-ingest500-1794843478","tag":"r100k-rep-ingest500","deployment":"native-host","network_ns":"host","sender_dest":"127.0.0.1:54952","tcp_dest":"127.0.0.1:54952","http":"127.0.0.1:43021","metrics":"127.0.0.1:51701","core_pid_file":"/tmp/wp65a-m2-r100k-rep-ingest500-1794843478/core.pid","workdir":"/tmp/wp65a-m2-r100k-rep-ingest500-1794843478"}

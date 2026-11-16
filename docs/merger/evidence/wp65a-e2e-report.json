@@ -1,0 +1,42 @@
+{
+  "steps": [
+    {
+      "name": "ingest_udp_tcp",
+      "ok": true,
+      "detail": "3 udp + 2 tcp sent"
+    },
+    {
+      "name": "worker_cycle1",
+      "ok": true,
+      "detail": "fetched=19 embedded=19 provider_calls=1"
+    },
+    {
+      "name": "dedup_reuse",
+      "ok": true,
+      "detail": "rep_embedded=19 status=success stats={'exact_match_hits': 19, 'template_match_hits': 0, 'provider_calls': 1, 'provider_calls_avoided': 35}"
+    },
+    {
+      "name": "provider_failure_deferred",
+      "ok": true,
+      "detail": "status=provider_error detail=no embedding records resolved"
+    },
+    {
+      "name": "replay_idempotent",
+      "ok": true,
+      "detail": "occurrences 38 -> 38 embedded=0"
+    },
+    {
+      "name": "similarity_retrieval",
+      "ok": true,
+      "detail": "model=e2e-hash-embedder rev=e2e-rev-1 prov_verified=True hits=10"
+    },
+    {
+      "name": "raw_archive",
+      "ok": true,
+      "detail": "archives=1"
+    }
+  ],
+  "assertions": [],
+  "ok": true,
+  "generated_at_ns": 1794827880935875982
+}

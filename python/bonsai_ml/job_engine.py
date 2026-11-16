@@ -747,8 +747,21 @@ def build_default_engine(api_url: str = DEFAULT_API_URL) -> BonsaiJobEngine:
         job = IncrementalExportJob(api_url=api_url)
         return job.run_incremental(export_type="remediation")
 
-    async def syslog_embedding(reporter: Any = None) -> None:
-        run_syslog_embedding_worker(api_url=api_url, run_once=True)
+    async def syslog_embedding(reporter: Any = None) -> Any:
+        from .syslog_embedding_worker import (
+            FAILURE_STATUSES,
+            run_syslog_embedding_worker,
+        )
+
+        outcome = run_syslog_embedding_worker(api_url=api_url, run_once=True)
+        # WP65-20: a failed cycle (fetch/provider/ack) must surface as a
+        # job failure — never a false-green "succeeded" empty cycle.
+        if isinstance(outcome, dict) and outcome.get("status") in FAILURE_STATUSES:
+            raise RuntimeError(
+                f"syslog_embedding cycle failed: {outcome.get('status')} "
+                f"({outcome.get('detail', '')})"
+            )
+        return outcome
 
     async def config_embedding(reporter: Any = None) -> None:
         run_config_embedding_worker(api_url=api_url, run_once=True)

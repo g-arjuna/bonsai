@@ -1,0 +1,16 @@
+{
+  "scale": 10000,
+  "unique_frac": 0.05,
+  "enrichment": "disabled \u2014 ingest-only measurement",
+  "ingest": {
+    "messages": 10000,
+    "wall_s": 1.1,
+    "msgs_per_s": 9126.1,
+    "peak_core_rss_mb": 720.3
+  },
+  "bytes_after_ingest": {
+    "graph": 17502208,
+    "archive": 1580091
+  },
+  "peak_core_rss_mb": 720.3
+}

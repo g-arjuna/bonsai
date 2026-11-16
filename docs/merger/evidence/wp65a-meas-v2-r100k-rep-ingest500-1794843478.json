@@ -1,0 +1,60 @@
+{
+  "scale": 100000,
+  "unique_frac": 0.05,
+  "corpus": "repetitive",
+  "mode": "ingest-only",
+  "rate": 500.0,
+  "transport": "udp",
+  "pipeline": {
+    "bonsai_syslog_events_total": 100000.0,
+    "bonsai_syslog_archive_errors_total": 0.0,
+    "bonsai_syslog_noise_suppressed_total": 0.0,
+    "bonsai_syslog_shed_total": 0.0,
+    "bonsai_syslog_shunned_total": 0.0,
+    "bonsai_syslog_tcp_rejected_total": 0.0,
+    "bonsai_syslog_fact_join_total": 0.0,
+    "bonsai_archive_drops_total": 0.0,
+    "bonsai_broadcast_drops_total": 100000.0,
+    "bonsai_graph_write_errors_total": 0.0,
+    "bonsai_graph_state_change_write_total": 100000.0,
+    "bonsai_event_bus_router_drops_total": 0.0,
+    "bonsai_event_bus_subscriber_drops_total": 0.0,
+    "bonsai_queue_saturation_total": 0.0,
+    "bonsai_write_coordinator_queue_depth": 0.0,
+    "bonsai_rule_firings_total": 0.0,
+    "bonsai_graph_write_latency_seconds_mean": null,
+    "bonsai_graph_batch_write_latency_seconds_mean": 0.284907
+  },
+  "embedding_stats": {
+    "before": {
+      "config_embedded": 0,
+      "config_pending": 0,
+      "syslog_embedded": 0,
+      "syslog_pending": 0
+    },
+    "after": {
+      "config_embedded": 0,
+      "config_pending": 0,
+      "syslog_embedded": 0,
+      "syslog_pending": 100000
+    }
+  },
+  "ingest": {
+    "messages_offered": 100000,
+    "messages_sent_ok": 100000,
+    "send_errors": 0,
+    "bytes_sent": 8560000,
+    "offered_rate_msg_s": 477.5,
+    "send_jitter_ms_max": 2.25,
+    "wall_s": 209.42,
+    "peak_core_rss_mb": 887.8,
+    "peak_worker_rss_mb": 46.7,
+    "peak_combined_rss_mb": 934.6,
+    "rss_mb_start": 540.0
+  },
+  "bytes": {
+    "graph": 282615808,
+    "archive": 37320000,
+    "registry": 4096
+  }
+}
