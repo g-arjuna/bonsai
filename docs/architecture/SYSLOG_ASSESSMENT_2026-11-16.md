@@ -6,71 +6,113 @@ WP6.5A). Scope: `src/signals/syslog.rs`, `src/shun.rs`,
 `src/http_server/shun.rs`, `src/config.rs`, `src/collector/`.
 Static source review only — no live receiver run.
 
+Corrected 2026-11-16 (closeout review): SYS-01 reclassified — the
+newline-framing path is a confirmed P0 availability defect, not a
+bounded PASS. SYS-02, SYS-03, SYS-04, SYS-06, SYS-08 and SYS-09
+updated against source (`run_tcp_newline`, `run_tcp`,
+`run_udp`, `parse_rfc5424`, `parse_legacy`, `SyslogArchive::append`).
+
 Bonsai is a network context/evidence engine, not a SIEM or a general
 syslog collector. Findings are classified: **defect** (correctness/
 durability bug), **limitation** (deliberate or accepted scope boundary),
 **gap** (missing capability worth a backlog item).
 
-## SYS-01 Bounded TCP framing — PASS with notes
+## SYS-01 Bounded TCP framing — SPLIT VERDICT
 
-- RFC 6587 octet-counting is implemented (`run_tcp_octet_counting`,
-  `src/signals/syslog.rs:436`): `<len> <MSG>` with the length prefix
-  capped at 7 digits and `msg_len <= max_frame_bytes`
-  (`syslog.max_frame_bytes`, default 8192, `src/config.rs:537`).
-  Oversized or malformed frames close the connection — fail-closed, no
-  unbounded allocation (`msg_buf` is allocated only after the bound
-  check).
+- **Octet-counting (RFC 6587) — PASS.** `run_tcp_octet_counting`
+  (`src/signals/syslog.rs:440`) caps the length prefix at 7 digits,
+  enforces `msg_len <= max_frame_bytes` (`syslog.max_frame_bytes`,
+  default 8192, `src/config.rs:537`) *before* allocating `msg_buf`,
+  and closes the connection on malformed/oversized frames —
+  fail-closed, no unbounded allocation.
+- **Newline framing — confirmed P0 availability defect.**
+  `run_tcp_newline` (`src/signals/syslog.rs:395-434`) calls
+  `reader.read_line(&mut line)` which appends to `line` until a `\n`
+  or EOF with **no bound during accumulation**; the
+  `n > max_frame_bytes` check runs only *after* the entire
+  unterminated line has been read into memory. A sender that never
+  emits a delimiter (or emits one after gigabytes) causes unbounded
+  memory growth per connection — and with `MAX_TCP_CONNECTIONS`
+  (SYS-02) such senders can also exhaust the connection pool.
+  **Required fix (next small runtime slice, post-WP6.5A):** bounded
+  incremental framing — accumulate with an early-abort cap at
+  `max_frame_bytes` (e.g. `take`/`read_until` on a bounded buffer or
+  chunked `fill_buf` scanning), closing the connection on overflow
+  rather than completing the read. Regression tests: oversized
+  frames, fragmented frames, valid frames following invalid input
+  where the framing contract permits resync, and both framing modes.
 - Dual-mode framing: connections are probed for octet-counting vs
-  newline framing (`src/signals/syslog.rs:354-378`).
+  newline framing (`src/signals/syslog.rs:363-366`) by peeking the
+  first byte — a digit selects octet-counting.
 - **Limitation:** on any framing error the whole TCP connection is
   dropped rather than resynchronized — acceptable for evidence
-  collection (sender retransmits/next connection), but worth noting for
-  chatty senders.
+  collection (sender retransmits/next connection), but worth noting
+  for chatty senders.
 
-## SYS-02 Idle/shutdown handling — PARTIAL
+## SYS-02 Connection admission and idle handling — DEFECT (availability)
 
-- EOF and read errors terminate the per-connection task cleanly
-  (`return` on empty `fill_buf`, warn on error); connection counting
-  (`conn_count`) is decremented on exit.
-- **Gap:** no idle/keepalive timeout on established TCP connections was
-  found — a silently dead peer can hold a task indefinitely. Low risk
-  (tasks are cheap) but unbounded in count. Recommend a backlog item
-  for an idle timeout + `receiver_supervisor` visibility.
-- Shutdown: receiver tasks are spawned under the supervisor; no
-  graceful drain of in-flight frames was observed — bounded by frame
-  size, acceptable.
+- There is a **finite** limit: `MAX_TCP_CONNECTIONS = 128`
+  (`src/signals/syslog.rs:305`); excess accepts are rejected with
+  `bonsai_syslog_tcp_rejected_total` and `conn_count` is decremented
+  on task exit. The defect is not unbounded task count — it is that
+  **idle or slow connections can consume the entire 128-slot pool**
+  and starve legitimate senders.
+- **Gap (confirmed):** no initial-read deadline (a connection that
+  sends nothing holds a slot forever), no established-frame/idle
+  deadline (a stalled mid-frame sender holds a slot indefinitely),
+  and no cancellation of in-flight connection tasks on shutdown —
+  the accept loop stops but spawned readers persist until EOF/error.
+- **Required fix (same slice as SYS-01):** bounded initial-read and
+  per-frame/idle deadlines, `tokio::select!` cancellation on the
+  shutdown signal inside connection tasks, and orderly drain.
+  Regression tests: connection-slot recovery after idle/slow-sender
+  eviction, slow-sender behavior under both framing modes.
 
-## SYS-03 RFC 5424 structured data — PARTIAL
+## SYS-03 RFC 5424 structured data — DEFECT (MSG-boundary corruption)
 
-- `parse_rfc5424` (`src/signals/syslog.rs:1161`) handles VERSION=1,
-  splits HEADER fields, normalizes NILVALUE `-` via `normalise_nil`,
-  and falls back to `parse_legacy` on malformed input — no panic path.
-- **Limitation:** STRUCTURED-DATA is *not parsed or retained*. When the
-  SD element starts with `[` or is `-`, the parser skips it and keeps
-  only the MSG part (`src/signals/syslog.rs:1174-1184`). SD-ID params
-  (e.g. `exampleSDID@32473 iut="3"`) are evidence that is currently
-  discarded — relevant for firewall/vendor telemetry that carries
-  structured context. Backlog item: bounded SD capture into the event
-  record (cap elements/params, preserve raw anyway since `raw` is
-  archived verbatim).
-- **Note:** BOM (`\ufeff`) handling per RFC 5424 §6.1 is not stripped —
-  a BOM would land inside MSG. Minor.
+- `parse_rfc5424` (`src/signals/syslog.rs:1161`) uses
+  `rest.splitn(8, ' ')`. STRUCTURED-DATA is not a single space-free
+  token: SD elements may contain spaces inside quoted parameter
+  values and multiple SD elements are space-separated. With
+  `splitn(8)`, an SD element containing spaces is split across
+  `parts[6]`/`parts[7]`; because `parts[6]` starts with `[`, the
+  parser takes `parts[7]` — the *remainder of the SD element plus the
+  real MSG* — as the message. **Result: MSG-boundary corruption, not
+  merely discarded structured data** — SD parameter text (including
+  the closing `]`) leaks into `event.message` and `event.raw`
+  downstream consumers see a corrupted message.
+- Additional gaps: multiple SD elements, escaped quotes (`\"`, `\]`,
+  `\\` per RFC 5424 §6.3.3), and PARAM-NAME=VALUE validation are all
+  unhandled; NILVALUE normalization applies only to HEADER fields.
+- `parse_legacy` fallback on malformed 5424 input can further
+  misattribute fields (hostname/message boundary guessed from token
+  count).
+- **Backlog item (unchanged owner BN-016):** real SD parsing —
+  bounded element/param capture into the event record plus correct
+  MSG extraction. `raw` is archived verbatim so evidence is
+  recoverable, but parsed fields are currently unreliable for
+  SD-bearing messages. BOM (`\ufeff`) per RFC 5424 §6.1 is also not
+  stripped.
 
-## SYS-04 Timestamp provenance — LIMITATION (explicit)
+## SYS-04 Timestamp provenance — LIMITATION (explicit, refined)
 
 - `SyslogEvent.timestamp_ns` is always the *receiver* clock
-  (`now_ns()` at ingest, `src/signals/syslog.rs:1122` signature takes
-  `timestamp_ns` from caller). The RFC 5424 TIMESTAMP header field is
-  read but discarded (`let _timestamp = parts.next()?`), and RFC 3164
-  has no timestamp at all.
-- Consequence: clock skew between device and collector is invisible;
-  backlogged/batched forwarding loses original event time. The raw
-  message is archived, so sender timestamps remain recoverable
-  forensically but are not queryable.
-- **Recommendation (backlog):** parse RFC 5424 TIMESTAMP into an
-  optional `sender_timestamp_ns` field with explicit provenance
-  (`timestamp_provenance: receiver|sender|none`) — consistent with the
-  project's "never fabricate" rule; do not silently substitute.
+  (`now_ns()` at ingest). The RFC 5424 TIMESTAMP header field is read
+  but discarded (`let _timestamp = parts.next()?`,
+  `src/signals/syslog.rs:1167`).
+- RFC 3164 timestamps (`Mon dd hh:mm:ss`) carry **no year and no
+  timezone** — they cannot yield a trustworthy absolute sender time
+  without assumptions (current-year guess, local-TZ guess). The
+  correct posture is to record that sender time is *unavailable*
+  (or only partially recoverable with explicit uncertainty), never
+  to fabricate an absolute timestamp.
+- Sender time, receive time and persistence time must remain
+  separately identifiable fields with explicit provenance
+  (`sender|receiver|none` + quality). Today only receiver time and
+  the raw string exist; persistence (archive write) time is implicit
+  in file order. Backlog item unchanged: optional
+  `sender_timestamp_ns` + `timestamp_provenance` — consistent with
+  the "never fabricate" rule.
 
 ## SYS-05 PRI validation — MINOR DEFECT
 
@@ -84,57 +126,81 @@ durability bug), **limitation** (deliberate or accepted scope boundary),
   are fail-safe (no panic) but the invalid-PRI case should be counted
   via a metric for visibility.
 
-## SYS-06 UDP truncation — GAP (unverified bound)
+## SYS-06 UDP truncation — CONFIRMED GAP (exact bound now verified)
 
-- UDP path uses a single `recv_from` into a fixed buffer
-  (`run_udp`, `src/signals/syslog.rs:239`). The buffer size was not
-  confirmed in this pass; if it is smaller than `max_frame_bytes`,
-  oversized datagrams are silently truncated by the kernel with no
-  truncation flag check — a real evidence-loss path for burst senders.
-- **Action:** verify buffer size ≥ max_frame_bytes and/or check the
-  `MSG_TRUNC` equivalent; syslog has no truncation marker, so the only
-  honest signal is a metric/counter. Backlog item.
+- The UDP receive buffer is **exactly `max_frame_bytes`**
+  (`vec![0_u8; max_frame_bytes.max(1)]`,
+  `src/signals/syslog.rs:253`; default 8192). `recv_from` on a
+  datagram larger than the buffer discards the excess and returns
+  `n = buf.len()` — tokio does not surface a truncation flag, so an
+  oversized datagram is **silently accepted as a complete frame** and
+  parsed/archived as if whole. This is an evidence-integrity defect:
+  truncated input is not distinguishable downstream.
+- **Required (backlog, small):** explicit truncation detection and
+  accounting — e.g. receive with `MSG_TRUNC` semantics (socket2 /
+  raw fd) or treat `n == buf.len()` as suspect +
+  `bonsai_syslog_udp_truncated_total` metric and an explicit
+  `truncated` marker on the event rather than accepting the partial
+  payload as complete evidence.
 
-## SYS-07 TLS — GAP (out of current scope)
+## SYS-07 TLS — GAP (out of current scope; attribution caveat added)
 
 - The syslog receiver binds plain TCP/UDP only; no TLS/rustls code
   exists in `src/signals/syslog.rs`. RFC 5425 (TLS syslog) is **not**
-  implemented. TLS exists elsewhere (`RuntimeTlsConfig` for the
-  collector→core channel, `HttpTlsConfig` for the API) but does not
-  cover the syslog hop.
+  implemented. `RuntimeTlsConfig` covers the collector→core channel
+  and `HttpTlsConfig` the API — **neither secures the
+  device→collector syslog hop**; terminating TLS at a relay does not
+  make the plaintext leg trustworthy.
+- **Attribution caveat:** any TLS-terminating sidecar must preserve
+  trustworthy exporter attribution — the relay's source IP and any
+  self-claimed hostname are *not* canonical device identity (the
+  existing provisional `syslogsrc/...` key and candidate-hostname
+  model already encode this; a sidecar must not upgrade claimed
+  identity to verified).
 - **Classification:** deliberate scope boundary for the current
-  release; enterprise deployments terminating TLS at a collector
-  forward plain syslog internally. Backlog item if RFC 5425 becomes a
-  requirement — prefer stunnel/envoy sidecar over in-tree TLS to keep
-  the receiver small.
+  release; RFC 5425 remains a separately designed integration
+  (SYS-F), not assumed covered by collector→core TLS.
 
-## SYS-08 Pattern hot reload — PASS
+## SYS-08 Pattern hot reload — PARTIAL (transport-inconsistent)
 
-- `run_udp`/`run_tcp` watch a `watch` channel for pattern changes and
-  log "hot-reloaded pattern extractor" (`src/signals/syslog.rs:272`).
-  The fact extractor is rebuilt without restarting the receiver.
-- Shun rules reload via `ShunEngine::reload` (`src/shun.rs:215`)
-  after DB writes through `/api/shun/*` (`src/http_server/shun.rs`).
+- **UDP:** `run_udp` selects on `pattern_rx` and hot-reloads the
+  extractor without restart (`src/signals/syslog.rs:269-273`).
+- **TCP:** `run_tcp` receives no `pattern_rx`; each accepted
+  connection clones the extractor captured at listener start
+  (`src/signals/syslog.rs:346`). Extractor updates never reach TCP
+  connections — including long-lived ones — until process restart.
+- **Defect (contract inconsistency):** identical operator action
+  (update patterns) produces different behavior per transport. Fix:
+  pass the watch channel into `run_tcp` and re-resolve per frame (or
+  per connection) so both transports share one update contract.
 
-## SYS-09 Archive durability — PASS with caveats
+## SYS-09 Archive durability — PASS with classified caveats
 
-- `SyslogArchive::append` (`src/signals/syslog.rs:833`) writes the
-  JSONL line then awaits `file.flush()` — the comment correctly notes
-  `write_all` only queues bytes; flush drains to the OS. Returned `Ok`
-  means the line reached the file.
-- **Caveat 1:** `flush()` is *not* `sync_all()`/fsync — a host crash
-  can still lose the last lines in page cache. For a forensic archive
-  this is a real but bounded durability gap; per-record fsync would
-  be too costly at high EPS — recommend periodic fsync or group-commit
-  as a backlog item, not a blocker.
-- **Caveat 2:** no rotation/size cap on `runtime/signals/syslog.jsonl`
-  — unbounded growth on long-running deployments. Backlog item tied to
-  the retention matrix (see resource/durability review).
-- **Caveat 3:** archive write failure is counted
+`handle_frame` order (`src/signals/syslog.rs:531-618`): archive
+append is **always first**, before noise suppression, shun
+evaluation and governor shedding. Explicit stage classification:
+
+| Stage | Behavior | Evidence state |
+|---|---|---|
+| Archive attempted | `SyslogArchive::append` serializes the event and `write_all`s one JSONL line | attempted |
+| OS-buffered write | `file.flush()` drains tokio's buffer to the OS — returned `Ok` means the line reached the file, **not** that it is durable | OS-buffered |
+| Durable write | **No fsync/`sync_all`** — a host crash can lose the tail in page cache | not guaranteed |
+| Downstream suppression | `SYSLOG_NOISE_APPS`, `ShunEngine` drop/rate-limit, governor `should_shed()` all return *after* archive | suppressed downstream only |
+| Queue loss | shed path returns before `bus.publish`; metric `bonsai_syslog_shed_total` | gap is metric-visible, not a graph `completeness_state` marker |
+| Truncation | UDP oversized datagrams accepted truncated (SYS-06); newline oversize drops the connection | silent today |
+| Invalid decoding | `from_utf8_lossy` + `trim_end` — **the archived `raw` is NOT byte-exact**: invalid UTF-8 is replaced and trailing whitespace trimmed before archival | do not claim byte-exact archival |
+| Restart/shutdown gaps | append-mode reopen can leave a torn last line after crash; in-flight TCP frames are not drained on shutdown | bounded, readers must tolerate torn tail |
+
+- Archive write failure is counted
   (`bonsai_syslog_archive_errors_total`) and logged but does NOT block
-  bus publish — evidence ordering is preserved (archive attempted
-  first) but a persistently failing archive silently degrades to
-  bus-only delivery. Operator-visible via metric; acceptable, document.
+  bus publish — a persistently failing archive silently degrades to
+  bus-only delivery. Operator-visible via metric; acceptable,
+  documented.
+- **Do not assume TCP application-level retransmission** — framing
+  errors drop the connection; resend behavior is sender-dependent.
+- Caveats retained: no rotation/size cap on
+  `runtime/signals/syslog.jsonl` (unbounded growth — backlog SYS-E);
+  periodic fsync/group-commit recommended over per-record fsync.
 
 ## Suppression vs evidence deletion (explicit trace)
 
@@ -149,9 +215,10 @@ Order inside `handle_frame` (`src/signals/syslog.rs:521`):
 
 **Conclusion:** UI/API ignore-and-shun rules suppress *downstream*
 processing (graph projection, fact extraction, enrichment) but never
-delete archived raw evidence. This is the correct evidence-engine
-posture: suppression ≠ deletion. The only true evidence-loss paths are
-archive write failure (Caveat 3) and UDP truncation (SYS-06).
+delete archived raw evidence — with the SYS-09 caveats above (lossy
+UTF-8/trim means "archived" ≠ byte-exact; flush ≠ fsync; UDP
+truncation and archive failure are real loss paths). This is the
+correct evidence-engine posture: suppression ≠ deletion.
 
 Shun rule flow: `POST /api/shun/rules` → DB persist →
 `ShunEngine::reload` → runtime `evaluate(scope, message, fact_types)`
@@ -174,9 +241,11 @@ identity (consistent with BN-021e source isolation).
 
 | ID | Item | Owner |
 |---|---|---|
-| SYS-A | RFC 5424 STRUCTURED-DATA bounded capture + sender TIMESTAMP provenance field | BN-016 |
+| SYS-A | Bounded RFC 5424 STRUCTURED-DATA parsing (fix MSG-boundary corruption) + sender TIMESTAMP provenance field with RFC 3164 year/TZ uncertainty | BN-016 |
 | SYS-B | PRI range validation + invalid-PRI metric | BN-016 |
-| SYS-C | UDP buffer/truncation verification + metric | BN-016 |
-| SYS-D | TCP idle timeout for syslog connections | BN-009 |
-| SYS-E | Archive rotation + periodic fsync policy | BN-008/BN-019 |
-| SYS-F | RFC 5425 TLS termination decision (sidecar preferred) | BN-005 |
+| SYS-C | UDP truncation detection (`MSG_TRUNC`/suspect-length) + metric + explicit truncated marker | BN-016 |
+| SYS-D | **P0:** bounded incremental newline framing + TCP initial-read/frame/idle deadlines + shutdown cancellation (with SYS-01) | BN-009/BN-016 |
+| SYS-E | Archive rotation + periodic fsync policy + torn-tail tolerance documentation | BN-008/BN-019 |
+| SYS-F | RFC 5425 TLS termination decision (sidecar preferred; preserve exporter attribution — relay IP/claimed hostname is not canonical identity) | BN-005 |
+| SYS-G | TCP extractor hot-reload parity with UDP (shared update contract) | BN-016 |
+| SYS-H | Shed/gap marker event so downstream sees archive-retained-but-unpublished holes as explicit `completeness_state` gaps | BN-008 |

@@ -119,9 +119,27 @@ item):
   (acceptable: replay is idempotent upstream) or, worse, lose the ack
   for already-consumed records.
 
-**Durability guarantee (honest):** at-least-once delivery to core
-*if* the collector stays alive; bounded loss under sustained
-core-outage + local-disk-pressure; no exactly-once anywhere.
+**Durability guarantee (honest):** the collector disk queue provides
+bounded local durability *up to its own ack boundary* — it does **not**
+by itself prove end-to-end at-least-once delivery to core. Three
+distinct loss windows must be reported separately:
+
+- **Loss before durable acknowledgement** — `DropNewest` before
+  append, send failures while the queue is empty/draining, and
+  overflow beyond the configured cap all lose records that were
+  never durably accepted.
+- **Replay after crash** — data/ack non-atomicity can replay
+  already-consumed records; replay is idempotent upstream but is not
+  free (duplicate projection work, cursor ambiguity).
+- **Overflow loss** — the cap is enforced on drain, not append, so a
+  disconnected core can leave the queue growing past its configured
+  limit until the next drain check; records accepted-then-evicted
+  are loss without an explicit per-record gap marker.
+
+Even with a healthy queue, "core accepted" remains an event-bus
+enqueue, not a durable commit — downstream write failures
+(`write_coordinator.rs` logs without a durable retry contract) are a
+separate unaccounted-loss window. No exactly-once anywhere.
 
 **Design direction (backlog, smallest suitable evolution):** segmented
 durable queue/journal — append-only segment files with a compact
@@ -163,7 +181,10 @@ Other confirmed items:
   embeddings, registry, orphan HostEndpoints grow without a matrix.
 - Ladybug physical space reuse requires compaction checkpoints —
   `checkpoint_threshold` is set (2 MiB) but long-run space reclamation
-  unverified.
+  unverified. **A Ladybug checkpoint is not proof of physical disk
+  reclamation** — checkpoints bound WAL/recovery cost; actual file
+  shrink/reuse must be measured (file size before/after, page
+  reuse), not inferred from checkpoint cadence.
 
 **Retention matrix proposal (backlog, per evidence class):**
 
@@ -240,10 +261,34 @@ proposed, not implemented)**:
    observed for failed batches; retry policy unverified. **Fix:**
    bounded outbox or explicit drop metric.
 
-Guarantee classification: all five adapters are **best-effort,
-at-least-once-when-lucky** — none offer durable delivery today.
+Guarantee classification (precise, per adapter — none offer durable
+delivery today):
+
+- **Splunk HEC** — fire-and-forget HTTP POST; indexing is not
+  acknowledged (`indexer_ack` unused). Combined with the
+  dedup-before-ack defect below, effective guarantee is
+  *at-most-once under failure* for affected records, best-effort
+  otherwise.
+- **Elastic** — bulk HTTP 200 treated as success while per-item
+  `error` entries are unchecked; same at-most-once-under-failure
+  exposure for rejected items.
+- **Prometheus remote-write** — failed batches have no observed
+  durable outbox/retry; classification is best-effort with possible
+  silent loss.
+- **ServiceNow EM / syslog adapter** — outbound notification paths;
+  delivery semantics unverified per-item (no ack contract found);
+  treat as best-effort until individually verified.
+
 Proposed corrective tasks are small and independent (per-adapter,
 per-guarantee) — schedule under BN-008/BN-019, not a rewrite.
+Preserved requirements for the fixes: Splunk/Elastic **per-item
+acknowledgement**, a **composite (timestamp, event_id) cursor**
+(not timestamp-only), and **dedup committed only after ack**;
+Prometheus remote-write **durability decision** (bounded outbox vs
+explicit drop metric) recorded per deployment; bounded
+segmented-journal evolution retained **without** a Kafka default;
+topology-safe admission control with a **protected critical-evidence
+lane** retained per F3.
 
 **Inbound evidence-query adapter contract (design, begins with SIEM
 search):** see E2 — `bonsai-evidence-reader` role, structured

@@ -692,20 +692,42 @@ already verified tasks or execute old destructive instructions verbatim.
 
 ## 16 November 2026 — WP6.5A closeout + enterprise evidence architecture intake
 
-WP6.5A status (branch `feat/wp65a-template-dedup` @ `fe4071e`, merged
-with main `506595b`): WP65-16/17/18 lifecycle guards, WP65-19 historical
-schema upgrade and WP65-20 worker outcome visibility are implemented
-with runtime regressions in `tests/wp65a_embedding_lifecycle.rs` (now in
-the canonical L2 gate inventory) and `python/tests/test_message_templates.py`
-(46/46). Still open before merge: WP65-15 write-lock/ingestion
-measurement, mandatory core/sidecar E2E run, 10k/100k storage baseline
-(C5), and the canonical container gate at the integrated SHA.
+WP6.5A status (branch `feat/wp65a-template-dedup` @ `10479e1`, merged
+with main `506595b`; PR #21 delta merged at `8f41a33`): WP65-16/17/18
+lifecycle guards, WP65-19 historical schema upgrade and WP65-20 worker
+outcome visibility are implemented with runtime regressions in
+`tests/wp65a_embedding_lifecycle.rs` (in the canonical L2 gate
+inventory) and `python/tests/test_message_templates.py` (46/46).
+Remaining focused defects before promotion: WP65-15 mandatory
+graph-write-lock/ingestion contention measurement; WP65-21 core
+processing-generation/claim contract (current `claim_attempts` is an
+optional retry-attempt snapshot, not a unique fencing generation);
+WP65-22 complete worker/scheduler outcome contract (mixed
+success+unresolved batches must not report false-green; acknowledgement
+validation regardless of dedup mode); WP65-23 checked idempotent schema
+migrations for the StateChangeEvent lifecycle columns (current
+`ALTER TABLE … ADD` results are discarded unchecked); WP65-24 explicit
+unknown-provenance compatibility (sentinel-string matches must not
+verify two unknown model spaces as compatible); plus the mandatory
+core/sidecar E2E run, 10k/100k storage baseline with the
+per-event-vs-shared-vector decision, development-storage cleanup, and
+the canonical container gate at the integrated SHA.
 
 New architecture intake (design/backlog only — no implementation
-authorized):
+authorized). The detailed per-requirement acceptance table lives in
+the **"16 November 2026 — connectivity, firewall evidence and resource
+lifecycle delta"** section above (PR #21, merged `8f41a33`); the three
+documents below supply the design rationale and source references for
+those same BN-owned items — they do not create duplicate programmes
+and do not relax any acceptance criteria:
 
 - **Syslog assessment** — `docs/architecture/SYSLOG_ASSESSMENT_2026-11-16.md`:
-  SYS-01…09 traced; generated items SYS-A…F assigned to BN-005/008/009/016/019.
+  SYS-01…09 traced and corrected at closeout (newline-framing P0
+  availability defect, finite-but-exhaustible TCP pool, RFC 5424
+  MSG-boundary corruption, UDP silent truncation, transport-inconsistent
+  extractor reload); generated items SYS-A…H assigned to
+  BN-005/008/009/016/019. Bounded-framing and connection-availability
+  fixes are the next small runtime slice after WP6.5A.
 - **Connectivity Investigator + firewall evidence integration** —
   `docs/architecture/CONNECTIVITY_INVESTIGATOR_AND_FIREWALL_INTEGRATION_2026-11-16.md`:
   common UI/API/MCP request, five distinct evidence classes, epistemic
@@ -717,11 +739,13 @@ authorized):
   `docs/architecture/RESOURCE_DURABILITY_ARCHIVE_SIZING_REVIEW_2026-11-16.md`:
   AppFlow cardinality/TTL/semantics gaps, core-vs-collector graph roles,
   governor per-class budget design, collector disk-queue durability
-  findings + segmented-journal direction, storage-surface inventory +
-  retention matrix proposal, sizing worksheet (measured vs illustrative),
-  outbound adapter defect confirmations (Splunk/Elastic dedup-before-ack,
-  cursor pagination, bulk per-item errors, HEC ack, Prometheus durability)
-  and the inbound evidence-query adapter contract.
+  findings (three distinct loss windows; disk queue alone ≠ end-to-end
+  at-least-once) + segmented-journal direction, storage-surface
+  inventory + retention matrix proposal, sizing worksheet (measured vs
+  illustrative; Ladybug checkpoint ≠ physical reclamation), precise
+  per-adapter outbound delivery classifications (Splunk/Elastic
+  per-item ack, composite cursor, dedup-after-ack; Prometheus
+  durability decision) and the inbound evidence-query adapter contract.
 
 ## Definition of done
 
