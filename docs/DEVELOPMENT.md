@@ -238,12 +238,50 @@ Trust modes:
 - `--untrusted`: fresh per-run cache root, cold sccache, ephemeral
   target inside the snapshot — for validating untrusted PR code with no
   shared executable caches or target state.
+- `--shared-target-dir PATH` (trusted only): bind-mounts a managed build
+  lane as the container `target/` for both phases, so compatible trusted
+  worktrees reuse warm dependency artifacts. A host-side `flock` on
+  `PATH/.lane.lock` enforces one build owner per lane.
+- `--lbug-native PATH` (trusted only): PATH is a directory prepared by
+  `scripts/ci/lbug-native-prepare.sh`; it is bind-mounted read-only at
+  the identical path and `LBUG_LIBRARY_DIR`/`LBUG_INCLUDE_DIR`/`CXXFLAGS`
+  switch lbug's `build.rs` to prebuilt-native mode. This eliminates the
+  ~35–77 min LadybugDB CMake rebuild that otherwise reruns for **every**
+  distinct Cargo unit kind (check vs build/test) and profile.
 
 ```bash
 scripts/ci/run-local.sh l0 l1 l2 l3   # trusted, network-isolated gates
 scripts/ci/run-local.sh --untrusted l0 l1   # cold-cache PR validation
 scripts/ci/run-local.sh --build --shared-target l0 l1 l2 l3
+scripts/ci/run-local.sh --trusted --shared-target-dir ~/.cache/bonsai-ci/build-lane --lbug-native ~/.cache/bonsai-ci/lbug-native l0 l1 l2 l3
 ```
+
+#### Trusted build lanes (host side)
+
+`scripts/ci/build-lane.sh` is the host equivalent of `--shared-target-dir`:
+
+```bash
+scripts/ci/build-lane.sh --dir ~/.cache/bonsai-ci/build-lane \
+  --lbug-native ~/.cache/bonsai-ci/lbug-native -- \
+  cargo test --test <name> --offline
+```
+
+It holds a blocking `flock` on `<dir>/.lane.lock` for the command's
+duration (one heavyweight Cargo owner per lane), records toolchain
+identity in `<dir>/.lane-compat.json` and warns on drift — including
+`lbug_mode` (`bundled` vs `prebuilt`), which Cargo itself cannot detect
+because `LBUG_*` env vars are not fingerprinted. **Never mix bundled and
+prebuilt lbug modes on the same target dir**; use a dedicated lane or
+`cargo clean -p lbug` when switching.
+
+Measured on this host (2026-11-16, runs.csv): warm same-worktree rebuild
+~3 min; compatible-worktree reuse via lane ~6 min with **zero** lbug
+native rebuild; `cargo check` with `--lbug-native` ~1 min versus ~76 min
+for the bundled CMake pipeline it replaces. Host and `bonsai-ci:local`
+container toolchains are identical (rustc 1.95.0 `59807616e`, cmake
+3.28.3, g++ 13.3.0), so artifacts are interchangeable across lanes —
+keep `.cargo/config.toml` rustflags, profile, features and toolchain
+stable or fingerprints fork and reuse is lost.
 
 This validates the gate commands and code and constitutes **local
 technical acceptance**. It does not replace independent review, L4 lab

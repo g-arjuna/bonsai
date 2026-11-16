@@ -8,7 +8,8 @@
 #
 # Usage:
 #   scripts/ci/run-local.sh [--build] [--trusted|--untrusted]
-#                           [--shared-target] [--net bridge|none]
+#                           [--shared-target|--shared-target-dir PATH]
+#                           [--lbug-native PATH] [--net bridge|none]
 #                           [l0 l1 l2 l3 ...]
 #
 # What it does:
@@ -43,6 +44,22 @@
 #                        cache or target state is shared with trusted
 #                        runs. Cold provisioning is slower.
 #
+#   --shared-target-dir PATH  trusted-only managed build lane: PATH is
+#                        bind-mounted as the container's Cargo target/
+#                        for BOTH phases, so compatible trusted
+#                        worktrees reuse warm dependency/native artifacts
+#                        (incl. the lbug CMake build). A host-side flock
+#                        on PATH/.lane.lock enforces one build owner.
+#                        Host-side equivalent: scripts/ci/build-lane.sh.
+#   --lbug-native PATH  trusted-only: PATH is a dir prepared by
+#                        scripts/ci/lbug-native-prepare.sh, bind-mounted
+#                        read-only at the identical path; LBUG_LIBRARY_DIR/
+#                        LBUG_INCLUDE_DIR/CXXFLAGS switch lbug's build.rs
+#                        to prebuilt-native mode so cargo check/build/test
+#                        units compile only the small cxx bridge instead of
+#                        re-running the CMake build. Never mix with
+#                        bundled-mode runs on the same target dir.
+#
 # Never mounted: developer $HOME, ~/.cargo, ~/.rustup, docker socket,
 # production databases, protected soak evidence. Container runs
 # non-root with --memory/--cpus limits (defaults 24g/4, override via
@@ -67,6 +84,8 @@ JOBS="${CI_BUILD_JOBS:-2}"
 KEEP_SNAPSHOT="${CI_SNAPSHOT:-0}"
 MODE="trusted"
 SHARED_TARGET=0
+SHARED_TARGET_DIR=""
+LBUG_NATIVE_DIR=""
 GATE_NET="none"
 
 TIERS=()
@@ -77,11 +96,17 @@ while [ "$#" -gt 0 ]; do
     --trusted)       MODE="trusted" ;;
     --untrusted)     MODE="untrusted" ;;
     --shared-target) SHARED_TARGET=1 ;;
+    --shared-target-dir)
+      [ "$#" -ge 2 ] || { echo "--shared-target-dir requires PATH" >&2; exit 2; }
+      SHARED_TARGET_DIR="$2"; shift ;;
+    --lbug-native)
+      [ "$#" -ge 2 ] || { echo "--lbug-native requires PATH" >&2; exit 2; }
+      LBUG_NATIVE_DIR="$2"; shift ;;
     --net)
       [ "$#" -ge 2 ] || { echo "--net requires bridge|none" >&2; exit 2; }
       GATE_NET="$2"; shift ;;
     l0|l1|l2|l3|l4|manifest) TIERS+=("$1") ;;
-    *) echo "usage: $0 [--build] [--trusted|--untrusted] [--shared-target] [--net bridge|none] [l0 l1 l2 l3 ...]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--build] [--trusted|--untrusted] [--shared-target|--shared-target-dir PATH] [--lbug-native PATH] [--net bridge|none] [l0 l1 l2 l3 ...]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -142,6 +167,21 @@ MOUNTS=(
   -v "$CACHE_ROOT/venv:/ci-cache/venv"
   -v "$CACHE_ROOT/home:/ci-cache/home"
 )
+if [ "$SHARED_TARGET" = "1" ] && [ -n "$SHARED_TARGET_DIR" ]; then
+  echo "GATE FAIL: --shared-target and --shared-target-dir are mutually exclusive" >&2; exit 2
+fi
+if [ -n "$SHARED_TARGET_DIR" ]; then
+  if [ "$MODE" != "trusted" ]; then
+    echo "GATE FAIL: --shared-target-dir is only permitted in --trusted mode" >&2; exit 2
+  fi
+  SHARED_TARGET_DIR="$(cd "$SHARED_TARGET_DIR" 2>/dev/null && pwd || mkdir -p "$SHARED_TARGET_DIR" && cd "$SHARED_TARGET_DIR" && pwd)"
+  # Explicit single-owner scheduling: one heavyweight Cargo build owns the
+  # managed lane for the whole container run (both phases). The lock is a
+  # host-side flock on the lane dir; it is held until this script exits.
+  exec 8>"$SHARED_TARGET_DIR/.lane.lock"
+  echo "=== TRUSTED-LOCAL policy: shared build lane $SHARED_TARGET_DIR (flock held for run) ==="
+  flock 8
+fi
 if [ "$SHARED_TARGET" = "1" ]; then
   if [ "$MODE" != "trusted" ]; then
     echo "GATE FAIL: --shared-target is only permitted in --trusted mode" >&2; exit 2
@@ -150,7 +190,10 @@ if [ "$SHARED_TARGET" = "1" ]; then
   MOUNTS+=(-v "$ROOT/target:$ROOT/target")
   echo "=== TRUSTED-LOCAL policy: sharing Cargo target $ROOT/target ==="
 fi
-
+if [ -n "$SHARED_TARGET_DIR" ]; then
+  mkdir -p "$SHARED_TARGET_DIR"
+  MOUNTS+=(-v "$SHARED_TARGET_DIR:$ROOT/target")
+fi
 # Container env: ephemeral HOME, dedicated CARGO_HOME, cache dirs.
 # PATH is set inside the run command (toolchain dir resolved there so the
 # Dockerfile stays the single version pin).
@@ -166,6 +209,25 @@ BASE_ENV=(
   # ui/dist is produced by phase A provisioning; l1 verifies it exists.
   -e SKIP_UI_BUILD=1
 )
+
+if [ -n "$LBUG_NATIVE_DIR" ]; then
+  if [ "$MODE" != "trusted" ]; then
+    echo "GATE FAIL: --lbug-native is only permitted in --trusted mode" >&2; exit 2
+  fi
+  [ -f "$LBUG_NATIVE_DIR/env.sh" ] || { echo "GATE FAIL: $LBUG_NATIVE_DIR/env.sh missing — run scripts/ci/lbug-native-prepare.sh" >&2; exit 2; }
+  LBUG_NATIVE_DIR="$(cd "$LBUG_NATIVE_DIR" && pwd)"
+  # shellcheck disable=SC1090
+  . "$LBUG_NATIVE_DIR/env.sh"
+  # env.sh paths are absolute under LBUG_NATIVE_DIR; bind-mount the dir at
+  # the identical container path (read-only) so they resolve verbatim.
+  MOUNTS+=(-v "$LBUG_NATIVE_DIR:$LBUG_NATIVE_DIR:ro")
+  BASE_ENV+=(
+    -e "LBUG_LIBRARY_DIR=$LBUG_LIBRARY_DIR"
+    -e "LBUG_INCLUDE_DIR=$LBUG_INCLUDE_DIR"
+    -e "CXXFLAGS=${CXXFLAGS:-}"
+  )
+  echo "=== TRUSTED-LOCAL policy: prebuilt lbug native dir $LBUG_NATIVE_DIR ==="
+fi
 
 # Does the requested tier set need UI/python provisioning?
 NEED_UI=0; NEED_PY=0; NEED_BROWSER=0
