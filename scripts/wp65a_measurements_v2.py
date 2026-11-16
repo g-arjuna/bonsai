@@ -125,7 +125,13 @@ def varied_corpus(n: int, seed: int = 11):
 
 
 def scrape_metrics(metrics_url: str) -> dict[str, float]:
-    """Parse Prometheus text exposition into name->value (sum of samples)."""
+    """Parse Prometheus text exposition.
+
+    Returns plain name->value for counters/gauges. Histogram bucket
+    samples are EXCLUDED (summing buckets is meaningless); histogram
+    `_sum`/`_count` are kept so callers can derive means. Labels are
+    summed away — drop counters are reported as totals across labels.
+    """
     import urllib.request
 
     try:
@@ -141,11 +147,20 @@ def scrape_metrics(metrics_url: str) -> dict[str, float]:
         if len(parts) != 2:
             continue
         name, val = parts[0].split("{")[0], parts[1]
+        if name.endswith("_bucket"):
+            continue  # histogram buckets are not summable values
         try:
             out[name] = out.get(name, 0.0) + float(val)
         except ValueError:
             pass
     return out
+
+
+def hist_mean_delta(m0: dict, m1: dict, base: str):
+    """Mean of a Prometheus histogram from _sum/_count deltas."""
+    ds = m1.get(f"{base}_sum", 0.0) - m0.get(f"{base}_sum", 0.0)
+    dc = m1.get(f"{base}_count", 0.0) - m0.get(f"{base}_count", 0.0)
+    return round(ds / dc, 6) if dc else None
 
 
 def api_get(api: str, path: str):
@@ -343,6 +358,20 @@ def main() -> int:
         nonlocal drain_result
         drain_result = run_drain(args.api_url, embedder, dedup)
 
+    # ── RSS sampler: core + this worker process, throughout the run ──
+    import os as _os
+    rss_peak = {"core": rss_mb(args.core_pid), "worker": rss_mb(_os.getpid())}
+    _stop = threading.Event()
+
+    def _rss_sampler():
+        while not _stop.is_set():
+            rss_peak["core"] = max(rss_peak["core"], rss_mb(args.core_pid))
+            rss_peak["worker"] = max(rss_peak["worker"], rss_mb(_os.getpid()))
+            _stop.wait(2.0)
+
+    sampler = threading.Thread(target=_rss_sampler, daemon=True)
+    sampler.start()
+
     t_ingest0 = time.monotonic()
     peak_rss = rss_mb(args.core_pid)
 
@@ -391,6 +420,8 @@ def main() -> int:
 
     # ── post metrics ──────────────────────────────────────────────────
     time.sleep(3)  # let counters flush
+    _stop.set()
+    sampler.join(timeout=5)
     m1 = scrape_metrics(metrics_url) if metrics_url else {}
     s1 = embedding_stats(args.api_url)
     peak_rss = max(peak_rss, rss_mb(args.core_pid))
@@ -405,11 +436,20 @@ def main() -> int:
         "bonsai_syslog_fact_join_total", "bonsai_archive_drops_total",
         "bonsai_broadcast_drops_total", "bonsai_graph_write_errors_total",
         "bonsai_graph_state_change_write_total",
-        "bonsai_graph_write_latency_seconds", "bonsai_graph_batch_write_latency_seconds",
+        "bonsai_event_bus_router_drops_total",
+        "bonsai_event_bus_subscriber_drops_total",
         "bonsai_queue_saturation_total", "bonsai_write_coordinator_queue_depth",
         "bonsai_rule_firings_total",
     ]
     out["pipeline"] = {k: delta(k) for k in interesting if m1}
+    # Histogram means (not counter deltas): write latency and batch
+    # latency reported as average seconds over the window.
+    out["pipeline"]["bonsai_graph_write_latency_seconds_mean"] = hist_mean_delta(
+        m0, m1, "bonsai_graph_write_latency_seconds"
+    )
+    out["pipeline"]["bonsai_graph_batch_write_latency_seconds_mean"] = (
+        hist_mean_delta(m0, m1, "bonsai_graph_batch_write_latency_seconds")
+    )
     out["embedding_stats"] = {"before": s0, "after": s1}
     out["ingest"] = {
         "messages_offered": args.scale,
@@ -419,7 +459,11 @@ def main() -> int:
         "offered_rate_msg_s": round(offered_rate, 1),
         "send_jitter_ms_max": round(max(sender.jitter_ms or [0]), 2),
         "wall_s": round(ingest_wall, 2),
-        "peak_core_rss_mb": round(peak_rss, 1),
+        "peak_core_rss_mb": round(max(peak_rss, rss_peak["core"]), 1),
+        "peak_worker_rss_mb": round(rss_peak["worker"], 1),
+        "peak_combined_rss_mb": round(
+            max(peak_rss, rss_peak["core"]) + rss_peak["worker"], 1
+        ),
         "rss_mb_start": round(rss0, 1),
     }
     if drain_result:
