@@ -101,6 +101,7 @@ async fn start_lab(udp: bool, tcp: bool, collector_id: &str, targets: Vec<Target
         archive_path: archive_path.clone(),
         max_frame_bytes: 8192,
         collector_id: collector_id.to_string(),
+        ..SyslogConfig::default()
     };
     let bus = InProcessBus::new(1024);
     let rx = bus.subscribe();

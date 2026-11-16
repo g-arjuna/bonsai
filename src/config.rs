@@ -537,6 +537,20 @@ pub struct SyslogConfig {
     /// Maximum accepted syslog frame size. Default: 8192 bytes.
     #[serde(default = "default_syslog_max_frame_bytes")]
     pub max_frame_bytes: usize,
+    /// TCP deadline for the first complete frame on a connection.
+    /// Connections that send nothing (or never finish a first frame)
+    /// within this window are closed and their slot released.
+    /// Default: 10 seconds.
+    #[serde(default = "default_syslog_tcp_initial_timeout_secs")]
+    pub tcp_initial_timeout_secs: u64,
+    /// TCP deadline for each read while no partial frame is buffered
+    /// (i.e. maximum idle gap between frames). Default: 120 seconds.
+    #[serde(default = "default_syslog_tcp_idle_timeout_secs")]
+    pub tcp_idle_timeout_secs: u64,
+    /// TCP deadline for completing a partially received frame once any
+    /// bytes are buffered. Default: 30 seconds.
+    #[serde(default = "default_syslog_tcp_frame_timeout_secs")]
+    pub tcp_frame_timeout_secs: u64,
     /// Collector/ingress namespace included in provisional syslog source
     /// keys (BN-021e). Distinguishes observations received by different
     /// collectors or trusted relays. Defaults to "default".
@@ -552,6 +566,9 @@ impl Default for SyslogConfig {
             tcp_addr: default_syslog_tcp_addr(),
             archive_path: default_syslog_archive_path(),
             max_frame_bytes: default_syslog_max_frame_bytes(),
+            tcp_initial_timeout_secs: default_syslog_tcp_initial_timeout_secs(),
+            tcp_idle_timeout_secs: default_syslog_tcp_idle_timeout_secs(),
+            tcp_frame_timeout_secs: default_syslog_tcp_frame_timeout_secs(),
             collector_id: default_flow_collector_id(),
         }
     }
@@ -562,6 +579,15 @@ fn default_syslog_udp_addr() -> String {
 }
 fn default_syslog_tcp_addr() -> String {
     "0.0.0.0:6514".to_string()
+}
+fn default_syslog_tcp_initial_timeout_secs() -> u64 {
+    10
+}
+fn default_syslog_tcp_idle_timeout_secs() -> u64 {
+    120
+}
+fn default_syslog_tcp_frame_timeout_secs() -> u64 {
+    30
 }
 fn default_syslog_archive_path() -> String {
     "runtime/signals/syslog.jsonl".to_string()
