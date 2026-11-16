@@ -7,9 +7,12 @@ source inspection and CI green runs do not constitute formal acceptance
 
 ## Candidate under review
 
-- PR #17 `feat/bn022-auth-storage` @ `5570585` (contains an equivalent
+- PR #17 `feat/bn022-auth-storage` @ `19c6be7` (contains an equivalent
   cherry-pick of PR #16's local-first CI change as `549568b`; the
-  `ci.yml` content is byte-identical to PR #16 @`95cd0f8`).
+  `ci.yml` content is byte-identical to PR #16 @`95cd0f8`). The trusted
+  L0–L3 gate was executed at `5570585`; `621955f`, `f86ea26` and
+  `19c6be7` are test-fixture/docs/evidence-only successors — no
+  production `src/` change after the tested SHA.
 - PR #16 `fix/bn019-b6-fail-closed-ci` @ `95cd0f8` — merge first.
 - PR #18 `docs/bn021g2-otlp-contract` @ `9e2459d` — docs-only; its branch
   still carries the OLD auto-trigger `ci.yml` and must absorb the
@@ -31,6 +34,7 @@ source inspection and CI green runs do not constitute formal acceptance
 | SEC-01..SEC-20 dispositions | PR #17 description + commit history; SEC-19/20 in c8f83fd, residuals in 2f32b3d |
 | Named suites | `tests/bn022_*.rs`, `tests/bn022_sec19_sec20.rs`, `tests/b11_b12_b13_routing_workflow.rs` |
 | Trusted gates L0–L3 | `scripts/ci/run-local.sh --trusted --shared-target l0 l1 l2 l3` — see "Gate record" below |
+| Durable sanitized gate summary @5570585 | `docs/merger/evidence/2026-11-16-bn022-l0-l3-gate/gate-summary.txt` |
 | Build-time log | `docs/build-times/runs.csv` |
 
 ## Gate record (exact tested SHAs)
@@ -41,7 +45,7 @@ source inspection and CI green runs do not constitute formal acceptance
 | df30cb7 | L0 FAIL (rustfmt on remediation.rs) | fixed in 29d1497 |
 | 29d1497 | L0/L1/L2 PASS, **L3 FAIL** | `b11_..._graceful_degradation` fixture planted `routing_service_token` as plaintext app_config — rejected by SEC-19 structural guard (correct behavior); fixture fixed in 621955f+5570585 |
 | 621955f | L0 FAIL (rustfmt on b11 fixture) | fixed in 5570585 |
-| 5570585 | **L0/L1/L2/L3 ALL PASS** | `scripts/ci/run-local.sh --trusted --shared-target l0 l1 l2 l3`; 48 test-result lines, 0 failures; log `/tmp/final-gates-5570585.log`, run dir `target/ci/local-run-20261116-092619` |
+| 5570585 | **L0/L1/L2/L3 ALL PASS** | `scripts/ci/run-local.sh --trusted --shared-target l0 l1 l2 l3`; 48 test-result lines, 0 failures; durable sanitized summary `docs/merger/evidence/2026-11-16-bn022-l0-l3-gate/gate-summary.txt`; ephemeral full log `/tmp/final-gates-5570585.log`, run dir `target/ci/local-run-20261116-092619` |
 
 Focused verification already executed at 5570585-equivalent source:
 `cargo test --test bn022_graph_read_boundary` 5/5 PASS;
@@ -115,8 +119,13 @@ to 0600 on open, corrupt-ciphertext decrypt-verify rejection.
    this does not weaken mismatch detection.
 3. Arbitrary secret names outside PROTECTED_CONFIG_NAMES/retired
    classes are operator responsibility (no enumeration possible).
-4. Plain-http routing endpoints permitted for loopback/dev; remote
-   deployments should use https (documented, not enforced).
+4. Routing transport: plain `http` `routing_service_url` is permitted
+   only for loopback destinations; non-loopback plain HTTP is rejected
+   unless the operator explicitly sets
+   `BONSAI_ROUTING_ALLOW_INSECURE_HTTP=1`
+   (`src/routing_service/mod.rs` `insecure_http_transport_permitted`).
+   HTTPS is therefore effectively required for remote deployments —
+   enforced at the transport contract, not merely recommended.
 5. D2.4 residuals: auth-cancellation failure accounting and
    quarantine-seal edge cases were reviewed; existing suites cover the
    required regressions — no new defect confirmed, but dedicated
@@ -155,6 +164,10 @@ cargo test --test bn022_sec19_sec20 --test bn022_auth_closure \
 # trusted local gates (canonical)
 scripts/ci/run-local.sh --trusted --shared-target l0 l1 l2 l3
 # recovery harness (disposable, loopback-only, synthetic creds)
-cargo build --bin bonsai --bin wp28_fixture_seed
+# NOTE: wp28_fixture_seed requires the test-fixtures feature; build it
+# separately so the bonsai binary stays feature-identical to the
+# gate-tested build.
+cargo build --bin bonsai
+cargo build --features test-fixtures --bin wp28_fixture_seed
 KEEP_WORK=1 scripts/recovery/final_candidate_recovery.sh target/debug/bonsai
 ```
