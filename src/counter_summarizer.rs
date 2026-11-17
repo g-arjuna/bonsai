@@ -178,6 +178,8 @@ mod tests {
 
     fn counter_update(target: &str, if_name: &str, value: i64, ts: i64) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "srl1".to_string(),
@@ -235,6 +237,8 @@ mod tests {
     fn summarizer_ignores_non_counter_paths() {
         let mut summarizer = CounterSummarizer::new(60);
         let bgp_update = TelemetryUpdate {
+    plan_id: String::new(),
+    session_id: String::new(),
             target: "10.0.0.1:57400".to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "srl1".to_string(),

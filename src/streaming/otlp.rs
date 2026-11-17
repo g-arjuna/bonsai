@@ -431,6 +431,8 @@ async fn traces_handler(
                 merge_identity(&mut value, &identity);
 
                 state.bus.publish(TelemetryUpdate {
+                    plan_id: String::new(),
+                    session_id: String::new(),
                     target: src.source_key.clone(),
                     vendor: String::new(),
                     hostname: String::new(),
@@ -781,6 +783,8 @@ async fn metrics_handler(
                     merge_identity(&mut value, &identity);
 
                     state.bus.publish(TelemetryUpdate {
+                        plan_id: String::new(),
+                        session_id: String::new(),
                         target: src.source_key.clone(),
                         vendor: String::new(),
                         hostname: String::new(),

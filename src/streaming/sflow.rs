@@ -538,6 +538,8 @@ fn publish_flow(
     );
 
     bus.publish(TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
         target: src.source_key.clone(),
         vendor: String::new(),
         hostname: String::new(),
@@ -586,6 +588,8 @@ fn publish_counters(
     });
 
     bus.publish(TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
         target: src.source_key.clone(),
         vendor: String::new(),
         hostname: String::new(),

@@ -341,6 +341,8 @@ fn otlp_span_update(source_key: &str, service: &str, peer: &str, extra: Value) -
         }
     }
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
         target: source_key.to_string(),
         vendor: String::new(),
         hostname: String::new(),
@@ -384,6 +386,8 @@ fn otlp_metric_update(
         }
     }
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
         target: source_key.to_string(),
         vendor: String::new(),
         hostname: String::new(),

@@ -137,6 +137,8 @@ fn publish_event(bus: &Arc<InProcessBus>, target_map: &BgpLsTargetMap, event: Bg
     };
     let value = serde_json::to_value(event).unwrap_or_default();
     bus.publish(TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
         target: resolved.address,
         vendor: resolved.vendor,
         hostname: resolved.hostname,

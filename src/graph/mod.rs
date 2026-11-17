@@ -10535,6 +10535,8 @@ mod tests {
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
                 target: "leaf1".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf1".to_string(),
@@ -10556,6 +10558,8 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf1".to_string(),
@@ -10631,6 +10635,8 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf2".to_string(),
@@ -10685,6 +10691,8 @@ mod tests {
         // Seed a BFD session via OpenConfig path: interface id = "ethernet-1/1"
         store
             .write(TelemetryUpdate {
+    plan_id: String::new(),
+    session_id: String::new(),
                 target: "leaf3".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf3".to_string(),
@@ -10704,6 +10712,8 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf3".to_string(),
@@ -10770,6 +10780,8 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf4".to_string(),
@@ -10826,6 +10838,8 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+    plan_id: String::new(),
+    session_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "cisco_iosxr".to_string(),
                 hostname: "spine1".to_string(),
@@ -10881,6 +10895,8 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "juniper".to_string(),
                 hostname: "spine2".to_string(),
@@ -12058,6 +12074,8 @@ mod tests {
         ts_ns: i64,
     ) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12082,6 +12100,8 @@ mod tests {
         ts_ns: i64,
     ) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12513,6 +12533,8 @@ mod tests {
 
     fn iface_stats_update(target: &str, if_name: &str, ts_ns: i64) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12534,6 +12556,8 @@ mod tests {
         ts_ns: i64,
     ) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12809,6 +12833,8 @@ mod tests {
         for (ni, state, ts_ns) in [("vrf-a", "established", 10), ("vrf-b", "idle", 11)] {
             store
                 .write(TelemetryUpdate {
+                    plan_id: String::new(),
+                    session_id: String::new(),
                     target: "10.0.0.1".to_string(),
                     vendor: "nokia_srl".to_string(),
                     hostname: "10.0.0.1".to_string(),
@@ -12859,6 +12885,8 @@ mod tests {
         // Down update omitting peer-as entirely.
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
                 target: "10.0.0.1".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "10.0.0.1".to_string(),

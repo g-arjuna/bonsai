@@ -25,6 +25,11 @@ pub struct SubscriptionPlan {
     pub state: String,
     /// "automatic" | "explicit" | "disabled" — operator acquisition intent.
     pub acquisition: String,
+    /// Device-facing subscription session that owns this plan's coverage.
+    /// Minted per Subscribe session by the collector; empty for
+    /// non-submitted states. A reconnect under the same plan_id carries a
+    /// NEW session_id and must supersede, never merge with, the old one.
+    pub session_id: String,
     /// Operator-visible detail (rejection reason, disable note).
     pub detail: String,
 }
@@ -61,9 +66,12 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
 
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
-    // target -> last registered plan_id, to avoid re-registering an
-    // identical plan on reconnect while still superseding on real changes.
-    let mut registered_plans: HashMap<String, String> = HashMap::new();
+    // target -> last registered (plan_id, session_id). A reconnect under
+    // an unchanged plan still mints a new session_id, so it is NOT
+    // deduplicated: previous-session evidence becomes superseded.
+    let mut registered_plans: HashMap<String, (String, String)> = HashMap::new();
+    // target -> current authorized (plan_id, session_id) for coverage.
+    let mut current_sessions: HashMap<String, (String, String)> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -76,21 +84,29 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
                     info!("subscription verifier plan channel closed");
                     break;
                 };
-                if registered_plans.get(&plan.target) == Some(&plan.plan_id) {
-                    // Identical plan re-sent (e.g. reconnect): keep existing
-                    // tracked state instead of flapping pending→observed.
+                let key = (plan.plan_id.clone(), plan.session_id.clone());
+                if registered_plans.get(&plan.target) == Some(&key) {
                     continue;
                 }
-                registered_plans.insert(plan.target.clone(), plan.plan_id.clone());
+                registered_plans.insert(plan.target.clone(), key);
+                if plan.state == "submitted" && !plan.session_id.is_empty() {
+                    current_sessions.insert(
+                        plan.target.clone(),
+                        (plan.plan_id.clone(), plan.session_id.clone()),
+                    );
+                } else {
+                    current_sessions.remove(&plan.target);
+                }
                 register_plan(&store, &mut tracked, plan).await;
             }
             event = telemetry_rx.recv() => {
                 match event {
                     Some(update) => {
-                        observe_update(&store, &mut tracked, update).await;
+                        observe_update(&store, &mut tracked, &current_sessions, update).await;
                         // drain backlog without yielding — avoids queue saturation
                         while let Ok(update) = telemetry_rx.try_recv() {
-                            observe_update(&store, &mut tracked, update).await;
+                            observe_update(&store, &mut tracked, &current_sessions, update)
+                                .await;
                         }
                     }
                     None => break,
@@ -227,8 +243,12 @@ async fn register_plan<S: BonsaiStore>(
 async fn observe_update<S: BonsaiStore>(
     store: &S,
     tracked: &mut HashMap<(String, String), TrackedPath>,
+    current_sessions: &HashMap<String, (String, String)>,
     update: std::sync::Arc<TelemetryUpdate>,
 ) {
+    if !update_has_current_session(current_sessions, &update) {
+        return;
+    }
     let event = update.classify();
     let now = update.timestamp_ns.max(now_ns());
     let matching_keys: Vec<(String, String)> = tracked
@@ -408,6 +428,21 @@ fn path_matches_update(
     }
 }
 
+/// Session fencing (M5.2B): only observations carrying the CURRENT
+/// authorized (plan_id, session_id) pair may satisfy coverage.
+/// Legacy/empty provenance and late data from a superseded session are
+/// received telemetry but grant no subscription coverage.
+fn update_has_current_session(
+    current_sessions: &HashMap<String, (String, String)>,
+    update: &TelemetryUpdate,
+) -> bool {
+    current_sessions
+        .get(&update.target)
+        .is_some_and(|(plan_id, session_id)| {
+            !session_id.is_empty() && update.plan_id == *plan_id && update.session_id == *session_id
+        })
+}
+
 fn tracked_key(target: &str, expectation: &SubscriptionPathExpectation) -> (String, String) {
     (
         target.to_string(),
@@ -440,6 +475,8 @@ mod tests {
     #[test]
     fn interface_counter_update_matches_sample_interface_expectation() {
         let update = TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
             target: "dut:57400".to_string(),
             vendor: "openconfig".to_string(),
             hostname: "dut".to_string(),
@@ -466,6 +503,8 @@ mod tests {
     #[test]
     fn bgp_update_matches_network_instances_expectation() {
         let update = TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
             target: "dut:57400".to_string(),
             vendor: "openconfig".to_string(),
             hostname: "dut".to_string(),
@@ -496,6 +535,74 @@ mod tests {
             &expectation("network-instances", "ON_CHANGE"),
             &update,
             &event
+        ));
+    }
+
+    fn provenance_update(target: &str, plan_id: &str, session_id: &str) -> TelemetryUpdate {
+        TelemetryUpdate {
+            plan_id: plan_id.to_string(),
+            session_id: session_id.to_string(),
+            target: target.to_string(),
+            vendor: String::new(),
+            hostname: String::new(),
+            role: String::new(),
+            site: String::new(),
+            timestamp_ns: 1,
+            path: "interfaces".to_string(),
+            value: json!({}),
+        }
+    }
+
+    #[test]
+    fn current_session_provenance_authorizes_coverage() {
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            "dut:57400".to_string(),
+            ("plan-1".to_string(), "sess-a".to_string()),
+        );
+        assert!(update_has_current_session(
+            &sessions,
+            &provenance_update("dut:57400", "plan-1", "sess-a")
+        ));
+    }
+
+    #[test]
+    fn superseded_session_cannot_satisfy_current_coverage() {
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            "dut:57400".to_string(),
+            ("plan-1".to_string(), "sess-b".to_string()),
+        );
+        // Same plan_id, previous session — late/reconnect data fenced.
+        assert!(!update_has_current_session(
+            &sessions,
+            &provenance_update("dut:57400", "plan-1", "sess-a")
+        ));
+        // Different plan entirely.
+        assert!(!update_has_current_session(
+            &sessions,
+            &provenance_update("dut:57400", "plan-2", "sess-b")
+        ));
+        // Legacy/empty provenance never satisfies a session-bound plan.
+        assert!(!update_has_current_session(
+            &sessions,
+            &provenance_update("dut:57400", "", "")
+        ));
+        // Wrong target.
+        assert!(!update_has_current_session(
+            &sessions,
+            &provenance_update("other:57400", "plan-1", "sess-b")
+        ));
+    }
+
+    #[test]
+    fn non_session_plans_grant_no_coverage() {
+        // A submitted plan without session provenance (legacy producer)
+        // leaves no current session — nothing is authorized.
+        let sessions = HashMap::new();
+        assert!(!update_has_current_session(
+            &sessions,
+            &provenance_update("dut:57400", "plan-1", "sess-a")
         ));
     }
 }

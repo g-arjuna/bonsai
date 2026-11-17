@@ -58,6 +58,8 @@ impl HealthEmitter {
             .map(|d| d.as_nanos() as i64)
             .unwrap_or(0);
         let update = TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
             target: "health-emitter".to_string(),
             vendor: String::new(),
             hostname: String::new(),

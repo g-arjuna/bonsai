@@ -102,6 +102,7 @@ impl GnmiSubscriber {
             target: self.target.clone(),
             paths: Vec::new(),
             plan_id: format!("{}#{}:{:016x}", base, state, hasher.finish()),
+            session_id: String::new(),
             state: state.to_string(),
             acquisition: self.acquisition.as_str().to_string(),
             detail,
@@ -160,6 +161,7 @@ impl GnmiSubscriber {
                         target: self.target.clone(),
                         paths: Vec::new(),
                         plan_id,
+                        session_id: String::new(),
                         state: "disabled".to_string(),
                         acquisition: self.acquisition.as_str().to_string(),
                         detail: "acquisition disabled".to_string(),
@@ -180,6 +182,7 @@ impl GnmiSubscriber {
                         target: self.target.clone(),
                         paths: Vec::new(),
                         plan_id,
+                        session_id: String::new(),
                         state: "rejected".to_string(),
                         acquisition: self.acquisition.as_str().to_string(),
                         detail: detail.clone(),
@@ -274,6 +277,11 @@ impl GnmiSubscriber {
         });
 
         let plan = build_acquisition_plan(self.acquisition, &self.selected_paths, &caps);
+        // M5.2B: every device-facing Subscribe session gets a fresh
+        // session identity. run_forever calls subscribe_telemetry once
+        // per (re)connect, so each reconnect mints a new session_id and
+        // previous-session observations are fenced by the verifier.
+        let session_id = format!("{}:{}", target, uuid::Uuid::new_v4());
         let (subscriptions, plan_paths, submitted_plan_id) = match plan {
             AcquisitionPlan::Disabled { plan_id } => {
                 info!(
@@ -286,6 +294,7 @@ impl GnmiSubscriber {
                     target: target.clone(),
                     paths: Vec::new(),
                     plan_id,
+                    session_id: String::new(),
                     state: "disabled".to_string(),
                     acquisition: self.acquisition.as_str().to_string(),
                     detail: "acquisition disabled".to_string(),
@@ -306,6 +315,7 @@ impl GnmiSubscriber {
                     target: target.clone(),
                     paths: Vec::new(),
                     plan_id,
+                    session_id: String::new(),
                     state: "rejected".to_string(),
                     acquisition: self.acquisition.as_str().to_string(),
                     detail: detail.clone(),
@@ -364,6 +374,7 @@ impl GnmiSubscriber {
             target: target.clone(),
             paths: plan_paths,
             plan_id: submitted_plan_id.clone(),
+            session_id: session_id.clone(),
             state: "submitted".to_string(),
             acquisition: self.acquisition.as_str().to_string(),
             detail: String::new(),
@@ -460,6 +471,8 @@ impl GnmiSubscriber {
                                 for (path, val) in all_updates {
                                     debug!(target = %target, path = %path, "update");
                                     let msg = TelemetryUpdate {
+                                        plan_id: submitted_plan_id.clone(),
+                                        session_id: session_id.clone(),
                                         target: target.clone(),
                                         vendor: caps.vendor_label.clone(),
                                         hostname: self.hostname.clone().unwrap_or_default(),
@@ -774,6 +787,7 @@ pub fn planned_subscription_plan_for_target(
             target: target.address.clone(),
             paths: Vec::new(),
             plan_id,
+            session_id: String::new(),
             state: "disabled".to_string(),
             acquisition: target.acquisition.as_str().to_string(),
             detail: "acquisition disabled".to_string(),
@@ -782,6 +796,7 @@ pub fn planned_subscription_plan_for_target(
             target: target.address.clone(),
             paths: Vec::new(),
             plan_id,
+            session_id: String::new(),
             state: "rejected".to_string(),
             acquisition: target.acquisition.as_str().to_string(),
             detail: errors.join("; "),
@@ -797,6 +812,7 @@ pub fn planned_subscription_plan_for_target(
                 .filter_map(subscription_expectation)
                 .collect(),
             plan_id,
+            session_id: String::new(),
             state: "submitted".to_string(),
             acquisition: target.acquisition.as_str().to_string(),
             detail: String::new(),

@@ -1404,6 +1404,8 @@ fn publish_flow(
         .unwrap_or(0);
 
     bus.publish(TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
         target: src.source_key.clone(),
         vendor: String::new(),
         hostname: String::new(),

@@ -255,6 +255,8 @@ pub fn telemetry_to_ingest_update(
 ) -> Result<ProtoTelemetryIngestUpdate> {
     Ok(ProtoTelemetryIngestUpdate {
         collector_id: collector_id.to_string(),
+        plan_id: update.plan_id.clone(),
+        session_id: update.session_id.clone(),
         target: update.target.clone(),
         vendor: update.vendor.clone(),
         hostname: update.hostname.clone(),
@@ -277,6 +279,8 @@ pub fn summary_to_ingest_update(
     // target and if_name are already on the summary; use template metadata when available.
     Ok(ProtoTelemetryIngestUpdate {
         collector_id: collector_id.to_string(),
+        plan_id: template.map_or_else(String::new, |t| t.plan_id.clone()),
+        session_id: template.map_or_else(String::new, |t| t.session_id.clone()),
         target: template.map_or_else(|| summary.target.clone(), |t| t.target.clone()),
         vendor: template.map_or_else(String::new, |t| t.vendor.clone()),
         hostname: template.map_or_else(String::new, |t| t.hostname.clone()),
@@ -293,6 +297,8 @@ pub fn summary_to_ingest_update(
 pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<TelemetryUpdate> {
     if let Some(summary) = update.interface_summary {
         return Ok(TelemetryUpdate {
+            plan_id: update.plan_id,
+            session_id: update.session_id,
             target: update.target,
             vendor: update.vendor,
             hostname: update.hostname,
@@ -308,6 +314,8 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
         .with_context(|| format!("invalid telemetry value_msgpack for path '{}'", update.path))?;
 
     Ok(TelemetryUpdate {
+        plan_id: update.plan_id,
+        session_id: update.session_id,
         target: update.target,
         vendor: update.vendor,
         hostname: update.hostname,
@@ -1279,6 +1287,8 @@ mod tests {
     #[test]
     fn telemetry_ingest_proto_round_trips_msgpack_payload() {
         let update = TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
             target: "10.0.0.1:57400".to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "srl1".to_string(),
@@ -1311,6 +1321,8 @@ mod tests {
 
         for index in 0_u64..1_000 {
             let update = TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1353,6 +1365,8 @@ mod tests {
 
         for index in 0_i64..1_000 {
             let update = TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1481,6 +1495,8 @@ mod tests {
         telemetry_to_ingest_update(
             collector_id,
             &TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),

@@ -12,6 +12,14 @@ pub struct TelemetryUpdate {
     pub timestamp_ns: i64,
     pub path: String,
     pub value: JsonValue,
+    /// Acquisition plan identity that produced this observation (gNMI
+    /// subscriber path only). Empty for non-plan producers and legacy data.
+    pub plan_id: String,
+    /// Device-facing subscription session that produced this observation.
+    /// A new value is minted per Subscribe session; empty for producers
+    /// without session provenance. Late data from a previous session must
+    /// not satisfy current-session coverage.
+    pub session_id: String,
 }
 
 /// Classified form of a TelemetryUpdate after path parsing.

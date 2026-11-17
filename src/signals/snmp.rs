@@ -643,6 +643,8 @@ pub async fn run_snmp_receiver(
                             provisional_identity_json(&src, &resolved, &resolution, &event);
                         let value = publish_value(&event, &identity_json);
                         bus.publish(TelemetryUpdate {
+                            plan_id: String::new(),
+                            session_id: String::new(),
                             target: src.source_key.clone(),
                             vendor: resolved.candidate_vendor().to_string(),
                             hostname: event.agent_address.clone(),
@@ -663,6 +665,8 @@ pub async fn run_snmp_receiver(
                                 &identity_json,
                             );
                             bus.publish(TelemetryUpdate {
+                                plan_id: String::new(),
+                                session_id: String::new(),
                                 target: src.source_key.clone(),
                                 vendor: resolved.candidate_vendor().to_string(),
                                 hostname: event.agent_address.clone(),

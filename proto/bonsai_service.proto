@@ -224,6 +224,12 @@ message TelemetryIngestUpdate {
   InterfaceSummary interface_summary = 9;
   string role         = 10;
   string site         = 11;
+  // gNMI acquisition provenance (M5.2B): plan identity and device-facing
+  // subscription session that produced this observation. Empty for
+  // producers without session provenance; verifiers must not grant
+  // current-session coverage to empty/legacy provenance.
+  string plan_id      = 12;
+  string session_id   = 13;
 }
 
 message InterfaceCounterSummary {

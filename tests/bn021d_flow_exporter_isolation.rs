@@ -1413,6 +1413,8 @@ fn flow_update(
         }
     }
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
         target: exporter_key.to_string(),
         vendor: String::new(),
         hostname: String::new(),
