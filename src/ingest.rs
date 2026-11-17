@@ -259,6 +259,7 @@ pub fn telemetry_to_ingest_update(
         plan_id: update.plan_id.clone(),
         session_id: update.session_id.clone(),
         source_protocol: update.source_protocol.clone(),
+        gnmi_path: encode_gnmi_paths(&update.gnmi_path),
         target: update.target.clone(),
         vendor: update.vendor.clone(),
         hostname: update.hostname.clone(),
@@ -288,6 +289,7 @@ pub fn summary_to_ingest_update(
         plan_id: String::new(),
         session_id: String::new(),
         source_protocol: "gnmi_summary".to_string(),
+        gnmi_path: Vec::new(),
         target: template.map_or_else(|| summary.target.clone(), |t| t.target.clone()),
         vendor: template.map_or_else(String::new, |t| t.vendor.clone()),
         hostname: template.map_or_else(String::new, |t| t.hostname.clone()),
@@ -307,6 +309,7 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
             plan_id: update.plan_id,
             session_id: update.session_id,
             source_protocol: update.source_protocol,
+            gnmi_path: Vec::new(),
             target: update.target,
             vendor: update.vendor,
             hostname: update.hostname,
@@ -320,11 +323,14 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
 
     let value = rmp_serde::from_slice(&update.value_msgpack)
         .with_context(|| format!("invalid telemetry value_msgpack for path '{}'", update.path))?;
+    let gnmi_path = decode_gnmi_paths(&update.gnmi_path)
+        .context("invalid telemetry gnmi_path")?;
 
     Ok(TelemetryUpdate {
         plan_id: update.plan_id,
         session_id: update.session_id,
         source_protocol: update.source_protocol,
+        gnmi_path,
         target: update.target,
         vendor: update.vendor,
         hostname: update.hostname,
@@ -334,6 +340,41 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
         path: update.path,
         value,
     })
+}
+
+/// `gnmi_path` wire framing: each structured path is a u32-LE length
+/// prefix followed by its prost-encoded `gnmi.Path`. prost bytes avoid
+/// a cross-package proto import; empty bytes decode to an empty vec
+/// (non-gNMI producers carry no structured evidence).
+fn encode_gnmi_paths(paths: &[crate::proto::gnmi::Path]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for path in paths {
+        let encoded = path.encode_to_vec();
+        out.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+        out.extend_from_slice(&encoded);
+    }
+    out
+}
+
+fn decode_gnmi_paths(bytes: &[u8]) -> Result<Vec<crate::proto::gnmi::Path>> {
+    let mut paths = Vec::new();
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        if rest.len() < 4 {
+            anyhow::bail!("truncated gnmi_path frame");
+        }
+        let len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+        rest = &rest[4..];
+        if rest.len() < len {
+            anyhow::bail!("truncated gnmi_path frame payload");
+        }
+        paths.push(
+            crate::proto::gnmi::Path::decode(&rest[..len])
+                .context("invalid gnmi_path frame")?,
+        );
+        rest = &rest[len..];
+    }
+    Ok(paths)
 }
 
 fn interface_summary_to_json(summary: InterfaceSummary) -> serde_json::Value {
@@ -1306,6 +1347,7 @@ mod tests {
             plan_id: String::new(),
             session_id: String::new(),
             source_protocol: String::new(),
+            gnmi_path: Vec::new(),
             target: "10.0.0.1:57400".to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "srl1".to_string(),
@@ -1341,6 +1383,7 @@ mod tests {
                 plan_id: String::new(),
                 session_id: String::new(),
                 source_protocol: String::new(),
+            gnmi_path: Vec::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1386,6 +1429,7 @@ mod tests {
                 plan_id: String::new(),
                 session_id: String::new(),
                 source_protocol: String::new(),
+            gnmi_path: Vec::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1517,6 +1561,7 @@ mod tests {
                 plan_id: String::new(),
                 session_id: String::new(),
                 source_protocol: String::new(),
+            gnmi_path: Vec::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),

@@ -674,10 +674,14 @@ impl GnmiSubscriber {
                                 // JSON blob at the container path. Group scalars within one
                                 // notification by their parent path so classifiers see the same
                                 // blob-at-container shape regardless of vendor.
-                                let mut blobs: Vec<(String, serde_json::Value)> = Vec::new();
+                                let mut blobs: Vec<(String, serde_json::Value, Vec<Path>)> =
+                                    Vec::new();
                                 let mut leaf_groups: HashMap<
                                     String,
-                                    serde_json::Map<String, serde_json::Value>,
+                                    (
+                                        serde_json::Map<String, serde_json::Value>,
+                                        Vec<Path>,
+                                    ),
                                 > = HashMap::new();
 
                                 for update in &notif.update {
@@ -691,6 +695,15 @@ impl GnmiSubscriber {
                                         (false, true) => prefix.clone(),
                                         (false, false) => format!("{prefix}/{update_path}"),
                                     };
+                                    // Structured evidence path: notification
+                                    // prefix elements followed by the update's
+                                    // own elements (gNMI relative-path rule).
+                                    let gnmi_paths = resolve_notification_path(
+                                        notif.prefix.as_ref(),
+                                        update.path.as_ref(),
+                                    )
+                                    .into_iter()
+                                    .collect::<Vec<_>>();
                                     let val = update
                                         .val
                                         .as_ref()
@@ -703,26 +716,28 @@ impl GnmiSubscriber {
                                             | serde_json::Value::Bool(_)
                                     );
                                     if is_scalar && let Some(slash) = path.rfind('/') {
-                                        leaf_groups
+                                        let (group, group_paths) = leaf_groups
                                             .entry(path[..slash].to_string())
-                                            .or_default()
-                                            .insert(path[slash + 1..].to_string(), val);
+                                            .or_default();
+                                        group.insert(path[slash + 1..].to_string(), val);
+                                        group_paths.extend(gnmi_paths);
                                         continue;
                                     }
-                                    blobs.push((path, val));
+                                    blobs.push((path, val, gnmi_paths));
                                 }
 
                                 let all_updates = blobs.into_iter().chain(
-                                    leaf_groups
-                                        .into_iter()
-                                        .map(|(p, obj)| (p, serde_json::Value::Object(obj))),
+                                    leaf_groups.into_iter().map(|(p, (obj, paths))| {
+                                        (p, serde_json::Value::Object(obj), paths)
+                                    }),
                                 );
-                                for (path, val) in all_updates {
+                                for (path, val, gnmi_paths) in all_updates {
                                     debug!(target = %target, path = %path, "update");
                                     let msg = TelemetryUpdate {
                                         plan_id: submitted_plan_id.clone(),
                                         session_id: session_id.clone(),
                                         source_protocol: "gnmi".to_string(),
+                                        gnmi_path: gnmi_paths,
                                         target: target.clone(),
                                         vendor: caps.vendor_label.clone(),
                                         hostname: self.hostname.clone().unwrap_or_default(),
@@ -1763,6 +1778,33 @@ fn xr_native_stats_path() -> Path {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Resolve the structured evidence path for one gNMI update: the
+/// update path is relative to the notification prefix, so the full
+/// path is the prefix elements followed by the update elements.
+/// Origin prefers the prefix's origin, falling back to the update
+/// path's. `None` when neither side carries a path — such observations
+/// carry no structured evidence and cannot satisfy coverage.
+fn resolve_notification_path(prefix: Option<&Path>, update: Option<&Path>) -> Option<Path> {
+    match (prefix, update) {
+        (None, None) => None,
+        (Some(p), None) => Some(p.clone()),
+        (None, Some(u)) => Some(u.clone()),
+        (Some(p), Some(u)) => {
+            let mut elem = p.elem.clone();
+            elem.extend(u.elem.iter().cloned());
+            Some(Path {
+                origin: if p.origin.is_empty() {
+                    u.origin.clone()
+                } else {
+                    p.origin.clone()
+                },
+                elem,
+                ..Default::default()
+            })
+        }
+    }
+}
 
 fn path_to_string(path: &Path) -> String {
     path.elem

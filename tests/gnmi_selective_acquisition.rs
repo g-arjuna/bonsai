@@ -876,3 +876,150 @@ async fn plan_change_cancels_stream_and_empty_emits_no_request() {
         "final stream was not cancelled"
     );
 }
+
+#[tokio::test]
+async fn stale_session_observation_never_projects_coverage() {
+    // M5.2B B2d regression: a superseded session's observation — even one
+    // whose structured gNMI path exactly covers a tracked expectation —
+    // must never flip subscription status to "observed". Only the
+    // current registered (plan_id, session_id) pair grants coverage, and
+    // only through exact structured path evidence.
+    use bonsai::subscription_sessions::{SessionLifecycleEvent, SubscriptionSessionRegistry, state};
+    use bonsai::telemetry::TelemetryUpdate;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = bonsai::graph::GraphStore::open(
+        dir.path().join("graph.db").to_str().unwrap(),
+        256 * 1024 * 1024,
+    )
+    .expect("open graph store");
+    let db = store.db();
+    let bus = InProcessBus::new(64);
+    let publish_bus = bus.clone();
+    let (plan_tx, plan_rx) = mpsc::channel(8);
+    let (_stx, srx) = watch::channel(false);
+    let sessions = Arc::new(SubscriptionSessionRegistry::new());
+    let verifier_sessions = Arc::clone(&sessions);
+    let verifier = tokio::spawn(run_subscription_verifier(
+        store,
+        bus,
+        plan_rx,
+        verifier_sessions,
+        srx,
+    ));
+
+    let target = "dut:57400".to_string();
+    let expectation = SubscriptionPathExpectation {
+        path: "interfaces/interface[name=Ethernet1/1]/state/counters".to_string(),
+        origin: "openconfig".to_string(),
+        mode: "SAMPLE".to_string(),
+        sample_interval_ns: 10_000_000_000,
+    };
+    plan_tx
+        .send(SubscriptionPlan {
+            target: target.clone(),
+            paths: vec![expectation],
+            plan_id: "plan-1".to_string(),
+            session_id: "sess-b".to_string(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            detail: String::new(),
+        })
+        .await
+        .unwrap();
+
+    // Register sess-a synchronized, then sess-b — sess-b supersedes.
+    for (session_id, seq_state) in [
+        ("sess-a", [(state::SUBMITTED, 1), (state::SYNCHRONIZED, 2)]),
+        ("sess-b", [(state::SUBMITTED, 1), (state::SYNCHRONIZED, 2)]),
+    ] {
+        for (st, seq) in seq_state {
+            sessions.apply(
+                &SessionLifecycleEvent {
+                    collector_id: String::new(),
+                    target: target.clone(),
+                    plan_id: "plan-1".to_string(),
+                    session_id: session_id.to_string(),
+                    state: st.to_string(),
+                    transition_seq: seq,
+                    authority_epoch: 0,
+                    assignment_generation: 0,
+                    occurred_at_ns: 0,
+                    detail: String::new(),
+                },
+                true,
+            );
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let covering_path = bonsai::gnmi_path::parse_path(
+        "openconfig",
+        "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+    )
+    .unwrap();
+    let stale_update = TelemetryUpdate {
+        plan_id: "plan-1".to_string(),
+        session_id: "sess-a".to_string(),
+        source_protocol: "gnmi".to_string(),
+        gnmi_path: vec![covering_path.clone()],
+        target: target.clone(),
+        vendor: String::new(),
+        hostname: String::new(),
+        role: String::new(),
+        site: String::new(),
+        timestamp_ns: 1,
+        path: "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets".to_string(),
+        value: serde_json::json!({"in-octets": 42}),
+    };
+    publish_bus.publish(stale_update);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses
+            .iter()
+            .all(|(_, _, s)| s != "observed"),
+        "superseded session observation must not project coverage: {:?}",
+        statuses
+    );
+
+    // The current session's identical-path observation DOES cover.
+    let mut current = TelemetryUpdate {
+        plan_id: "plan-1".to_string(),
+        session_id: "sess-b".to_string(),
+        source_protocol: "gnmi".to_string(),
+        gnmi_path: vec![covering_path],
+        target: target.clone(),
+        vendor: String::new(),
+        hostname: String::new(),
+        role: String::new(),
+        site: String::new(),
+        timestamp_ns: 2,
+        path: "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets".to_string(),
+        value: serde_json::json!({"in-octets": 43}),
+    };
+    publish_bus.publish(current.clone());
+    // A same-session observation on an unrelated keyed instance must not
+    // satisfy this expectation even though the session is current.
+    current.gnmi_path = bonsai::gnmi_path::parse_path(
+        "openconfig",
+        "interfaces/interface[name=Ethernet1/2]/state/counters/in-octets",
+    )
+    .map(|p| vec![p])
+    .unwrap_or_default();
+    publish_bus.publish(current);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses
+            .iter()
+            .any(|(_, _, s)| s == "observed"),
+        "current session covering observation must project coverage: {:?}",
+        statuses
+    );
+
+    _stx.send(true).unwrap();
+    let _ = verifier.await;
+}

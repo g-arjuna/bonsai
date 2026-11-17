@@ -236,6 +236,12 @@ message TelemetryIngestUpdate {
   // gNMI subscription coverage — protocol provenance is never inferred
   // from path shape or target identity.
   string source_protocol = 14;
+  // Resolved structured gNMI path (prost-encoded gnmi.Path: notification
+  // prefix + update path elements with origin resolved). prost bytes
+  // avoid a cross-package proto import; empty for non-gNMI producers.
+  // This is the authoritative evidence path for coverage matching —
+  // the flattened `path` string remains classifier/projection input.
+  bytes gnmi_path = 15;
 }
 
 // Authoritative subscription-lifecycle evidence (M5.2B). Collectors report

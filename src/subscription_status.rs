@@ -8,7 +8,7 @@ use crate::event_bus::InProcessBus;
 use crate::graph::{BonsaiEvent, SubscriptionStatusWrite};
 use crate::store::BonsaiStore;
 use crate::subscription_sessions::SubscriptionSessionRegistry;
-use crate::telemetry::{TelemetryEvent, TelemetryUpdate};
+use crate::telemetry::TelemetryUpdate;
 
 pub const VERIFICATION_WINDOW: Duration = Duration::from_secs(30);
 
@@ -249,13 +249,12 @@ async fn observe_update<S: BonsaiStore>(
     if !update_has_current_session(sessions, &update) {
         return;
     }
-    let event = update.classify();
     let now = update.timestamp_ns.max(now_ns());
     let matching_keys: Vec<(String, String)> = tracked
         .iter()
         .filter(|((target, _), tracked_path)| {
             target == &update.target
-                && path_matches_update(&tracked_path.expectation, &update, &event)
+                && path_matches_update(&tracked_path.expectation, &update)
         })
         .map(|(key, _)| key.clone())
         .collect();
@@ -371,61 +370,25 @@ fn subscription_status_event(status: &SubscriptionStatusWrite) -> BonsaiEvent {
     }
 }
 
-fn path_matches_update(
-    expectation: &SubscriptionPathExpectation,
-    update: &TelemetryUpdate,
-    event: &TelemetryEvent,
-) -> bool {
-    let expected = expectation.path.to_lowercase();
-    let actual = update.path.to_lowercase();
-    match event {
-        TelemetryEvent::InterfaceStats { .. }
-        | TelemetryEvent::InterfaceSummary { .. }
-        | TelemetryEvent::SflowCounters { .. } => {
-            expected.contains("statistics")
-                || expected.contains("generic-counters")
-                || (expected.contains("interfaces")
-                    && expectation.mode.eq_ignore_ascii_case("SAMPLE"))
-                || actual.contains("statistics")
-                || actual.contains("generic-counters")
-                || actual.contains("summary")
-        }
-        TelemetryEvent::InterfaceDescription { .. } => expected.contains("description"),
-        TelemetryEvent::ServiceEndpoint { .. }
-        | TelemetryEvent::QoSPolicyChange { .. }
-        | TelemetryEvent::SyslogEvent { .. }
-        | TelemetryEvent::SyslogFact { .. }
-        | TelemetryEvent::SnmpTrap { .. }
-        | TelemetryEvent::SnmpFact { .. }
-        | TelemetryEvent::BmpInitiation
-        | TelemetryEvent::BmpStatisticsReport
-        | TelemetryEvent::OtlpMetrics { .. }
-        | TelemetryEvent::NetflowRecord { .. }
-        | TelemetryEvent::SflowRecord { .. }
-        | TelemetryEvent::EnvSensor { .. }
-        | TelemetryEvent::OpticsDiagnostics { .. }
-        | TelemetryEvent::OpticalChannel { .. }
-        | TelemetryEvent::PowerUnit { .. } => {
-            actual.contains(&expected) || expected.contains(&actual)
-        }
-        TelemetryEvent::InterfaceOperStatus { .. } => {
-            expected.contains("oper-state")
-                || (expected.contains("interfaces")
-                    && expectation.mode.eq_ignore_ascii_case("ON_CHANGE"))
-        }
-        TelemetryEvent::BgpNeighborState { .. } => {
-            expected.contains("bgp") || expected.contains("network-instances")
-        }
-        TelemetryEvent::BfdSessionState { .. } => expected.contains("bfd"),
-        TelemetryEvent::IsisAdjacencyState { .. } => expected.contains("isis"),
-        TelemetryEvent::LldpNeighbor { .. } => expected.contains("lldp"),
-        TelemetryEvent::ConfigChange { .. } => false,
-        TelemetryEvent::BmpPeerState => false,
-        TelemetryEvent::BmpRouteMonitoring => false,
-        TelemetryEvent::BgpLsState => false,
-        TelemetryEvent::OtlpSpan { .. } => false,
-        TelemetryEvent::Ignored => false,
+/// Structured gNMI coverage (M5.2B): an observation satisfies an
+/// expectation only through exact structured path evidence — the
+/// resolved notification path(s) carried on the update must contain
+/// the parsed expectation path (origin-compatible, element-exact with
+/// unkeyed elements acting as instance wildcards). Expectations or
+/// observations that fail to parse, and updates without structured
+/// paths, are explicit non-coverage; string containment is never used.
+fn path_matches_update(expectation: &SubscriptionPathExpectation, update: &TelemetryUpdate) -> bool {
+    if update.gnmi_path.is_empty() {
+        return false;
     }
+    let Ok(expected) = crate::gnmi_path::parse_path(&expectation.origin, &expectation.path)
+    else {
+        return false;
+    };
+    update
+        .gnmi_path
+        .iter()
+        .any(|obs| crate::gnmi_path::observation_covers(&expected, obs))
 }
 
 /// Session + protocol fencing (M5.2B): only observations carrying the
@@ -478,41 +441,67 @@ mod tests {
         }
     }
 
-    #[test]
-    fn interface_counter_update_matches_sample_interface_expectation() {
-        let update = TelemetryUpdate {
+    fn gnmi_update(path: &str, gnmi_path: &str) -> TelemetryUpdate {
+        TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
-            source_protocol: String::new(),
+            source_protocol: "gnmi".to_string(),
+            gnmi_path: crate::gnmi_path::parse_path("", gnmi_path)
+                .map(|p| vec![p])
+                .unwrap_or_default(),
             target: "dut:57400".to_string(),
             vendor: "openconfig".to_string(),
             hostname: "dut".to_string(),
             role: String::new(),
             site: String::new(),
             timestamp_ns: 1,
-            path: "interfaces/interface[name=ethernet-1/1]/state/counters".to_string(),
-            value: json!({"in-pkts": 1}),
-        };
-        let event = update.classify();
+            path: path.to_string(),
+            value: json!({}),
+        }
+    }
 
+    #[test]
+    fn structured_path_expectation_matching_is_exact() {
+        let update = gnmi_update(
+            "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets",
+            "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets",
+        );
+        // Container expectation is covered by a descendant leaf.
         assert!(path_matches_update(
-            &expectation("interfaces", "SAMPLE"),
-            &update,
-            &event
+            &expectation("interfaces/interface[name=ethernet-1/1]/state/counters", "SAMPLE"),
+            &update
         ));
+        // A different keyed instance never satisfies.
         assert!(!path_matches_update(
-            &expectation("interfaces", "ON_CHANGE"),
-            &update,
-            &event
+            &expectation("interfaces/interface[name=ethernet-1/2]/state/counters", "SAMPLE"),
+            &update
+        ));
+        // A deeper expectation is not covered by a shallower observation.
+        assert!(!path_matches_update(
+            &expectation("interfaces/interface[name=ethernet-1/1]/state/counters/in-octets/extra", "SAMPLE"),
+            &update
+        ));
+        // Malformed expectations are explicit non-coverage.
+        assert!(!path_matches_update(
+            &expectation("interfaces/interface[name=ethernet-1/1", "SAMPLE"),
+            &update
+        ));
+        // Updates without structured paths never satisfy.
+        let mut bare = update.clone();
+        bare.gnmi_path = Vec::new();
+        assert!(!path_matches_update(
+            &expectation("interfaces", "SAMPLE"),
+            &bare
         ));
     }
 
     #[test]
     fn bgp_update_matches_network_instances_expectation() {
-        let update = TelemetryUpdate {
+        let mut update = TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
             source_protocol: String::new(),
+            gnmi_path: Vec::new(),
             target: "dut:57400".to_string(),
             vendor: "openconfig".to_string(),
             hostname: "dut".to_string(),
@@ -537,12 +526,18 @@ mod tests {
                 }
             }),
         };
-        let event = update.classify();
+        update.gnmi_path = crate::gnmi_path::parse_path("", "network-instances")
+            .map(|p| vec![p])
+            .unwrap_or_default();
 
         assert!(path_matches_update(
             &expectation("network-instances", "ON_CHANGE"),
-            &update,
-            &event
+            &update
+        ));
+        // Ancestor observation cannot cover a descendant expectation.
+        assert!(!path_matches_update(
+            &expectation("network-instances/protocols/bgp", "ON_CHANGE"),
+            &update
         ));
     }
 
@@ -551,6 +546,7 @@ mod tests {
             plan_id: plan_id.to_string(),
             session_id: session_id.to_string(),
             source_protocol: "gnmi".to_string(),
+            gnmi_path: Vec::new(),
             target: target.to_string(),
             vendor: String::new(),
             hostname: String::new(),

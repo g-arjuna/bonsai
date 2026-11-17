@@ -1407,6 +1407,7 @@ fn publish_flow(
         plan_id: String::new(),
         session_id: String::new(),
         source_protocol: "netflow".to_string(),
+            gnmi_path: Vec::new(),
         target: src.source_key.clone(),
         vendor: String::new(),
         hostname: String::new(),

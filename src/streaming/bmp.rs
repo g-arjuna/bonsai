@@ -251,6 +251,7 @@ fn publish_event(
         plan_id: String::new(),
         session_id: String::new(),
         source_protocol: "bmp".to_string(),
+            gnmi_path: Vec::new(),
         target: resolved.address,
         vendor: resolved.vendor,
         hostname: resolved.hostname,

@@ -94,6 +94,28 @@ pub fn canonical_path_key(origin: &str, raw_path: &str) -> Option<String> {
     parse_path(origin, raw_path).ok().map(|p| canonical_key(&p))
 }
 
+/// Exact structured coverage (M5.2B): does `observation` satisfy
+/// `expectation`? Origins must be compatible (a non-empty expectation
+/// origin requires an exact match; empty means unspecified), the
+/// observation path must equal or descend from the expectation path,
+/// and every expectation element must match name-exactly with exact
+/// keys when the expectation specifies them. An expectation element
+/// without keys matches any keyed instance (gNMI list wildcard
+/// semantics). String containment is never used.
+pub fn observation_covers(expectation: &Path, observation: &Path) -> bool {
+    if !expectation.origin.is_empty() && expectation.origin != observation.origin {
+        return false;
+    }
+    if observation.elem.len() < expectation.elem.len() {
+        return false;
+    }
+    expectation
+        .elem
+        .iter()
+        .zip(observation.elem.iter())
+        .all(|(e, o)| e.name == o.name && (e.key.is_empty() || e.key == o.key))
+}
+
 /// Split on '/' separators outside '[' ... ']' key expressions. An unclosed
 /// '[' keeps the remainder inside the current segment so the segment parser
 /// rejects it as malformed. A backslash escapes the next character.
@@ -283,5 +305,69 @@ mod tests {
         let f = parse_path("", r"foo[k=a,b]").unwrap();
         let g = parse_path("", "foo[k=a][x=b]").unwrap();
         assert_ne!(canonical_key(&f), canonical_key(&g));
+    }
+
+    #[test]
+    fn observation_covers_is_exact_and_structured() {
+        let exp = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters",
+        )
+        .unwrap();
+        // Descendant leaf observation covers the container expectation.
+        let leaf = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(observation_covers(&exp, &leaf));
+        // Exact path covers.
+        let exact = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters",
+        )
+        .unwrap();
+        assert!(observation_covers(&exp, &exact));
+        // Different key instance never satisfies.
+        let other = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/2]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&exp, &other));
+        // Case-sensitive keys.
+        let case = parse_path(
+            "openconfig",
+            "interfaces/interface[name=ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&exp, &case));
+        // Different origin never satisfies a specified origin.
+        let ietf = parse_path(
+            "ietf",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&exp, &ietf));
+        // Ancestor observation cannot cover a deeper leaf expectation.
+        let leaf_exp = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&leaf_exp, &exact));
+        // Unkeyed expectation element is a wildcard over instances.
+        let any_iface = parse_path("openconfig", "interfaces/interface/state").unwrap();
+        assert!(observation_covers(&any_iface, &leaf));
+        // But a keyed expectation still pins the instance.
+        let keyed = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/2]/state",
+        )
+        .unwrap();
+        assert!(!observation_covers(&keyed, &leaf));
+        // Unrelated subtree never matches.
+        let bgp = parse_path("openconfig", "network-instances/protocols").unwrap();
+        assert!(!observation_covers(&bgp, &leaf));
     }
 }

@@ -1552,6 +1552,152 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(pending, vec!["10.0.0.1".to_string()]);
     }
+
+    /// M5.2B: lifecycle authority windows — a lifecycle event is valid
+    /// only inside [assigned_gen, removed_gen) for its (collector,
+    /// device) pair within the current authority epoch.
+    #[tokio::test]
+    async fn session_authority_window_accepts_only_current_assignment() {
+        let (manager, _registry, _dir) =
+            manager_with_device(AcquisitionMode::Explicit).await;
+        let epoch = manager.authority_epoch();
+        let (mut rx, _gen) = manager
+            .register_collector(
+                "c1".to_string(),
+                crate::api::PROTOCOL_VERSION_CURRENT,
+                true,
+            )
+            .await
+            .unwrap();
+        let assigned_gen = rx.recv().await.expect("initial sync").generation;
+        assert!(assigned_gen > 0);
+
+        // The assigning generation itself is inside the window.
+        assert!(manager.validate_session_authority(
+            "c1",
+            "10.0.0.1",
+            epoch,
+            assigned_gen
+        ));
+        // Never-issued future generations and the zero generation are
+        // not authority this collector holds.
+        assert!(!manager.validate_session_authority(
+            "c1",
+            "10.0.0.1",
+            epoch,
+            assigned_gen + 1
+        ));
+        assert!(!manager.validate_session_authority(
+            "c1", "10.0.0.1", epoch, 0
+        ));
+        // A delayed event from a different authority epoch is fenced.
+        assert!(!manager.validate_session_authority(
+            "c1",
+            "10.0.0.1",
+            epoch + 1,
+            assigned_gen
+        ));
+        // Another collector or an unknown device holds no window.
+        assert!(!manager.validate_session_authority(
+            "c2",
+            "10.0.0.1",
+            epoch,
+            assigned_gen
+        ));
+        assert!(!manager.validate_session_authority(
+            "c1",
+            "10.0.0.2",
+            epoch,
+            assigned_gen
+        ));
+    }
+
+    /// Removal closes the window at the withdrawing generation;
+    /// reassignment opens a fresh window and fences every stale
+    /// generation from prior windows.
+    #[tokio::test]
+    async fn session_authority_window_closes_on_removal_and_reassignment() {
+        let (manager, registry, _dir) =
+            manager_with_device(AcquisitionMode::Explicit).await;
+        let epoch = manager.authority_epoch();
+        let (mut rx, _gen) = manager
+            .register_collector(
+                "c1".to_string(),
+                crate::api::PROTOCOL_VERSION_CURRENT,
+                true,
+            )
+            .await
+            .unwrap();
+        let g1 = rx.recv().await.expect("initial sync").generation;
+
+        // Withdraw the device: the resync generation becomes the
+        // exclusive upper bound of the authority window.
+        registry
+            .assign_device_with_audit("10.0.0.1", None, "test", "unassign")
+            .unwrap();
+        manager.resync_collector("c1").await;
+        let g2 = rx.recv().await.expect("withdrawal sync").generation;
+        assert!(g2 > g1);
+
+        // Generations strictly inside [g1, g2) remain valid evidence of
+        // the authority held at issuance; the boundary and later are not.
+        assert!(manager.validate_session_authority("c1", "10.0.0.1", epoch, g1));
+        assert!(!manager.validate_session_authority("c1", "10.0.0.1", epoch, g2));
+        assert!(!manager.validate_session_authority(
+            "c1",
+            "10.0.0.1",
+            epoch,
+            g2 + 1
+        ));
+
+        // Reassignment opens a NEW window — stale generations from the
+        // previous window stay fenced even though they once authorized.
+        registry
+            .assign_device_with_audit(
+                "10.0.0.1",
+                Some("c1".to_string()),
+                "test",
+                "reassign",
+            )
+            .unwrap();
+        manager.resync_collector("c1").await;
+        let g3 = rx.recv().await.expect("reassignment sync").generation;
+        assert!(g3 > g2);
+        assert!(manager.validate_session_authority("c1", "10.0.0.1", epoch, g3));
+        assert!(!manager.validate_session_authority("c1", "10.0.0.1", epoch, g1));
+        assert!(!manager.validate_session_authority("c1", "10.0.0.1", epoch, g2));
+    }
+
+    /// A new CollectorManager over the same registry state mints a
+    /// strictly newer authority epoch (persisted high-water), so
+    /// lifecycle evidence stamped under the previous epoch is fenced.
+    #[tokio::test]
+    async fn session_authority_epoch_changes_across_restart() {
+        let (manager, registry, dir) =
+            manager_with_device(AcquisitionMode::Explicit).await;
+        let epoch1 = manager.authority_epoch();
+        let (mut rx, _gen) = manager
+            .register_collector(
+                "c1".to_string(),
+                crate::api::PROTOCOL_VERSION_CURRENT,
+                true,
+            )
+            .await
+            .unwrap();
+        let issued_gen = rx.recv().await.expect("initial sync").generation;
+
+        // Simulated core restart: a fresh manager on the same registry
+        // must not reuse the previous epoch.
+        let credentials = Arc::new(
+            CredentialVault::open(dir.path().join("vault"), "BONSAI_ASSIGNMENT_TEST_VAULT")
+                .unwrap(),
+        );
+        let manager2 = CollectorManager::new(registry, credentials, vec![]);
+        let epoch2 = manager2.authority_epoch();
+        assert!(epoch2 > epoch1, "restart must mint a newer epoch");
+        // Old-epoch evidence is rejected outright.
+        assert!(!manager2.validate_session_authority("c1", "10.0.0.1", epoch1, issued_gen));
+    }
 }
 
 /// Whether a delivered assignment currently carries live acquisition

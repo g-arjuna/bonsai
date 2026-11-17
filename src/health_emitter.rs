@@ -61,6 +61,7 @@ impl HealthEmitter {
             plan_id: String::new(),
             session_id: String::new(),
             source_protocol: String::new(),
+            gnmi_path: Vec::new(),
             target: "health-emitter".to_string(),
             vendor: String::new(),
             hostname: String::new(),

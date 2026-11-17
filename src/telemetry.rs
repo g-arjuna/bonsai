@@ -25,6 +25,15 @@ pub struct TelemetryUpdate {
     /// explicit protocol claim. Only "gnmi" observations carrying a
     /// registered current session may satisfy gNMI subscription coverage.
     pub source_protocol: String,
+    /// Resolved structured gNMI path (notification prefix + update path
+    /// elements, origin resolved) for device-facing subscription
+    /// observations. This is the authoritative evidence path — `path`
+    /// remains the flattened classifier/projection representation.
+    /// Empty for non-gNMI producers and legacy data; such observations
+    /// can never satisfy gNMI subscription coverage. Multiple entries
+    /// occur when scalar leaves sharing a parent were grouped into one
+    /// container-shaped update — each entry is one leaf's full path.
+    pub gnmi_path: Vec<crate::proto::gnmi::Path>,
 }
 
 /// Classified form of a TelemetryUpdate after path parsing.

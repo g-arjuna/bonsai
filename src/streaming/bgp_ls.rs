@@ -140,6 +140,7 @@ fn publish_event(bus: &Arc<InProcessBus>, target_map: &BgpLsTargetMap, event: Bg
         plan_id: String::new(),
         session_id: String::new(),
         source_protocol: "bgp_ls".to_string(),
+            gnmi_path: Vec::new(),
         target: resolved.address,
         vendor: resolved.vendor,
         hostname: resolved.hostname,
