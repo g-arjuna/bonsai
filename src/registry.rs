@@ -936,6 +936,7 @@ mod tests {
 
     fn target(address: &str, vendor: &str) -> TargetConfig {
         TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),
@@ -1218,6 +1219,7 @@ mod tests {
         let mut activate = registry.get_device("10.30.3.1").expect("get").expect("exists");
         activate.enabled = true;
         activate.selected_paths = vec![crate::config::SelectedSubscriptionPath {
+            provenance: String::new(),
             path: "/interfaces/interface/state/counters".to_string(),
             origin: "test".to_string(),
             mode: "poll".to_string(),

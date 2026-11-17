@@ -34,9 +34,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // SAFETY: build scripts are single-threaded at this point
     unsafe { std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path().unwrap()) };
 
-    // gNMI: client-only (we are the gNMI client)
+    // gNMI: client in production; server stubs are generated so isolated
+    // test labs can run a recording/mock gNMI server (M4 selective
+    // acquisition runtime verification).
     tonic_build::configure()
-        .build_server(false)
+        .build_server(true)
         .build_client(true)
         .compile_protos(&["proto/gnmi.proto"], &["proto"])?;
 

@@ -728,6 +728,9 @@
         body: JSON.stringify({
           ...form,
           enabled: form.enabled,
+          // Onboarding selections are operator-explicit: the chosen set is
+          // the complete desired plan — no automatic defaults are appended.
+          acquisition: 'explicit',
           selected_paths: paths.map((path) => ({
             path: path.path,
             origin: path.origin || '',

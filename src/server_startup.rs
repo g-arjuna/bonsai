@@ -2260,6 +2260,7 @@ pub(super) async fn spawn_subscriber(
         debouncer,
         subscription_plan_tx.cloned(),
         target.selected_paths.clone(),
+        target.acquisition,
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
@@ -2297,7 +2298,9 @@ pub(super) async fn seed_subscription_plan(
         return;
     }
     let plan = subscriber::planned_subscription_plan_for_target(&target);
-    if plan.paths.is_empty() {
+    // Disabled/rejected plans carry no paths but MUST still be delivered so
+    // the verifier supersedes any previously tracked plan for this target.
+    if plan.state == "submitted" && plan.paths.is_empty() {
         return;
     }
     if let Err(error) = tx.send(plan).await {

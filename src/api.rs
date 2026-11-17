@@ -2343,6 +2343,7 @@ pub fn managed_device_from_target(target: &TargetConfig) -> ManagedDevice {
             .cloned()
             .map(selected_path_to_proto)
             .collect(),
+        acquisition: target.acquisition.as_str().to_string(),
     }
 }
 
@@ -2374,6 +2375,15 @@ pub fn target_from_managed_device(
             .into_iter()
             .map(selected_path_from_proto)
             .collect(),
+        acquisition: match crate::config::AcquisitionMode::parse(&device.acquisition) {
+            Some(mode) => mode,
+            // Fail closed: an unrecognised intent must not degrade to
+            // automatic collection on the collector.
+            None if device.acquisition.trim().is_empty() => {
+                crate::config::AcquisitionMode::Automatic
+            }
+            None => return Err("unsupported acquisition mode"),
+        },
         extra_ips: Vec::new(),
         created_at_ns: 0,
         updated_at_ns: 0,
@@ -2398,6 +2408,7 @@ fn selected_path_to_proto(path: SelectedSubscriptionPath) -> SubscriptionPath {
         sample_interval_ns: path.sample_interval_ns,
         rationale: path.rationale,
         optional: path.optional,
+        provenance: path.provenance,
     }
 }
 
@@ -2405,6 +2416,7 @@ fn selected_path_from_proto(path: SubscriptionPath) -> SelectedSubscriptionPath 
     SelectedSubscriptionPath {
         path: path.path,
         origin: path.origin,
+        provenance: path.provenance,
         mode: path.mode,
         sample_interval_ns: path.sample_interval_ns,
         rationale: path.rationale,
@@ -2458,6 +2470,7 @@ fn discovery_report_to_proto(report: discovery::DiscoveryReport) -> DiscoveryRep
                         sample_interval_ns: path.sample_interval_ns,
                         rationale: path.rationale,
                         optional: path.optional,
+                        provenance: String::new(),
                     })
                     .collect(),
                 rationale: profile.rationale,

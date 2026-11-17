@@ -10959,6 +10959,7 @@ mod tests {
 
         store
             .sync_sites_from_targets(vec![TargetConfig {
+                acquisition: Default::default(),
                 extra_ips: Vec::new(),
                 optional: false,
                 paths: Vec::new(),
@@ -11090,6 +11091,7 @@ mod tests {
 
     fn sync_target(address: &str, site: Option<&str>) -> TargetConfig {
         TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),

@@ -15,6 +15,18 @@ pub const VERIFICATION_WINDOW: Duration = Duration::from_secs(30);
 pub struct SubscriptionPlan {
     pub target: String,
     pub paths: Vec<SubscriptionPathExpectation>,
+    /// Deterministic identity of the desired acquisition plan (hash of the
+    /// normalized intent + path set). Stable across reconnects for an
+    /// unchanged configuration; changes when the effective plan changes.
+    pub plan_id: String,
+    /// "submitted" — paths were sent in a Subscribe RPC.
+    /// "disabled" — acquisition disabled; no RPC emitted.
+    /// "rejected" — explicit plan failed validation; no RPC emitted.
+    pub state: String,
+    /// "automatic" | "explicit" | "disabled" — operator acquisition intent.
+    pub acquisition: String,
+    /// Operator-visible detail (rejection reason, disable note).
+    pub detail: String,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +61,9 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
 
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
+    // target -> last registered plan_id, to avoid re-registering an
+    // identical plan on reconnect while still superseding on real changes.
+    let mut registered_plans: HashMap<String, String> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -61,6 +76,12 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
                     info!("subscription verifier plan channel closed");
                     break;
                 };
+                if registered_plans.get(&plan.target) == Some(&plan.plan_id) {
+                    // Identical plan re-sent (e.g. reconnect): keep existing
+                    // tracked state instead of flapping pending→observed.
+                    continue;
+                }
+                registered_plans.insert(plan.target.clone(), plan.plan_id.clone());
                 register_plan(&store, &mut tracked, plan).await;
             }
             event = telemetry_rx.recv() => {
@@ -88,8 +109,59 @@ async fn register_plan<S: BonsaiStore>(
     plan: SubscriptionPlan,
 ) {
     let now = now_ns();
-    let deadline = Instant::now() + VERIFICATION_WINDOW;
     let target = plan.target.clone();
+    let submitted = plan.state == "submitted";
+
+    // Supersede every previously-tracked path for this target that is not
+    // part of the new submitted plan, so an obsolete plan is never left
+    // represented as current/active. Disabled and rejected plans supersede
+    // the entire previous plan.
+    let new_keys: std::collections::HashSet<String> = plan
+        .paths
+        .iter()
+        .map(|e| tracked_key(&target, e).1)
+        .collect();
+    let stale_keys: Vec<(String, String)> = tracked
+        .iter()
+        .filter(|((t, k), _)| t == &target && !(submitted && new_keys.contains(k)))
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in stale_keys {
+        if let Some(tracked_path) = tracked.remove(&key) {
+            let status = SubscriptionStatusWrite {
+                device_address: target.clone(),
+                path: tracked_path.expectation.path.clone(),
+                origin: tracked_path.expectation.origin.clone(),
+                mode: tracked_path.expectation.mode.clone(),
+                sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
+                status: "superseded".to_string(),
+                first_observed_at_ns: tracked_path.first_observed_at_ns,
+                last_observed_at_ns: tracked_path.last_observed_at_ns,
+                updated_at_ns: now,
+            };
+            let event = subscription_status_event(&status);
+            if let Err(error) = store.write_subscription_status(status).await {
+                warn!(%error, target = %target, path_key = %key.1, "failed to write superseded subscription status");
+            } else {
+                store.publish_event(event);
+            }
+        }
+    }
+
+    if !submitted {
+        info!(
+            target = %target,
+            plan_id = %plan.plan_id,
+            state = %plan.state,
+            acquisition = %plan.acquisition,
+            detail = %plan.detail,
+            "acquisition plan not submitted to device"
+        );
+        publish_plan_state(store, &plan).await;
+        return;
+    }
+
+    let deadline = Instant::now() + VERIFICATION_WINDOW;
 
     for expectation in plan.paths {
         let key = tracked_key(&target, &expectation);
@@ -209,6 +281,25 @@ async fn mark_silent_paths<S: BonsaiStore>(
             store.publish_event(event);
         }
     }
+}
+
+async fn publish_plan_state<S: BonsaiStore>(store: &S, plan: &SubscriptionPlan) {
+    let event = BonsaiEvent {
+        device_address: plan.target.clone(),
+        event_type: "subscription_plan_state".to_string(),
+        detail_json: serde_json::json!({
+            "plan_id": &plan.plan_id,
+            "state": &plan.state,
+            "acquisition": &plan.acquisition,
+            "detail": &plan.detail,
+            "paths": plan.paths.len(),
+        })
+        .to_string(),
+        occurred_at_ns: now_ns(),
+        state_change_event_id: String::new(),
+        source_type: "gnmi".to_string(),
+    };
+    store.publish_event(event);
 }
 
 fn subscription_status_event(status: &SubscriptionStatusWrite) -> BonsaiEvent {

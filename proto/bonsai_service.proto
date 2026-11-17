@@ -39,6 +39,10 @@ message ManagedDevice {
   repeated SubscriptionPath selected_paths = 11;
   optional bool enabled = 12;
   string collector_id = 13;
+  // Acquisition intent: "automatic" | "explicit" | "disabled".
+  // Empty = legacy automatic. A collector that cannot express explicit
+  // selection must fail closed rather than treating it as automatic.
+  string acquisition = 14;
 }
 
 message AddDeviceRequest        { ManagedDevice device = 1; }
@@ -114,6 +118,9 @@ message SubscriptionPath {
   uint64 sample_interval_ns = 4;
   string rationale          = 5;
   bool optional             = 6;
+  // Audit provenance label (e.g. "override: site-override(...)").
+  // Distinct from `origin`, which is the gNMI model origin.
+  string provenance         = 7;
 }
 
 message PathProfileMatch {

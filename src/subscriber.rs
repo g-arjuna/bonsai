@@ -20,8 +20,8 @@ use crate::proto::gnmi::{
     SubscriptionMode, subscribe_request, subscription_list,
 };
 
-use crate::config::SelectedSubscriptionPath;
 use crate::config::TargetConfig;
+use crate::config::{AcquisitionMode, SelectedSubscriptionPath};
 use crate::event_bus::InProcessBus;
 use crate::ingest::TelemetryDebouncer;
 use crate::subscription_status::{SubscriptionPathExpectation, SubscriptionPlan};
@@ -44,6 +44,7 @@ pub struct GnmiSubscriber {
     debouncer: Option<Arc<TelemetryDebouncer>>,
     subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     selected_paths: Vec<SelectedSubscriptionPath>,
+    acquisition: AcquisitionMode,
 }
 
 impl GnmiSubscriber {
@@ -62,6 +63,7 @@ impl GnmiSubscriber {
         debouncer: Option<Arc<TelemetryDebouncer>>,
         subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
         selected_paths: Vec<SelectedSubscriptionPath>,
+        acquisition: AcquisitionMode,
     ) -> Self {
         Self {
             target: target.into(),
@@ -77,6 +79,15 @@ impl GnmiSubscriber {
             debouncer,
             subscription_plan_tx,
             selected_paths,
+            acquisition,
+        }
+    }
+
+    async fn publish_plan(&self, plan: SubscriptionPlan) {
+        if let Some(tx) = &self.subscription_plan_tx
+            && let Err(error) = tx.send(plan).await
+        {
+            warn!(target = %self.target, %error, "failed to publish subscription plan");
         }
     }
 
@@ -117,6 +128,52 @@ impl GnmiSubscriber {
         &self,
         shutdown: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
+        // Disabled and rejected plans need no device contact at all —
+        // decide before connecting so no Capabilities/Subscribe RPC is
+        // emitted. (Automatic needs real capabilities for fallback.)
+        if self.acquisition != AcquisitionMode::Automatic {
+            match build_acquisition_plan(
+                self.acquisition,
+                &self.selected_paths,
+                &ModelCapabilities::fallback(None),
+            ) {
+                AcquisitionPlan::Disabled { plan_id } => {
+                    self.publish_plan(SubscriptionPlan {
+                        target: self.target.clone(),
+                        paths: Vec::new(),
+                        plan_id,
+                        state: "disabled".to_string(),
+                        acquisition: self.acquisition.as_str().to_string(),
+                        detail: "acquisition disabled".to_string(),
+                    })
+                    .await;
+                    idle_until_shutdown(shutdown).await;
+                    return Ok(());
+                }
+                AcquisitionPlan::Rejected { plan_id, errors } => {
+                    let detail = errors.join("; ");
+                    warn!(
+                        target = %self.target,
+                        plan_id = %plan_id,
+                        errors = %detail,
+                        "explicit acquisition plan rejected — no Subscribe RPC will be emitted"
+                    );
+                    self.publish_plan(SubscriptionPlan {
+                        target: self.target.clone(),
+                        paths: Vec::new(),
+                        plan_id,
+                        state: "rejected".to_string(),
+                        acquisition: self.acquisition.as_str().to_string(),
+                        detail: detail.clone(),
+                    })
+                    .await;
+                    idle_until_shutdown(shutdown).await;
+                    return Ok(());
+                }
+                AcquisitionPlan::Ready { .. } => {}
+            }
+        }
+
         let channel = self.connect().await?;
         let target = self.target.clone();
 
@@ -158,27 +215,61 @@ impl GnmiSubscriber {
             Ok(req)
         });
 
-        let selected_subscriptions = build_selected_subscriptions(&self.selected_paths);
-        let using_selected_paths = !selected_subscriptions.is_empty();
-        let subscriptions = if using_selected_paths {
-            selected_subscriptions
-        } else {
-            if !self.selected_paths.is_empty() {
+        let plan = build_acquisition_plan(self.acquisition, &self.selected_paths, &caps);
+        let (subscriptions, plan_paths, submitted_plan_id) = match plan {
+            AcquisitionPlan::Disabled { plan_id } => {
+                info!(
+                    target = %target,
+                    plan_id = %plan_id,
+                    acquisition = self.acquisition.as_str(),
+                    "acquisition disabled — no Subscribe RPC will be emitted"
+                );
+                self.publish_plan(SubscriptionPlan {
+                    target: target.clone(),
+                    paths: Vec::new(),
+                    plan_id,
+                    state: "disabled".to_string(),
+                    acquisition: self.acquisition.as_str().to_string(),
+                    detail: "acquisition disabled".to_string(),
+                })
+                .await;
+                idle_until_shutdown(shutdown).await;
+                return Ok(());
+            }
+            AcquisitionPlan::Rejected { plan_id, errors } => {
+                let detail = errors.join("; ");
                 warn!(
                     target = %target,
-                    selected_paths = self.selected_paths.len(),
-                    "configured subscription path selection produced no valid paths; falling back to capabilities"
+                    plan_id = %plan_id,
+                    errors = %detail,
+                    "explicit acquisition plan rejected — no Subscribe RPC will be emitted"
                 );
+                self.publish_plan(SubscriptionPlan {
+                    target: target.clone(),
+                    paths: Vec::new(),
+                    plan_id,
+                    state: "rejected".to_string(),
+                    acquisition: self.acquisition.as_str().to_string(),
+                    detail: detail.clone(),
+                })
+                .await;
+                idle_until_shutdown(shutdown).await;
+                return Ok(());
             }
-            build_subscriptions(&caps)
+            AcquisitionPlan::Ready {
+                subscriptions,
+                plan_id,
+            } => {
+                let plan_paths = subscriptions
+                    .iter()
+                    .filter_map(subscription_expectation)
+                    .collect::<Vec<_>>();
+                (subscriptions, plan_paths, plan_id)
+            }
         };
         let enforce_idle_timeout = subscriptions
             .iter()
             .any(|sub| sub.mode == SubscriptionMode::Sample as i32);
-        let plan_paths = subscriptions
-            .iter()
-            .filter_map(subscription_expectation)
-            .collect::<Vec<_>>();
         info!(
             target = %target,
             vendor       = %caps.vendor_label,
@@ -190,7 +281,8 @@ impl GnmiSubscriber {
             oc_bfd       = caps.has_oc_bfd,
             oc_bgp       = caps.has_oc_bgp,
             paths        = subscriptions.len(),
-            selected     = using_selected_paths,
+            plan_id      = %submitted_plan_id,
+            acquisition  = self.acquisition.as_str(),
             "subscribing"
         );
 
@@ -210,16 +302,15 @@ impl GnmiSubscriber {
             .context("Subscribe RPC failed")?
             .into_inner();
 
-        if let Some(tx) = &self.subscription_plan_tx
-            && let Err(error) = tx
-                .send(SubscriptionPlan {
-                    target: target.clone(),
-                    paths: plan_paths,
-                })
-                .await
-        {
-            warn!(target = %target, %error, "failed to publish subscription plan");
-        }
+        self.publish_plan(SubscriptionPlan {
+            target: target.clone(),
+            paths: plan_paths,
+            plan_id: submitted_plan_id.clone(),
+            state: "submitted".to_string(),
+            acquisition: self.acquisition.as_str().to_string(),
+            detail: String::new(),
+        })
+        .await;
 
         loop {
             let next_message = if enforce_idle_timeout {
@@ -462,6 +553,7 @@ pub async fn spawn_subscriber_with_creds(
         debouncer,
         subscription_plan_tx.cloned(),
         target.selected_paths.clone(),
+        target.acquisition,
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
@@ -473,24 +565,47 @@ pub async fn spawn_subscriber_with_creds(
 pub fn planned_subscription_plan_for_target(
     target: &crate::config::TargetConfig,
 ) -> SubscriptionPlan {
-    let selected_subscriptions = build_selected_subscriptions(&target.selected_paths);
-    let subscriptions = if selected_subscriptions.is_empty() {
-        let hint = target
+    // Preview uses capability fallback hints for automatic mode; explicit
+    // plans are validated strictly (no capability substitution).
+    let caps = ModelCapabilities::fallback(
+        target
             .vendor
             .as_deref()
             .or(target.hostname.as_deref())
-            .or(target.role.as_deref());
-        build_subscriptions(&ModelCapabilities::fallback(hint))
-    } else {
-        selected_subscriptions
-    };
-
-    SubscriptionPlan {
-        target: target.address.clone(),
-        paths: subscriptions
-            .iter()
-            .filter_map(subscription_expectation)
-            .collect(),
+            .or(target.role.as_deref()),
+    );
+    match build_acquisition_plan(target.acquisition, &target.selected_paths, &caps) {
+        AcquisitionPlan::Disabled { plan_id } => SubscriptionPlan {
+            target: target.address.clone(),
+            paths: Vec::new(),
+            plan_id,
+            state: "disabled".to_string(),
+            acquisition: target.acquisition.as_str().to_string(),
+            detail: "acquisition disabled".to_string(),
+        },
+        AcquisitionPlan::Rejected { plan_id, errors } => SubscriptionPlan {
+            target: target.address.clone(),
+            paths: Vec::new(),
+            plan_id,
+            state: "rejected".to_string(),
+            acquisition: target.acquisition.as_str().to_string(),
+            detail: errors.join("; "),
+        },
+        AcquisitionPlan::Ready {
+            subscriptions,
+            plan_id,
+            ..
+        } => SubscriptionPlan {
+            target: target.address.clone(),
+            paths: subscriptions
+                .iter()
+                .filter_map(subscription_expectation)
+                .collect(),
+            plan_id,
+            state: "submitted".to_string(),
+            acquisition: target.acquisition.as_str().to_string(),
+            detail: String::new(),
+        },
     }
 }
 
@@ -754,75 +869,159 @@ fn build_subscriptions(caps: &ModelCapabilities) -> Vec<Subscription> {
     subs
 }
 
+// ── acquisition plan ──────────────────────────────────────────────────────────
+
+/// Effective acquisition plan for one subscribe cycle.
+enum AcquisitionPlan {
+    /// No Subscribe RPC is emitted (acquisition disabled or an explicit
+    /// selection that resolved to zero paths after overrides).
+    Disabled { plan_id: String },
+    /// Explicit plan failed validation — no Subscribe RPC, no fallback.
+    Rejected {
+        plan_id: String,
+        errors: Vec<String>,
+    },
+    /// Valid plan ready to submit.
+    Ready {
+        subscriptions: Vec<Subscription>,
+        plan_id: String,
+    },
+}
+
+/// Deterministic plan identity: hash of acquisition mode + normalized
+/// (origin, path, mode, interval) tuples in canonical order. Equivalent
+/// textual path spellings that parse to the same structured path produce
+/// the same identity only when their normalized form matches — dedup of
+/// subscriptions themselves happens on the structured Path, not the string.
+fn acquisition_plan_id(
+    acquisition: AcquisitionMode,
+    entries: &[(String, String, String, u64)],
+) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut canonical = String::new();
+    for (origin, path, mode, interval) in entries {
+        canonical.push_str(&format!("{}|{}|{}|{}\n", origin, path, mode, interval));
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    acquisition.as_str().hash(&mut hasher);
+    canonical.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Build the effective acquisition plan.
+///
+/// - `Disabled` intent → Disabled (never falls back).
+/// - `Explicit` intent → atomic validation: every selected path must parse
+///   and carry a supported mode; any failure rejects the WHOLE plan (no
+///   partial application, no capability fallback). An explicit selection
+///   that resolves to zero paths is Disabled — removing the last path can
+///   never reactivate automatic collection.
+/// - `Automatic` (default/legacy) → selected paths honoured when they yield
+///   valid subscriptions; otherwise the historical capability-derived plan.
+fn build_acquisition_plan(
+    acquisition: AcquisitionMode,
+    selected_paths: &[SelectedSubscriptionPath],
+    caps: &ModelCapabilities,
+) -> AcquisitionPlan {
+    match acquisition {
+        AcquisitionMode::Disabled => AcquisitionPlan::Disabled {
+            plan_id: acquisition_plan_id(acquisition, &[]),
+        },
+        AcquisitionMode::Explicit => {
+            let mut errors = Vec::new();
+            let mut subscriptions = Vec::new();
+            let mut entries = Vec::new();
+            for selected in selected_paths {
+                match subscription_from_selected_path(selected) {
+                    Ok(sub) => {
+                        if let Some(expectation) = subscription_expectation(&sub) {
+                            entries.push((
+                                expectation.origin,
+                                expectation.path,
+                                expectation.mode,
+                                expectation.sample_interval_ns,
+                            ));
+                        }
+                        subscriptions.push(sub);
+                    }
+                    Err(error) => errors.push(format!("'{}': {}", selected.path, error)),
+                }
+            }
+            let plan_id = acquisition_plan_id(acquisition, &entries);
+            if !errors.is_empty() {
+                return AcquisitionPlan::Rejected { plan_id, errors };
+            }
+            if subscriptions.is_empty() {
+                return AcquisitionPlan::Disabled { plan_id };
+            }
+            AcquisitionPlan::Ready {
+                subscriptions,
+                plan_id,
+            }
+        }
+        AcquisitionMode::Automatic => {
+            let selected_subscriptions = build_selected_subscriptions(selected_paths);
+            let subscriptions = if selected_subscriptions.is_empty() {
+                if !selected_paths.is_empty() {
+                    warn!(
+                        selected_paths = selected_paths.len(),
+                        "configured subscription path selection produced no valid paths; falling back to capabilities"
+                    );
+                }
+                build_subscriptions(caps)
+            } else {
+                selected_subscriptions
+            };
+            let entries = subscriptions
+                .iter()
+                .filter_map(subscription_expectation)
+                .map(|e| (e.origin, e.path, e.mode, e.sample_interval_ns))
+                .collect::<Vec<_>>();
+            AcquisitionPlan::Ready {
+                plan_id: acquisition_plan_id(acquisition, &entries),
+                subscriptions,
+            }
+        }
+    }
+}
+
+/// Legacy/automatic helper retained for capability-preview callers: builds
+/// subscriptions from selected paths, skipping invalid entries (the strict
+/// explicit path uses `subscription_from_selected_path` instead).
 fn build_selected_subscriptions(selected_paths: &[SelectedSubscriptionPath]) -> Vec<Subscription> {
     selected_paths
         .iter()
-        .filter_map(subscription_from_selected_path)
+        .filter_map(|s| subscription_from_selected_path(s).ok())
         .collect()
 }
 
-fn subscription_from_selected_path(selected: &SelectedSubscriptionPath) -> Option<Subscription> {
-    let Some(path) = selected_path_to_gnmi(&selected.origin, &selected.path) else {
-        warn!(
-            path = %selected.path,
-            "skipping selected subscription path with invalid syntax"
-        );
-        return None;
-    };
+fn subscription_from_selected_path(
+    selected: &SelectedSubscriptionPath,
+) -> Result<Subscription, String> {
+    let path = selected_path_to_gnmi(&selected.origin, &selected.path)
+        .ok_or_else(|| "invalid gNMI path syntax".to_string())?;
     match selected.mode.trim().to_ascii_uppercase().as_str() {
-        "SAMPLE" => Some(sub_sample(path, selected.sample_interval_ns)),
-        "ON_CHANGE" => Some(sub_on_change(path)),
-        other => {
-            warn!(
-                path = %selected.path,
-                mode = %other,
-                "skipping selected subscription path with unsupported mode"
-            );
-            None
-        }
+        "SAMPLE" => Ok(sub_sample(path, selected.sample_interval_ns)),
+        "ON_CHANGE" => Ok(sub_on_change(path)),
+        other => Err(format!("unsupported subscription mode '{}'", other)),
     }
 }
 
 fn selected_path_to_gnmi(origin: &str, raw_path: &str) -> Option<Path> {
-    let mut elem = Vec::new();
-    for segment in raw_path.split('/').filter(|segment| !segment.is_empty()) {
-        let (name, key) = parse_selected_path_segment(segment)?;
-        elem.push(PathElem { name, key });
-    }
-
-    if elem.is_empty() {
-        return None;
-    }
-
-    Some(Path {
-        origin: origin.trim().to_string(),
-        elem,
-        ..Default::default()
-    })
+    crate::gnmi_path::parse_path(origin, raw_path).ok()
 }
 
-fn parse_selected_path_segment(segment: &str) -> Option<(String, HashMap<String, String>)> {
-    let first_key = segment.find('[').unwrap_or(segment.len());
-    let name = segment[..first_key].trim();
-    if name.is_empty() {
-        return None;
-    }
-
-    let mut key = HashMap::new();
-    let mut rest = &segment[first_key..];
-    while !rest.is_empty() {
-        let after_open = rest.strip_prefix('[')?;
-        let close = after_open.find(']')?;
-        let pair = &after_open[..close];
-        let (key_name, key_value) = pair.split_once('=')?;
-        if key_name.trim().is_empty() || key_value.trim().is_empty() {
-            return None;
+/// Park the subscriber until shutdown for plans that emit no Subscribe RPC
+/// (disabled or rejected). Prevents the reconnect loop from spinning.
+async fn idle_until_shutdown(shutdown: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *shutdown.borrow() {
+            return;
         }
-        key.insert(key_name.trim().to_string(), key_value.trim().to_string());
-        rest = &after_open[close + 1..];
+        if shutdown.changed().await.is_err() {
+            return;
+        }
     }
-
-    Some((name.to_string(), key))
 }
 
 fn sub_sample(path: Path, interval_ns: u64) -> Subscription {
@@ -1061,6 +1260,7 @@ mod tests {
     #[test]
     fn selected_subscription_preserves_mode_and_interval() {
         let selected = SelectedSubscriptionPath {
+            provenance: String::new(),
             path: "interfaces".to_string(),
             origin: "openconfig".to_string(),
             mode: "SAMPLE".to_string(),

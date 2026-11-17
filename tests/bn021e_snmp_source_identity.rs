@@ -199,6 +199,7 @@ fn free_port() -> u16 {
 
 fn target(hostname: &str, address: &str, vendor: &str, site: &str) -> TargetConfig {
     TargetConfig {
+        acquisition: Default::default(),
         extra_ips: Vec::new(),
         optional: false,
         paths: Vec::new(),
