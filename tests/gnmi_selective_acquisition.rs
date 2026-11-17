@@ -963,6 +963,7 @@ async fn stale_session_observation_never_projects_coverage() {
         session_id: "sess-a".to_string(),
         source_protocol: "gnmi".to_string(),
         gnmi_path: vec![covering_path.clone()],
+        is_delete: false,
         target: target.clone(),
         vendor: String::new(),
         hostname: String::new(),
@@ -990,6 +991,7 @@ async fn stale_session_observation_never_projects_coverage() {
         session_id: "sess-b".to_string(),
         source_protocol: "gnmi".to_string(),
         gnmi_path: vec![covering_path],
+        is_delete: false,
         target: target.clone(),
         vendor: String::new(),
         hostname: String::new(),
@@ -1017,6 +1019,172 @@ async fn stale_session_observation_never_projects_coverage() {
             .iter()
             .any(|(_, _, s)| s == "observed"),
         "current session covering observation must project coverage: {:?}",
+        statuses
+    );
+
+    _stx.send(true).unwrap();
+    let _ = verifier.await;
+}
+
+/// M5.2B B3: delete/tombstone evidence invalidates coverage for the
+/// current session only, and an observed SAMPLE path goes stale after
+/// its freshness bound while quiet ON_CHANGE stays valid.
+#[tokio::test]
+async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
+    use bonsai::subscription_sessions::{SessionLifecycleEvent, SubscriptionSessionRegistry, state};
+    use bonsai::subscription_status::run_subscription_verifier_with_windows;
+    use bonsai::telemetry::TelemetryUpdate;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = bonsai::graph::GraphStore::open(
+        dir.path().join("graph.db").to_str().unwrap(),
+        256 * 1024 * 1024,
+    )
+    .expect("open graph store");
+    let db = store.db();
+    let bus = InProcessBus::new(64);
+    let publish_bus = bus.clone();
+    let (plan_tx, plan_rx) = mpsc::channel(8);
+    let (_stx, srx) = watch::channel(false);
+    let sessions = Arc::new(SubscriptionSessionRegistry::new());
+    let verifier_sessions = Arc::clone(&sessions);
+    // Tight windows so the test exercises stale transitions quickly:
+    // 50ms sweep tick, 200ms pending/freshness floor.
+    let verifier = tokio::spawn(run_subscription_verifier_with_windows(
+        store,
+        bus,
+        plan_rx,
+        verifier_sessions,
+        srx,
+        Duration::from_millis(50),
+        Duration::from_millis(200),
+    ));
+
+    let target = "dut:57400".to_string();
+    let leaf = "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets";
+    plan_tx
+        .send(SubscriptionPlan {
+            target: target.clone(),
+            paths: vec![SubscriptionPathExpectation {
+                path: "interfaces/interface[name=Ethernet1/1]/state/counters".to_string(),
+                origin: "openconfig".to_string(),
+                mode: "SAMPLE".to_string(),
+                sample_interval_ns: 0,
+            }],
+            plan_id: "plan-1".to_string(),
+            session_id: "sess-b".to_string(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            detail: String::new(),
+        })
+        .await
+        .unwrap();
+
+    // sess-a synchronized then superseded by sess-b.
+    for (session_id, seq_state) in [
+        ("sess-a", [(state::SUBMITTED, 1), (state::SYNCHRONIZED, 2)]),
+        ("sess-b", [(state::SUBMITTED, 1), (state::SYNCHRONIZED, 2)]),
+    ] {
+        for (st, seq) in seq_state {
+            sessions.apply(
+                &SessionLifecycleEvent {
+                    collector_id: String::new(),
+                    target: target.clone(),
+                    plan_id: "plan-1".to_string(),
+                    session_id: session_id.to_string(),
+                    state: st.to_string(),
+                    transition_seq: seq,
+                    authority_epoch: 0,
+                    assignment_generation: 0,
+                    occurred_at_ns: 0,
+                    detail: String::new(),
+                },
+                true,
+            );
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let covering = bonsai::gnmi_path::parse_path("openconfig", leaf)
+        .map(|p| vec![p])
+        .unwrap_or_default();
+    let mk = |session_id: &str, is_delete: bool, ts: i64| TelemetryUpdate {
+        plan_id: "plan-1".to_string(),
+        session_id: session_id.to_string(),
+        source_protocol: "gnmi".to_string(),
+        gnmi_path: covering.clone(),
+        is_delete,
+        target: target.clone(),
+        vendor: String::new(),
+        hostname: String::new(),
+        role: String::new(),
+        site: String::new(),
+        timestamp_ns: ts,
+        path: leaf.to_string(),
+        value: if is_delete {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!({"in-octets": ts})
+        },
+    };
+
+    // 1. Current-session observation -> observed.
+    publish_bus.publish(mk("sess-b", false, 1));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().any(|(_, _, s)| s == "observed"),
+        "expected observed after covering update: {:?}",
+        statuses
+    );
+
+    // 2. Current-session delete -> deleted (coverage invalidated).
+    publish_bus.publish(mk("sess-b", true, 2));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().any(|(_, _, s)| s == "deleted"),
+        "expected deleted after current-session delete: {:?}",
+        statuses
+    );
+
+    // 3. Stale-session observation and delete are both fenced.
+    publish_bus.publish(mk("sess-a", false, 3));
+    publish_bus.publish(mk("sess-a", true, 4));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().all(|(_, _, s)| s == "deleted"),
+        "stale session must not revive or alter coverage: {:?}",
+        statuses
+    );
+
+    // 4. Fresh current-session observation revives coverage.
+    publish_bus.publish(mk("sess-b", false, 5));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().any(|(_, _, s)| s == "observed"),
+        "expected observed after revival: {:?}",
+        statuses
+    );
+
+    // 5. SAMPLE freshness: quiet past the bound -> stale.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().any(|(_, _, s)| s == "stale"),
+        "expected stale after freshness bound: {:?}",
+        statuses
+    );
+
+    // 6. A new observation clears stale back to observed.
+    publish_bus.publish(mk("sess-b", false, 6));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().any(|(_, _, s)| s == "observed"),
+        "expected observed after post-stale update: {:?}",
         statuses
     );
 

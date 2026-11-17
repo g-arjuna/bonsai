@@ -242,6 +242,11 @@ message TelemetryIngestUpdate {
   // This is the authoritative evidence path for coverage matching —
   // the flattened `path` string remains classifier/projection input.
   bytes gnmi_path = 15;
+  // Delete/tombstone evidence (M5.2B): true when this record reports a
+  // gNMI Notification.delete for the resolved path. Carries no value;
+  // value_msgpack is a Null encoding. Only current-session records may
+  // invalidate subscription coverage.
+  bool is_delete = 16;
 }
 
 // Authoritative subscription-lifecycle evidence (M5.2B). Collectors report

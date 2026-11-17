@@ -34,6 +34,12 @@ pub struct TelemetryUpdate {
     /// occur when scalar leaves sharing a parent were grouped into one
     /// container-shaped update — each entry is one leaf's full path.
     pub gnmi_path: Vec<crate::proto::gnmi::Path>,
+    /// Delete/tombstone evidence (M5.2B B3): true when this update
+    /// reports that the resolved gNMI path was deleted from the
+    /// device's data tree (gNMI `Notification.delete`). Carries no
+    /// value; `value` is Null. Only updates from the current
+    /// authorized session may invalidate subscription coverage.
+    pub is_delete: bool,
 }
 
 /// Classified form of a TelemetryUpdate after path parsing.

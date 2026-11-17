@@ -883,6 +883,7 @@ mod tests {
             session_id: String::new(),
             source_protocol: String::new(),
             gnmi_path: Vec::new(),
+            is_delete: false,
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "leaf1".to_string(),

@@ -50,14 +50,47 @@ struct TrackedPath {
     first_observed_at_ns: i64,
     last_observed_at_ns: i64,
     deadline: Instant,
+    /// Monotonic timestamp of the most recent covering observation —
+    /// drives SAMPLE freshness independent of wall-clock ns.
+    last_seen: Instant,
+    /// How long an observed SAMPLE path may stay quiet before it is
+    /// reported stale. `Duration::MAX` for ON_CHANGE: a quiet ON_CHANGE
+    /// subscription remains valid (M5.2B B3).
+    stale_after: Duration,
 }
 
 pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
     store: S,
     bus: Arc<InProcessBus>,
+    plan_rx: tokio::sync::mpsc::Receiver<SubscriptionPlan>,
+    sessions: Arc<SubscriptionSessionRegistry>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    run_subscription_verifier_with_windows(
+        store,
+        bus,
+        plan_rx,
+        sessions,
+        shutdown,
+        Duration::from_secs(5),
+        VERIFICATION_WINDOW,
+    )
+    .await;
+}
+
+/// Verifier core parameterized on the sweep tick and the pending/
+/// freshness floor so tests can exercise stale transitions without
+/// waiting out the production 30s window. Production callers must use
+/// `run_subscription_verifier`.
+#[doc(hidden)]
+pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
+    store: S,
+    bus: Arc<InProcessBus>,
     mut plan_rx: tokio::sync::mpsc::Receiver<SubscriptionPlan>,
     sessions: Arc<SubscriptionSessionRegistry>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    tick: Duration,
+    freshness_floor: Duration,
 ) {
     let (sub, mut telemetry_rx) = crate::event_bus::MpscSubscriber::new(
         "subscription_verifier",
@@ -66,7 +99,7 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
     );
     bus.add_subscriber(sub).await;
 
-    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    let mut interval = tokio::time::interval(tick);
     let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
     // target -> last registered plan identity INCLUDING lifecycle
     // revision (state + detail). plan_id alone is the stable desired/
@@ -97,7 +130,7 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
                     continue;
                 }
                 registered_plans.insert(plan.target.clone(), key);
-                register_plan(&store, &mut tracked, plan).await;
+                register_plan(&store, &mut tracked, plan, freshness_floor).await;
             }
             event = telemetry_rx.recv() => {
                 match event {
@@ -123,6 +156,7 @@ async fn register_plan<S: BonsaiStore>(
     store: &S,
     tracked: &mut HashMap<(String, String), TrackedPath>,
     plan: SubscriptionPlan,
+    freshness_floor: Duration,
 ) {
     let now = now_ns();
     let target = plan.target.clone();
@@ -206,7 +240,7 @@ async fn register_plan<S: BonsaiStore>(
         return;
     }
 
-    let deadline = Instant::now() + VERIFICATION_WINDOW;
+    let deadline = Instant::now() + freshness_floor;
 
     for expectation in plan.paths {
         let key = tracked_key(&target, &expectation);
@@ -218,6 +252,8 @@ async fn register_plan<S: BonsaiStore>(
                 first_observed_at_ns: 0,
                 last_observed_at_ns: 0,
                 deadline,
+                last_seen: Instant::now(),
+                stale_after: sample_stale_after(&expectation, freshness_floor),
             },
         );
         let status = SubscriptionStatusWrite {
@@ -263,6 +299,18 @@ async fn observe_update<S: BonsaiStore>(
         let Some(tracked_path) = tracked.get_mut(&key) else {
             continue;
         };
+        tracked_path.last_seen = Instant::now();
+        // Delete/tombstone evidence (M5.2B B3): a current-session
+        // Notification.delete invalidates the path's current coverage
+        // until a fresh observation arrives. Stale-session deletes are
+        // already fenced by update_has_current_session above.
+        if update.is_delete {
+            if tracked_path.status != "deleted" {
+                tracked_path.status = "deleted".to_string();
+                write_status(store, &key, tracked_path, now).await;
+            }
+            continue;
+        }
         let status_changed = tracked_path.status != "observed";
         if status_changed {
             tracked_path.first_observed_at_ns = now;
@@ -272,25 +320,50 @@ async fn observe_update<S: BonsaiStore>(
 
         // Only write to the store on the first transition — avoids a DB write per telemetry update
         if status_changed {
-            let status = SubscriptionStatusWrite {
-                device_address: key.0.clone(),
-                path: tracked_path.expectation.path.clone(),
-                origin: tracked_path.expectation.origin.clone(),
-                mode: tracked_path.expectation.mode.clone(),
-                sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
-                status: tracked_path.status.clone(),
-                first_observed_at_ns: tracked_path.first_observed_at_ns,
-                last_observed_at_ns: tracked_path.last_observed_at_ns,
-                updated_at_ns: now,
-            };
-            let event = subscription_status_event(&status);
-            if let Err(error) = store.write_subscription_status(status).await {
-                warn!(%error, target = %key.0, path_key = %key.1, "failed to write observed subscription status");
-            } else {
-                store.publish_event(event);
-            }
+            write_status(store, &key, tracked_path, now).await;
         }
     }
+}
+
+/// Persist one status transition and publish its event. Kept separate
+/// so every transition path (observed/deleted/stale/silent/superseded)
+/// shares identical write+publish semantics.
+async fn write_status<S: BonsaiStore>(
+    store: &S,
+    key: &(String, String),
+    tracked_path: &TrackedPath,
+    now: i64,
+) {
+    let status = SubscriptionStatusWrite {
+        device_address: key.0.clone(),
+        path: tracked_path.expectation.path.clone(),
+        origin: tracked_path.expectation.origin.clone(),
+        mode: tracked_path.expectation.mode.clone(),
+        sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
+        status: tracked_path.status.clone(),
+        first_observed_at_ns: tracked_path.first_observed_at_ns,
+        last_observed_at_ns: tracked_path.last_observed_at_ns,
+        updated_at_ns: now,
+    };
+    let event = subscription_status_event(&status);
+    if let Err(error) = store.write_subscription_status(status).await {
+        warn!(%error, target = %key.0, path_key = %key.1, "failed to write subscription status");
+    } else {
+        store.publish_event(event);
+    }
+}
+
+/// SAMPLE freshness bound (M5.2B B3): an observed SAMPLE path is stale
+/// after max(3 × sample_interval, VERIFICATION_WINDOW) without a new
+/// covering observation — roughly three missed reporting periods, with
+/// a floor so sub-second intervals still get a sane bound. ON_CHANGE
+/// paths return `Duration::MAX`: quiet is valid, never stale.
+fn sample_stale_after(expectation: &SubscriptionPathExpectation, floor: Duration) -> Duration {
+    if !expectation.mode.eq_ignore_ascii_case("sample") {
+        return Duration::MAX;
+    }
+    let interval = Duration::from_nanos(expectation.sample_interval_ns);
+    (interval.saturating_mul(3)).max(floor)
 }
 
 async fn mark_silent_paths<S: BonsaiStore>(
@@ -328,6 +401,28 @@ async fn mark_silent_paths<S: BonsaiStore>(
         } else {
             store.publish_event(event);
         }
+    }
+
+    // SAMPLE freshness (M5.2B B3): an observed SAMPLE path that has
+    // gone quiet past its freshness bound is stale — the subscription
+    // may still be live but the evidence is no longer current. ON_CHANGE
+    // and non-observed states are untouched.
+    let stale_keys: Vec<(String, String)> = tracked
+        .iter()
+        .filter(|(_, path)| {
+            path.status == "observed"
+                && path.stale_after != Duration::MAX
+                && now_instant.saturating_duration_since(path.last_seen) >= path.stale_after
+        })
+        .map(|(key, _)| key.clone())
+        .collect();
+
+    for key in stale_keys {
+        let Some(tracked_path) = tracked.get_mut(&key) else {
+            continue;
+        };
+        tracked_path.status = "stale".to_string();
+        write_status(store, &key, tracked_path, now).await;
     }
 }
 
@@ -449,6 +544,7 @@ mod tests {
             gnmi_path: crate::gnmi_path::parse_path("", gnmi_path)
                 .map(|p| vec![p])
                 .unwrap_or_default(),
+            is_delete: false,
             target: "dut:57400".to_string(),
             vendor: "openconfig".to_string(),
             hostname: "dut".to_string(),
@@ -502,6 +598,7 @@ mod tests {
             session_id: String::new(),
             source_protocol: String::new(),
             gnmi_path: Vec::new(),
+            is_delete: false,
             target: "dut:57400".to_string(),
             vendor: "openconfig".to_string(),
             hostname: "dut".to_string(),
@@ -547,6 +644,7 @@ mod tests {
             session_id: session_id.to_string(),
             source_protocol: "gnmi".to_string(),
             gnmi_path: Vec::new(),
+            is_delete: false,
             target: target.to_string(),
             vendor: String::new(),
             hostname: String::new(),
@@ -649,5 +747,32 @@ mod tests {
             &reg,
             &provenance_update("dut:57400", "plan-1", "sess-a")
         ));
+    }
+
+    #[test]
+    fn sample_freshness_bound_is_mode_aware() {
+        // SAMPLE paths get a bounded freshness window: 3x the sample
+        // interval, floored at VERIFICATION_WINDOW.
+        let mut sample = expectation("interfaces", "SAMPLE");
+        sample.sample_interval_ns = 5_000_000_000; // 5s
+        assert_eq!(sample_stale_after(&sample, VERIFICATION_WINDOW), Duration::from_secs(30));
+        sample.sample_interval_ns = 60_000_000_000; // 60s
+        assert_eq!(
+            sample_stale_after(&sample, VERIFICATION_WINDOW),
+            Duration::from_secs(180)
+        );
+        // The floor dominates small intervals.
+        sample.sample_interval_ns = 0;
+        assert_eq!(sample_stale_after(&sample, Duration::from_millis(100)), Duration::from_millis(100));
+        // Mode matching is case-insensitive.
+        let mut lower = expectation("interfaces", "sample");
+        lower.sample_interval_ns = 0;
+        assert_eq!(sample_stale_after(&lower, VERIFICATION_WINDOW), VERIFICATION_WINDOW);
+        // ON_CHANGE never goes stale — quiet is valid.
+        for mode in ["ON_CHANGE", "on_change", ""] {
+            let mut e = expectation("interfaces", mode);
+            e.sample_interval_ns = 1;
+            assert_eq!(sample_stale_after(&e, VERIFICATION_WINDOW), Duration::MAX, "mode {mode}");
+        }
     }
 }

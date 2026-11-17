@@ -738,6 +738,7 @@ impl GnmiSubscriber {
                                         session_id: session_id.clone(),
                                         source_protocol: "gnmi".to_string(),
                                         gnmi_path: gnmi_paths,
+                                        is_delete: false,
                                         target: target.clone(),
                                         vendor: caps.vendor_label.clone(),
                                         hostname: self.hostname.clone().unwrap_or_default(),
@@ -746,6 +747,54 @@ impl GnmiSubscriber {
                                         timestamp_ns: notif.timestamp,
                                         path,
                                         value: val,
+                                    };
+                                    if let Some(ref d) = self.debouncer
+                                        && d.should_drop(&msg)
+                                    {
+                                        continue;
+                                    }
+                                    self.bus.publish(msg);
+                                }
+
+                                // gNMI Notification.delete: tombstone
+                                // evidence for paths removed from the
+                                // device's data tree (M5.2B B3). Delete
+                                // paths resolve against the notification
+                                // prefix exactly like update paths. Each
+                                // delete becomes its own provenance-
+                                // carrying update so the verifier can
+                                // invalidate coverage for the CURRENT
+                                // session only.
+                                for delete in &notif.delete {
+                                    let delete_path = path_to_string(delete);
+                                    let path = match (prefix.is_empty(), delete_path.is_empty()) {
+                                        (true, _) => delete_path,
+                                        (false, true) => prefix.clone(),
+                                        (false, false) => format!("{prefix}/{delete_path}"),
+                                    };
+                                    if path.is_empty() {
+                                        continue;
+                                    }
+                                    let gnmi_paths = resolve_notification_path(
+                                        notif.prefix.as_ref(),
+                                        Some(delete),
+                                    )
+                                    .into_iter()
+                                    .collect::<Vec<_>>();
+                                    let msg = TelemetryUpdate {
+                                        plan_id: submitted_plan_id.clone(),
+                                        session_id: session_id.clone(),
+                                        source_protocol: "gnmi".to_string(),
+                                        gnmi_path: gnmi_paths,
+                                        is_delete: true,
+                                        target: target.clone(),
+                                        vendor: caps.vendor_label.clone(),
+                                        hostname: self.hostname.clone().unwrap_or_default(),
+                                        role: self.role.clone().unwrap_or_default(),
+                                        site: self.site.clone().unwrap_or_default(),
+                                        timestamp_ns: notif.timestamp,
+                                        path,
+                                        value: serde_json::Value::Null,
                                     };
                                     if let Some(ref d) = self.debouncer
                                         && d.should_drop(&msg)
