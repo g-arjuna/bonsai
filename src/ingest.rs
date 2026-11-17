@@ -2629,21 +2629,64 @@ pub async fn run_collector_manager(
 /// they were emitted, so delayed delivery across a core restart is
 /// fenced by the core's epoch check — a stale lifecycle event can never
 /// become current authority.
+/// Upper bound on the per-session latest-event resend index used to heal
+/// lifecycle delivery across stream reconnects (M5.2B B3).
+const LIFECYCLE_RESEND_INDEX_CAP: usize = 4096;
+
 async fn run_lifecycle_forwarder(
     cfg: Arc<RuntimeConfig>,
     collector_id: String,
     mut rx: mpsc::Receiver<SessionLifecycleEvent>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
+    // Reliable-delivery index (M5.2B B3): the newest event per
+    // (target, session_id) is retained so a dead RPC stream can be
+    // healed on reconnect. Lifecycle transitions are monotonic per
+    // session (transition_seq), so resending the latest state is
+    // idempotent core-side — already-applied sequences dedup, lost
+    // terminal states are restored. Events still queued in a dead
+    // stream's request channel are covered by this resend.
+    let mut latest: HashMap<(String, String), SessionLifecycleEvent> = HashMap::new();
+    let mut latest_order: std::collections::VecDeque<(String, String)> =
+        std::collections::VecDeque::new();
+    // Resend backlog drained ahead of fresh rx events on reconnect so
+    // older evidence never overtakes newer.
+    let mut resend: std::collections::VecDeque<SessionLifecycleEvent> =
+        std::collections::VecDeque::new();
+
+    fn note_latest(
+        latest: &mut HashMap<(String, String), SessionLifecycleEvent>,
+        order: &mut std::collections::VecDeque<(String, String)>,
+        ev: &SessionLifecycleEvent,
+    ) {
+        let key = (ev.target.clone(), ev.session_id.clone());
+        if !latest.contains_key(&key) {
+            if latest.len() >= LIFECYCLE_RESEND_INDEX_CAP {
+                if let Some(oldest) = order.pop_front() {
+                    latest.remove(&oldest);
+                }
+            }
+            order.push_back(key.clone());
+        }
+        latest.insert(key, ev.clone());
+    }
+
     'outer: loop {
-        // Lazy connect: no idle lifecycle RPC while no session activity.
-        let first = tokio::select! {
-            _ = shutdown.changed() => return Ok(()),
-            ev = rx.recv() => ev,
+        // Next outbound event: resend backlog first (older evidence),
+        // then fresh producer events. With an empty backlog and no
+        // producers this parks until shutdown — no idle RPC is opened.
+        let first = if let Some(ev) = resend.pop_front() {
+            Some(ev)
+        } else {
+            tokio::select! {
+                _ = shutdown.changed() => return Ok(()),
+                ev = rx.recv() => ev,
+            }
         };
         let Some(first) = first else {
             return Ok(()); // all producers gone
         };
+        note_latest(&mut latest, &mut latest_order, &first);
 
         let client = loop {
             match create_ingest_client(&cfg).await {
@@ -2692,7 +2735,8 @@ async fn run_lifecycle_forwarder(
             });
         }
 
-        // Deliver the already-received first event, then stream the rest.
+        // Deliver the already-selected first event, then stream the
+        // rest — resend backlog ahead of fresh rx events.
         if req_tx
             .send(lifecycle_event_to_proto(&collector_id, &first))
             .await
@@ -2702,30 +2746,56 @@ async fn run_lifecycle_forwarder(
             continue 'outer;
         }
         loop {
-            tokio::select! {
-                _ = shutdown.changed() => return Ok(()),
-                _ = done_rx.recv() => {
-                    warn!("subscription lifecycle RPC stream ended; reconnecting");
-                    metrics::counter!("bonsai_subscription_lifecycle_stream_reconnects_total").increment(1);
-                    // req_tx drops here → client stream closes → RPC ends.
-                    tokio::select! {
-                        _ = shutdown.changed() => return Ok(()),
-                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
-                    }
-                    continue 'outer;
+            // Pick the next outbound event: resend backlog first so
+            // healed older evidence never overtakes newer events.
+            let next = loop {
+                if let Some(ev) = resend.pop_front() {
+                    break Some(ev);
                 }
-                ev = rx.recv() => {
-                    match ev {
-                        Some(ev) => {
-                            let proto = lifecycle_event_to_proto(&collector_id, &ev);
-                            if req_tx.send(proto).await.is_err() {
-                                warn!("lifecycle RPC request channel closed");
-                                continue 'outer;
-                            }
+                tokio::select! {
+                    _ = shutdown.changed() => return Ok(()),
+                    _ = done_rx.recv() => {
+                        warn!("subscription lifecycle RPC stream ended; reconnecting");
+                        metrics::counter!("bonsai_subscription_lifecycle_stream_reconnects_total").increment(1);
+                        // req_tx drops here → client stream closes → RPC ends.
+                        tokio::select! {
+                            _ = shutdown.changed() => return Ok(()),
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                         }
-                        None => return Ok(()),
+                        // Heal: resend the newest event per session.
+                        // Core dedups by transition_seq, so this is
+                        // idempotent for already-applied states and
+                        // restores any lost terminal transition.
+                        resend.extend(latest.values().cloned());
+                        continue 'outer;
+                    }
+                    ev = rx.recv() => break ev,
+                }
+            };
+            match next {
+                Some(ev) => {
+                    note_latest(&mut latest, &mut latest_order, &ev);
+                    let proto = lifecycle_event_to_proto(&collector_id, &ev);
+                    let sent = tokio::select! {
+                        _ = shutdown.changed() => return Ok(()),
+                        _ = done_rx.recv() => {
+                            warn!("subscription lifecycle RPC stream ended; reconnecting");
+                            metrics::counter!("bonsai_subscription_lifecycle_stream_reconnects_total").increment(1);
+                            tokio::select! {
+                                _ = shutdown.changed() => return Ok(()),
+                                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                            }
+                            resend.extend(latest.values().cloned());
+                            continue 'outer;
+                        }
+                        r = req_tx.send(proto) => r,
+                    };
+                    if sent.is_err() {
+                        warn!("lifecycle RPC request channel closed");
+                        continue 'outer;
                     }
                 }
+                None => return Ok(()),
             }
         }
     }

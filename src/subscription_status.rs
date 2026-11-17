@@ -304,53 +304,57 @@ async fn observe_update<S: BonsaiStore>(
         // Notification.delete invalidates the path's current coverage
         // until a fresh observation arrives. Stale-session deletes are
         // already fenced by update_has_current_session above.
-        if update.is_delete {
-            if tracked_path.status != "deleted" {
-                tracked_path.status = "deleted".to_string();
-                write_status(store, &key, tracked_path, now).await;
-            }
+        let new_status = if update.is_delete { "deleted" } else { "observed" };
+        if tracked_path.status == new_status {
             continue;
         }
-        let status_changed = tracked_path.status != "observed";
-        if status_changed {
-            tracked_path.first_observed_at_ns = now;
+        // Persistence truthfulness (M5.2B B3): the graph write is
+        // attempted BEFORE the in-memory transition commits, and the
+        // success event is published only after the write lands. A
+        // failed write leaves the old status in memory so the next
+        // observation/tick retries — memory can never claim a persisted
+        // state the store does not hold.
+        let first_observed = if new_status == "observed" {
+            now
+        } else {
+            tracked_path.first_observed_at_ns
+        };
+        let last_observed = if update.is_delete {
+            tracked_path.last_observed_at_ns
+        } else {
+            now
+        };
+        let status = SubscriptionStatusWrite {
+            device_address: key.0.clone(),
+            path: tracked_path.expectation.path.clone(),
+            origin: tracked_path.expectation.origin.clone(),
+            mode: tracked_path.expectation.mode.clone(),
+            sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
+            status: new_status.to_string(),
+            first_observed_at_ns: first_observed,
+            last_observed_at_ns: last_observed,
+            updated_at_ns: now,
+        };
+        if let Err(error) = persist_status(store, &status).await {
+            warn!(%error, target = %key.0, path_key = %key.1, "failed to write subscription status");
+            continue;
         }
-        tracked_path.status = "observed".to_string();
-        tracked_path.last_observed_at_ns = now;
-
-        // Only write to the store on the first transition — avoids a DB write per telemetry update
-        if status_changed {
-            write_status(store, &key, tracked_path, now).await;
-        }
+        tracked_path.status = new_status.to_string();
+        tracked_path.first_observed_at_ns = first_observed;
+        tracked_path.last_observed_at_ns = last_observed;
     }
 }
 
-/// Persist one status transition and publish its event. Kept separate
-/// so every transition path (observed/deleted/stale/silent/superseded)
-/// shares identical write+publish semantics.
-async fn write_status<S: BonsaiStore>(
+/// Persist one status transition and publish its event only after the
+/// store write succeeds. Returns the store error so callers can keep
+/// the previous in-memory state and retry on the next transition.
+async fn persist_status<S: BonsaiStore>(
     store: &S,
-    key: &(String, String),
-    tracked_path: &TrackedPath,
-    now: i64,
-) {
-    let status = SubscriptionStatusWrite {
-        device_address: key.0.clone(),
-        path: tracked_path.expectation.path.clone(),
-        origin: tracked_path.expectation.origin.clone(),
-        mode: tracked_path.expectation.mode.clone(),
-        sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
-        status: tracked_path.status.clone(),
-        first_observed_at_ns: tracked_path.first_observed_at_ns,
-        last_observed_at_ns: tracked_path.last_observed_at_ns,
-        updated_at_ns: now,
-    };
-    let event = subscription_status_event(&status);
-    if let Err(error) = store.write_subscription_status(status).await {
-        warn!(%error, target = %key.0, path_key = %key.1, "failed to write subscription status");
-    } else {
-        store.publish_event(event);
-    }
+    status: &SubscriptionStatusWrite,
+) -> anyhow::Result<()> {
+    store.write_subscription_status(status.clone()).await?;
+    store.publish_event(subscription_status_event(status));
+    Ok(())
 }
 
 /// SAMPLE freshness bound (M5.2B B3): an observed SAMPLE path is stale
@@ -382,25 +386,25 @@ async fn mark_silent_paths<S: BonsaiStore>(
         let Some(tracked_path) = tracked.get_mut(&key) else {
             continue;
         };
-        tracked_path.status = "subscribed_but_silent".to_string();
-
         let status = SubscriptionStatusWrite {
             device_address: key.0.clone(),
             path: tracked_path.expectation.path.clone(),
             origin: tracked_path.expectation.origin.clone(),
             mode: tracked_path.expectation.mode.clone(),
             sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
-            status: tracked_path.status.clone(),
+            status: "subscribed_but_silent".to_string(),
             first_observed_at_ns: 0,
             last_observed_at_ns: 0,
             updated_at_ns: now,
         };
-        let event = subscription_status_event(&status);
-        if let Err(error) = store.write_subscription_status(status).await {
+        // Write before commit: a failed store write keeps the pending
+        // status so the next sweep retries instead of claiming a
+        // persisted state that does not exist.
+        if let Err(error) = persist_status(store, &status).await {
             warn!(%error, target = %key.0, path_key = %key.1, "failed to write silent subscription status");
-        } else {
-            store.publish_event(event);
+            continue;
         }
+        tracked_path.status = "subscribed_but_silent".to_string();
     }
 
     // SAMPLE freshness (M5.2B B3): an observed SAMPLE path that has
@@ -421,8 +425,22 @@ async fn mark_silent_paths<S: BonsaiStore>(
         let Some(tracked_path) = tracked.get_mut(&key) else {
             continue;
         };
+        let status = SubscriptionStatusWrite {
+            device_address: key.0.clone(),
+            path: tracked_path.expectation.path.clone(),
+            origin: tracked_path.expectation.origin.clone(),
+            mode: tracked_path.expectation.mode.clone(),
+            sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
+            status: "stale".to_string(),
+            first_observed_at_ns: tracked_path.first_observed_at_ns,
+            last_observed_at_ns: tracked_path.last_observed_at_ns,
+            updated_at_ns: now,
+        };
+        if let Err(error) = persist_status(store, &status).await {
+            warn!(%error, target = %key.0, path_key = %key.1, "failed to write stale subscription status");
+            continue;
+        }
         tracked_path.status = "stale".to_string();
-        write_status(store, &key, tracked_path, now).await;
     }
 }
 
