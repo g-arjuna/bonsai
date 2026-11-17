@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
-use crate::api::pb::{AssignmentUpdate, DeviceAssignment};
 use crate::api::ACQUISITION_CONTRACT_VERSION;
+use crate::api::pb::{AssignmentUpdate, DeviceAssignment};
 use crate::config::{AcquisitionMode, AssignmentRule, TargetConfig};
 use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::graph::{BonsaiEvent, SiteRecord};
@@ -251,8 +251,7 @@ impl CollectorManager {
             entry.last_heartbeat_ns = now_ns();
         }
 
-        let (assignments, blocked) =
-            self.build_assignments(&collector_id, protocol_version);
+        let (assignments, blocked) = self.build_assignments(&collector_id, protocol_version);
         for address in &blocked {
             // Fail closed AND visible: an incompatible collector must never
             // receive explicit/disabled intent (it would interpret it as
@@ -737,16 +736,11 @@ mod tests {
 
     async fn manager_with_device(
         acquisition: AcquisitionMode,
-    ) -> (
-        CollectorManager,
-        Arc<ApiRegistry>,
-        tempfile::TempDir,
-    ) {
+    ) -> (CollectorManager, Arc<ApiRegistry>, tempfile::TempDir) {
         unsafe { std::env::set_var("BONSAI_ASSIGNMENT_TEST_VAULT", "test-passphrase") };
         let dir = tempfile::tempdir().unwrap();
-        let registry = Arc::new(
-            ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap(),
-        );
+        let registry =
+            Arc::new(ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap());
         let credentials = Arc::new(
             CredentialVault::open(dir.path().join("vault"), "BONSAI_ASSIGNMENT_TEST_VAULT")
                 .unwrap(),
@@ -756,7 +750,12 @@ mod tests {
             .add_device_with_audit(target.clone(), "test", "test_add")
             .unwrap();
         registry
-            .assign_device_with_audit(&target.address, Some("c1".to_string()), "test", "test_assign")
+            .assign_device_with_audit(
+                &target.address,
+                Some("c1".to_string()),
+                "test",
+                "test_assign",
+            )
             .unwrap();
         (
             CollectorManager::new(registry.clone(), credentials, vec![]),
@@ -767,8 +766,7 @@ mod tests {
 
     #[tokio::test]
     async fn pre_contract_collector_never_receives_explicit_assignment() {
-        let (manager, registry, _dir) =
-            manager_with_device(AcquisitionMode::Explicit).await;
+        let (manager, registry, _dir) = manager_with_device(AcquisitionMode::Explicit).await;
         let (mut rx, _gen) = manager
             .register_collector("c1".to_string(), ACQUISITION_CONTRACT_VERSION - 1)
             .await
@@ -780,26 +778,38 @@ mod tests {
             "explicit plan must not reach a pre-contract collector"
         );
         // The device is unassigned — operator-visible, not silently delivered.
-        assert!(registry.get_device("10.0.0.1").unwrap().unwrap().collector_id.is_none());
+        assert!(
+            registry
+                .get_device("10.0.0.1")
+                .unwrap()
+                .unwrap()
+                .collector_id
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn pre_contract_collector_never_receives_disabled_assignment() {
-        let (manager, registry, _dir) =
-            manager_with_device(AcquisitionMode::Disabled).await;
+        let (manager, registry, _dir) = manager_with_device(AcquisitionMode::Disabled).await;
         let (mut rx, _gen) = manager
             .register_collector("c1".to_string(), 1)
             .await
             .unwrap();
         let update = rx.recv().await.expect("initial sync");
         assert!(update.assignments.is_empty());
-        assert!(registry.get_device("10.0.0.1").unwrap().unwrap().collector_id.is_none());
+        assert!(
+            registry
+                .get_device("10.0.0.1")
+                .unwrap()
+                .unwrap()
+                .collector_id
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn pre_contract_collector_still_receives_automatic_assignment() {
-        let (manager, _registry, _dir) =
-            manager_with_device(AcquisitionMode::Automatic).await;
+        let (manager, _registry, _dir) = manager_with_device(AcquisitionMode::Automatic).await;
         let (mut rx, _gen) = manager
             .register_collector("c1".to_string(), 1)
             .await
@@ -810,8 +820,7 @@ mod tests {
 
     #[tokio::test]
     async fn contract_collector_receives_explicit_assignment() {
-        let (manager, _registry, _dir) =
-            manager_with_device(AcquisitionMode::Explicit).await;
+        let (manager, _registry, _dir) = manager_with_device(AcquisitionMode::Explicit).await;
         let (mut rx, _gen) = manager
             .register_collector("c1".to_string(), ACQUISITION_CONTRACT_VERSION)
             .await

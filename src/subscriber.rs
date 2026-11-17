@@ -1321,12 +1321,18 @@ mod tests {
         let caps = ModelCapabilities::fallback(None);
         let a = build_acquisition_plan(
             AcquisitionMode::Explicit,
-            &[sel("interfaces", "ON_CHANGE", 0), sel("system", "SAMPLE", 5_000_000_000)],
+            &[
+                sel("interfaces", "ON_CHANGE", 0),
+                sel("system", "SAMPLE", 5_000_000_000),
+            ],
             &caps,
         );
         let b = build_acquisition_plan(
             AcquisitionMode::Explicit,
-            &[sel("system", "SAMPLE", 5_000_000_000), sel("interfaces", "ON_CHANGE", 0)],
+            &[
+                sel("system", "SAMPLE", 5_000_000_000),
+                sel("interfaces", "ON_CHANGE", 0),
+            ],
             &caps,
         );
         let id = |p: &AcquisitionPlan| match p {
