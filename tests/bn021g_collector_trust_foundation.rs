@@ -424,6 +424,9 @@ fn target(
         inventory_platform: None,
         inventory_status: None,
         inventory_tenant: None,
+        security: None,
+        client_cert: None,
+        client_key: None,
         created_at_ns: 0,
         updated_at_ns: 0,
         created_by: String::new(),
@@ -2710,8 +2713,7 @@ async fn otlp_provisional_app_id_is_renamespaced() {
     let detail: serde_json::Value =
         serde_json::from_str(&row[0]).expect("event detail must be JSON");
     assert_eq!(
-        detail["provisional_app_id"],
-        "otlpapp/otlpsrc/site-a/http/10.4.0.5:4317/payments-svc",
+        detail["provisional_app_id"], "otlpapp/otlpsrc/site-a/http/10.4.0.5:4317/payments-svc",
         "app id must be re-derived under the authenticated namespace: {}",
         row[0]
     );

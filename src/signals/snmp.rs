@@ -1560,6 +1560,9 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            security: None,
+            client_cert: None,
+            client_key: None,
         }];
         let map = SnmpTargetMap::new(&targets);
         let resolved = map.resolve(
@@ -1628,6 +1631,9 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            security: None,
+            client_cert: None,
+            client_key: None,
         };
         // Two tenants reuse the same private IP.
         let map = SnmpTargetMap::new(&[

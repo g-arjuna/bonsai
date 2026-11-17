@@ -2,31 +2,35 @@ use anyhow::{Context, Result};
 use std::time::Duration;
 use tonic::Request;
 use tonic::metadata::MetadataValue;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig};
+use tonic::transport::Channel;
 use tracing::warn;
 
+use crate::gnmi_security::ConnSecurity;
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
 use crate::proto::gnmi::{Path, PathElem, SetRequest, TypedValue, Update, typed_value};
 
 /// Execute a gNMI Set (UPDATE) against a single target.
 /// Credentials are injected as gRPC metadata headers — they never leave the Rust process.
+/// Transport security comes from the resolved `ConnSecurity` contract:
+/// explicit TLS/mTLS or the audited plaintext lab exception — never an
+/// implicit downgrade.
 pub async fn gnmi_set(
     address: &str,
     username: Option<&str>,
     password: Option<&str>,
-    ca_cert_pem: Option<&[u8]>,
-    tls_domain: &str,
+    conn_security: &ConnSecurity,
     yang_path: &str,
     json_value: &str,
 ) -> Result<()> {
-    if ca_cert_pem.is_none() && (username.is_some() || password.is_some()) {
+    if !conn_security.effective.is_tls() && (username.is_some() || password.is_some()) {
         warn!(
             %address,
+            security = conn_security.effective.label(),
             "SECURITY: gNMI Set is sending credentials over a plaintext (non-TLS) channel. \
-             Set ca_cert on this target to enable TLS."
+             Configure security=\"tls_verify\" or \"mtls\" with ca_cert/tls_domain."
         );
     }
-    let channel = open_channel(address, ca_cert_pem, tls_domain).await?;
+    let channel = open_channel(address, conn_security).await?;
     let user = username.map(str::to_owned);
     let pass = password.map(str::to_owned);
 
@@ -99,30 +103,27 @@ pub fn parse_path(s: &str) -> Path {
     }
 }
 
-async fn open_channel(
-    address: &str,
-    ca_cert_pem: Option<&[u8]>,
-    tls_domain: &str,
-) -> Result<Channel> {
-    let scheme = if ca_cert_pem.is_some() {
-        "https"
-    } else {
-        "http"
-    };
-    let endpoint = format!("{scheme}://{address}");
+async fn open_channel(address: &str, conn_security: &ConnSecurity) -> Result<Channel> {
+    let endpoint = format!("{}://{}", conn_security.scheme(), address);
     let mut builder = Channel::from_shared(endpoint.clone())
         .context("invalid endpoint")?
         .timeout(Duration::from_secs(15));
 
-    if let Some(pem) = ca_cert_pem {
-        let tls = ClientTlsConfig::new()
-            .ca_certificate(Certificate::from_pem(pem))
-            .domain_name(tls_domain.to_string());
+    if let Some(tls) = conn_security.client_tls_config()? {
         builder = builder.tls_config(tls).context("TLS config failed")?;
     }
 
-    builder
+    let channel = builder
         .connect()
         .await
-        .with_context(|| format!("connect failed: {endpoint}"))
+        .with_context(|| format!("connect failed: {endpoint}"))?;
+
+    if !conn_security.effective.is_tls() {
+        metrics::counter!(
+            "bonsai_gnmi_plaintext_dial_total",
+            "mode" => conn_security.effective.label()
+        )
+        .increment(1);
+    }
+    Ok(channel)
 }

@@ -6,7 +6,7 @@ use tokio::task::JoinHandle;
 use anyhow::{Context, Result};
 use tonic::Request;
 use tonic::metadata::MetadataValue;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig};
+use tonic::transport::Channel;
 use tracing::{debug, info, warn};
 
 const BACKOFF_INITIAL: Duration = Duration::from_secs(5);
@@ -37,9 +37,9 @@ pub struct GnmiSubscriber {
     hostname: Option<String>,
     role: Option<String>,
     site: Option<String>,
-    /// None = plaintext gRPC.
-    ca_cert_pem: Option<Vec<u8>>,
-    tls_domain: String,
+    /// Resolved transport security (explicit TLS/mTLS or audited/plaintext
+    /// legacy). Never downgraded at connect time.
+    conn_security: crate::gnmi_security::ConnSecurity,
     bus: Arc<InProcessBus>,
     debouncer: Option<Arc<TelemetryDebouncer>>,
     subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
@@ -57,8 +57,7 @@ impl GnmiSubscriber {
         hostname: Option<String>,
         role: Option<String>,
         site: Option<String>,
-        tls_domain: impl Into<String>,
-        ca_cert_pem: Option<Vec<u8>>,
+        conn_security: crate::gnmi_security::ConnSecurity,
         bus: Arc<InProcessBus>,
         debouncer: Option<Arc<TelemetryDebouncer>>,
         subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
@@ -73,8 +72,7 @@ impl GnmiSubscriber {
             hostname,
             role,
             site,
-            ca_cert_pem,
-            tls_domain: tls_domain.into(),
+            conn_security,
             bus,
             debouncer,
             subscription_plan_tx,
@@ -177,11 +175,14 @@ impl GnmiSubscriber {
         let channel = self.connect().await?;
         let target = self.target.clone();
 
-        if self.ca_cert_pem.is_none() && (self.username.is_some() || self.password.is_some()) {
+        if !self.conn_security.effective.is_tls()
+            && (self.username.is_some() || self.password.is_some())
+        {
             warn!(
                 target = %self.target,
+                security = self.conn_security.effective.label(),
                 "SECURITY: gNMI Subscribe is sending credentials over a plaintext (non-TLS) channel. \
-                 Set ca_cert on this target to enable TLS."
+                 Configure security=\"tls_verify\" or \"mtls\" with ca_cert/tls_domain."
             );
         }
 
@@ -443,19 +444,13 @@ impl GnmiSubscriber {
     }
 
     async fn connect(&self) -> Result<Channel> {
-        let use_tls = self.ca_cert_pem.is_some();
-        let scheme = if use_tls { "https" } else { "http" };
-        let endpoint = format!("{scheme}://{}", self.target);
+        let endpoint = format!("{}://{}", self.conn_security.scheme(), self.target);
 
         let mut builder = Channel::from_shared(endpoint.clone())
             .context("invalid endpoint")?
             .timeout(Duration::from_secs(30));
 
-        if let Some(cert_pem) = &self.ca_cert_pem {
-            let ca_cert = Certificate::from_pem(cert_pem.clone());
-            let tls = ClientTlsConfig::new()
-                .ca_certificate(ca_cert)
-                .domain_name(self.tls_domain.clone());
+        if let Some(tls) = self.conn_security.client_tls_config()? {
             builder = builder.tls_config(tls).context("TLS config failed")?;
         }
 
@@ -464,7 +459,19 @@ impl GnmiSubscriber {
             .await
             .with_context(|| format!("failed to connect to {endpoint}"))?;
 
-        info!(target = %self.target, tls = %use_tls, "connected");
+        if !self.conn_security.effective.is_tls() {
+            metrics::counter!(
+                "bonsai_gnmi_plaintext_dial_total",
+                "mode" => self.conn_security.effective.label()
+            )
+            .increment(1);
+        }
+
+        info!(
+            target = %self.target,
+            security = self.conn_security.effective.label(),
+            "connected"
+        );
         Ok(channel)
     }
 }
@@ -486,31 +493,12 @@ pub async fn stop_all_subscribers(subscribers: &mut SubscriberHandleMap) {
     }
 }
 
-/// Vault-aware cert loader — resolves `vault:name` references via the vault, falls back to filesystem.
-pub async fn load_ca_cert_pem(
+/// Resolve the transport security contract for a target (filesystem-only,
+/// used by collector mode where no vault is present).
+pub async fn conn_security_for_target_fs(
     target: &TargetConfig,
-    vault: &crate::credentials::CredentialVault,
-) -> Result<Option<Vec<u8>>> {
-    match &target.ca_cert {
-        Some(path) => {
-            let bytes = crate::tls_util::read_cert_pem(path, vault).await?;
-            Ok(Some(bytes))
-        }
-        None => Ok(None),
-    }
-}
-
-/// Filesystem-only cert loader — used by collector mode where no vault is present.
-pub async fn load_ca_cert_pem_fs(target: &TargetConfig) -> Result<Option<Vec<u8>>> {
-    match &target.ca_cert {
-        Some(path) => {
-            let bytes = tokio::fs::read(path)
-                .await
-                .with_context(|| format!("could not read CA cert from '{path}'"))?;
-            Ok(Some(bytes))
-        }
-        None => Ok(None),
-    }
+) -> Result<crate::gnmi_security::ConnSecurity> {
+    crate::gnmi_security::resolve_conn_security(target, None).await
 }
 
 pub async fn spawn_subscriber_with_creds(
@@ -537,7 +525,7 @@ pub async fn spawn_subscriber_with_creds(
         return Ok(());
     }
 
-    let ca_cert_pem = load_ca_cert_pem_fs(&target).await?;
+    let conn_security = conn_security_for_target_fs(&target).await?;
 
     let subscriber = GnmiSubscriber::new(
         target.address.clone(),
@@ -547,8 +535,7 @@ pub async fn spawn_subscriber_with_creds(
         target.hostname.clone(),
         target.role.clone(),
         target.site.clone(),
-        target.tls_domain.clone().unwrap_or_default(),
-        ca_cert_pem,
+        conn_security,
         std::sync::Arc::clone(bus),
         debouncer,
         subscription_plan_tx.cloned(),

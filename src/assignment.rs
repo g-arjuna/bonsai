@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
-use crate::api::ACQUISITION_CONTRACT_VERSION;
 use crate::api::pb::{AssignmentUpdate, DeviceAssignment};
+use crate::api::{ACQUISITION_CONTRACT_VERSION, SECURITY_CONTRACT_VERSION};
 use crate::config::{AcquisitionMode, AssignmentRule, TargetConfig};
 use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::graph::{BonsaiEvent, SiteRecord};
@@ -252,24 +252,24 @@ impl CollectorManager {
         }
 
         let (assignments, blocked) = self.build_assignments(&collector_id, protocol_version);
-        for address in &blocked {
+        for (address, reason) in &blocked {
             // Fail closed AND visible: an incompatible collector must never
-            // receive explicit/disabled intent (it would interpret it as
-            // automatic collection), so the device is unassigned and the
-            // operator sees it return to the unassigned pool.
+            // receive intent it cannot enforce (it would interpret explicit
+            // acquisition as automatic, or silently drop mTLS client
+            // identity), so the device is unassigned and the operator sees
+            // it return to the unassigned pool.
             warn!(
                 %collector_id,
                 device = %address,
                 protocol_version,
-                "assignment withheld: collector predates the acquisition contract"
+                reason,
+                "assignment withheld: collector predates a required contract"
             );
             metrics::counter!("bonsai_assignment_blocked_protocol_total").increment(1);
-            if let Err(e) = self.registry.assign_device_with_audit(
-                address,
-                None,
-                "system",
-                "acquisition_requires_newer_collector",
-            ) {
+            if let Err(e) = self
+                .registry
+                .assign_device_with_audit(address, None, "system", reason)
+            {
                 warn!(device = %address, %e, "failed to unassign incompatible device");
             }
         }
@@ -493,14 +493,17 @@ impl CollectorManager {
     }
 
     /// Build the DeviceAssignment list for a collector session, enforcing
-    /// the acquisition contract: devices with non-Automatic acquisition
-    /// intent are only delivered to collectors at or above
-    /// ACQUISITION_CONTRACT_VERSION. Returns (assignments, blocked addresses).
+    /// the acquisition and transport-security contracts: devices with
+    /// non-Automatic acquisition intent are only delivered to collectors
+    /// at or above ACQUISITION_CONTRACT_VERSION, and mTLS devices only to
+    /// collectors at or above SECURITY_CONTRACT_VERSION (older collectors
+    /// would silently drop the client identity and downgrade to plain TLS
+    /// verify). Returns (assignments, blocked (address, audit reason)).
     fn build_assignments(
         &self,
         collector_id: &str,
         protocol_version: u32,
-    ) -> (Vec<DeviceAssignment>, Vec<String>) {
+    ) -> (Vec<DeviceAssignment>, Vec<(String, &'static str)>) {
         let targets = match self.registry.list_assigned_to(collector_id) {
             Ok(targets) => targets,
             Err(e) => {
@@ -509,11 +512,19 @@ impl CollectorManager {
             }
         };
         let acquisition_aware = protocol_version >= ACQUISITION_CONTRACT_VERSION;
+        let security_aware = protocol_version >= SECURITY_CONTRACT_VERSION;
         let mut assignments = Vec::new();
         let mut blocked = Vec::new();
         for target in targets {
             if !acquisition_aware && target.acquisition != AcquisitionMode::Automatic {
-                blocked.push(target.address.clone());
+                blocked.push((
+                    target.address.clone(),
+                    "acquisition_requires_newer_collector",
+                ));
+                continue;
+            }
+            if !security_aware && target.security == Some(crate::config::GnmiSecurityMode::Mtls) {
+                blocked.push((target.address.clone(), "security_requires_newer_collector"));
                 continue;
             }
             assignments.push(create_assignment(
@@ -538,18 +549,17 @@ impl CollectorManager {
             }
         };
         let (assignments, blocked) = self.build_assignments(collector_id, version);
-        for address in &blocked {
+        for (address, reason) in &blocked {
             warn!(
                 %collector_id,
                 device = %address,
-                "resync withheld acquisition-incompatible assignment"
+                reason,
+                "resync withheld contract-incompatible assignment"
             );
-            if let Err(e) = self.registry.assign_device_with_audit(
-                address,
-                None,
-                "system",
-                "acquisition_requires_newer_collector",
-            ) {
+            if let Err(e) = self
+                .registry
+                .assign_device_with_audit(address, None, "system", reason)
+            {
                 warn!(device = %address, %e, "failed to unassign incompatible device");
             }
         }
@@ -726,6 +736,9 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            security: None,
+            client_cert: None,
+            client_key: None,
             created_at_ns: 0,
             updated_at_ns: 0,
             created_by: String::new(),
@@ -829,6 +842,78 @@ mod tests {
         assert_eq!(update.assignments.len(), 1);
         let device = update.assignments[0].device.as_ref().unwrap();
         assert_eq!(device.acquisition, "explicit");
+    }
+
+    async fn manager_with_mtls_device() -> (CollectorManager, Arc<ApiRegistry>, tempfile::TempDir) {
+        unsafe { std::env::set_var("BONSAI_ASSIGNMENT_TEST_VAULT", "test-passphrase") };
+        let dir = tempfile::tempdir().unwrap();
+        let registry =
+            Arc::new(ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap());
+        let credentials = Arc::new(
+            CredentialVault::open(dir.path().join("vault"), "BONSAI_ASSIGNMENT_TEST_VAULT")
+                .unwrap(),
+        );
+        let mut target = acquisition_target("10.0.0.2", AcquisitionMode::Automatic);
+        target.security = Some(crate::config::GnmiSecurityMode::Mtls);
+        target.ca_cert = Some("ca.pem".to_string());
+        target.tls_domain = Some("device.example".to_string());
+        target.client_cert = Some("client.pem".to_string());
+        target.client_key = Some("client.key".to_string());
+        registry
+            .add_device_with_audit(target.clone(), "test", "test_add")
+            .unwrap();
+        registry
+            .assign_device_with_audit(
+                &target.address,
+                Some("c1".to_string()),
+                "test",
+                "test_assign",
+            )
+            .unwrap();
+        (
+            CollectorManager::new(registry.clone(), credentials, vec![]),
+            registry,
+            dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn pre_security_collector_never_receives_mtls_assignment() {
+        let (manager, registry, _dir) = manager_with_mtls_device().await;
+        // v2 understands the acquisition contract but predates security
+        // intent — delivering mtls would silently drop client identity.
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), SECURITY_CONTRACT_VERSION - 1)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("initial sync");
+        assert!(
+            update.assignments.is_empty(),
+            "mTLS must not reach a pre-security collector"
+        );
+        assert!(
+            registry
+                .get_device("10.0.0.2")
+                .unwrap()
+                .unwrap()
+                .collector_id
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn security_collector_receives_mtls_assignment() {
+        let (manager, _registry, _dir) = manager_with_mtls_device().await;
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), SECURITY_CONTRACT_VERSION)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("initial sync");
+        assert_eq!(update.assignments.len(), 1);
+        let device = update.assignments[0].device.as_ref().unwrap();
+        assert_eq!(device.security, "mtls");
+        assert_eq!(device.client_cert, "client.pem");
+        assert_eq!(device.client_key, "client.key");
     }
 }
 

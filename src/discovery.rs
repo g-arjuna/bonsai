@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tonic::Request;
 use tonic::metadata::MetadataValue;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig};
+use tonic::transport::Channel;
 
 use crate::catalogue::{
     CataloguePath, CatalogueProfile, canonical_role, is_sp_role, load_catalogue,
@@ -25,6 +25,12 @@ pub struct DiscoveryInput {
     pub password_env: Option<String>,
     pub ca_cert_path: Option<String>,
     pub tls_domain: Option<String>,
+    /// Explicit transport security intent; `None` = legacy inference.
+    pub security: Option<crate::config::GnmiSecurityMode>,
+    /// mTLS client certificate path/`vault:` ref (security="mtls" only).
+    pub client_cert_path: Option<String>,
+    /// mTLS client key path/`vault:` ref (security="mtls" only).
+    pub client_key_path: Option<String>,
     pub role_hint: Option<String>,
     /// Optional vault for resolving `vault:name` cert references.
     pub vault: Option<std::sync::Arc<crate::credentials::CredentialVault>>,
@@ -84,16 +90,10 @@ type PathProfileTemplate = CatalogueProfile;
 type PathTemplate = CataloguePath;
 
 pub async fn discover_device(input: DiscoveryInput) -> Result<DiscoveryReport> {
-    let address = normalize_required("address", input.address)?;
+    let address = normalize_required("address", input.address.clone())?;
+    let channel = connect(&input).await?;
     let username = input.username.or(env_value(input.username_env.as_deref())?);
     let password = input.password.or(env_value(input.password_env.as_deref())?);
-    let channel = connect(
-        &address,
-        input.ca_cert_path.as_deref(),
-        input.tls_domain.as_deref(),
-        input.vault.as_deref(),
-    )
-    .await?;
 
     let mut client = GNmiClient::new(channel);
     let mut request = Request::new(CapabilityRequest::default());
@@ -108,9 +108,21 @@ pub async fn discover_device(input: DiscoveryInput) -> Result<DiscoveryReport> {
     let summary =
         CapabilitySummary::from_response(&response.supported_models, &response.supported_encodings);
     let mut warnings = discovery_warnings(&summary, input.role_hint.as_deref());
-    if input.ca_cert_path.is_some() && input.tls_domain.as_deref().unwrap_or_default().is_empty() {
+    if matches!(
+        crate::gnmi_security::infer_effective_mode(
+            input.security,
+            input
+                .ca_cert_path
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false),
+        ),
+        crate::gnmi_security::EffectiveSecurity::Plaintext { .. }
+    ) {
         warnings.push(
-            "TLS CA cert was provided without tls_domain; SNI may fail on some targets".to_string(),
+            "gNMI discovery is using a plaintext channel; configure security=\"tls_verify\" \
+             or \"mtls\" with ca_cert/tls_domain for production targets"
+                .to_string(),
         );
     }
     let (recommended_profiles, profile_warnings) = recommend_profiles(
@@ -134,7 +146,6 @@ pub async fn gnmi_readiness_report(
     known_issues_path: &str,
 ) -> GnmiReadinessReport {
     let checked_at_ns = crate::graph::common::now_ns();
-    let address = input.address.clone();
     let username = input
         .username
         .clone()
@@ -144,30 +155,39 @@ pub async fn gnmi_readiness_report(
         .clone()
         .or_else(|| env_value(input.password_env.as_deref()).ok().flatten());
     let known_issues = load_known_issues(known_issues_path);
-    let tls_status = if input.ca_cert_path.is_some() {
-        if input
-            .tls_domain
+    let effective_security = crate::gnmi_security::infer_effective_mode(
+        input.security,
+        input
+            .ca_cert_path
             .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .is_empty()
-        {
-            "configured_missing_domain".to_string()
-        } else {
-            "configured".to_string()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false),
+    );
+    let tls_status = match effective_security {
+        crate::gnmi_security::EffectiveSecurity::MutualTls => "mtls".to_string(),
+        crate::gnmi_security::EffectiveSecurity::TlsVerify => {
+            if input
+                .tls_domain
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                "configured_missing_domain".to_string()
+            } else {
+                "configured".to_string()
+            }
         }
-    } else {
-        "disabled".to_string()
+        crate::gnmi_security::EffectiveSecurity::Plaintext { explicit } => {
+            if explicit {
+                "plaintext_explicit".to_string()
+            } else {
+                "plaintext_legacy".to_string()
+            }
+        }
     };
 
-    match connect(
-        &address,
-        input.ca_cert_path.as_deref(),
-        input.tls_domain.as_deref(),
-        input.vault.as_deref(),
-    )
-    .await
-    {
+    match connect(&input).await {
         Ok(channel) => {
             let mut client = GNmiClient::new(channel);
             let mut request = Request::new(CapabilityRequest::default());
@@ -666,36 +686,33 @@ fn discovery_warnings(summary: &CapabilitySummary, role_hint: Option<&str>) -> V
     warnings
 }
 
-async fn connect(
-    address: &str,
-    ca_cert_path: Option<&str>,
-    tls_domain: Option<&str>,
-    vault: Option<&crate::credentials::CredentialVault>,
-) -> Result<Channel> {
-    let use_tls = ca_cert_path.is_some();
-    let scheme = if use_tls { "https" } else { "http" };
-    let endpoint = format!("{scheme}://{address}");
+async fn connect(input: &DiscoveryInput) -> Result<Channel> {
+    let conn = crate::gnmi_security::resolve_conn_security_parts(
+        input.security,
+        input.ca_cert_path.as_deref(),
+        input.tls_domain.as_deref(),
+        input.client_cert_path.as_deref(),
+        input.client_key_path.as_deref(),
+        input.vault.as_deref(),
+    )
+    .await?;
 
+    let endpoint = format!("{}://{}", conn.scheme(), input.address);
     let mut builder = Channel::from_shared(endpoint.clone())
         .context("invalid gNMI endpoint")?
         .timeout(DISCOVERY_TIMEOUT);
 
-    if let Some(path) = ca_cert_path {
-        let cert_pem = if let Some(v) = vault {
-            crate::tls_util::read_cert_pem(path, v).await?
-        } else {
-            tokio::fs::read(path)
-                .await
-                .with_context(|| format!("could not read CA cert from '{path}'"))?
-        };
-        let domain = tls_domain.unwrap_or_default().trim();
-        if domain.is_empty() {
-            bail!("tls_domain is required when ca_cert_path is provided");
-        }
-        let tls = ClientTlsConfig::new()
-            .ca_certificate(Certificate::from_pem(cert_pem))
-            .domain_name(domain.to_string());
+    if let Some(tls) = conn.client_tls_config()? {
         builder = builder.tls_config(tls).context("TLS config failed")?;
+    }
+
+    if !conn.effective.is_tls() {
+        metrics::counter!(
+            "bonsai_gnmi_plaintext_dial_total",
+            "mode" => conn.effective.label(),
+            "rpc" => "discovery"
+        )
+        .increment(1);
     }
 
     builder
