@@ -1558,8 +1558,10 @@ mod tests {
     /// device) pair within the current authority epoch.
     #[tokio::test]
     async fn session_authority_window_accepts_only_current_assignment() {
+        // Automatic mode grants acquisition authority without requiring
+        // selected_paths (Explicit + empty selection is authority-less).
         let (manager, _registry, _dir) =
-            manager_with_device(AcquisitionMode::Explicit).await;
+            manager_with_device(AcquisitionMode::Automatic).await;
         let epoch = manager.authority_epoch();
         let (mut rx, _gen) = manager
             .register_collector(
@@ -1618,7 +1620,7 @@ mod tests {
     #[tokio::test]
     async fn session_authority_window_closes_on_removal_and_reassignment() {
         let (manager, registry, _dir) =
-            manager_with_device(AcquisitionMode::Explicit).await;
+            manager_with_device(AcquisitionMode::Automatic).await;
         let epoch = manager.authority_epoch();
         let (mut rx, _gen) = manager
             .register_collector(
@@ -1674,7 +1676,7 @@ mod tests {
     #[tokio::test]
     async fn session_authority_epoch_changes_across_restart() {
         let (manager, registry, dir) =
-            manager_with_device(AcquisitionMode::Explicit).await;
+            manager_with_device(AcquisitionMode::Automatic).await;
         let epoch1 = manager.authority_epoch();
         let (mut rx, _gen) = manager
             .register_collector(
