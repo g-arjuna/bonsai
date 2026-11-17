@@ -1106,7 +1106,11 @@ mod tests {
         // opt-in): credentials must be stripped and the assignment
         // rejected — version compatibility is not authentication.
         let (mut rx, _gen) = manager
-            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, false)
+            .register_collector(
+                "c1".to_string(),
+                crate::api::PROTOCOL_VERSION_CURRENT,
+                false,
+            )
             .await
             .unwrap();
         let update = rx.recv().await.expect("initial sync");
