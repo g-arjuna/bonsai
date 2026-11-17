@@ -792,20 +792,25 @@ pub fn resolve_subscription_paths(
 
     // Sort overrides correctly or apply them in order
     // Apply Role-Env overrides
-    let role = device.role.as_deref().unwrap_or("");
-    let _env = device.site.as_deref().unwrap_or("data_center"); // or look up actual env
-    // Actually we need the environment, but the environment might be fetched from site or inferred.
-
     for ovr in overrides {
         let matches = match &ovr.scope {
             crate::registry::OverrideScope::Site(s) => device.site.as_deref() == Some(s.as_str()),
             crate::registry::OverrideScope::RoleEnv {
                 role: r,
-                environment: _e,
+                environment: e,
             } => {
-                // Here we would ideally check actual environment, for now just matching role as a best effort
-                // In production, we'd pass environment to this function.
-                role == r.as_str()
+                // RoleEnv scope requires BOTH role and environment. This
+                // resolver is synchronous and has no site→environment
+                // lookup, so it cannot prove the environment half of the
+                // scope — fail closed rather than applying the override
+                // outside its intended scope. RoleEnv overrides still
+                // apply on the recommendation path (synthesizer), which
+                // resolves the real environment.
+                audit.push(format!(
+                    "Skipped role-env override ({}/{}) for '{}': environment unresolved in this context",
+                    r, e, device.address
+                ));
+                false
             }
             crate::registry::OverrideScope::Device(d) => device.address == d.as_str(),
         };

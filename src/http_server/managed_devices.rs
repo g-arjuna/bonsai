@@ -319,6 +319,11 @@ pub(super) async fn save_managed_device(
             target.external_id = existing.external_id.clone();
         }
     }
+    // Validate the FINAL effective configuration — after credential/TLS/
+    // acquisition/selected_paths inheritance — so no caller can persist an
+    // invalid explicit plan through inheritance that request-level
+    // validation never saw.
+    validate_explicit_paths(&target.acquisition, &target.selected_paths)?;
     let address = target.address.clone();
     let result = match state
         .registry
@@ -354,6 +359,14 @@ pub(super) async fn save_managed_device(
                 }));
             }
             let statuses = read_subscription_statuses(state.store.db()).await?;
+            // Propagate acquisition/selection changes to a live collector
+            // promptly: a full resync withdraws obsolete broader
+            // subscriptions instead of waiting for reconnect.
+            if let Some(cid) = device.collector_id.as_deref()
+                && let Some(manager) = state.collector_manager.as_ref()
+            {
+                manager.resync_collector(cid).await;
+            }
             Ok(Json(MutationResponse {
                 success: true,
                 error: String::new(),
@@ -1180,8 +1193,14 @@ pub(super) fn managed_device_json(
     statuses: &HashMap<String, Vec<SubscriptionStatusJson>>,
     overrides: &[crate::registry::PathOverride],
 ) -> ManagedDeviceJson {
-    let (_, audit) = crate::discovery::resolve_subscription_paths(&target, overrides);
-    let plan = crate::subscriber::planned_subscription_plan_for_target(&target);
+    let (resolved_paths, audit) = crate::discovery::resolve_subscription_paths(&target, overrides);
+    // The displayed plan must be the EFFECTIVE plan — the same override-
+    // resolved selection that assignment delivers to the collector — not
+    // the raw desired selection. Plan identity therefore matches what is
+    // actually submitted to the device.
+    let mut plan_target = target.clone();
+    plan_target.selected_paths = resolved_paths;
+    let plan = crate::subscriber::planned_subscription_plan_for_target(&plan_target);
     let address = target.address;
     ManagedDeviceJson {
         enabled: target.enabled,
@@ -1196,6 +1215,7 @@ pub(super) fn managed_device_json(
         role: target.role.unwrap_or_default(),
         site: target.site.unwrap_or_default(),
         selected_paths: target.selected_paths.clone(),
+        resolved_selected_paths: plan_target.selected_paths.clone(),
         acquisition: target.acquisition.as_str().to_string(),
         acquisition_plan_state: plan.state,
         acquisition_plan_id: plan.plan_id,
@@ -1295,7 +1315,7 @@ fn acquisition_mode_from_request(
 /// must be a well-formed structured gNMI path with a supported mode.
 /// Invalid plans are rejected wholesale — no partial acceptance, no silent
 /// drops, no automatic fallback.
-fn validate_explicit_paths(
+pub(super) fn validate_explicit_paths(
     acquisition: &crate::config::AcquisitionMode,
     paths: &[crate::config::SelectedSubscriptionPath],
 ) -> Result<(), (StatusCode, String)> {
@@ -1304,11 +1324,20 @@ fn validate_explicit_paths(
     }
     let mut errors = Vec::new();
     for p in paths {
-        if crate::gnmi_path::parse_path(&p.origin, &p.path).is_err() {
-            errors.push(format!("'{}': malformed gNMI path", p.path));
+        match crate::gnmi_path::parse_path(&p.origin, &p.path) {
+            Ok(_) => {}
+            Err(e) => errors.push(format!("'{}': {}", p.path, e)),
         }
         match p.mode.trim().to_ascii_uppercase().as_str() {
-            "SAMPLE" | "ON_CHANGE" => {}
+            "SAMPLE" => {
+                if p.sample_interval_ns == 0 {
+                    errors.push(format!(
+                        "'{}': SAMPLE mode requires a positive sample_interval_ns",
+                        p.path
+                    ));
+                }
+            }
+            "ON_CHANGE" => {}
             other => errors.push(format!("'{}': unsupported mode '{}'", p.path, other)),
         }
     }

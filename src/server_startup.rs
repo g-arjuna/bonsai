@@ -310,6 +310,24 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 Store::Collector(s) => s.write_subscription_status(status).await,
             }
         }
+        async fn supersede_subscription_statuses_outside_plan(
+            &self,
+            device_address: &str,
+            keep: &std::collections::HashSet<(String, String, String, i64)>,
+        ) -> Result<()> {
+            match self {
+                Store::Core(s) => {
+                    s.supersede_subscription_statuses_outside_plan(device_address, keep)
+                        .await
+                        .map(|_| ())
+                }
+                Store::Collector(s) => {
+                    s.supersede_subscription_statuses_outside_plan(device_address, keep)
+                        .await
+                        .map(|_| ())
+                }
+            }
+        }
         fn publish_event(&self, event: graph::BonsaiEvent) {
             match self {
                 Store::Core(s) => s.publish_event(event),
@@ -1085,7 +1103,10 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             // register_collector returns a Receiver for assignment updates;
             // in mode=all the core already manages subscriptions directly, so
             // we just drop the receiver — it keeps the collector marked as connected.
-            match manager.register_collector(local_id).await {
+            match manager
+                .register_collector(local_id, bonsai::api::PROTOCOL_VERSION_CURRENT)
+                .await
+            {
                 Ok((_assignment_rx, _generation)) => {
                     info!("local in-process collector registered")
                 }

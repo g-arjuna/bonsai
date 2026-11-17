@@ -148,6 +148,35 @@ async fn register_plan<S: BonsaiStore>(
         }
     }
 
+    // Supersede PERSISTED statuses outside the new plan as well. The
+    // in-memory `tracked` sweep above only covers this process's memory;
+    // after a restart it is empty while the graph still holds statuses
+    // written by the previous plan. Without this, an obsolete plan's rows
+    // would remain displayed as current alongside (or instead of) the new
+    // plan. Disabled/rejected plans keep nothing — every persisted row for
+    // the target is superseded.
+    let keep: std::collections::HashSet<(String, String, String, i64)> = if submitted {
+        plan.paths
+            .iter()
+            .map(|e| {
+                (
+                    e.path.clone(),
+                    e.origin.clone(),
+                    e.mode.clone(),
+                    e.sample_interval_ns as i64,
+                )
+            })
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+    if let Err(error) = store
+        .supersede_subscription_statuses_outside_plan(&target, &keep)
+        .await
+    {
+        warn!(%error, target = %target, "failed to supersede persisted subscription statuses");
+    }
+
     if !submitted {
         info!(
             target = %target,

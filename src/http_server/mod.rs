@@ -477,6 +477,9 @@ pub(super) struct ManagedDeviceJson {
     role: String,
     site: String,
     selected_paths: Vec<SelectedSubscriptionPath>,
+    /// The override-resolved effective selection actually assigned to the
+    /// collector — distinct from the raw desired `selected_paths`.
+    resolved_selected_paths: Vec<SelectedSubscriptionPath>,
     /// Acquisition intent: "automatic" | "explicit" | "disabled".
     acquisition: String,
     /// Validated effective plan state for this device:

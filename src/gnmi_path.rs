@@ -4,17 +4,33 @@
 //! Path elements are separated by '/' ONLY outside bracketed key
 //! expressions, so keyed names containing slashes (e.g. `name=Ethernet1/1`,
 //! `name=xe-0/0/0`) survive intact. Elements support `elem[k1=v1][k2=v2]`
-//! key lists. Malformed brackets, empty names/keys and duplicate keys are
-//! rejected — never silently repaired.
+//! key lists. Inside key expressions a backslash escapes the next
+//! character (`\]`, `\[`, `\\`), so key values may contain brackets and
+//! backslashes literally. Malformed brackets, empty names/keys, stray
+//! brackets in element names and duplicate keys are rejected — never
+//! silently repaired. Key values are preserved byte-exact (no trimming).
 
 use std::collections::HashMap;
 
 use crate::proto::gnmi::{Path, PathElem};
 
+/// gNMI model origins are simple identifiers (e.g. "openconfig", "ietf",
+/// "gnmi"). Anything else — including provenance labels such as
+/// "override: site-override(...)" — is not a valid wire origin.
+pub fn valid_origin(origin: &str) -> bool {
+    !origin.is_empty()
+        && origin
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
 /// Parse a configured path string into a structured gNMI Path.
 /// `origin` is the gNMI model origin (e.g. "openconfig"), NOT a provenance
 /// label — callers must keep provenance separate.
 pub fn parse_path(origin: &str, raw_path: &str) -> Result<Path, String> {
+    if !origin.is_empty() && !valid_origin(origin) {
+        return Err(format!("invalid gNMI origin '{}'", origin));
+    }
     let mut elem = Vec::new();
     for segment in split_path_segments(raw_path) {
         let (name, key) = parse_segment(segment)
@@ -31,16 +47,18 @@ pub fn parse_path(origin: &str, raw_path: &str) -> Result<Path, String> {
     })
 }
 
-/// Canonical identity for a structured path: origin plus elements in order,
-/// each rendered as `name{k1=v1,k2=v2}` with keys sorted. Equivalent textual
+/// Canonical identity for a structured path: origin plus elements in order.
+/// Element and key names/values are backslash-escaped (`\`, `,`, `=`, `[`,
+/// `]`) before joining, so key values containing separator characters
+/// cannot collide with a different structured path. Equivalent textual
 /// spellings of the same structured path produce the same key; different
 /// origins or different keyed paths never collapse together.
 pub fn canonical_key(path: &Path) -> String {
     let mut out = String::new();
-    out.push_str(&path.origin);
+    out.push_str(&escape_field(&path.origin));
     for elem in &path.elem {
         out.push('/');
-        out.push_str(&elem.name);
+        out.push_str(&escape_field(&elem.name));
         if !elem.key.is_empty() {
             let mut pairs: Vec<(&String, &String)> = elem.key.iter().collect();
             pairs.sort();
@@ -49,10 +67,23 @@ pub fn canonical_key(path: &Path) -> String {
                 if i > 0 {
                     out.push(',');
                 }
-                out.push_str(&format!("{}={}", k, v));
+                out.push_str(&escape_field(k));
+                out.push('=');
+                out.push_str(&escape_field(v));
             }
             out.push(']');
         }
+    }
+    out
+}
+
+fn escape_field(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if matches!(ch, '\\' | ',' | '=' | '[' | ']') {
+            out.push('\\');
+        }
+        out.push(ch);
     }
     out
 }
@@ -65,13 +96,19 @@ pub fn canonical_path_key(origin: &str, raw_path: &str) -> Option<String> {
 
 /// Split on '/' separators outside '[' ... ']' key expressions. An unclosed
 /// '[' keeps the remainder inside the current segment so the segment parser
-/// rejects it as malformed.
+/// rejects it as malformed. A backslash escapes the next character.
 fn split_path_segments(raw: &str) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut depth = 0usize;
     let mut start = 0usize;
+    let mut escaped = false;
     for (idx, ch) in raw.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match ch {
+            '\\' => escaped = true,
             '[' => depth += 1,
             ']' => depth = depth.saturating_sub(1),
             '/' if depth == 0 => {
@@ -87,8 +124,10 @@ fn split_path_segments(raw: &str) -> Vec<&str> {
 
 fn parse_segment(segment: &str) -> Option<(String, HashMap<String, String>)> {
     let first_key = segment.find('[').unwrap_or(segment.len());
-    let name = segment[..first_key].trim();
-    if name.is_empty() {
+    let name = &segment[..first_key];
+    // Element names must not contain stray brackets; '/' was already
+    // split outside key expressions.
+    if name.is_empty() || name.contains(']') || name.contains('[') {
         return None;
     }
 
@@ -96,24 +135,74 @@ fn parse_segment(segment: &str) -> Option<(String, HashMap<String, String>)> {
     let mut rest = &segment[first_key..];
     while !rest.is_empty() {
         let after_open = rest.strip_prefix('[')?;
-        let close = after_open.find(']')?;
-        let pair = &after_open[..close];
-        let (key_name, key_value) = pair.split_once('=')?;
-        let key_name = key_name.trim();
-        let key_value = key_value.trim();
-        if key_name.is_empty() || key_value.is_empty() {
-            return None;
+        // Find the closing ']' that is not backslash-escaped.
+        let mut close = None;
+        let mut escaped = false;
+        for (i, ch) in after_open.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                ']' => {
+                    close = Some(i);
+                    break;
+                }
+                _ => {}
+            }
         }
-        if key
-            .insert(key_name.to_string(), key_value.to_string())
-            .is_some()
-        {
-            return None;
+        let close = close?;
+        let pair = &after_open[..close];
+        let (key_name, key_value) = split_key_pair(pair)?;
+        if key.insert(key_name, key_value).is_some() {
+            return None; // duplicate key
         }
         rest = &after_open[close + 1..];
     }
 
     Some((name.to_string(), key))
+}
+
+/// Split `name=value` at the first UNESCAPED '='; unescape `\x` → `x` in
+/// both halves. Values are preserved exactly — no trimming.
+fn split_key_pair(pair: &str) -> Option<(String, String)> {
+    let mut escaped = false;
+    let mut eq = None;
+    for (i, ch) in pair.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '=' => {
+                eq = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let eq = eq?;
+    let name = unescape(&pair[..eq])?;
+    let value = unescape(&pair[eq + 1..])?;
+    if name.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some((name, value))
+}
+
+fn unescape(s: &str) -> Option<String> {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            out.push(chars.next()?);
+        } else {
+            out.push(ch);
+        }
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -127,7 +216,7 @@ mod tests {
             "interfaces/interface[name=Ethernet1/1]/state/counters",
         )
         .unwrap();
-        assert_eq!(p.elem.len(), 3);
+        assert_eq!(p.elem.len(), 4);
         assert_eq!(p.elem[1].name, "interface");
         assert_eq!(
             p.elem[1].key.get("name").map(String::as_str),
@@ -152,16 +241,36 @@ mod tests {
     }
 
     #[test]
+    fn escaped_brackets_and_backslash_in_values() {
+        let p = parse_path("", r"foo[name=a\]b][note=x\\y]/bar").unwrap();
+        assert_eq!(p.elem[0].key.get("name").map(String::as_str), Some("a]b"));
+        assert_eq!(p.elem[0].key.get("note").map(String::as_str), Some("x\\y"));
+    }
+
+    #[test]
+    fn key_values_not_trimmed() {
+        let p = parse_path("", "foo[name= spaced ]/bar").unwrap();
+        assert_eq!(
+            p.elem[0].key.get("name").map(String::as_str),
+            Some(" spaced ")
+        );
+    }
+
+    #[test]
     fn malformed_and_duplicate_rejected() {
         assert!(parse_path("", "foo[name=a").is_err());
         assert!(parse_path("", "foo[name=]").is_err());
         assert!(parse_path("", "foo[name=a][name=b]").is_err());
+        assert!(parse_path("", "foo]bar/baz").is_err());
+        assert!(parse_path("", "foo[bar]/baz").is_err());
+        assert!(parse_path("", "foo[name=a]stray/baz").is_err());
         assert!(parse_path("", "/").is_err());
         assert!(parse_path("", "").is_err());
+        assert!(parse_path("override: site-override(x)", "a/b").is_err());
     }
 
     #[test]
-    fn canonical_key_stable_and_origin_sensitive() {
+    fn canonical_key_stable_origin_sensitive_and_unambiguous() {
         let a = parse_path("openconfig", "interfaces/interface[name=Ethernet1/1]").unwrap();
         let b = parse_path("openconfig", "/interfaces/interface[name=Ethernet1/1]/").unwrap();
         assert_eq!(canonical_key(&a), canonical_key(&b));
@@ -169,5 +278,10 @@ mod tests {
         assert_ne!(canonical_key(&a), canonical_key(&c));
         let d = parse_path("openconfig", "interfaces/interface[name=Ethernet1/2]").unwrap();
         assert_ne!(canonical_key(&a), canonical_key(&d));
+        // Separator characters inside values cannot collide: a single key
+        // whose value contains ','/'=' must not equal two separate keys.
+        let f = parse_path("", r"foo[k=a,b]").unwrap();
+        let g = parse_path("", "foo[k=a][x=b]").unwrap();
+        assert_ne!(canonical_key(&f), canonical_key(&g));
     }
 }

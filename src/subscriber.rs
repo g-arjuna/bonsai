@@ -898,8 +898,12 @@ fn acquisition_plan_id(
     entries: &[(String, String, String, u64)],
 ) -> String {
     use std::hash::{Hash, Hasher};
+    // Ordering-independent: the same effective plan in a different
+    // configuration order must produce the same identity.
+    let mut sorted = entries.to_vec();
+    sorted.sort();
     let mut canonical = String::new();
-    for (origin, path, mode, interval) in entries {
+    for (origin, path, mode, interval) in &sorted {
         canonical.push_str(&format!("{}|{}|{}|{}\n", origin, path, mode, interval));
     }
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -931,16 +935,35 @@ fn build_acquisition_plan(
             let mut errors = Vec::new();
             let mut subscriptions = Vec::new();
             let mut entries = Vec::new();
+            // Canonical structured identity → (mode, interval). Identical
+            // duplicates collapse; same path with conflicting parameters
+            // rejects the whole plan — never silently overwrite.
+            let mut seen: std::collections::HashMap<String, (String, u64)> =
+                std::collections::HashMap::new();
             for selected in selected_paths {
                 match subscription_from_selected_path(selected) {
-                    Ok(sub) => {
+                    Ok((sub, canonical)) => {
                         if let Some(expectation) = subscription_expectation(&sub) {
-                            entries.push((
-                                expectation.origin,
-                                expectation.path,
-                                expectation.mode,
-                                expectation.sample_interval_ns,
-                            ));
+                            let sig = (expectation.mode.clone(), expectation.sample_interval_ns);
+                            match seen.get(&canonical) {
+                                Some(prev) if *prev != sig => {
+                                    errors.push(format!(
+                                        "'{}': conflicting duplicate of an earlier selection",
+                                        selected.path
+                                    ));
+                                    continue;
+                                }
+                                Some(_) => continue, // exact duplicate — collapse
+                                None => {
+                                    seen.insert(canonical, sig.clone());
+                                    entries.push((
+                                        expectation.origin,
+                                        expectation.path,
+                                        expectation.mode,
+                                        expectation.sample_interval_ns,
+                                    ));
+                                }
+                            }
                         }
                         subscriptions.push(sub);
                     }
@@ -991,18 +1014,24 @@ fn build_acquisition_plan(
 fn build_selected_subscriptions(selected_paths: &[SelectedSubscriptionPath]) -> Vec<Subscription> {
     selected_paths
         .iter()
-        .filter_map(|s| subscription_from_selected_path(s).ok())
+        .filter_map(|s| subscription_from_selected_path(s).ok().map(|(sub, _)| sub))
         .collect()
 }
 
 fn subscription_from_selected_path(
     selected: &SelectedSubscriptionPath,
-) -> Result<Subscription, String> {
+) -> Result<(Subscription, String), String> {
     let path = selected_path_to_gnmi(&selected.origin, &selected.path)
         .ok_or_else(|| "invalid gNMI path syntax".to_string())?;
+    let canonical = crate::gnmi_path::canonical_key(&path);
     match selected.mode.trim().to_ascii_uppercase().as_str() {
-        "SAMPLE" => Ok(sub_sample(path, selected.sample_interval_ns)),
-        "ON_CHANGE" => Ok(sub_on_change(path)),
+        "SAMPLE" => {
+            if selected.sample_interval_ns == 0 {
+                return Err("SAMPLE mode requires a positive sample_interval_ns".to_string());
+            }
+            Ok((sub_sample(path, selected.sample_interval_ns), canonical))
+        }
+        "ON_CHANGE" => Ok((sub_on_change(path), canonical)),
         other => Err(format!("unsupported subscription mode '{}'", other)),
     }
 }
@@ -1269,9 +1298,83 @@ mod tests {
             optional: false,
         };
 
-        let sub = subscription_from_selected_path(&selected).expect("subscription");
+        let (sub, _) = subscription_from_selected_path(&selected).expect("subscription");
         assert_eq!(sub.mode, SubscriptionMode::Sample as i32);
         assert_eq!(sub.sample_interval, 10_000_000_000);
         assert_eq!(sub.path.as_ref().expect("path").origin, "openconfig");
+    }
+
+    fn sel(path: &str, mode: &str, interval_ns: u64) -> SelectedSubscriptionPath {
+        SelectedSubscriptionPath {
+            provenance: String::new(),
+            path: path.to_string(),
+            origin: String::new(),
+            mode: mode.to_string(),
+            sample_interval_ns: interval_ns,
+            rationale: String::new(),
+            optional: false,
+        }
+    }
+
+    #[test]
+    fn explicit_plan_id_is_order_independent() {
+        let caps = ModelCapabilities::fallback(None);
+        let a = build_acquisition_plan(
+            AcquisitionMode::Explicit,
+            &[sel("interfaces", "ON_CHANGE", 0), sel("system", "SAMPLE", 5_000_000_000)],
+            &caps,
+        );
+        let b = build_acquisition_plan(
+            AcquisitionMode::Explicit,
+            &[sel("system", "SAMPLE", 5_000_000_000), sel("interfaces", "ON_CHANGE", 0)],
+            &caps,
+        );
+        let id = |p: &AcquisitionPlan| match p {
+            AcquisitionPlan::Ready { plan_id, .. } => plan_id.clone(),
+            _ => panic!("expected ready plan"),
+        };
+        assert_eq!(id(&a), id(&b));
+    }
+
+    #[test]
+    fn explicit_plan_rejects_conflicting_duplicate() {
+        let caps = ModelCapabilities::fallback(None);
+        let plan = build_acquisition_plan(
+            AcquisitionMode::Explicit,
+            &[
+                sel("interfaces", "ON_CHANGE", 0),
+                sel("interfaces", "SAMPLE", 5_000_000_000),
+            ],
+            &caps,
+        );
+        assert!(matches!(plan, AcquisitionPlan::Rejected { .. }));
+    }
+
+    #[test]
+    fn explicit_plan_collapses_identical_duplicate() {
+        let caps = ModelCapabilities::fallback(None);
+        let plan = build_acquisition_plan(
+            AcquisitionMode::Explicit,
+            &[
+                sel("interfaces", "ON_CHANGE", 0),
+                sel("/interfaces/", "ON_CHANGE", 0),
+            ],
+            &caps,
+        );
+        match plan {
+            AcquisitionPlan::Ready { subscriptions, .. } => assert_eq!(subscriptions.len(), 1),
+            _ => panic!("expected ready plan"),
+        }
+    }
+
+    #[test]
+    fn sample_mode_requires_positive_interval() {
+        let caps = ModelCapabilities::fallback(None);
+        let plan = build_acquisition_plan(
+            AcquisitionMode::Explicit,
+            &[sel("interfaces", "SAMPLE", 0)],
+            &caps,
+        );
+        assert!(matches!(plan, AcquisitionPlan::Rejected { .. }));
     }
 }

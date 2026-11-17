@@ -455,6 +455,16 @@ impl BonsaiStore for GraphStore {
         self.write_subscription_status(status).await
     }
 
+    async fn supersede_subscription_statuses_outside_plan(
+        &self,
+        device_address: &str,
+        keep: &std::collections::HashSet<(String, String, String, i64)>,
+    ) -> Result<()> {
+        self.supersede_subscription_statuses_outside_plan(device_address, keep)
+            .await
+            .map(|_| ())
+    }
+
     fn publish_event(&self, event: BonsaiEvent) {
         self.publish_event(event)
     }
@@ -4121,6 +4131,84 @@ impl GraphStore {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("subscription status write connection")?;
             write_subscription_status_blocking(&conn, status)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Supersede persisted SubscriptionStatus rows for `device_address`
+    /// whose (path, origin, mode, interval) is not in `keep`. Used by the
+    /// subscription verifier on plan registration so statuses persisted by
+    /// an obsolete plan — including rows surviving a restart, where the
+    /// verifier's in-memory `tracked` map is empty — are not left
+    /// displayed as current.
+    pub async fn supersede_subscription_statuses_outside_plan(
+        &self,
+        device_address: &str,
+        keep: &std::collections::HashSet<(String, String, String, i64)>,
+    ) -> Result<usize> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        let addr = device_address.to_string();
+        let keep = keep.clone();
+        let now = now_ns();
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("subscription status supersede connection")?;
+            let rows = conn
+                .query(&format!(
+                    "MATCH (s:SubscriptionStatus {{device_address: '{}'}}) \
+                     RETURN s.path, s.origin, s.mode, s.sample_interval_ns, s.status, \
+                            s.first_observed_at, s.last_observed_at",
+                    addr.replace('\'', "\\'")
+                ))
+                .context("query subscription statuses")?;
+            let mut superseded = 0usize;
+            for row in rows {
+                let path = match &row[0] {
+                    Value::String(s) => s.clone(),
+                    _ => continue,
+                };
+                let origin = match &row[1] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let mode = match &row[2] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let interval = match &row[3] {
+                    Value::Int64(n) => *n,
+                    _ => 0,
+                };
+                if keep.contains(&(path.clone(), origin.clone(), mode.clone(), interval)) {
+                    continue;
+                }
+                let first = {
+                    let t = read_ts_ns(&row[5]);
+                    if t > 0 { t } else { now }
+                };
+                let last = {
+                    let t = read_ts_ns(&row[6]);
+                    if t > 0 { t } else { now }
+                };
+                write_subscription_status_blocking(
+                    &conn,
+                    SubscriptionStatusWrite {
+                        device_address: addr.clone(),
+                        path,
+                        origin,
+                        mode,
+                        sample_interval_ns: interval,
+                        status: "superseded".to_string(),
+                        first_observed_at_ns: first,
+                        last_observed_at_ns: last,
+                        updated_at_ns: now,
+                    },
+                )?;
+                superseded += 1;
+            }
+            Ok(superseded)
         })
         .await
         .context("spawn_blocking panicked")?
