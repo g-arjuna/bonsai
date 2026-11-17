@@ -1967,10 +1967,10 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_reaches_v7_with_inventory_columns_and_index() {
+    fn fresh_database_reaches_v8_with_inventory_columns_and_index() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_at(&dir).expect("open");
-        assert_eq!(store.schema_version().expect("version"), 7);
+        assert_eq!(store.schema_version().expect("version"), 8);
 
         let db = store.db.lock().unwrap();
         let mut stmt = db
@@ -1989,6 +1989,10 @@ mod tests {
             "inventory_platform",
             "inventory_status",
             "inventory_tenant",
+            "acquisition",
+            "security",
+            "client_cert",
+            "client_key",
         ] {
             assert!(cols.contains(col), "missing column {col}");
         }
@@ -2004,7 +2008,7 @@ mod tests {
     }
 
     #[test]
-    fn v5_database_upgrades_to_v7_preserving_rows_and_paths() {
+    fn v5_database_upgrades_to_v8_preserving_rows_and_paths() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join(DB_FILE);
         {
@@ -2022,8 +2026,8 @@ mod tests {
             conn.execute("PRAGMA user_version=5", []).expect("set v5");
         }
 
-        let store = SqliteStore::open_file(&db_path).expect("migrate v5->v7");
-        assert_eq!(store.schema_version().expect("version"), 7);
+        let store = SqliteStore::open_file(&db_path).expect("migrate v5->v8");
+        assert_eq!(store.schema_version().expect("version"), 8);
 
         let devices = store.list_devices().expect("list");
         assert_eq!(devices.len(), 1);
@@ -2036,6 +2040,11 @@ mod tests {
         assert!(!d.inventory_only);
         assert!(d.selected_paths.is_empty());
         assert!(d.extra_ips.is_empty());
+        // v8 columns default to legacy inference / automatic acquisition.
+        assert_eq!(d.security, None);
+        assert_eq!(d.acquisition, crate::config::AcquisitionMode::Automatic);
+        assert!(d.client_cert.is_none());
+        assert!(d.client_key.is_none());
 
         // selected_paths / extra_ips round-trip through upsert+read.
         let mut updated = d.clone();
@@ -2070,7 +2079,7 @@ mod tests {
         }
 
         let store = SqliteStore::open_file(&db_path).expect("migrate partial v6");
-        assert_eq!(store.schema_version().expect("version"), 7);
+        assert_eq!(store.schema_version().expect("version"), 8);
         let devices = store.list_devices().expect("list");
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].address, "10.0.0.2");
