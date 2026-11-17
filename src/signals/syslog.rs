@@ -790,6 +790,7 @@ async fn handle_frame(
     bus.publish(TelemetryUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: "syslog".to_string(),
         target: src.source_key.clone(),
         vendor: target.candidate_vendor().to_string(),
         hostname: event.hostname.clone(),
@@ -807,6 +808,7 @@ async fn handle_frame(
         bus.publish(TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: "syslog".to_string(),
             target: src.source_key.clone(),
             vendor: target.candidate_vendor().to_string(),
             hostname: fact.hostname.clone(),

@@ -710,6 +710,7 @@ fn snmp_trap_update(
     TelemetryUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: String::new(),
         target: source_key.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: String::new(),
@@ -759,6 +760,7 @@ fn snmp_fact_update(
     TelemetryUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: String::new(),
         target: source_key.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: String::new(),

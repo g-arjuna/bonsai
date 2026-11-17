@@ -27,6 +27,7 @@ use crate::config::{
 };
 use crate::counter_summarizer::CounterSummarizer;
 use crate::event_bus::InProcessBus;
+use crate::subscription_sessions::SessionLifecycleEvent;
 use crate::subscription_status::SubscriptionPlan;
 use crate::telemetry::{TelemetryEvent, TelemetryUpdate};
 
@@ -257,6 +258,7 @@ pub fn telemetry_to_ingest_update(
         collector_id: collector_id.to_string(),
         plan_id: update.plan_id.clone(),
         session_id: update.session_id.clone(),
+        source_protocol: update.source_protocol.clone(),
         target: update.target.clone(),
         vendor: update.vendor.clone(),
         hostname: update.hostname.clone(),
@@ -277,10 +279,15 @@ pub fn summary_to_ingest_update(
     summary: InterfaceSummary,
 ) -> Result<ProtoTelemetryIngestUpdate> {
     // target and if_name are already on the summary; use template metadata when available.
+    // M5.2B: an aggregate window may span observations from different
+    // subscription sessions, so a summary must NEVER inherit the
+    // template's plan/session identity — derived summaries are
+    // explicitly non-authoritative for raw subscription coverage.
     Ok(ProtoTelemetryIngestUpdate {
         collector_id: collector_id.to_string(),
-        plan_id: template.map_or_else(String::new, |t| t.plan_id.clone()),
-        session_id: template.map_or_else(String::new, |t| t.session_id.clone()),
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: "gnmi_summary".to_string(),
         target: template.map_or_else(|| summary.target.clone(), |t| t.target.clone()),
         vendor: template.map_or_else(String::new, |t| t.vendor.clone()),
         hostname: template.map_or_else(String::new, |t| t.hostname.clone()),
@@ -299,6 +306,7 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
         return Ok(TelemetryUpdate {
             plan_id: update.plan_id,
             session_id: update.session_id,
+            source_protocol: update.source_protocol,
             target: update.target,
             vendor: update.vendor,
             hostname: update.hostname,
@@ -316,6 +324,7 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
     Ok(TelemetryUpdate {
         plan_id: update.plan_id,
         session_id: update.session_id,
+        source_protocol: update.source_protocol,
         target: update.target,
         vendor: update.vendor,
         hostname: update.hostname,
@@ -709,8 +718,15 @@ async fn queue_bus_updates_summary(
                     Some(update) => {
                         let classified = update.classify();
                         if let TelemetryEvent::InterfaceStats { .. } = classified {
-                            // Counter update: feed the summarizer.
-                            if let Some(summary) = summarizer.observe(&update) {
+                            // M5.2B: observations carrying authoritative
+                            // session provenance must reach the core raw —
+                            // a mixed-session aggregate can never stand in
+                            // for per-session receive evidence.
+                            if update.source_protocol == "gnmi" && !update.session_id.is_empty() {
+                                let proto = telemetry_to_ingest_update(collector_id, &update)?;
+                                queue.append(proto, collector_id)?;
+                            } else if let Some(summary) = summarizer.observe(&update) {
+                                // Counter update: feed the summarizer.
                                 let proto = summary_to_ingest_update(collector_id, Some(&update), summary)?;
                                 queue.append(proto, collector_id)?;
                                 metrics::counter!("bonsai_summaries_emitted_total", "collector_id" => collector_id.to_string()).increment(1);
@@ -1289,6 +1305,7 @@ mod tests {
         let update = TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             target: "10.0.0.1:57400".to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "srl1".to_string(),
@@ -1323,6 +1340,7 @@ mod tests {
             let update = TelemetryUpdate {
                 plan_id: String::new(),
                 session_id: String::new(),
+                source_protocol: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1367,6 +1385,7 @@ mod tests {
             let update = TelemetryUpdate {
                 plan_id: String::new(),
                 session_id: String::new(),
+                source_protocol: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1497,6 +1516,7 @@ mod tests {
             &TelemetryUpdate {
                 plan_id: String::new(),
                 session_id: String::new(),
+                source_protocol: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1845,6 +1865,16 @@ mod tests {
         // All RPCs other than telemetry_ingest are unused by the drain
         // path — written out explicitly because #[async_trait] cannot
         // desugar async fns emitted by an inner macro_rules! call.
+        async fn subscription_lifecycle(
+            &self,
+            _r: tonic::Request<tonic::Streaming<crate::api::pb::SubscriptionLifecycleEvent>>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::SubscriptionLifecycleResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("subscription_lifecycle"))
+        }
+
         async fn get_leader(
             &self,
             _r: tonic::Request<crate::api::pb::GetLeaderRequest>,
@@ -2285,6 +2315,28 @@ mod tests {
     }
 }
 
+/// Convert an internal lifecycle event to its wire form. The collector
+/// id is stamped here from the authenticated session identity — never
+/// trusted from event content.
+fn lifecycle_event_to_proto(
+    collector_id: &str,
+    ev: &SessionLifecycleEvent,
+) -> crate::api::pb::SubscriptionLifecycleEvent {
+    crate::api::pb::SubscriptionLifecycleEvent {
+        collector_id: collector_id.to_string(),
+        device_address: ev.target.clone(),
+        plan_id: ev.plan_id.clone(),
+        session_id: ev.session_id.clone(),
+        state: ev.state.clone(),
+        transition_seq: ev.transition_seq,
+        authority_epoch: ev.authority_epoch,
+        assignment_generation: ev.assignment_generation,
+        occurred_at_ns: ev.occurred_at_ns,
+        detail: ev.detail.clone(),
+        protocol_version: crate::api::PROTOCOL_VERSION,
+    }
+}
+
 pub async fn run_collector_manager(
     cfg: Arc<RuntimeConfig>,
     _collector_cfg: Arc<CollectorConfig>,
@@ -2305,6 +2357,25 @@ pub async fn run_collector_manager(
 
     let startup_instant = Instant::now();
     let mut subscribers: crate::subscriber::SubscriberHandleMap = HashMap::new();
+    // Authoritative subscription-lifecycle channel (M5.2B): bounded,
+    // never silently dropped — a full channel applies backpressure to
+    // the emitting subscriber rather than losing a terminal transition.
+    // A dedicated forwarder task owns the receiver and maintains its own
+    // core connection so lifecycle evidence survives assignment-stream
+    // reconnects; stale (epoch, generation) stamps are fenced core-side.
+    let (lifecycle_tx, lifecycle_rx) = mpsc::channel::<SessionLifecycleEvent>(1024);
+    {
+        let fwd_cfg = Arc::clone(&cfg);
+        let fwd_id = collector_id.clone();
+        let fwd_shutdown = shutdown.clone();
+        tokio::spawn(run_lifecycle_forwarder(
+            fwd_cfg,
+            fwd_id,
+            lifecycle_rx,
+            fwd_shutdown,
+        ));
+    }
+    let lifecycle_tx = Some(lifecycle_tx);
     // Last (authority_epoch, generation) applied — persists across
     // reconnects. Core numbers generations per collector id within an
     // authority epoch; a core restart produces a NEW epoch, so delayed
@@ -2397,6 +2468,7 @@ pub async fn run_collector_manager(
                                 &mut subscribers,
                                 &mut last_authority_epoch,
                                 &mut last_applied_generation,
+                                &lifecycle_tx,
                             ).await;
                             // Authority is renewed ONLY by an accepted
                             // full sync — never by connection alone.
@@ -2496,6 +2568,116 @@ pub async fn run_collector_manager(
     }
 }
 
+/// Dedicated lifecycle-evidence forwarder (M5.2B). Maintains its own
+/// core connection independent of the assignment stream: connects
+/// lazily on the first event, reconnects with backoff on failure, and
+/// buffers events in the bounded channel while disconnected. Events
+/// carry the (authority_epoch, assignment_generation) stamp from when
+/// they were emitted, so delayed delivery across a core restart is
+/// fenced by the core's epoch check — a stale lifecycle event can never
+/// become current authority.
+async fn run_lifecycle_forwarder(
+    cfg: Arc<RuntimeConfig>,
+    collector_id: String,
+    mut rx: mpsc::Receiver<SessionLifecycleEvent>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    'outer: loop {
+        // Lazy connect: no idle lifecycle RPC while no session activity.
+        let first = tokio::select! {
+            _ = shutdown.changed() => return Ok(()),
+            ev = rx.recv() => ev,
+        };
+        let Some(first) = first else {
+            return Ok(()); // all producers gone
+        };
+
+        let client = loop {
+            match create_ingest_client(&cfg).await {
+                Ok(c) => break c,
+                Err(error) => {
+                    warn!(%error, %collector_id, "lifecycle forwarder: core connect failed; retrying in 5s");
+                    tokio::select! {
+                        _ = shutdown.changed() => return Ok(()),
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    }
+                }
+            }
+        };
+
+        let (req_tx, req_rx) = mpsc::channel::<crate::api::pb::SubscriptionLifecycleEvent>(256);
+        let (done_tx, mut done_rx) = mpsc::channel::<()>(1);
+        {
+            let mut lc_client = client.clone();
+            tokio::spawn(async move {
+                let stream = tokio_stream::wrappers::ReceiverStream::new(req_rx);
+                let outcome = async {
+                    let resp = lc_client
+                        .subscription_lifecycle(Request::new(stream))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    // Exactly one terminal response after the client
+                    // stream closes; surface rejections honestly.
+                    let r = resp.into_inner();
+                    if r.rejected > 0 || !r.error.is_empty() {
+                        warn!(
+                            accepted = r.accepted,
+                            rejected = r.rejected,
+                            error = %r.error,
+                            "core rejected subscription lifecycle records"
+                        );
+                        metrics::counter!("bonsai_subscription_lifecycle_rejected_total")
+                            .increment(r.rejected);
+                    }
+                    Ok::<(), String>(())
+                }
+                .await;
+                if let Err(error) = outcome {
+                    warn!(%error, "subscription lifecycle RPC stream failed");
+                }
+                let _ = done_tx.send(()).await;
+            });
+        }
+
+        // Deliver the already-received first event, then stream the rest.
+        if req_tx
+            .send(lifecycle_event_to_proto(&collector_id, &first))
+            .await
+            .is_err()
+        {
+            warn!("lifecycle RPC request channel closed");
+            continue 'outer;
+        }
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => return Ok(()),
+                _ = done_rx.recv() => {
+                    warn!("subscription lifecycle RPC stream ended; reconnecting");
+                    metrics::counter!("bonsai_subscription_lifecycle_stream_reconnects_total").increment(1);
+                    // req_tx drops here → client stream closes → RPC ends.
+                    tokio::select! {
+                        _ = shutdown.changed() => return Ok(()),
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    }
+                    continue 'outer;
+                }
+                ev = rx.recv() => {
+                    match ev {
+                        Some(ev) => {
+                            let proto = lifecycle_event_to_proto(&collector_id, &ev);
+                            if req_tx.send(proto).await.is_err() {
+                                warn!("lifecycle RPC request channel closed");
+                                continue 'outer;
+                            }
+                        }
+                        None => return Ok(()),
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Bounded disconnected-assignment policy (M5.2A): while the assignment
 /// stream is down the collector keeps its last-applied subscribers for at
 /// most this long, then stops them. Stale remote authority is never held
@@ -2522,7 +2704,19 @@ pub async fn handle_assignment_update(
     subscribers: &mut crate::subscriber::SubscriberHandleMap,
     last_authority_epoch: &mut u64,
     last_applied_generation: &mut u64,
+    lifecycle_tx: &Option<mpsc::Sender<SessionLifecycleEvent>>,
 ) -> bool {
+    // Assignment authority stamped on every lifecycle transition this
+    // update produces: the (epoch, generation) the collector applied.
+    let authority_epoch = update.authority_epoch;
+    let assignment_generation = update.generation;
+    let lifecycle = lifecycle_tx
+        .as_ref()
+        .map(|tx| crate::subscriber::LifecycleHandle {
+            tx: tx.clone(),
+            authority_epoch,
+            assignment_generation,
+        });
     let mut renewed = false;
     if update.authority_epoch == 0 {
         // Legacy core without epoch fencing.
@@ -2649,6 +2843,12 @@ pub async fn handle_assignment_update(
                 "rejected",
                 assignment.reject_reason.clone(),
             );
+            if let Some(h) = &lifecycle {
+                let plan = crate::subscriber::planned_subscription_plan_for_target(&target);
+                crate::subscriber::SessionEmitter::for_plan(h, &target.address, &plan.plan_id)
+                    .emit_plan("failed", &assignment.reject_reason)
+                    .await;
+            }
             continue;
         }
 
@@ -2658,6 +2858,7 @@ pub async fn handle_assignment_update(
             None, // debouncer is local to core
             subscription_plan_tx.as_ref(),
             subscribers,
+            lifecycle.as_ref(),
         )
         .await
         {
@@ -2679,6 +2880,12 @@ pub async fn handle_assignment_update(
                     "rejected",
                     format!("{error:#}"),
                 );
+                if let Some(h) = &lifecycle {
+                    let plan = crate::subscriber::planned_subscription_plan_for_target(&target);
+                    crate::subscriber::SessionEmitter::for_plan(h, &target.address, &plan.plan_id)
+                        .emit_plan("failed", format!("{error:#}"))
+                        .await;
+                }
             }
         }
     }

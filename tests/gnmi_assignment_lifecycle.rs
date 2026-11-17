@@ -264,6 +264,7 @@ impl Rig {
             &mut self.subscribers,
             &mut self.last_epoch,
             &mut self.last_generation,
+            &None,
         )
         .await;
     }

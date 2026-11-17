@@ -56,6 +56,7 @@ pub mod sqlite_store;
 pub mod store;
 pub mod streaming;
 pub mod subscriber;
+pub mod subscription_sessions;
 pub mod subscription_status;
 pub mod synthesizer;
 pub mod telemetry;

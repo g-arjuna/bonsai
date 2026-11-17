@@ -20,6 +20,11 @@ pub struct TelemetryUpdate {
     /// without session provenance. Late data from a previous session must
     /// not satisfy current-session coverage.
     pub session_id: String,
+    /// Producer protocol provenance (M5.2B): "gnmi" for device-facing
+    /// gNMI subscription observations; empty for producers without an
+    /// explicit protocol claim. Only "gnmi" observations carrying a
+    /// registered current session may satisfy gNMI subscription coverage.
+    pub source_protocol: String,
 }
 
 /// Classified form of a TelemetryUpdate after path parsing.

@@ -453,6 +453,7 @@ fn telemetry_update(
     TelemetryIngestUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: String::new(),
         collector_id: collector_id.to_string(),
         target: target_addr.to_string(),
         vendor: String::new(),
@@ -1064,6 +1065,7 @@ async fn provisional_payloads_cannot_gain_canonical_authority() {
     let flow = TelemetryIngestUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: String::new(),
         collector_id: "site-a".to_string(),
         target: "flowsrc/site-a/nf9/198.51.100.9:49152/sid7".to_string(),
         vendor: String::new(),
@@ -2475,6 +2477,7 @@ fn netflow_update(
     TelemetryIngestUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: String::new(),
         collector_id: collector_id.to_string(),
         target: target_key.to_string(),
         vendor: String::new(),
@@ -2685,6 +2688,7 @@ async fn otlp_provisional_app_id_is_renamespaced() {
     let update = TelemetryIngestUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: String::new(),
         collector_id: "site-a".to_string(),
         target: "otlpsrc/site-b/http/10.4.0.5:4317".to_string(),
         vendor: String::new(),

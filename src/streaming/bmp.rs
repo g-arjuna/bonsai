@@ -250,6 +250,7 @@ fn publish_event(
     bus.publish(TelemetryUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: "bmp".to_string(),
         target: resolved.address,
         vendor: resolved.vendor,
         hostname: resolved.hostname,

@@ -51,6 +51,7 @@ async fn b09_bmp_peer_state_transition_emits_state_change_event() {
         .write(TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             timestamp_ns: 1_700_000_000_000_000_000,
             target: "172.20.0.11:57400".to_string(),
             vendor: "frr".to_string(),
@@ -68,6 +69,7 @@ async fn b09_bmp_peer_state_transition_emits_state_change_event() {
         .write(TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             timestamp_ns: 1_700_000_005_000_000_000,
             target: "172.20.0.11:57400".to_string(),
             vendor: "frr".to_string(),
@@ -85,6 +87,7 @@ async fn b09_bmp_peer_state_transition_emits_state_change_event() {
         .write(TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             timestamp_ns: 1_700_000_006_000_000_000,
             target: "172.20.0.11:57400".to_string(),
             vendor: "frr".to_string(),
@@ -103,6 +106,7 @@ async fn b09_bmp_peer_state_transition_emits_state_change_event() {
         .write(TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             timestamp_ns: 1_700_000_007_000_000_000,
             target: "172.20.0.11:57400".to_string(),
             vendor: "frr".to_string(),

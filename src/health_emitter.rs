@@ -60,6 +60,7 @@ impl HealthEmitter {
         let update = TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             target: "health-emitter".to_string(),
             vendor: String::new(),
             hostname: String::new(),

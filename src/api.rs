@@ -109,6 +109,12 @@ pub struct BonsaiService<S: BonsaiStore> {
     dev_open_credential_assignments: bool,
     ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
     detection_coordinator: Option<Arc<WriteCoordinator>>,
+    /// Authoritative subscription-session registry (M5.2B). Remote
+    /// collectors feed it through the authenticated
+    /// `SubscriptionLifecycle` RPC; local acquisition feeds it
+    /// in-process; the subscription verifier reads current sessions
+    /// from it.
+    session_registry: Arc<crate::subscription_sessions::SubscriptionSessionRegistry>,
 }
 
 impl<S: BonsaiStore> BonsaiService<S> {
@@ -141,7 +147,20 @@ impl<S: BonsaiStore> BonsaiService<S> {
             dev_open_credential_assignments: false,
             ha_coordinator,
             detection_coordinator,
+            session_registry: Arc::new(
+                crate::subscription_sessions::SubscriptionSessionRegistry::new(),
+            ),
         }
+    }
+
+    /// Share the authoritative session registry with the subscription
+    /// verifier and local acquisition path (M5.2B).
+    pub fn with_session_registry(
+        mut self,
+        registry: Arc<crate::subscription_sessions::SubscriptionSessionRegistry>,
+    ) -> Self {
+        self.session_registry = registry;
+        self
     }
 
     /// Set the runtime authentication policy (G5). `server_startup`
@@ -2058,6 +2077,176 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             error: String::new(),
             protocol_version: PROTOCOL_VERSION_CURRENT,
             rejected,
+        }))
+    }
+
+    /// M5.2B authoritative subscription-lifecycle ingress. Every record
+    /// is validated against: the transport-attested collector identity
+    /// (per-message `authorize_collector`), the device→collector
+    /// assignment binding, the current assignment authority epoch, the
+    /// applicable assignment revision window, and the lifecycle
+    /// transition state machine. Unauthenticated development-compat
+    /// sessions are permanently rejected per-record — they may keep
+    /// acquiring telemetry but can never establish verified coverage.
+    async fn subscription_lifecycle(
+        &self,
+        req: Request<Streaming<pb::SubscriptionLifecycleEvent>>,
+    ) -> Result<Response<pb::SubscriptionLifecycleResponse>, Status> {
+        let principal = self.require_principal(&req)?;
+        let mut audited = std::collections::HashSet::new();
+        let mut stream = req.into_inner();
+        let mut accepted = 0_u64;
+        let mut rejected = 0_u64;
+
+        while let Some(event) = stream
+            .message()
+            .await
+            .map_err(|e| Status::unavailable(e.to_string()))?
+        {
+            let collector_id = event.collector_id.clone();
+
+            // Unauthenticated (development-compat) sessions cannot
+            // establish verified subscription evidence.
+            let grant = match &principal {
+                Some(p) => match self.authorize_ingest(Some(p), &collector_id) {
+                    Ok(Some(g)) => {
+                        self.audit_ingest_grant(p, &g, &mut audited);
+                        Some(g)
+                    }
+                    Ok(None) => None,
+                    Err(status) if is_permanent_ingest_rejection(&status) => {
+                        rejected += 1;
+                        continue;
+                    }
+                    Err(status) => return Err(status),
+                },
+                None => {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "unauthenticated"
+                    )
+                    .increment(1);
+                    continue;
+                }
+            };
+            let Some(grant) = grant else {
+                rejected += 1;
+                continue;
+            };
+
+            match check_protocol_compat(event.protocol_version, PROTOCOL_VERSION_CURRENT) {
+                VersionCompat::Compatible | VersionCompat::MinorSkew { .. } => {}
+                VersionCompat::MajorSkew { .. } => {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "protocol_skew"
+                    )
+                    .increment(1);
+                    continue;
+                }
+            }
+
+            // Device must be currently assigned to THIS collector —
+            // lifecycle evidence can never establish authority for an
+            // unrelated device.
+            let bare = crate::registry::strip_port(&event.device_address);
+            let device_assigned = self
+                .registry
+                .get_device(bare)
+                .map_err(|e| {
+                    tracing::error!(%e, "lifecycle authorization registry lookup failed");
+                    Status::internal("device registry error")
+                })?
+                .is_some_and(|t| {
+                    t.enabled && t.collector_id.as_deref() == Some(grant.collector_id())
+                });
+            if !device_assigned {
+                rejected += 1;
+                metrics::counter!(
+                    "bonsai_subscription_lifecycle_rejected_total",
+                    "reason" => "unauthorized_device"
+                )
+                .increment(1);
+                tracing::warn!(
+                    collector_id = %grant.collector_id(),
+                    device = %event.device_address,
+                    "lifecycle event denied: device not assigned to collector"
+                );
+                continue;
+            }
+
+            // Applicable assignment authority: current epoch and a
+            // generation inside this device's assigned-authority window.
+            // Marks are keyed by the assigned device address verbatim —
+            // the same string the collector stamps on lifecycle events.
+            let authority_ok = self.collector_manager.as_ref().is_some_and(|m| {
+                m.validate_session_authority(
+                    grant.collector_id(),
+                    &event.device_address,
+                    event.authority_epoch,
+                    event.assignment_generation,
+                )
+            });
+            if !authority_ok {
+                rejected += 1;
+                metrics::counter!(
+                    "bonsai_subscription_lifecycle_rejected_total",
+                    "reason" => "stale_authority"
+                )
+                .increment(1);
+                tracing::warn!(
+                    collector_id = %grant.collector_id(),
+                    device = %event.device_address,
+                    epoch = event.authority_epoch,
+                    generation = event.assignment_generation,
+                    "lifecycle event denied: assignment authority not current"
+                );
+                continue;
+            }
+
+            let internal = crate::subscription_sessions::SessionLifecycleEvent {
+                collector_id: grant.collector_id().to_string(),
+                // Session identity keys on the same target string the
+                // subscriber stamps on telemetry (the assigned device
+                // address verbatim), not the port-stripped registry key.
+                target: event.device_address.clone(),
+                plan_id: event.plan_id,
+                session_id: event.session_id,
+                state: event.state,
+                transition_seq: event.transition_seq,
+                authority_epoch: event.authority_epoch,
+                assignment_generation: event.assignment_generation,
+                occurred_at_ns: event.occurred_at_ns,
+                detail: event.detail,
+            };
+            match self.session_registry.apply(&internal, true) {
+                crate::subscription_sessions::ApplyOutcome::Applied
+                | crate::subscription_sessions::ApplyOutcome::Duplicate => {
+                    accepted += 1;
+                }
+                crate::subscription_sessions::ApplyOutcome::Stale => {
+                    // Idempotent-ish: older revision already superseded —
+                    // not an error, but not newly accepted either.
+                    accepted += 1;
+                }
+                crate::subscription_sessions::ApplyOutcome::InvalidTransition
+                | crate::subscription_sessions::ApplyOutcome::Rejected(_) => {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "invalid_transition"
+                    )
+                    .increment(1);
+                }
+            }
+        }
+
+        Ok(Response::new(pb::SubscriptionLifecycleResponse {
+            accepted,
+            rejected,
+            error: String::new(),
         }))
     }
 

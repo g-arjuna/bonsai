@@ -139,6 +139,7 @@ fn publish_event(bus: &Arc<InProcessBus>, target_map: &BgpLsTargetMap, event: Bg
     bus.publish(TelemetryUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: "bgp_ls".to_string(),
         target: resolved.address,
         vendor: resolved.vendor,
         hostname: resolved.hostname,

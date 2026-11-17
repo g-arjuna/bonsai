@@ -207,6 +207,7 @@ fn subscriber(
         Some(plan_tx),
         selected_paths,
         acquisition,
+        None,
     )
 }
 
@@ -653,7 +654,13 @@ async fn plan_change_supersedes_stale_paths_without_false_active() {
     let bus = InProcessBus::new(64);
     let (plan_tx, plan_rx) = mpsc::channel(8);
     let (_stx, srx) = watch::channel(false);
-    let verifier = tokio::spawn(run_subscription_verifier(store, bus, plan_rx, srx));
+    let verifier = tokio::spawn(run_subscription_verifier(
+        store,
+        bus,
+        plan_rx,
+        Arc::new(bonsai::subscription_sessions::SubscriptionSessionRegistry::new()),
+        srx,
+    ));
 
     let expectation = |path: &str| SubscriptionPathExpectation {
         path: path.to_string(),

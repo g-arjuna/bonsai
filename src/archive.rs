@@ -881,6 +881,7 @@ mod tests {
         TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "leaf1".to_string(),

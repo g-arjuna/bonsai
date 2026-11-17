@@ -10537,6 +10537,7 @@ mod tests {
             .write(TelemetryUpdate {
                 plan_id: String::new(),
                 session_id: String::new(),
+                source_protocol: String::new(),
                 target: "leaf1".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf1".to_string(),
@@ -10560,6 +10561,7 @@ mod tests {
             .write(TelemetryUpdate {
                 plan_id: String::new(),
                 session_id: String::new(),
+                source_protocol: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf1".to_string(),
@@ -10637,6 +10639,7 @@ mod tests {
             .write(TelemetryUpdate {
                 plan_id: String::new(),
                 session_id: String::new(),
+                source_protocol: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf2".to_string(),
@@ -10693,6 +10696,7 @@ mod tests {
             .write(TelemetryUpdate {
     plan_id: String::new(),
     session_id: String::new(),
+    source_protocol: String::new(),
                 target: "leaf3".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf3".to_string(),
@@ -10714,6 +10718,7 @@ mod tests {
             .write(TelemetryUpdate {
                 plan_id: String::new(),
                 session_id: String::new(),
+                source_protocol: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf3".to_string(),
@@ -10782,6 +10787,7 @@ mod tests {
             .write(TelemetryUpdate {
                 plan_id: String::new(),
                 session_id: String::new(),
+                source_protocol: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf4".to_string(),
@@ -10840,6 +10846,7 @@ mod tests {
             .write(TelemetryUpdate {
     plan_id: String::new(),
     session_id: String::new(),
+    source_protocol: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "cisco_iosxr".to_string(),
                 hostname: "spine1".to_string(),
@@ -10897,6 +10904,7 @@ mod tests {
             .write(TelemetryUpdate {
                 plan_id: String::new(),
                 session_id: String::new(),
+                source_protocol: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "juniper".to_string(),
                 hostname: "spine2".to_string(),
@@ -12076,6 +12084,7 @@ mod tests {
         TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12102,6 +12111,7 @@ mod tests {
         TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12535,6 +12545,7 @@ mod tests {
         TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12558,6 +12569,7 @@ mod tests {
         TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12835,6 +12847,7 @@ mod tests {
                 .write(TelemetryUpdate {
                     plan_id: String::new(),
                     session_id: String::new(),
+                    source_protocol: String::new(),
                     target: "10.0.0.1".to_string(),
                     vendor: "nokia_srl".to_string(),
                     hostname: "10.0.0.1".to_string(),
@@ -12887,6 +12900,7 @@ mod tests {
             .write(TelemetryUpdate {
                 plan_id: String::new(),
                 session_id: String::new(),
+                source_protocol: String::new(),
                 target: "10.0.0.1".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "10.0.0.1".to_string(),

@@ -180,6 +180,7 @@ mod tests {
         TelemetryUpdate {
             plan_id: String::new(),
             session_id: String::new(),
+            source_protocol: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "srl1".to_string(),
@@ -239,6 +240,7 @@ mod tests {
         let bgp_update = TelemetryUpdate {
     plan_id: String::new(),
     session_id: String::new(),
+    source_protocol: String::new(),
             target: "10.0.0.1:57400".to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "srl1".to_string(),

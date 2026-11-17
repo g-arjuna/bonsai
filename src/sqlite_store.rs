@@ -157,6 +157,33 @@ impl SqliteStore {
         self.authz_epoch.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// Read a free-form setting value (stored as TEXT). Returns None
+    /// when the key is absent. Used for small durable coordination
+    /// values such as the assignment-authority epoch high-water mark.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db
+            .prepare("SELECT value FROM settings WHERE key = ?1")
+            .context("prepare settings read")?;
+        let mut rows = stmt.query([key]).context("query settings")?;
+        match rows.next().context("settings row")? {
+            Some(row) => Ok(Some(row.get::<_, String>(0).context("settings value")?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Write a free-form setting value (stored as TEXT).
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO settings (key, value, updated_at_ns) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at_ns = ?3",
+            rusqlite::params![key, value, now_ns()],
+        )
+        .context("upsert setting")?;
+        Ok(())
+    }
+
     /// Current schema version recorded in the database (`user_version`).
     /// Read-only safe; returns 0 for a pre-versioned/empty database.
     pub fn schema_version(&self) -> Result<i64> {

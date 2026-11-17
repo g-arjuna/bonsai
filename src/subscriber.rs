@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{collections::HashMap, time::Duration};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -13,6 +14,11 @@ const BACKOFF_INITIAL: Duration = Duration::from_secs(5);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 const BACKOFF_RESET_THRESHOLD: Duration = Duration::from_secs(60);
 const SAMPLE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Bounded deadline for the initial synchronization sequence after a
+/// Subscribe RPC is established. sync_response=true per subscription
+/// completes it; a device that never syncs fails the session rather
+/// than holding submitted-but-unverified authority forever.
+const INITIAL_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
 
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
 use crate::proto::gnmi::{
@@ -24,8 +30,144 @@ use crate::config::TargetConfig;
 use crate::config::{AcquisitionMode, SelectedSubscriptionPath};
 use crate::event_bus::InProcessBus;
 use crate::ingest::TelemetryDebouncer;
+use crate::subscription_sessions::SessionLifecycleEvent;
 use crate::subscription_status::{SubscriptionPathExpectation, SubscriptionPlan};
 use crate::telemetry::TelemetryUpdate;
+
+/// Handle a subscriber uses to report authoritative device-facing
+/// session lifecycle transitions. Remote collectors forward these over
+/// the `SubscriptionLifecycle` RPC; local acquisition applies them
+/// in-process. `authority_epoch`/`assignment_generation` carry the
+/// assignment authority the collector applied (0/0 for trusted local
+/// acquisition, which bypasses remote authority checks).
+#[derive(Clone)]
+pub struct LifecycleHandle {
+    pub tx: mpsc::Sender<SessionLifecycleEvent>,
+    pub authority_epoch: u64,
+    pub assignment_generation: u64,
+}
+
+/// Per-session lifecycle emitter: monotonic transition revisions,
+/// stamped with the applicable assignment authority.
+pub struct SessionEmitter {
+    tx: Option<mpsc::Sender<SessionLifecycleEvent>>,
+    collector_id: String,
+    target: String,
+    plan_id: String,
+    session_id: String,
+    authority_epoch: u64,
+    assignment_generation: u64,
+    seq: u64,
+    /// Set once this emitter publishes a terminal state, so teardown
+    /// paths can skip a redundant terminal transition.
+    terminated: Option<Arc<AtomicBool>>,
+}
+
+fn lifecycle_state_terminal(state: &str) -> bool {
+    matches!(state, "failed" | "disconnected" | "disabled" | "superseded")
+}
+
+impl SessionEmitter {
+    /// Plan-level emitter for assignment outcomes decided outside a
+    /// subscriber (rejected/failed/disabled assignments).
+    pub fn for_plan(handle: &LifecycleHandle, target: &str, plan_id: &str) -> Self {
+        Self::new(Some(handle), target, plan_id, "", None)
+    }
+
+    fn new(
+        lifecycle: Option<&LifecycleHandle>,
+        target: &str,
+        plan_id: &str,
+        session_id: &str,
+        terminated: Option<Arc<AtomicBool>>,
+    ) -> Self {
+        Self {
+            tx: lifecycle.map(|h| h.tx.clone()),
+            collector_id: String::new(),
+            target: target.to_string(),
+            plan_id: plan_id.to_string(),
+            session_id: session_id.to_string(),
+            authority_epoch: lifecycle.map_or(0, |h| h.authority_epoch),
+            assignment_generation: lifecycle.map_or(0, |h| h.assignment_generation),
+            seq: 0,
+            terminated,
+        }
+    }
+
+    fn event(&self, state: &str, seq: u64, detail: &str) -> SessionLifecycleEvent {
+        SessionLifecycleEvent {
+            collector_id: self.collector_id.clone(),
+            target: self.target.clone(),
+            plan_id: self.plan_id.clone(),
+            session_id: self.session_id.clone(),
+            state: state.to_string(),
+            transition_seq: seq,
+            authority_epoch: self.authority_epoch,
+            assignment_generation: self.assignment_generation,
+            occurred_at_ns: now_unix_ns(),
+            detail: detail.to_string(),
+        }
+    }
+
+    /// Ordered session transition. Blocks on a full lifecycle channel —
+    /// lifecycle evidence is bounded but never silently dropped.
+    async fn emit(&mut self, state: &str, detail: impl Into<String>) {
+        let Some(tx) = &self.tx else { return };
+        self.seq += 1;
+        let ev = self.event(state, self.seq, &detail.into());
+        if let Err(error) = tx.send(ev).await {
+            warn!(target = %self.target, %error, "lifecycle channel closed — transition lost");
+        } else if lifecycle_state_terminal(state) {
+            self.mark_terminated();
+        }
+    }
+
+    fn mark_terminated(&self) {
+        if let Some(flag) = &self.terminated {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Best-effort transition for shutdown/cancellation paths where
+    /// blocking could hang teardown.
+    fn emit_nowait(&mut self, state: &str, detail: impl Into<String>) {
+        let Some(tx) = &self.tx else { return };
+        self.seq += 1;
+        let ev = self.event(state, self.seq, &detail.into());
+        if tx.try_send(ev).is_err() {
+            warn!(target = %self.target, "lifecycle channel full/closed — terminal transition dropped");
+            metrics::counter!("bonsai_subscription_lifecycle_dropped_total").increment(1);
+        } else if lifecycle_state_terminal(state) {
+            self.mark_terminated();
+        }
+    }
+
+    /// Plan-level outcome (disabled/rejected/failed plan, no session).
+    /// Unordered (seq=0): latest-wins at the registry, never resurrects
+    /// a terminated session.
+    pub async fn emit_plan(&self, state: &str, detail: impl Into<String>) {
+        let Some(tx) = &self.tx else { return };
+        let ev = self.event(state, 0, &detail.into());
+        if let Err(error) = tx.send(ev).await {
+            warn!(target = %self.target, %error, "lifecycle channel closed — plan outcome lost");
+        }
+    }
+}
+
+fn now_unix_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
+}
+
+/// Live device-facing session tracked for teardown-time termination.
+#[derive(Clone)]
+struct ActiveSession {
+    session_id: String,
+    plan_id: String,
+    terminated: Arc<AtomicBool>,
+}
 
 pub struct GnmiSubscriber {
     target: String,
@@ -45,6 +187,10 @@ pub struct GnmiSubscriber {
     subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     selected_paths: Vec<SelectedSubscriptionPath>,
     acquisition: AcquisitionMode,
+    lifecycle: Option<LifecycleHandle>,
+    /// Most recently minted device-facing session, used to retire its
+    /// authority on shutdown paths that bypass the stream loop.
+    active_session: Arc<std::sync::Mutex<Option<ActiveSession>>>,
 }
 
 impl GnmiSubscriber {
@@ -63,6 +209,7 @@ impl GnmiSubscriber {
         subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
         selected_paths: Vec<SelectedSubscriptionPath>,
         acquisition: AcquisitionMode,
+        lifecycle: Option<LifecycleHandle>,
     ) -> Self {
         Self {
             target: target.into(),
@@ -78,6 +225,8 @@ impl GnmiSubscriber {
             subscription_plan_tx,
             selected_paths,
             acquisition,
+            lifecycle,
+            active_session: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -89,25 +238,72 @@ impl GnmiSubscriber {
         }
     }
 
+    /// Publish a plan-level lifecycle outcome (disabled/rejected/failed)
+    /// for plans that own no device-facing session.
+    async fn emit_plan_outcome(&self, state: &str, plan_id: &str, detail: &str) {
+        if let Some(h) = &self.lifecycle {
+            SessionEmitter::new(Some(h), &self.target, plan_id, "", None)
+                .emit_plan(state, detail)
+                .await;
+        }
+    }
+
     /// Publish a non-submitted plan (rejected/blocked/failed) so the
     /// verifier supersedes any previously tracked plan for this target.
-    /// The plan_id is suffixed with a detail hash so a *changed* failure
-    /// reason is not deduplicated away by the verifier's plan-id check.
+    /// The plan_id is the STABLE desired/effective plan identity —
+    /// failure state and detail live in the plan's state/detail fields
+    /// and the lifecycle stream, never encoded into plan_id (M5.2B).
     async fn publish_blocked_plan(&self, state: &str, detail: String) {
-        let base = acquisition_plan_id(self.acquisition, &[]);
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        use std::hash::{Hash, Hasher};
-        detail.hash(&mut hasher);
+        let plan_id = acquisition_plan_id(self.acquisition, &[]);
         self.publish_plan(SubscriptionPlan {
             target: self.target.clone(),
             paths: Vec::new(),
-            plan_id: format!("{}#{}:{:016x}", base, state, hasher.finish()),
+            plan_id: plan_id.clone(),
             session_id: String::new(),
             state: state.to_string(),
             acquisition: self.acquisition.as_str().to_string(),
-            detail,
+            detail: detail.clone(),
         })
         .await;
+        self.emit_plan_outcome(state, &plan_id, &detail).await;
+    }
+
+    /// Terminal transition for teardown paths that bypass the stream
+    /// loop (shutdown while connecting or backing off). Uses
+    /// `transition_seq = u64::MAX` so it always supersedes in-flight
+    /// ordered transitions for THIS session key; reconnects mint a
+    /// fresh session_id and are unaffected. Skipped when the stream
+    /// loop already published a terminal state.
+    async fn emit_active_session_terminal(&self, state: &str, detail: &str) {
+        let Some(handle) = &self.lifecycle else {
+            return;
+        };
+        let active = self.active_session.lock().unwrap().clone();
+        let Some(active) = active else { return };
+        if active.terminated.load(Ordering::SeqCst) {
+            return;
+        }
+        let ev = SessionLifecycleEvent {
+            collector_id: String::new(),
+            target: self.target.clone(),
+            plan_id: active.plan_id,
+            session_id: active.session_id,
+            state: state.to_string(),
+            transition_seq: u64::MAX,
+            authority_epoch: handle.authority_epoch,
+            assignment_generation: handle.assignment_generation,
+            occurred_at_ns: now_unix_ns(),
+            detail: detail.to_string(),
+        };
+        match tokio::time::timeout(Duration::from_secs(2), handle.tx.send(ev)).await {
+            Ok(Ok(())) => {
+                active.terminated.store(true, Ordering::SeqCst);
+            }
+            _ => {
+                warn!(target = %self.target, "lifecycle channel saturated/closed — shutdown terminal transition dropped");
+                metrics::counter!("bonsai_subscription_lifecycle_dropped_total").increment(1);
+            }
+        }
     }
 
     pub async fn run_forever(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
@@ -118,6 +314,8 @@ impl GnmiSubscriber {
             tokio::select! {
                 _ = shutdown.changed() => {
                     info!(target = %self.target, "shutdown signal received");
+                    self.emit_active_session_terminal("disconnected", "shutdown")
+                        .await;
                     return;
                 }
                 result = self.subscribe_telemetry(&mut stream_shutdown) => {
@@ -135,6 +333,8 @@ impl GnmiSubscriber {
             tokio::select! {
                 _ = shutdown.changed() => {
                     info!(target = %self.target, "shutdown signal received");
+                    self.emit_active_session_terminal("disconnected", "shutdown")
+                        .await;
                     return;
                 }
                 _ = tokio::time::sleep(backoff) => {}
@@ -160,13 +360,15 @@ impl GnmiSubscriber {
                     self.publish_plan(SubscriptionPlan {
                         target: self.target.clone(),
                         paths: Vec::new(),
-                        plan_id,
+                        plan_id: plan_id.clone(),
                         session_id: String::new(),
                         state: "disabled".to_string(),
                         acquisition: self.acquisition.as_str().to_string(),
                         detail: "acquisition disabled".to_string(),
                     })
                     .await;
+                    self.emit_plan_outcome("disabled", &plan_id, "acquisition disabled")
+                        .await;
                     idle_until_shutdown(shutdown).await;
                     return Ok(());
                 }
@@ -181,13 +383,14 @@ impl GnmiSubscriber {
                     self.publish_plan(SubscriptionPlan {
                         target: self.target.clone(),
                         paths: Vec::new(),
-                        plan_id,
+                        plan_id: plan_id.clone(),
                         session_id: String::new(),
                         state: "rejected".to_string(),
                         acquisition: self.acquisition.as_str().to_string(),
                         detail: detail.clone(),
                     })
                     .await;
+                    self.emit_plan_outcome("failed", &plan_id, &detail).await;
                     idle_until_shutdown(shutdown).await;
                     return Ok(());
                 }
@@ -293,13 +496,15 @@ impl GnmiSubscriber {
                 self.publish_plan(SubscriptionPlan {
                     target: target.clone(),
                     paths: Vec::new(),
-                    plan_id,
+                    plan_id: plan_id.clone(),
                     session_id: String::new(),
                     state: "disabled".to_string(),
                     acquisition: self.acquisition.as_str().to_string(),
                     detail: "acquisition disabled".to_string(),
                 })
                 .await;
+                self.emit_plan_outcome("disabled", &plan_id, "acquisition disabled")
+                    .await;
                 idle_until_shutdown(shutdown).await;
                 return Ok(());
             }
@@ -314,13 +519,14 @@ impl GnmiSubscriber {
                 self.publish_plan(SubscriptionPlan {
                     target: target.clone(),
                     paths: Vec::new(),
-                    plan_id,
+                    plan_id: plan_id.clone(),
                     session_id: String::new(),
                     state: "rejected".to_string(),
                     acquisition: self.acquisition.as_str().to_string(),
                     detail: detail.clone(),
                 })
                 .await;
+                self.emit_plan_outcome("failed", &plan_id, &detail).await;
                 idle_until_shutdown(shutdown).await;
                 return Ok(());
             }
@@ -354,6 +560,7 @@ impl GnmiSubscriber {
             "subscribing"
         );
 
+        let subscription_count = subscriptions.len();
         let req = SubscribeRequest {
             request: Some(subscribe_request::Request::Subscribe(SubscriptionList {
                 subscription: subscriptions,
@@ -381,12 +588,46 @@ impl GnmiSubscriber {
         })
         .await;
 
+        // Authoritative lifecycle: a successful Subscribe RPC establishes
+        // SUBMISSION only — never synchronization. Initial sync completes
+        // when every subscription's sync_response arrives (bounded by
+        // INITIAL_SYNC_TIMEOUT).
+        // Track the live session so teardown paths that bypass the
+        // stream loop (shutdown during connect/backoff) can still retire
+        // its authority with an explicit terminal transition.
+        let terminated = Arc::new(AtomicBool::new(false));
+        *self.active_session.lock().unwrap() = Some(ActiveSession {
+            session_id: session_id.clone(),
+            plan_id: submitted_plan_id.clone(),
+            terminated: Arc::clone(&terminated),
+        });
+        let mut emitter = SessionEmitter::new(
+            self.lifecycle.as_ref(),
+            &target,
+            &submitted_plan_id,
+            &session_id,
+            Some(terminated),
+        );
+        emitter.emit("submitted", "").await;
+        emitter.emit("synchronizing", "").await;
+        let mut pending_sync = subscription_count;
+        let sync_sleep =
+            tokio::time::sleep_until(tokio::time::Instant::now() + INITIAL_SYNC_TIMEOUT);
+        tokio::pin!(sync_sleep);
+
         loop {
             let next_message = if enforce_idle_timeout {
                 tokio::select! {
                     _ = shutdown.changed() => {
                         info!(target = %target, "shutdown signal received during telemetry stream");
+                        emitter.emit_nowait("disconnected", "shutdown");
                         return Ok(());
+                    }
+                    _ = &mut sync_sleep, if pending_sync > 0 => {
+                        warn!(target = %target, timeout_secs = INITIAL_SYNC_TIMEOUT.as_secs(),
+                            "initial synchronization deadline expired");
+                        emitter.emit("failed", "initial_sync_timeout").await;
+                        break;
                     }
                     _ = tokio::time::sleep(SAMPLE_STREAM_IDLE_TIMEOUT) => {
                         warn!(
@@ -394,6 +635,7 @@ impl GnmiSubscriber {
                             idle_secs = SAMPLE_STREAM_IDLE_TIMEOUT.as_secs(),
                             "sample-based telemetry stream went idle; forcing reconnect"
                         );
+                        emitter.emit("failed", "sample_stream_idle_timeout").await;
                         break;
                     }
                     message = stream.message() => message,
@@ -402,7 +644,14 @@ impl GnmiSubscriber {
                 tokio::select! {
                     _ = shutdown.changed() => {
                         info!(target = %target, "shutdown signal received during telemetry stream");
+                        emitter.emit_nowait("disconnected", "shutdown");
                         return Ok(());
+                    }
+                    _ = &mut sync_sleep, if pending_sync > 0 => {
+                        warn!(target = %target, timeout_secs = INITIAL_SYNC_TIMEOUT.as_secs(),
+                            "initial synchronization deadline expired");
+                        emitter.emit("failed", "initial_sync_timeout").await;
+                        break;
                     }
                     message = stream.message() => message,
                 }
@@ -473,6 +722,7 @@ impl GnmiSubscriber {
                                     let msg = TelemetryUpdate {
                                         plan_id: submitted_plan_id.clone(),
                                         session_id: session_id.clone(),
+                                        source_protocol: "gnmi".to_string(),
                                         target: target.clone(),
                                         vendor: caps.vendor_label.clone(),
                                         hostname: self.hostname.clone().unwrap_or_default(),
@@ -490,21 +740,39 @@ impl GnmiSubscriber {
                                     self.bus.publish(msg);
                                 }
                             }
-                            Response::SyncResponse(sync) => {
-                                debug!(target = %target, sync = sync, "sync response");
+                            Response::SyncResponse(sync_response) => {
+                                debug!(target = %target, sync_response, "sync response");
+                                // sync_response=true completes the initial
+                                // synchronization sequence for that
+                                // subscription; false means more updates
+                                // follow — it is NOT completion and NOT an
+                                // error. Per-leaf coverage is proven by
+                                // observations, never by sync alone.
+                                if sync_response {
+                                    pending_sync = pending_sync.saturating_sub(1);
+                                    if pending_sync == 0 {
+                                        emitter.emit("synchronized", "").await;
+                                    }
+                                }
                             }
                             Response::Error(e) => {
                                 warn!(target = %target, code = e.code, message = %e.message, "gNMI error");
+                                emitter
+                                    .emit("failed", format!("gnmi_error:{}:{}", e.code, e.message))
+                                    .await;
+                                break;
                             }
                         }
                     }
                 }
                 Ok(None) => {
                     warn!(target = %target, "stream ended");
+                    emitter.emit("disconnected", "stream_ended").await;
                     break;
                 }
                 Err(e) => {
                     warn!(target = %target, error = %e, "stream error");
+                    emitter.emit("failed", format!("{e:#}")).await;
                     break;
                 }
             }
@@ -682,11 +950,23 @@ pub async fn spawn_subscriber_with_creds(
     debouncer: Option<Arc<TelemetryDebouncer>>,
     subscription_plan_tx: Option<&mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut SubscriberHandleMap,
+    lifecycle: Option<&LifecycleHandle>,
 ) -> Result<SpawnOutcome> {
     let address = target.address.clone();
     if !target.enabled {
         info!(address = %address, "subscriber start skipped because target is disabled");
         stop_subscriber(&address, subscribers).await;
+        if let Some(h) = lifecycle {
+            SessionEmitter::new(
+                Some(h),
+                &address,
+                &acquisition_plan_id(target.acquisition, &[]),
+                "",
+                None,
+            )
+            .emit_plan("disabled", "target disabled")
+            .await;
+        }
         return Ok(SpawnOutcome::Stopped);
     }
     if target.inventory_only {
@@ -695,6 +975,17 @@ pub async fn spawn_subscriber_with_creds(
             "subscriber start skipped: inventory-only asset has no collection plan"
         );
         stop_subscriber(&address, subscribers).await;
+        if let Some(h) = lifecycle {
+            SessionEmitter::new(
+                Some(h),
+                &address,
+                &acquisition_plan_id(target.acquisition, &[]),
+                "",
+                None,
+            )
+            .emit_plan("disabled", "inventory-only asset has no collection plan")
+            .await;
+        }
         return Ok(SpawnOutcome::Stopped);
     }
 
@@ -733,9 +1024,19 @@ pub async fn spawn_subscriber_with_creds(
     if plan.state == "disabled" || plan.state == "rejected" {
         let state = plan.state.clone();
         if let Some(tx) = subscription_plan_tx {
-            if tx.try_send(plan).is_err() {
+            if tx.try_send(plan.clone()).is_err() {
                 warn!(address = %address, "subscription plan channel full — status dropped");
             }
+        }
+        if let Some(h) = lifecycle {
+            let lc_state = if state == "disabled" {
+                "disabled"
+            } else {
+                "failed"
+            };
+            SessionEmitter::new(Some(h), &address, &plan.plan_id, "", None)
+                .emit_plan(lc_state, &plan.detail)
+                .await;
         }
         info!(address = %address, state = %state, "no acquisition plan — no subscriber");
         return Ok(SpawnOutcome::Stopped);
@@ -755,6 +1056,7 @@ pub async fn spawn_subscriber_with_creds(
         subscription_plan_tx.cloned(),
         target.selected_paths.clone(),
         target.acquisition,
+        lifecycle.cloned(),
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
@@ -821,11 +1123,10 @@ pub fn planned_subscription_plan_for_target(
 }
 
 /// Build a non-submitted SubscriptionPlan for a target whose assignment
-/// could not be honoured (rejected / blocked / failed). The plan_id is
-/// derived from the desired plan plus a detail hash so a *changed*
-/// failure reason is not deduplicated away by the verifier's plan-id
-/// check, and paths are cleared so every previously tracked path for
-/// the target is superseded.
+/// could not be honoured (rejected / blocked / failed). plan_id remains
+/// the STABLE desired/effective plan identity — failure state and detail
+/// are carried in the plan's state/detail fields and the lifecycle
+/// stream, never encoded into plan_id (M5.2B).
 pub fn blocked_subscription_plan(
     target: &TargetConfig,
     state: &str,
@@ -833,12 +1134,8 @@ pub fn blocked_subscription_plan(
 ) -> SubscriptionPlan {
     let mut plan = planned_subscription_plan_for_target(target);
     plan.state = state.to_string();
-    plan.detail = detail.clone();
+    plan.detail = detail;
     plan.paths = Vec::new();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    use std::hash::{Hash, Hasher};
-    detail.hash(&mut hasher);
-    plan.plan_id = format!("{}#{}:{:016x}", plan.plan_id, state, hasher.finish());
     plan
 }
 

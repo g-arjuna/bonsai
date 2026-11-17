@@ -540,6 +540,7 @@ fn publish_flow(
     bus.publish(TelemetryUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: "sflow".to_string(),
         target: src.source_key.clone(),
         vendor: String::new(),
         hostname: String::new(),
@@ -590,6 +591,7 @@ fn publish_counters(
     bus.publish(TelemetryUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: "sflow".to_string(),
         target: src.source_key.clone(),
         vendor: String::new(),
         hostname: String::new(),
@@ -687,8 +689,14 @@ mod tests {
     fn provisional_source_key_separates_transport_agent_and_collector() {
         let peer: SocketAddr = "10.0.0.1:49152".parse().unwrap();
         let base = SflowSource::build(peer, "site-a", "192.0.2.1".into(), 0, 1, 0);
-        let other_port =
-            SflowSource::build("10.0.0.1:49153".parse().unwrap(), "site-a", "192.0.2.1".into(), 0, 1, 0);
+        let other_port = SflowSource::build(
+            "10.0.0.1:49153".parse().unwrap(),
+            "site-a",
+            "192.0.2.1".into(),
+            0,
+            1,
+            0,
+        );
         let other_agent = SflowSource::build(peer, "site-a", "192.0.2.2".into(), 0, 1, 0);
         let other_sub = SflowSource::build(peer, "site-a", "192.0.2.1".into(), 7, 1, 0);
         let other_collector = SflowSource::build(peer, "site-b", "192.0.2.1".into(), 0, 1, 0);

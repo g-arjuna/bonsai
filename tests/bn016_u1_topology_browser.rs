@@ -17,6 +17,7 @@ fn gnmi_bgp(target: &str, peer: &str, ni: &str, state: &str, peer_as: i64) -> Te
     TelemetryUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: String::new(),
         target: target.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: target.to_string(),
@@ -34,6 +35,7 @@ fn iface_update(target: &str) -> TelemetryUpdate {
     TelemetryUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: String::new(),
         target: target.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: target.to_string(),

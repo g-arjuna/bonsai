@@ -390,6 +390,7 @@ fn flow_update(
     TelemetryUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: String::new(),
         target: exporter_key.to_string(),
         vendor: String::new(),
         hostname: String::new(),
@@ -405,6 +406,7 @@ fn counters_update(exporter_key: &str, exporter_ip: &str, if_index: i64) -> Tele
     TelemetryUpdate {
         plan_id: String::new(),
         session_id: String::new(),
+        source_protocol: String::new(),
         target: exporter_key.to_string(),
         vendor: String::new(),
         hostname: String::new(),
