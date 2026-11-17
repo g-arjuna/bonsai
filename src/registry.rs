@@ -965,6 +965,9 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            security: None,
+            client_cert: None,
+            client_key: None,
         }
     }
 
@@ -1082,16 +1085,22 @@ mod tests {
     #[test]
     fn external_id_is_unique_per_device() {
         let dir = test_registry_dir("extid");
-        let registry = ApiRegistry::open(dir.path().join("registry.json"), vec![])
-            .expect("open registry");
+        let registry =
+            ApiRegistry::open(dir.path().join("registry.json"), vec![]).expect("open registry");
 
         registry
-            .add_device(inventory_target("10.30.0.1", "netbox:https:nb1.example.com:443:device:123"))
+            .add_device(inventory_target(
+                "10.30.0.1",
+                "netbox:https:nb1.example.com:443:device:123",
+            ))
             .expect("first instance import");
         // A second NetBox instance may legitimately have device id 123 —
         // its instance-scoped identity is distinct and must not collide.
         registry
-            .add_device(inventory_target("10.30.0.2", "netbox:https:nb2.example.com:443:device:123"))
+            .add_device(inventory_target(
+                "10.30.0.2",
+                "netbox:https:nb2.example.com:443:device:123",
+            ))
             .expect("second instance import");
         // The SAME instance-scoped identity cannot bind twice.
         let dup = registry.add_device(inventory_target(
@@ -1100,21 +1109,25 @@ mod tests {
         ));
         assert!(dup.is_err(), "duplicate external id must be rejected");
 
-        assert!(registry
-            .find_by_external_id("netbox:https:nb1.example.com:443:device:123")
-            .expect("lookup")
-            .is_some());
-        assert!(registry
-            .find_by_external_id("netbox:https:nb2.example.com:443:device:123")
-            .expect("lookup")
-            .is_some());
+        assert!(
+            registry
+                .find_by_external_id("netbox:https:nb1.example.com:443:device:123")
+                .expect("lookup")
+                .is_some()
+        );
+        assert!(
+            registry
+                .find_by_external_id("netbox:https:nb2.example.com:443:device:123")
+                .expect("lookup")
+                .is_some()
+        );
     }
 
     #[test]
     fn ambiguous_external_id_fails_closed() {
         let dir = test_registry_dir("ambiguous");
-        let registry = ApiRegistry::open(dir.path().join("registry.json"), vec![])
-            .expect("open registry");
+        let registry =
+            ApiRegistry::open(dir.path().join("registry.json"), vec![]).expect("open registry");
         registry
             .add_device(inventory_target("10.30.1.1", "src:a:device:1"))
             .expect("add first");
@@ -1136,15 +1149,18 @@ mod tests {
     #[test]
     fn canonical_address_rejects_port_variants() {
         let dir = test_registry_dir("canonical");
-        let registry = ApiRegistry::open(dir.path().join("registry.json"), vec![])
-            .expect("open registry");
+        let registry =
+            ApiRegistry::open(dir.path().join("registry.json"), vec![]).expect("open registry");
         registry
             .add_device(target("10.30.2.1:57400", "gnmi"))
             .expect("add host:port device");
         // The graph keys Device nodes by port-stripped address — a bare
         // import of the same host must not create a second entry.
         let bare = registry.add_device(inventory_target("10.30.2.1", "src:a:device:9"));
-        assert!(bare.is_err(), "bare address must conflict with host:port entry");
+        assert!(
+            bare.is_err(),
+            "bare address must conflict with host:port entry"
+        );
         // ...and the canonical lookup finds the port-qualified entry.
         let found = registry
             .find_by_canonical_address("10.30.2.1")
@@ -1186,8 +1202,8 @@ mod tests {
     #[tokio::test]
     async fn inventory_only_requires_plan_for_activation() {
         let dir = test_registry_dir("lifecycle");
-        let registry = ApiRegistry::open(dir.path().join("registry.json"), vec![])
-            .expect("open registry");
+        let registry =
+            ApiRegistry::open(dir.path().join("registry.json"), vec![]).expect("open registry");
         registry
             .add_device(inventory_target("10.30.3.1", "src:a:device:1"))
             .expect("import inventory asset");
@@ -1202,21 +1218,29 @@ mod tests {
         assert!(!updated.enabled);
 
         // Enable WITHOUT a collection plan → rejected.
-        let mut enable = registry.get_device("10.30.3.1").expect("get").expect("exists");
+        let mut enable = registry
+            .get_device("10.30.3.1")
+            .expect("get")
+            .expect("exists");
         enable.enabled = true;
         let err = registry
             .update_device_with_audit(enable, "api", "api_enable")
             .expect_err("enable without plan must fail");
         assert!(err.to_string().contains("collection plan"), "{err}");
-        assert!(registry
-            .get_device("10.30.3.1")
-            .expect("get")
-            .expect("exists")
-            .inventory_only);
+        assert!(
+            registry
+                .get_device("10.30.3.1")
+                .expect("get")
+                .expect("exists")
+                .inventory_only
+        );
 
         // Enable WITH an explicit collection plan → explicit activation,
         // external identity preserved.
-        let mut activate = registry.get_device("10.30.3.1").expect("get").expect("exists");
+        let mut activate = registry
+            .get_device("10.30.3.1")
+            .expect("get")
+            .expect("exists");
         activate.enabled = true;
         activate.selected_paths = vec![crate::config::SelectedSubscriptionPath {
             provenance: String::new(),
@@ -1232,10 +1256,7 @@ mod tests {
             .expect("activation with plan");
         assert!(!activated.inventory_only);
         assert!(activated.enabled);
-        assert_eq!(
-            activated.external_id.as_deref(),
-            Some("src:a:device:1")
-        );
+        assert_eq!(activated.external_id.as_deref(), Some("src:a:device:1"));
 
         // Identity survives a later gRPC-style update that carries no
         // external_id (callers pass None → inherited, never cleared).
@@ -1270,10 +1291,7 @@ mod tests {
             .add_device(target("10.30.4.1", "x"))
             .expect_err("unwritable registry path must fail");
         assert!(format!("{err:#}").contains("registry"), "{err:#}");
-        assert!(registry
-            .get_device("10.30.4.1")
-            .expect("get")
-            .is_none());
+        assert!(registry.get_device("10.30.4.1").expect("get").is_none());
         assert!(registry.list_active().expect("list").is_empty());
     }
 
@@ -1282,8 +1300,7 @@ mod tests {
         let dir = test_registry_dir("sqlitefail");
         // Pre-create the config DB with triggers that reject device writes.
         {
-            let _store = crate::sqlite_store::SqliteStore::open(dir.path())
-                .expect("open store");
+            let _store = crate::sqlite_store::SqliteStore::open(dir.path()).expect("open store");
             let conn = rusqlite::Connection::open(dir.path().join("bonsai_config.db"))
                 .expect("second connection");
             conn.execute_batch(
@@ -1294,8 +1311,8 @@ mod tests {
             )
             .expect("install triggers");
         }
-        let registry = ApiRegistry::open(dir.path().join("registry.json"), vec![])
-            .expect("open registry");
+        let registry =
+            ApiRegistry::open(dir.path().join("registry.json"), vec![]).expect("open registry");
         assert!(registry.sqlite_store().is_some(), "sqlite store expected");
 
         let mut changes = registry.subscribe_changes();
@@ -1303,10 +1320,10 @@ mod tests {
             .add_device(target("10.30.5.1", "x"))
             .expect_err("sqlite write failure must propagate");
         assert!(format!("{err:#}").contains("persist"), "{err:#}");
-        assert!(registry
-            .get_device("10.30.5.1")
-            .expect("get")
-            .is_none());
-        assert!(changes.try_recv().is_err(), "no change event for failed write");
+        assert!(registry.get_device("10.30.5.1").expect("get").is_none());
+        assert!(
+            changes.try_recv().is_err(),
+            "no change event for failed write"
+        );
     }
 }

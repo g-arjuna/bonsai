@@ -84,8 +84,7 @@ pub(super) struct HttpTargetConnInfo {
     address: String,
     username: Option<String>,
     password: Option<String>,
-    ca_cert_pem: Option<Vec<u8>>,
-    tls_domain: String,
+    conn_security: crate::gnmi_security::ConnSecurity,
 }
 #[derive(Deserialize)]
 pub(super) struct SnowTestRequest {
@@ -690,8 +689,7 @@ pub(super) async fn execute_proposal_steps(
                     &conn.address,
                     conn.username.as_deref(),
                     conn.password.as_deref(),
-                    conn.ca_cert_pem.as_deref(),
-                    &conn.tls_domain,
+                    &conn.conn_security,
                     &op.path,
                     &op.value,
                 )
@@ -784,14 +782,10 @@ pub(super) async fn target_conn_info_for_http(
         .map_err(|e| format!("{e:#}"))?
         .ok_or_else(|| format!("unknown target '{device_address}'"))?;
 
-    let ca_cert_pem = match &target.ca_cert {
-        Some(path) if !path.is_empty() => Some(
-            crate::tls_util::read_cert_pem(path, &state.credentials)
-                .await
-                .map_err(|e| format!("{e:#}"))?,
-        ),
-        _ => None,
-    };
+    let conn_security =
+        crate::gnmi_security::resolve_conn_security(&target, Some(&state.credentials))
+            .await
+            .map_err(|e| format!("{e:#}"))?;
 
     let resolved_credentials = resolve_http_target_credentials(&target, &state.credentials)
         .map_err(|e| format!("{e:#}"))?;
@@ -807,8 +801,7 @@ pub(super) async fn target_conn_info_for_http(
         address: target.address,
         username,
         password,
-        ca_cert_pem,
-        tls_domain: target.tls_domain.unwrap_or_default(),
+        conn_security,
     })
 }
 pub(super) fn resolve_http_target_credentials(

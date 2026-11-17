@@ -1953,10 +1953,23 @@ pub struct TargetConfig {
     /// Whether the runtime subscriber should be running for this target.
     #[serde(default = "default_target_enabled")]
     pub enabled: bool,
-    /// TLS server name (SNI). Required when ca_cert is set.
+    /// TLS server name (SNI). Required for TLS security modes.
     pub tls_domain: Option<String>,
     /// Path to PEM CA cert. Enables TLS for this target.
     pub ca_cert: Option<String>,
+    /// Explicit gNMI transport-security intent (M5.1). `None` = legacy
+    /// inference: `ca_cert` present → TLS verify, absent → plaintext.
+    /// Explicit modes never downgrade: a TLS mode with missing/invalid
+    /// material fails closed, and `plaintext` is an explicit lab-only
+    /// opt-in — never an implicit fallback.
+    #[serde(default)]
+    pub security: Option<GnmiSecurityMode>,
+    /// PEM client certificate (filesystem path or `vault:` reference) for
+    /// mTLS. Only valid with `security = "mtls"`.
+    pub client_cert: Option<String>,
+    /// PEM client private key (filesystem path or `vault:` reference)
+    /// paired with `client_cert`. Only valid with `security = "mtls"`.
+    pub client_key: Option<String>,
     /// Override vendor detection. If absent, Capabilities RPC auto-detects.
     pub vendor: Option<String>,
     /// Alias into the local encrypted credential vault.
@@ -2068,6 +2081,41 @@ impl AcquisitionMode {
             "automatic" | "auto" => Some(Self::Automatic),
             "explicit" => Some(Self::Explicit),
             "disabled" | "none" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
+/// Explicit operator intent for the gNMI transport security of a target.
+/// `None`/absent preserves legacy inference (see `TargetConfig::security`).
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GnmiSecurityMode {
+    /// TLS with CA verification and SNI/hostname checking.
+    TlsVerify,
+    /// TLS verify plus a client certificate/key (mutual TLS).
+    Mtls,
+    /// Cleartext gRPC — explicit laboratory exception only. Requires an
+    /// audit-visible opt-in; never selected implicitly.
+    Plaintext,
+}
+
+impl GnmiSecurityMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TlsVerify => "tls_verify",
+            Self::Mtls => "mtls",
+            Self::Plaintext => "plaintext",
+        }
+    }
+
+    /// Strict parse for API/proto/TOML boundaries — unknown values are
+    /// rejected, never silently mapped to a weaker mode.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "tls_verify" | "tls" => Some(Self::TlsVerify),
+            "mtls" | "mutual_tls" => Some(Self::Mtls),
+            "plaintext" | "plain" | "insecure" => Some(Self::Plaintext),
             _ => None,
         }
     }

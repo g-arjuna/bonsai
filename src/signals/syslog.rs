@@ -1534,6 +1534,9 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            security: None,
+            client_cert: None,
+            client_key: None,
         }];
         let map = SyslogTargetMap::new(&targets);
         let event = parse_syslog(

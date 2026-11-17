@@ -24,7 +24,7 @@ use crate::store::BonsaiStore;
 use crate::telemetry_identity::VerifiedIngressPrincipal;
 use crate::write_coordinator::{PriorityWriteRequest, WriteCoordinator};
 
-pub const PROTOCOL_VERSION_CURRENT: u32 = 2;
+pub const PROTOCOL_VERSION_CURRENT: u32 = 3;
 pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_CURRENT;
 
 /// Minimum collector protocol version that understands the acquisition
@@ -33,6 +33,13 @@ pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_CURRENT;
 /// empty `selected_paths` list as "derive from capabilities", so explicit
 /// or disabled plans must never be delivered to them.
 pub const ACQUISITION_CONTRACT_VERSION: u32 = 2;
+
+/// Minimum collector protocol version that understands the transport
+/// security contract (`ManagedDevice.security`, `client_cert`,
+/// `client_key`). Collectors below this version ignore those fields and
+/// would silently downgrade `security="mtls"` to plain TLS verify —
+/// mTLS assignments must never be delivered to them.
+pub const SECURITY_CONTRACT_VERSION: u32 = 3;
 
 /// Version compatibility result. Major skew (>= 10 apart) is a hard error;
 /// any other mismatch is a warning; matching versions are compatible.
@@ -73,8 +80,7 @@ pub struct TargetConnInfo {
     pub address: String,
     pub username: Option<String>,
     pub password: Option<String>,
-    pub ca_cert_pem: Option<Vec<u8>>,
-    pub tls_domain: String,
+    pub conn_security: crate::gnmi_security::ConnSecurity,
 }
 
 pub struct BonsaiService<S: BonsaiStore> {
@@ -1459,6 +1465,20 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             }
             None => (None, None),
         };
+        // Fail closed on unrecognised transport-security intent — never
+        // probe as a weaker mode than the operator asked for.
+        let security = if request.security.trim().is_empty() {
+            None
+        } else {
+            Some(
+                crate::config::GnmiSecurityMode::parse(&request.security).ok_or_else(|| {
+                    Status::invalid_argument(format!(
+                        "unsupported security mode '{}'",
+                        request.security
+                    ))
+                })?,
+            )
+        };
         let input = discovery::DiscoveryInput {
             address: request.address,
             username,
@@ -1467,6 +1487,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             password_env: None,
             ca_cert_path: option_string(request.ca_cert_path),
             tls_domain: option_string(request.tls_domain),
+            security,
+            client_cert_path: option_string(request.client_cert_path),
+            client_key_path: option_string(request.client_key_path),
             role_hint: option_string(request.role_hint),
             environment_archetype: None,
             vault: None,
@@ -2238,8 +2261,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             &conn_info.address,
             conn_info.username.as_deref(),
             conn_info.password.as_deref(),
-            conn_info.ca_cert_pem.as_deref(),
-            &conn_info.tls_domain,
+            &conn_info.conn_security,
             &r.yang_path,
             &r.json_value,
         )
@@ -2351,6 +2373,12 @@ pub fn managed_device_from_target(target: &TargetConfig) -> ManagedDevice {
             .map(selected_path_to_proto)
             .collect(),
         acquisition: target.acquisition.as_str().to_string(),
+        security: target
+            .security
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default(),
+        client_cert: target.client_cert.clone().unwrap_or_default(),
+        client_key: target.client_key.clone().unwrap_or_default(),
     }
 }
 
@@ -2391,6 +2419,15 @@ pub fn target_from_managed_device(
             }
             None => return Err("unsupported acquisition mode"),
         },
+        security: match crate::config::GnmiSecurityMode::parse(&device.security) {
+            Some(mode) => Some(mode),
+            // Fail closed: an unrecognised security intent must not
+            // degrade to legacy inference on the collector.
+            None if device.security.trim().is_empty() => None,
+            None => return Err("unsupported security mode"),
+        },
+        client_cert: option_string(device.client_cert),
+        client_key: option_string(device.client_key),
         extra_ips: Vec::new(),
         created_at_ns: 0,
         updated_at_ns: 0,
@@ -2492,14 +2529,9 @@ async fn target_conn_info_from_config(
     target: &TargetConfig,
     credentials: &CredentialVault,
 ) -> Result<TargetConnInfo, Status> {
-    let ca_cert_pem = match &target.ca_cert {
-        Some(path) => Some(
-            crate::tls_util::read_cert_pem(path, credentials)
-                .await
-                .map_err(|e| Status::internal(format!("{e:#}")))?,
-        ),
-        None => None,
-    };
+    let conn_security = crate::gnmi_security::resolve_conn_security(target, Some(credentials))
+        .await
+        .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
 
     let resolved_credentials = resolve_target_credentials(target, credentials)
         .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
@@ -2515,8 +2547,7 @@ async fn target_conn_info_from_config(
         address: target.address.clone(),
         username,
         password,
-        ca_cert_pem,
-        tls_domain: target.tls_domain.clone().unwrap_or_default(),
+        conn_security,
     })
 }
 
