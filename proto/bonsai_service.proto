@@ -355,6 +355,16 @@ message AssignmentUpdate {
   // generations are ignored. The collector reports the last applied
   // generation in heartbeats so core can confirm remote withdrawals.
   uint64 generation = 3;
+  // Core authority epoch (M5.2A hardening): a per-boot identifier stamped
+  // on every update. The collector fences (authority_epoch, generation)
+  // lexicographically — a newer epoch is accepted only via a full sync,
+  // an older epoch is always rejected, and within an epoch only strictly
+  // newer generations apply. This makes assignment authority restart-safe
+  // without durable coordination: a core restart produces a new epoch, so
+  // in-memory generation counters may restart without rejecting valid
+  // updates, while delayed previous-epoch updates stay fenced.
+  // 0 = legacy core without epoch fencing.
+  uint64 authority_epoch = 4;
 }
 
 // Per-receiver status snapshot carried in each heartbeat (D3-14 T4 / D3-13).
@@ -389,6 +399,11 @@ message CollectorStats {
   // reports an applied generation at or beyond the removing update.
   // 0 = legacy collector without generation reporting.
   uint64 applied_assignment_generation = 13;
+  // M5.2A: authority_epoch of the last applied AssignmentUpdate (0 =
+  // legacy collector). Core only confirms withdrawals against acks that
+  // match the CURRENT authority epoch — an ack from a stale epoch or an
+  // arbitrary future generation cannot clear pending withdrawals.
+  uint64 authority_epoch = 14;
 }
 
 message HeartbeatAck {

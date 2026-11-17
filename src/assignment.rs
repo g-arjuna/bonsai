@@ -52,11 +52,24 @@ pub struct CollectorManager {
     /// heartbeat reports an applied generation >= this value; there is
     /// no claim of remote withdrawal completion without that ack.
     pending_withdrawals: Arc<Mutex<HashMap<(String, String), u64>>>,
-    /// collector_id -> addresses carried by the last sent full sync.
-    /// Used to diff withdrawals; persists across sessions so a reconnect
-    /// full-sync that drops a device is still tracked as a withdrawal.
-    last_sent_assignments: Arc<Mutex<HashMap<String, std::collections::HashSet<String>>>>,
+    /// collector_id -> per-device acquisition-authority map carried by
+    /// the last sent full sync (address -> had live acquisition
+    /// authority). Used to diff withdrawals: an address that loses its
+    /// assignment OR loses acquisition authority (rejected, disabled,
+    /// explicit-empty) is a withdrawal of previous authority. Persists
+    /// across sessions so a reconnect full-sync is still tracked.
+    last_sent_assignments: Arc<Mutex<HashMap<String, HashMap<String, bool>>>>,
     runtime_state: Arc<Mutex<HashMap<String, CollectorRuntimeState>>>,
+    /// This core boot's assignment-authority epoch (M5.2A). Stamped on
+    /// every AssignmentUpdate; the collector fences (epoch, generation)
+    /// so a core restart can never be mistaken for continuation of the
+    /// previous authority — delayed previous-epoch updates are rejected
+    /// and a new epoch is only honoured via a full sync.
+    authority_epoch: u64,
+    /// Serializes build→stamp→send of full syncs so a slower, older
+    /// snapshot can never receive a NEWER generation than a fresher
+    /// concurrent resync and supersede more recent desired state.
+    send_lock: tokio::sync::Mutex<()>,
     /// Routing rules sorted descending by priority (highest first).
     rules: Arc<Mutex<Vec<AssignmentRule>>>,
     /// Cached site records for hierarchy-aware assignment. Updated externally via `set_sites`.
@@ -84,6 +97,8 @@ struct CollectorRuntimeState {
     /// Last AssignmentUpdate.generation the collector reported applying
     /// (0 = legacy collector without generation reporting).
     applied_assignment_generation: u64,
+    /// Authority epoch the collector reported applying (0 = legacy).
+    applied_authority_epoch: u64,
 }
 
 #[derive(Clone, Default)]
@@ -112,6 +127,8 @@ impl CollectorManager {
             update_generations: Arc::new(Mutex::new(HashMap::new())),
             pending_withdrawals: Arc::new(Mutex::new(HashMap::new())),
             last_sent_assignments: Arc::new(Mutex::new(HashMap::new())),
+            authority_epoch: now_ns().max(1) as u64,
+            send_lock: tokio::sync::Mutex::new(()),
             runtime_state: Arc::new(Mutex::new(HashMap::new())),
             rules: Arc::new(Mutex::new(rules)),
             sites_cache: Arc::new(Mutex::new(Vec::new())),
@@ -127,6 +144,11 @@ impl CollectorManager {
     ) -> Self {
         self.health_emitter = Some(emitter);
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn authority_epoch_for_test(&self) -> u64 {
+        self.authority_epoch
     }
 
     /// Wire the graph event channel so collector connect/disconnect events
@@ -416,6 +438,7 @@ impl CollectorManager {
         recent_error_count: u32,
         receiver_statuses: Vec<ReceiverStatusRecord>,
         applied_assignment_generation: u64,
+        authority_epoch: u64,
     ) {
         {
             let mut runtime = self.runtime_state.lock().unwrap();
@@ -434,17 +457,28 @@ impl CollectorManager {
             entry.recent_error_count = recent_error_count;
             entry.receiver_statuses = receiver_statuses;
             entry.applied_assignment_generation = applied_assignment_generation;
+            entry.applied_authority_epoch = authority_epoch;
         }
-        // Withdrawal acknowledgement (M5.2A): a heartbeat reporting an
-        // applied assignment generation at or beyond the removing
-        // update's generation confirms the collector has seen the
-        // withdrawal. Until then the withdrawal stays pending — remote
-        // withdrawal is never claimed complete without this ack.
-        if applied_assignment_generation > 0 {
+        // Withdrawal acknowledgement (M5.2A): a heartbeat confirms a
+        // withdrawal ONLY when it is bound to the current authority
+        // epoch AND reports an applied generation that was actually
+        // issued to this collector (required <= applied <= last issued).
+        // An arbitrary future generation, a stale-epoch ack, or a legacy
+        // collector (epoch 0) cannot clear pending withdrawals.
+        if authority_epoch == self.authority_epoch && applied_assignment_generation > 0 {
+            let issued = self
+                .update_generations
+                .lock()
+                .unwrap()
+                .get(collector_id)
+                .copied()
+                .unwrap_or(0);
             let mut pending = self.pending_withdrawals.lock().unwrap();
             let before = pending.len();
             pending.retain(|(cid, _), required| {
-                !(cid == collector_id && applied_assignment_generation >= *required)
+                !(cid == collector_id
+                    && applied_assignment_generation >= *required
+                    && applied_assignment_generation <= issued)
             });
             let confirmed = before - pending.len();
             if confirmed > 0 {
@@ -605,9 +639,12 @@ impl CollectorManager {
     }
 
     /// Build, gate, version-stamp and deliver a full assignment sync.
-    /// Records per-device withdrawals against the update generation so
-    /// core can distinguish "sent" from "acknowledged". Returns false
-    /// when the session channel is already closed.
+    /// The whole build→stamp→send sequence is serialized per manager so
+    /// a slower older snapshot can never receive a NEWER generation than
+    /// a fresher concurrent resync. Stamps the current authority_epoch.
+    /// Records per-device authority withdrawals against the update
+    /// generation so core can distinguish "sent" from "acknowledged".
+    /// Returns false when the session channel is already closed.
     async fn deliver_full_sync(
         &self,
         collector_id: &str,
@@ -615,6 +652,9 @@ impl CollectorManager {
         protocol_version: u32,
         credential_delivery: bool,
     ) -> bool {
+        // Serialize snapshot+stamp+send: generation order must match
+        // desired-state order or an older config could supersede newer.
+        let _send_guard = self.send_lock.lock().await;
         let (assignments, blocked) =
             self.build_assignments(collector_id, protocol_version, credential_delivery);
         for (address, reason) in &blocked {
@@ -647,19 +687,26 @@ impl CollectorManager {
             *next
         };
 
-        // Withdrawal diff: devices present in the previous full sync but
-        // absent from this one are pending until the collector's heartbeat
-        // acknowledges this generation.
-        let current: std::collections::HashSet<String> = assignments
+        // Withdrawal diff on ACQUISITION AUTHORITY, not mere presence:
+        // an address that disappears OR loses live authority (rejected,
+        // disabled, explicit-empty) withdraws the previous authority.
+        // Pending until an epoch-bound heartbeat acknowledges this
+        // generation.
+        let current: HashMap<String, bool> = assignments
             .iter()
-            .filter_map(|a| a.device.as_ref().map(|d| d.address.clone()))
+            .filter_map(|a| {
+                a.device
+                    .as_ref()
+                    .map(|d| (d.address.clone(), assignment_has_acquisition_authority(a)))
+            })
             .collect();
         {
             let mut last_sent = self.last_sent_assignments.lock().unwrap();
             if let Some(previous) = last_sent.insert(collector_id.to_string(), current.clone()) {
                 let mut pending = self.pending_withdrawals.lock().unwrap();
-                for address in previous {
-                    if !current.contains(&address) {
+                for (address, had_authority) in previous {
+                    let still_authoritative = current.get(&address).copied().unwrap_or(false);
+                    if had_authority && !still_authoritative {
                         pending.insert((collector_id.to_string(), address), generation);
                     }
                 }
@@ -670,6 +717,7 @@ impl CollectorManager {
             assignments,
             is_full_sync: true,
             generation,
+            authority_epoch: self.authority_epoch,
         })
         .await
         .is_ok()
@@ -1192,7 +1240,190 @@ mod tests {
         manager.resync_collector("c1").await;
         let second = rx.recv().await.expect("resync");
         assert!(second.generation > first.generation);
+        assert_eq!(second.authority_epoch, first.authority_epoch);
+        assert!(second.authority_epoch > 0);
     }
+
+    #[tokio::test]
+    async fn authority_epoch_differs_across_core_instances() {
+        // Simulates a core restart: a NEW CollectorManager over the same
+        // kind of state must stamp a different (newer) epoch so delayed
+        // previous-authority updates stay fenced collector-side.
+        let (_m1, _r1, _d1) = manager_with_device(AcquisitionMode::Automatic).await;
+        let epoch1 = _m1.authority_epoch_for_test();
+        let (_m2, _r2, _d2) = manager_with_device(AcquisitionMode::Automatic).await;
+        let epoch2 = _m2.authority_epoch_for_test();
+        assert_ne!(epoch1, epoch2, "core restart must mint a new epoch");
+        assert!(epoch2 > epoch1);
+    }
+
+    fn heartbeat_args(
+        collector_id: &str,
+        applied_generation: u64,
+        authority_epoch: u64,
+    ) -> (
+        &str,
+        u64,
+        u32,
+        i64,
+        u64,
+        f32,
+        u32,
+        u32,
+        u64,
+        u32,
+        u32,
+        Vec<ReceiverStatusRecord>,
+        u64,
+        u64,
+    ) {
+        (
+            collector_id,
+            0,
+            0,
+            0,
+            0,
+            0.0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            Vec::new(),
+            applied_generation,
+            authority_epoch,
+        )
+    }
+
+    #[tokio::test]
+    async fn withdrawal_ack_requires_current_epoch_and_issued_generation() {
+        let (manager, registry, _dir) = manager_with_device(AcquisitionMode::Automatic).await;
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let first = rx.recv().await.expect("initial sync");
+        let epoch = first.authority_epoch;
+        let issued_gen = first.generation;
+
+        // Withdraw the device, then resync → withdrawal pending at gen2.
+        registry
+            .assign_device_with_audit("10.0.0.1", None, "test", "unassign")
+            .unwrap();
+        manager.resync_collector("c1").await;
+        let second = rx.recv().await.expect("resync");
+        assert!(second.generation > issued_gen);
+        let pending_of = |m: &CollectorManager| {
+            m.collector_status_summary()
+                .collectors
+                .iter()
+                .find(|c| c.id == "c1")
+                .map(|c| c.pending_withdrawal_devices.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(pending_of(&manager), vec!["10.0.0.1".to_string()]);
+
+        // Arbitrary FUTURE generation cannot clear the withdrawal.
+        let args = heartbeat_args("c1", issued_gen + 100, epoch);
+        manager.record_heartbeat(
+            args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8, args.9,
+            args.10, args.11, args.12, args.13,
+        );
+        assert_eq!(pending_of(&manager), vec!["10.0.0.1".to_string()]);
+
+        // Stale-epoch ack cannot clear it either.
+        let args = heartbeat_args("c1", second.generation, epoch + 1);
+        manager.record_heartbeat(
+            args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8, args.9,
+            args.10, args.11, args.12, args.13,
+        );
+        assert_eq!(pending_of(&manager), vec!["10.0.0.1".to_string()]);
+
+        // Correct epoch + issued generation → confirmed.
+        let args = heartbeat_args("c1", second.generation, epoch);
+        manager.record_heartbeat(
+            args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8, args.9,
+            args.10, args.11, args.12, args.13,
+        );
+        assert!(pending_of(&manager).is_empty());
+    }
+
+    #[tokio::test]
+    async fn authority_loss_while_still_assigned_is_a_withdrawal() {
+        // Explicit acquisition WITH a selected path = live authority.
+        let mut explicit_target = acquisition_target("10.0.0.1", AcquisitionMode::Explicit);
+        explicit_target.selected_paths = vec![crate::config::SelectedSubscriptionPath {
+            path: "/system".to_string(),
+            origin: "openconfig".to_string(),
+            provenance: String::new(),
+            mode: "sample".to_string(),
+            sample_interval_ns: 1_000_000_000,
+            rationale: String::new(),
+            optional: false,
+        }];
+        let (manager, registry, _dir) = manager_with_custom_target(explicit_target).await;
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let _ = rx.recv().await.expect("initial sync");
+
+        // Same device stays assigned but loses acquisition authority:
+        // explicit → disabled. The address remains in the assignment set
+        // yet the previous authority is withdrawn.
+        let mut target = acquisition_target("10.0.0.1", AcquisitionMode::Disabled);
+        target.selected_paths = vec![crate::config::SelectedSubscriptionPath {
+            path: "/system".to_string(),
+            origin: "openconfig".to_string(),
+            provenance: String::new(),
+            mode: "sample".to_string(),
+            sample_interval_ns: 1_000_000_000,
+            rationale: String::new(),
+            optional: false,
+        }];
+        registry
+            .update_device_with_audit(target, "test", "disable")
+            .unwrap();
+        // Ensure the device remains assigned — the withdrawal must be
+        // due to lost AUTHORITY, not lost assignment.
+        registry
+            .assign_device_with_audit("10.0.0.1", Some("c1".to_string()), "test", "keep")
+            .unwrap();
+        manager.resync_collector("c1").await;
+        let _ = rx.recv().await.expect("resync");
+
+        let pending = manager
+            .collector_status_summary()
+            .collectors
+            .iter()
+            .find(|c| c.id == "c1")
+            .map(|c| c.pending_withdrawal_devices.clone())
+            .unwrap_or_default();
+        assert_eq!(pending, vec!["10.0.0.1".to_string()]);
+    }
+}
+
+/// Whether a delivered assignment currently carries live acquisition
+/// authority on the collector: not rejected, device convertible intent
+/// is not disabled, and an explicit selection is not empty. Loss of
+/// authority (rejected/disabled/explicit-empty) is a withdrawal of the
+/// previous authority even though the address remains assigned.
+fn assignment_has_acquisition_authority(assignment: &DeviceAssignment) -> bool {
+    if assignment.rejected {
+        return false;
+    }
+    let Some(device) = assignment.device.as_ref() else {
+        return false;
+    };
+    if device.acquisition == crate::config::AcquisitionMode::Disabled.as_str() {
+        return false;
+    }
+    if device.acquisition == crate::config::AcquisitionMode::Explicit.as_str()
+        && device.selected_paths.is_empty()
+    {
+        return false;
+    }
+    true
 }
 
 /// Whether an assignment carries credential material that requires the

@@ -3092,3 +3092,63 @@ fn credential_binding_lookups_use_sqlite_indexes() {
         "collector identity lookup must use the partial unique index: {plan:?}"
     );
 }
+
+/// M5.2A credential confidentiality: a plaintext dev-compat session —
+/// even one presenting a shared PSK token — must NOT receive
+/// credential-bearing device assignments. Production credentials require
+/// a certificate-bound collector principal over verified encrypted
+/// transport; PSK/plaintext delivery exists only as an explicit
+/// isolated-lab opt-in (dev_open_credential_assignments), which this
+/// service does not enable.
+#[tokio::test]
+async fn plaintext_psk_only_cannot_receive_device_credentials() {
+    let lab = start_lab_mode(None, false, AuthPolicy::DevelopmentCompat).await;
+
+    // Credential-bearing device assigned to the registering collector.
+    let target = TargetConfig {
+        address: "10.9.9.9".to_string(),
+        enabled: true,
+        username: Some("lab".to_string()),
+        password: Some("lab-pass".to_string()),
+        collector_id: Some("dev-col".to_string()),
+        ..Default::default()
+    };
+    lab.registry
+        .add_device_with_audit(target, "test", "add")
+        .unwrap();
+    lab.registry
+        .assign_device_with_audit("10.9.9.9", Some("dev-col".to_string()), "test", "assign")
+        .unwrap();
+
+    let mut client = plain_client(&lab).await;
+    let mut stream = client
+        .register_collector(Request::new(CollectorIdentity {
+            collector_id: "dev-col".to_string(),
+            hostname: "collector-psk".to_string(),
+            protocol_version: PROTOCOL_VERSION,
+            // A shared PSK is authentication evidence only — it is not
+            // encryption and not collector-specific authorization.
+            auth_token: "shared-psk-value".to_string(),
+        }))
+        .await
+        .expect("dev-compat registration")
+        .into_inner();
+
+    let update = stream
+        .message()
+        .await
+        .expect("assignment stream")
+        .expect("full sync update");
+    assert!(update.is_full_sync);
+    assert_eq!(update.assignments.len(), 1);
+    let assignment = &update.assignments[0];
+    assert!(
+        assignment.rejected,
+        "credential-bearing assignment must be rejected without a certified principal"
+    );
+    assert_eq!(
+        assignment.reject_reason,
+        "credentials_require_authenticated_collector"
+    );
+    assert!(assignment.username.is_empty() && assignment.password.is_empty());
+}

@@ -215,6 +215,21 @@ fn update(generation: u64, assignments: Vec<DeviceAssignment>) -> AssignmentUpda
         assignments,
         is_full_sync: true,
         generation,
+        authority_epoch: 0,
+    }
+}
+
+fn epoch_update(
+    epoch: u64,
+    generation: u64,
+    full_sync: bool,
+    assignments: Vec<DeviceAssignment>,
+) -> AssignmentUpdate {
+    AssignmentUpdate {
+        assignments,
+        is_full_sync: full_sync,
+        generation,
+        authority_epoch: epoch,
     }
 }
 
@@ -223,6 +238,7 @@ struct Rig {
     plan_tx: mpsc::Sender<SubscriptionPlan>,
     plan_rx: mpsc::Receiver<SubscriptionPlan>,
     subscribers: SubscriberHandleMap,
+    last_epoch: u64,
     last_generation: u64,
 }
 
@@ -234,6 +250,7 @@ impl Rig {
             plan_tx,
             plan_rx,
             subscribers: SubscriberHandleMap::new(),
+            last_epoch: 0,
             last_generation: 0,
         }
     }
@@ -245,6 +262,7 @@ impl Rig {
             &self.bus,
             &plans,
             &mut self.subscribers,
+            &mut self.last_epoch,
             &mut self.last_generation,
         )
         .await;
@@ -651,4 +669,94 @@ fn _assert_lab_transport_authorized() {
             .effective
             .authorized_for_acquisition()
     );
+}
+
+// ── authority epoch fencing (restart-safe contract) ─────────────────────────
+
+/// A newer authority epoch is honoured ONLY via full sync; an older
+/// epoch is always rejected — a core restart cannot be impersonated by
+/// delayed previous-authority updates.
+#[tokio::test]
+async fn authority_epoch_fencing_restart_safe() {
+    let lab = start_lab().await;
+    let mut rig = Rig::new();
+    let target = lab_target(&lab, vec![selected("/system")]);
+
+    // Epoch 100, generation 5, full sync → establishes authority.
+    rig.apply(epoch_update(
+        100,
+        5,
+        true,
+        vec![assignment_for(&target, "u", "p")],
+    ))
+    .await;
+    assert!(wait_subscribes(&lab, 1).await);
+    assert!(wait_streams(&lab, 1).await);
+
+    // Same epoch, older generation → fenced.
+    rig.apply(epoch_update(100, 3, true, vec![])).await;
+    // Older epoch with a HIGH generation → still fenced (epoch wins).
+    rig.apply(epoch_update(99, 999, true, vec![])).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(lab.active_streams.load(Ordering::SeqCst), 1);
+
+    // New epoch 200 but INCREMENTAL (not full sync) → rejected: new
+    // authority must be established by authoritative synchronization.
+    rig.apply(epoch_update(200, 1, false, vec![])).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(lab.active_streams.load(Ordering::SeqCst), 1);
+
+    // New epoch 200 full sync → accepted; stream reconciles (empty =
+    // removal, so the subscriber stops).
+    rig.apply(epoch_update(200, 1, true, vec![])).await;
+    assert!(
+        wait_streams(&lab, 0).await,
+        "new-epoch full sync not applied"
+    );
+
+    // Now epoch 100 again (delayed previous authority) → rejected even
+    // though it carries a full sync.
+    rig.apply(epoch_update(
+        100,
+        50,
+        true,
+        vec![assignment_for(&target, "u", "p")],
+    ))
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(lab.subscribe_calls.load(Ordering::SeqCst), 1);
+    assert!(rig.subscribers.is_empty());
+}
+
+/// A malformed/unconvertible assignment device must stop the obsolete
+/// subscriber — it cannot preserve stale acquisition authority even
+/// though its address stays in the full-sync set.
+#[tokio::test]
+async fn malformed_assignment_stops_obsolete_subscriber() {
+    let lab = start_lab().await;
+    let mut rig = Rig::new();
+    let target = lab_target(&lab, vec![selected("/system")]);
+    rig.apply(update(1, vec![assignment_for(&target, "u", "p")]))
+        .await;
+    assert!(wait_subscribes(&lab, 1).await);
+    assert!(wait_streams(&lab, 1).await);
+
+    // Same address, but an unsupported security value the collector
+    // cannot convert → fail closed.
+    let mut bad_device = managed_device_from_target(&target);
+    bad_device.security = "carrier-pigeon".to_string();
+    let bad = DeviceAssignment {
+        device: Some(bad_device),
+        username: "u".to_string(),
+        password: "p".to_string(),
+        rejected: false,
+        reject_reason: String::new(),
+    };
+    rig.apply(update(2, vec![bad])).await;
+
+    assert!(wait_streams(&lab, 0).await, "obsolete stream preserved");
+    assert!(rig.subscribers.is_empty());
+    // And no replacement Subscribe RPC was emitted.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(lab.subscribe_calls.load(Ordering::SeqCst), 1);
 }

@@ -1151,19 +1151,16 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             .as_ref()
             .ok_or_else(|| Status::unimplemented("collector manager not enabled on this node"))?;
 
-        // M5.2A: credential-bearing assignments require an authenticated
-        // boundary — a transport-attested mTLS principal (already
-        // authorized above), a validated collector PSK, or an explicit
-        // isolated-lab opt-in. Protocol version is NOT authentication.
-        let token_authenticated = match std::env::var("BONSAI_COLLECTOR_TOKEN")
-            .ok()
-            .filter(|t| !t.trim().is_empty())
-        {
-            Some(expected) => auth_token == expected,
-            None => false,
-        };
+        // M5.2A credential confidentiality: production credential-bearing
+        // assignments require a certificate-bound collector principal
+        // (transport-attested mTLS identity over verified encrypted
+        // transport). A shared PSK is authentication evidence only — it
+        // is NOT encryption and NOT collector-specific authorization, so
+        // it cannot unlock device credentials by itself. PSK/plaintext
+        // delivery survives only as an explicit isolated-lab exception:
+        // development-compat auth mode AND the deliberate
+        // dev_open_credential_assignments opt-in.
         let credential_delivery = principal.is_some()
-            || token_authenticated
             || (self.auth_policy == AuthPolicy::DevelopmentCompat
                 && self.dev_open_credential_assignments);
 
@@ -1270,6 +1267,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 stats.recent_error_count,
                 receiver_records,
                 stats.applied_assignment_generation,
+                stats.authority_epoch,
             );
         }
         tracing::debug!(
