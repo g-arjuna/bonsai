@@ -1373,6 +1373,13 @@ pub struct RuntimeConfig {
     ///   the legacy pass-through behavior. Never inferred automatically.
     #[serde(default = "default_runtime_auth_mode")]
     pub auth_mode: String,
+    /// Explicit isolated-lab opt-in (M5.2A): permit credential-bearing
+    /// device assignments to reach unauthenticated development-compat
+    /// collector sessions. Only meaningful with
+    /// `auth_mode = "development-compat"`; ignored otherwise. Production
+    /// collectors must authenticate via mTLS principal or collector PSK.
+    #[serde(default)]
+    pub dev_open_credential_assignments: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -1384,6 +1391,7 @@ impl Default for RuntimeConfig {
             core_ingest_endpoint: default_core_ingest_endpoint(),
             tls: RuntimeTlsConfig::default(),
             auth_mode: default_runtime_auth_mode(),
+            dev_open_credential_assignments: false,
         }
     }
 }

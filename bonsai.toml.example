@@ -46,6 +46,13 @@ passphrase_env = "BONSAI_VAULT_PASSPHRASE"
 # role             = "leaf"
 # site             = "dc-east"
 # credential_alias = "dc-east-gnmi"    # vault alias
+# security         = "tls_verify"      # or "mtls"; "plaintext" is an
+#                                    # explicit isolated-lab opt-in only.
+#                                    # Omitting `security` (legacy) is
+#                                    # readable but reports
+#                                    # migration_required for sessions —
+#                                    # it does NOT silently authorize
+#                                    # cleartext.
 
 # ── Signal receivers (syslog / SNMP) ────────────────────────────────────────
 # Uncomment to enable. Section names MUST be [signals.syslog] / [signals.snmp].

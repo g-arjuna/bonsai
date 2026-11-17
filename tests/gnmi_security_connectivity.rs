@@ -390,6 +390,13 @@ async fn resolve_conn_security_loads_mtls_material_from_fs() {
     std::fs::write(&ca_path, &pki.ca_pem).unwrap();
     std::fs::write(&cert_path, &pki.client_cert_pem).unwrap();
     std::fs::write(&key_path, &pki.client_key_pem).unwrap();
+    // Private-key material must be owner-only (M5.2A provisioning
+    // contract) — the resolver refuses group/other-readable keys.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
 
     let mut target = TargetConfig {
         address: "127.0.0.1:443".to_string(),
@@ -467,4 +474,124 @@ fn proto_round_trip_preserves_security_contract() {
         ..Default::default()
     };
     assert!(bonsai::api::target_from_managed_device(Some(bad)).is_err());
+}
+
+// ── M5.2A focused negatives ─────────────────────────────────────────────────
+
+/// TLS verify with a wrong server name must fail the handshake — the
+/// cert is valid and CA-trusted, only the identity is wrong.
+#[tokio::test]
+async fn tls_verify_wrong_server_name_fails_closed() {
+    ensure_crypto_provider();
+    let pki = test_pki();
+    let lab = start_server(Some(tls_server_config(&pki, false))).await;
+    let mut security = conn(EffectiveSecurity::TlsVerify, Some(pki.ca_pem.clone()), None);
+    security.tls_domain = "wrong.example".to_string();
+    let sub = subscriber(&lab, security);
+    let (_stx, mut srx) = watch::channel(false);
+    let result = tokio::time::timeout(Duration::from_secs(15), sub.subscribe_telemetry(&mut srx))
+        .await
+        .expect("connect attempt must terminate, not hang");
+    assert!(result.is_err(), "wrong server name must fail the handshake");
+    assert_eq!(lab.subscribe_calls.load(Ordering::SeqCst), 0);
+}
+
+/// An expired server certificate must fail verification — validity
+/// window is part of trust, not just chain signature.
+#[tokio::test]
+async fn expired_server_certificate_fails_closed() {
+    ensure_crypto_provider();
+    // Dedicated expired leaf signed by a dedicated CA — only the
+    // validity window is wrong.
+    let (ca, ca_key, ca_pem) = make_ca();
+    let expired_key = rcgen::KeyPair::generate().unwrap();
+    let mut eparams =
+        rcgen::CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .unwrap();
+    eparams.is_ca = rcgen::IsCa::ExplicitNoCa;
+    eparams.key_usages = vec![
+        rcgen::KeyUsagePurpose::DigitalSignature,
+        rcgen::KeyUsagePurpose::KeyEncipherment,
+    ];
+    eparams.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    eparams.not_after = rcgen::date_time_ymd(2020, 1, 1);
+    let expired_cert = eparams.signed_by(&expired_key, &ca, &ca_key).unwrap();
+    let mut pki2 = test_pki();
+    pki2.server_cert_pem = expired_cert.pem();
+    pki2.server_key_pem = expired_key.serialize_pem();
+    pki2.ca_pem = ca_pem;
+    let lab = start_server(Some(tls_server_config(&pki2, false))).await;
+    let sub = subscriber(
+        &lab,
+        conn(
+            EffectiveSecurity::TlsVerify,
+            Some(pki2.ca_pem.clone()),
+            None,
+        ),
+    );
+    let (_stx, mut srx) = watch::channel(false);
+    let result = tokio::time::timeout(Duration::from_secs(15), sub.subscribe_telemetry(&mut srx))
+        .await
+        .expect("connect attempt must terminate, not hang");
+    assert!(
+        result.is_err(),
+        "expired certificate must fail verification"
+    );
+    assert_eq!(lab.subscribe_calls.load(Ordering::SeqCst), 0);
+}
+
+/// A client certificate the server does not trust must be rejected —
+/// mTLS is mutual, not "any certificate".
+#[tokio::test]
+async fn untrusted_client_certificate_rejected() {
+    ensure_crypto_provider();
+    let pki = test_pki();
+    let lab = start_server(Some(tls_server_config(&pki, true))).await;
+    // Client identity signed by an UNRELATED CA.
+    let (other_ca, other_ca_key, _) = make_ca();
+    let (rogue_cert, rogue_key) = make_leaf(
+        vec!["rogue".to_string()],
+        rcgen::ExtendedKeyUsagePurpose::ClientAuth,
+        &other_ca,
+        &other_ca_key,
+    );
+    let sub = subscriber(
+        &lab,
+        conn(
+            EffectiveSecurity::MutualTls,
+            Some(pki.ca_pem.clone()),
+            Some((rogue_cert.as_str(), rogue_key.as_str())),
+        ),
+    );
+    let (_stx, mut srx) = watch::channel(false);
+    let result = tokio::time::timeout(Duration::from_secs(15), sub.subscribe_telemetry(&mut srx))
+        .await
+        .expect("handshake rejection must terminate");
+    assert!(result.is_err(), "untrusted client cert must be rejected");
+    assert_eq!(lab.subscribe_calls.load(Ordering::SeqCst), 0);
+}
+
+/// A client certificate/key mismatch must fail — mismatched material is
+/// never silently repaired or downgraded.
+#[tokio::test]
+async fn client_cert_key_mismatch_fails() {
+    ensure_crypto_provider();
+    let pki = test_pki();
+    let lab = start_server(Some(tls_server_config(&pki, true))).await;
+    // Valid client cert paired with the SERVER's private key — the pair
+    // does not match, so the handshake must fail.
+    let sub = subscriber(
+        &lab,
+        conn(
+            EffectiveSecurity::MutualTls,
+            Some(pki.ca_pem.clone()),
+            Some((pki.client_cert_pem.as_str(), pki.server_key_pem.as_str())),
+        ),
+    );
+    let (_stx, mut srx) = watch::channel(false);
+    let result = tokio::time::timeout(Duration::from_secs(15), sub.subscribe_telemetry(&mut srx))
+        .await
+        .expect("connect attempt must terminate, not hang");
+    assert!(result.is_err(), "cert/key mismatch must fail");
+    assert_eq!(lab.subscribe_calls.load(Ordering::SeqCst), 0);
 }

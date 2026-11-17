@@ -89,6 +89,11 @@ pub(super) struct CollectorStatusJson {
     recent_warn_count: u32,
     recent_error_count: u32,
     receiver_statuses: Vec<ReceiverStatusJson>,
+    /// Devices removed from this collector's assignment set whose remote
+    /// withdrawal has NOT yet been acknowledged by an applied-generation
+    /// heartbeat. Non-empty = withdrawal pending/unconfirmed (M5.2A) —
+    /// never report remote withdrawal as complete while this is set.
+    pending_withdrawal_devices: Vec<String>,
 }
 #[derive(Serialize)]
 pub(super) struct ReceiverStatusJson {
@@ -366,6 +371,7 @@ pub(super) fn collector_status_json(s: CollectorStatus) -> CollectorStatusJson {
                 last_error: r.last_error,
             })
             .collect(),
+        pending_withdrawal_devices: s.pending_withdrawal_devices,
     }
 }
 

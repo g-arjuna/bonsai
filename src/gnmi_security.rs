@@ -50,6 +50,19 @@ impl EffectiveSecurity {
             Self::Plaintext { explicit: false } => "plaintext_legacy",
         }
     }
+
+    /// Whether this transport is authorized for production device
+    /// sessions (Subscribe, Set/remediation, collector acquisition).
+    ///
+    /// Legacy-inferred plaintext (`security` and `ca_cert` both absent)
+    /// is *readable configuration* but is NOT *authorized operational
+    /// transport*: it must be migrated to an explicit mode. Only the
+    /// deliberate laboratory opt-in `security="plaintext"` or a TLS mode
+    /// authorizes cleartext-or-better device I/O. Configured credentials
+    /// may only be transmitted on an authorized transport.
+    pub fn authorized_for_acquisition(self) -> bool {
+        !matches!(self, Self::Plaintext { explicit: false })
+    }
 }
 
 /// Resolved connection material for one gNMI dial (subscribe, discover,
@@ -228,12 +241,62 @@ pub fn validate_target_security(target: &TargetConfig) -> Result<(), String> {
 }
 
 async fn read_pem(path: &str, vault: Option<&CredentialVault>) -> Result<Vec<u8>> {
-    match vault {
-        Some(vault) => crate::tls_util::read_cert_pem(path, vault).await,
-        None => tokio::fs::read(path)
-            .await
-            .with_context(|| format!("could not read PEM material from '{path}'")),
+    if crate::tls_util::is_vault_ref(path) {
+        // Vault references are core-side material. A collector resolves
+        // trust material from its own filesystem only — a `vault:` ref
+        // that happens to be valid on core is NOT assumed available
+        // here. Fail closed with an explicit unsupported error rather
+        // than a confusing filesystem miss.
+        let vault = vault.context(
+            "vault: certificate references are resolved on core only; \
+             collector-local trust material must use filesystem paths",
+        )?;
+        return crate::tls_util::read_cert_pem(path, vault).await;
     }
+    tokio::fs::read(path)
+        .await
+        .with_context(|| format!("could not read PEM material from '{path}'"))
+}
+
+/// Private-key files resolved from the collector/core filesystem must
+/// not be accessible to other users. Vault-held keys are encrypted at
+/// rest and exempt. Group-read is permitted but logged.
+#[cfg(unix)]
+async fn check_private_key_file_permissions(path: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = tokio::fs::metadata(path)
+        .await
+        .with_context(|| format!("could not stat client key '{path}'"))?;
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o007 != 0 {
+        anyhow::bail!(
+            "client key '{path}' is accessible to other users (mode {mode:04o}); \
+             restrict permissions (e.g. chmod 600) — refusing to load private key material"
+        );
+    }
+    if mode & 0o040 != 0 {
+        tracing::warn!(
+            path,
+            mode = format!("{mode:04o}"),
+            "client key file is group-readable"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn check_private_key_file_permissions(_path: &str) -> Result<()> {
+    Ok(())
+}
+
+/// Read client-key PEM, enforcing filesystem permission policy when the
+/// reference is a plain path (vault-held keys are exempt).
+async fn read_client_key_pem(path: &str, vault: Option<&CredentialVault>) -> Result<Vec<u8>> {
+    let pem = read_pem(path, vault).await?;
+    if !crate::tls_util::is_vault_ref(path) {
+        check_private_key_file_permissions(path).await?;
+    }
+    Ok(pem)
 }
 
 /// Resolve the full connection security for a managed target.
@@ -283,7 +346,7 @@ pub async fn resolve_conn_security(
             .context("internal: mTLS without client_key")?;
         (
             Some(read_pem(cert, vault).await?),
-            Some(read_pem(key, vault).await?),
+            Some(read_client_key_pem(key, vault).await?),
         )
     } else {
         (None, None)
@@ -296,6 +359,29 @@ pub async fn resolve_conn_security(
         client_cert_pem,
         client_key_pem,
     })
+}
+
+/// Resolve connection security for a production device session
+/// (Subscribe, Set/remediation, collector acquisition). Identical to
+/// [`resolve_conn_security`] except that legacy-inferred plaintext is
+/// rejected: readable legacy configuration must be explicitly migrated
+/// (`security="plaintext"` lab opt-in or a TLS mode) before it can carry
+/// operational device I/O. The error is `migration_required` — never a
+/// silent downgrade and never a plaintext retry after TLS failure.
+pub async fn resolve_conn_security_for_acquisition(
+    target: &TargetConfig,
+    vault: Option<&CredentialVault>,
+) -> Result<ConnSecurity> {
+    let conn = resolve_conn_security(target, vault).await?;
+    if !conn.effective.authorized_for_acquisition() {
+        anyhow::bail!(
+            "migration_required: legacy plaintext gNMI transport is readable \
+             configuration but not authorized for device sessions; set \
+             security=\"plaintext\" for an isolated laboratory or configure \
+             security=\"tls_verify\"/\"mtls\""
+        );
+    }
+    Ok(conn)
 }
 
 /// Field-level variant for discovery/probe inputs that are not a full
@@ -336,7 +422,7 @@ pub async fn resolve_conn_security_parts(
                 .await?,
             ),
             Some(
-                read_pem(
+                read_client_key_pem(
                     client_key.context("internal: mTLS without client_key")?,
                     vault,
                 )
@@ -353,6 +439,20 @@ pub async fn resolve_conn_security_parts(
         client_cert_pem,
         client_key_pem,
     })
+}
+
+/// Validate that credentials can be encoded as gRPC metadata before any
+/// RPC is initiated. Invalid values fail closed here — they must never
+/// be silently dropped from the request headers.
+pub fn validate_auth_metadata(username: Option<&str>, password: Option<&str>) -> Result<()> {
+    for (label, value) in [("username", username), ("password", password)] {
+        if let Some(v) = value
+            && tonic::metadata::MetadataValue::try_from(v).is_err()
+        {
+            anyhow::bail!("gNMI {label} contains characters invalid for gRPC metadata");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -508,5 +608,64 @@ mod tests {
         let plain = ConnSecurity::plaintext(true);
         assert!(plain.client_tls_config().unwrap().is_none());
         assert_eq!(plain.scheme(), "http");
+    }
+
+    #[test]
+    fn auth_metadata_validation_rejects_unencodable_values() {
+        assert!(validate_auth_metadata(Some("user"), Some("pass")).is_ok());
+        assert!(validate_auth_metadata(None, None).is_ok());
+        // gRPC metadata forbids non-visible-ASCII — must fail BEFORE the
+        // RPC, never be silently dropped from headers.
+        assert!(validate_auth_metadata(Some("bad\nvalue"), None).is_err());
+        assert!(validate_auth_metadata(None, Some("bad\r\nvalue")).is_err());
+    }
+
+    #[tokio::test]
+    async fn legacy_plaintext_is_migration_required_for_acquisition() {
+        let mut t = target();
+        // Readable legacy configuration (no security, no ca_cert) is NOT
+        // authorized operational transport.
+        let err = match resolve_conn_security_for_acquisition(&t, None).await {
+            Ok(_) => panic!("legacy plaintext must be migration_required"),
+            Err(e) => e,
+        };
+        assert!(
+            format!("{err:#}").contains("migration_required"),
+            "unexpected error: {err:#}"
+        );
+        // Deliberate laboratory opt-in authorizes cleartext.
+        t.security = Some(GnmiSecurityMode::Plaintext);
+        let conn = resolve_conn_security_for_acquisition(&t, None)
+            .await
+            .unwrap();
+        assert!(conn.effective.authorized_for_acquisition());
+        assert_eq!(conn.scheme(), "http");
+        // Readable resolution still succeeds for status/migration views.
+        let mut legacy = target();
+        legacy.ca_cert = None;
+        let readable = resolve_conn_security(&legacy, None).await.unwrap();
+        assert!(!readable.effective.authorized_for_acquisition());
+    }
+
+    #[tokio::test]
+    async fn tls_modes_never_downgrade_to_unauthorized_plaintext() {
+        let mut t = target();
+        t.security = Some(GnmiSecurityMode::TlsVerify);
+        t.tls_domain = Some("device.example".to_string());
+        // Missing CA material: hard error, never plaintext.
+        assert!(
+            resolve_conn_security_for_acquisition(&t, None)
+                .await
+                .is_err()
+        );
+        t.security = Some(GnmiSecurityMode::Mtls);
+        t.client_cert = Some("client.pem".to_string());
+        t.client_key = Some("client.key".to_string());
+        // Collector-local material absent → fail closed (A5).
+        assert!(
+            resolve_conn_security_for_acquisition(&t, None)
+                .await
+                .is_err()
+        );
     }
 }

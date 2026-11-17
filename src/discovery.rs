@@ -696,6 +696,15 @@ async fn connect(input: &DiscoveryInput) -> Result<Channel> {
         input.vault.as_deref(),
     )
     .await?;
+    // A discovery dial is operational device I/O: legacy-inferred
+    // plaintext must not carry it (M5.2A) — explicit lab opt-in or a TLS
+    // mode is required.
+    if !conn.effective.authorized_for_acquisition() {
+        anyhow::bail!(
+            "migration_required: legacy plaintext gNMI transport is not \
+             authorized for device sessions; set an explicit security mode"
+        );
+    }
 
     let endpoint = format!("{}://{}", conn.scheme(), input.address);
     let mut builder = Channel::from_shared(endpoint.clone())

@@ -1102,7 +1102,12 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             // in mode=all the core already manages subscriptions directly, so
             // we just drop the receiver — it keeps the collector marked as connected.
             match manager
-                .register_collector(local_id, bonsai::api::PROTOCOL_VERSION_CURRENT)
+                .register_collector(
+                    local_id,
+                    bonsai::api::PROTOCOL_VERSION_CURRENT,
+                    // In-process local collector is trusted core-internal.
+                    true,
+                )
                 .await
             {
                 Ok((_assignment_rx, _generation)) => {
@@ -1257,6 +1262,13 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                                     }
                                 } else {
                                     stop_subscriber(&target.address, &mut subscribers).await;
+                                    publish_blocked_plan_tx(
+                                        subscription_plan_tx.as_ref(),
+                                        &target,
+                                        "disabled",
+                                        "target disabled".to_string(),
+                                    )
+                                    .await;
                                 }
                             }
                             RegistryChange::Removed(address) => {
@@ -1396,6 +1408,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         // BN-021g G5: explicit runtime auth policy — "required" fails
         // closed; "development-compat" is an explicit local-dev opt-in.
         let auth_policy = cfg.runtime.auth_policy()?;
+        let dev_open_cred_assignments = cfg.runtime.dev_open_credential_assignments;
         if auth_policy == bonsai::collector_auth::AuthPolicy::DevelopmentCompat {
             warn!(
                 "runtime.auth_mode=development-compat: gRPC RPCs without a transport principal are permitted — do not use outside isolated development"
@@ -1433,7 +1446,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                             None,
                             coordinator.clone(),
                         )
-                        .with_auth_policy(auth_policy),
+                        .with_auth_policy(auth_policy)
+                        .with_dev_open_credential_assignments(dev_open_cred_assignments),
                     )
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
@@ -1454,7 +1468,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                             None,
                             None,
                         )
-                        .with_auth_policy(auth_policy),
+                        .with_auth_policy(auth_policy)
+                        .with_dev_open_credential_assignments(dev_open_cred_assignments),
                     )
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
@@ -2232,6 +2247,23 @@ fn build_http_tls_acceptor(tls: &config::HttpTlsConfig) -> Result<tokio_rustls::
 
 // ── Subscriber lifecycle ──────────────────────────────────────────────────────
 
+/// Publish a non-submitted plan (rejected/blocked/failed/disabled) for a
+/// target whose acquisition cannot be honoured, so the subscription
+/// verifier supersedes any previously tracked plan. Non-blocking: a full
+/// verifier channel must not stall subscriber management.
+async fn publish_blocked_plan_tx(
+    tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
+    target: &TargetConfig,
+    state: &str,
+    detail: String,
+) {
+    let Some(tx) = tx else { return };
+    let plan = subscriber::blocked_subscription_plan(target, state, detail);
+    if let Err(error) = tx.try_send(plan) {
+        tracing::warn!(address = %target.address, %error, "failed to publish blocked subscription plan");
+    }
+}
+
 pub(super) async fn spawn_subscriber(
     target: TargetConfig,
     credentials: &std::sync::Arc<CredentialVault>,
@@ -2240,11 +2272,17 @@ pub(super) async fn spawn_subscriber(
     subscription_plan_tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut SubscriberHandleMap,
 ) -> Result<()> {
-    use bonsai::subscriber::stop_subscriber;
-    let _ = stop_subscriber; // keep import live — used by restart_subscriber
     let address = target.address.clone();
     if !target.enabled {
         tracing::info!(address = %address, "subscriber start skipped because target is disabled");
+        stop_subscriber(&address, subscribers).await;
+        publish_blocked_plan_tx(
+            subscription_plan_tx,
+            &target,
+            "disabled",
+            "target disabled".to_string(),
+        )
+        .await;
         return Ok(());
     }
     if target.inventory_only {
@@ -2252,23 +2290,75 @@ pub(super) async fn spawn_subscriber(
             address = %address,
             "subscriber start skipped: inventory-only asset has no collection plan"
         );
-        return Ok(());
-    }
-    if subscribers.contains_key(&address) {
-        tracing::info!(address = %address, "subscriber already running");
+        stop_subscriber(&address, subscribers).await;
+        publish_blocked_plan_tx(
+            subscription_plan_tx,
+            &target,
+            "disabled",
+            "inventory-only asset has no collection plan".to_string(),
+        )
+        .await;
         return Ok(());
     }
 
-    let conn_security =
-        bonsai::gnmi_security::resolve_conn_security(&target, Some(credentials)).await?;
-    let resolved_credentials = resolve_target_credentials(&target, credentials)?;
-    let (username, password) = match resolved_credentials {
-        Some(credentials) => {
-            let password = credentials.password_string();
-            (Some(credentials.username), Some(password))
+    // Resolve security + credentials BEFORE deciding: an unresolvable
+    // replacement must not silently keep the obsolete subscriber, and a
+    // required credential that fails to resolve is an explicit rejected
+    // outcome — never an apparently usable anonymous assignment.
+    let resolved = async {
+        let conn_security = bonsai::gnmi_security::resolve_conn_security_for_acquisition(
+            &target,
+            Some(credentials),
+        )
+        .await?;
+        let resolved_credentials = resolve_target_credentials(&target, credentials)?;
+        let (username, password) = match resolved_credentials {
+            Some(credentials) => {
+                let password = credentials.password_string();
+                (Some(credentials.username), Some(password))
+            }
+            None => (None, None),
+        };
+        bonsai::gnmi_security::validate_auth_metadata(username.as_deref(), password.as_deref())
+            .context("credential metadata invalid")?;
+        Ok::<_, anyhow::Error>((conn_security, username, password))
+    }
+    .await;
+    let (conn_security, username, password) = match resolved {
+        Ok(parts) => parts,
+        Err(error) => {
+            publish_blocked_plan_tx(
+                subscription_plan_tx,
+                &target,
+                "rejected",
+                format!("{error:#}"),
+            )
+            .await;
+            // Fail closed: an invalid replacement must not preserve an
+            // obsolete insecure or broader subscription.
+            stop_subscriber(&address, subscribers).await;
+            return Err(error);
         }
-        None => (None, None),
     };
+
+    let fingerprint = subscriber::assignment_fingerprint(
+        &target,
+        &conn_security,
+        username.as_deref(),
+        password.as_deref(),
+    );
+    if subscribers
+        .get(&address)
+        .is_some_and(|entry| entry.assignment_fingerprint == fingerprint)
+    {
+        tracing::info!(address = %address, "assignment unchanged — preserving subscriber");
+        return Ok(());
+    }
+    if subscribers.contains_key(&address) {
+        tracing::info!(address = %address, "assignment changed — stopping obsolete subscriber");
+        stop_subscriber(&address, subscribers).await;
+    }
+
     let subscriber = subscriber::GnmiSubscriber::new(
         target.address.clone(),
         username,
@@ -2286,7 +2376,14 @@ pub(super) async fn spawn_subscriber(
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
-    subscribers.insert(address.clone(), (shutdown_tx, handle));
+    subscribers.insert(
+        address.clone(),
+        bonsai::subscriber::SubscriberEntry {
+            shutdown_tx,
+            handle,
+            assignment_fingerprint: fingerprint,
+        },
+    );
     tracing::info!(address = %address, "subscriber started");
     Ok(())
 }
@@ -2299,8 +2396,9 @@ pub(super) async fn restart_subscriber(
     subscription_plan_tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut SubscriberHandleMap,
 ) -> Result<()> {
-    let address = target.address.clone();
-    bonsai::subscriber::stop_subscriber(&address, subscribers).await;
+    // spawn_subscriber performs effective-assignment reconciliation:
+    // an unchanged assignment preserves the healthy subscriber instead
+    // of flapping it on every registry update.
     spawn_subscriber(
         target,
         credentials,

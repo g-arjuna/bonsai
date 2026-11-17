@@ -333,11 +333,38 @@ message DeviceAssignment {
   ManagedDevice device   = 1;
   string        username = 2; // Resolved on core
   string        password = 3; // Resolved on core
+  // Explicit rejected/unavailable outcome (M5.2A): the assignment could
+  // not be honoured (credential resolution failed, the collector is not
+  // authorized to receive device credentials, or the collector predates
+  // the assignment-lifecycle contract). A rejected assignment must never
+  // be treated as a usable anonymous assignment: the collector stops any
+  // running subscriber for the device and surfaces `reject_reason`.
+  // Collectors below ASSIGNMENT_LIFECYCLE_CONTRACT_VERSION never receive
+  // rejected assignments (they would ignore the flag).
+  bool   rejected      = 4;
+  string reject_reason = 5; // operator-visible, never contains secrets
 }
 
 message AssignmentUpdate {
   repeated DeviceAssignment assignments = 1;
   bool                      is_full_sync = 2; // If true, collector should drop other devices
+  // Per-collector monotonically increasing update generation assigned by
+  // core (never resets across sessions). 0 = legacy core without
+  // generation fencing. The collector applies only updates with a
+  // generation newer than the last applied one; duplicate or stale
+  // generations are ignored. The collector reports the last applied
+  // generation in heartbeats so core can confirm remote withdrawals.
+  uint64 generation = 3;
+  // Core authority epoch (M5.2A hardening): a per-boot identifier stamped
+  // on every update. The collector fences (authority_epoch, generation)
+  // lexicographically — a newer epoch is accepted only via a full sync,
+  // an older epoch is always rejected, and within an epoch only strictly
+  // newer generations apply. This makes assignment authority restart-safe
+  // without durable coordination: a core restart produces a new epoch, so
+  // in-memory generation counters may restart without rejecting valid
+  // updates, while delayed previous-epoch updates stay fenced.
+  // 0 = legacy core without epoch fencing.
+  uint64 authority_epoch = 4;
 }
 
 // Per-receiver status snapshot carried in each heartbeat (D3-14 T4 / D3-13).
@@ -366,6 +393,17 @@ message CollectorStats {
   uint32 recent_error_count   = 11;
   // D3-14 T4: per-receiver status; empty on old collectors.
   repeated CollectorReceiverStatus receiver_statuses = 12;
+  // M5.2A: last AssignmentUpdate.generation this collector has applied.
+  // Core uses it to confirm remote withdrawals: a device removed from a
+  // collector's assignment set is "withdrawal pending" until a heartbeat
+  // reports an applied generation at or beyond the removing update.
+  // 0 = legacy collector without generation reporting.
+  uint64 applied_assignment_generation = 13;
+  // M5.2A: authority_epoch of the last applied AssignmentUpdate (0 =
+  // legacy collector). Core only confirms withdrawals against acks that
+  // match the CURRENT authority epoch — an ack from a stale epoch or an
+  // arbitrary future generation cannot clear pending withdrawals.
+  uint64 authority_epoch = 14;
 }
 
 message HeartbeatAck {

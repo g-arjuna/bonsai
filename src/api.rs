@@ -24,7 +24,7 @@ use crate::store::BonsaiStore;
 use crate::telemetry_identity::VerifiedIngressPrincipal;
 use crate::write_coordinator::{PriorityWriteRequest, WriteCoordinator};
 
-pub const PROTOCOL_VERSION_CURRENT: u32 = 3;
+pub const PROTOCOL_VERSION_CURRENT: u32 = 4;
 pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_CURRENT;
 
 /// Minimum collector protocol version that understands the acquisition
@@ -40,6 +40,14 @@ pub const ACQUISITION_CONTRACT_VERSION: u32 = 2;
 /// would silently downgrade `security="mtls"` to plain TLS verify —
 /// mTLS assignments must never be delivered to them.
 pub const SECURITY_CONTRACT_VERSION: u32 = 3;
+
+/// Minimum collector protocol version that understands the assignment
+/// lifecycle contract (`DeviceAssignment.rejected`/`reject_reason`,
+/// `AssignmentUpdate.generation`, heartbeat
+/// `applied_assignment_generation`). Older collectors cannot express an
+/// explicit rejected/unavailable outcome — a rejected assignment must
+/// never be delivered to them (it would be misread as usable).
+pub const ASSIGNMENT_LIFECYCLE_CONTRACT_VERSION: u32 = 4;
 
 /// Version compatibility result. Major skew (>= 10 apart) is a hard error;
 /// any other mismatch is a warning; matching versions are compatible.
@@ -94,6 +102,11 @@ pub struct BonsaiService<S: BonsaiStore> {
     sqlite_store: Option<Arc<crate::sqlite_store::SqliteStore>>,
     collector_authz: CollectorAuthz,
     auth_policy: AuthPolicy,
+    /// Explicit isolated-lab opt-in (runtime.dev_open_credential_assignments):
+    /// allows credential-bearing assignments to unauthenticated
+    /// development-compat collector sessions. Ignored under
+    /// AuthPolicy::Required — mTLS/token is always required there.
+    dev_open_credential_assignments: bool,
     ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
     detection_coordinator: Option<Arc<WriteCoordinator>>,
 }
@@ -125,6 +138,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
             // Fail closed by default: deployments must opt in to
             // development-compat explicitly via runtime.auth_mode.
             auth_policy: AuthPolicy::Required,
+            dev_open_credential_assignments: false,
             ha_coordinator,
             detection_coordinator,
         }
@@ -134,6 +148,14 @@ impl<S: BonsaiStore> BonsaiService<S> {
     /// derives this from `runtime.auth_mode`; tests may select either.
     pub fn with_auth_policy(mut self, policy: AuthPolicy) -> Self {
         self.auth_policy = policy;
+        self
+    }
+
+    /// Explicit isolated-lab opt-in for credential-bearing assignments to
+    /// unauthenticated development-compat collector sessions (M5.2A).
+    /// Only meaningful together with `AuthPolicy::DevelopmentCompat`.
+    pub fn with_dev_open_credential_assignments(mut self, open: bool) -> Self {
+        self.dev_open_credential_assignments = open;
         self
     }
 
@@ -1129,8 +1151,21 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             .as_ref()
             .ok_or_else(|| Status::unimplemented("collector manager not enabled on this node"))?;
 
+        // M5.2A credential confidentiality: production credential-bearing
+        // assignments require a certificate-bound collector principal
+        // (transport-attested mTLS identity over verified encrypted
+        // transport). A shared PSK is authentication evidence only — it
+        // is NOT encryption and NOT collector-specific authorization, so
+        // it cannot unlock device credentials by itself. PSK/plaintext
+        // delivery survives only as an explicit isolated-lab exception:
+        // development-compat auth mode AND the deliberate
+        // dev_open_credential_assignments opt-in.
+        let credential_delivery = principal.is_some()
+            || (self.auth_policy == AuthPolicy::DevelopmentCompat
+                && self.dev_open_credential_assignments);
+
         let (mut rx, generation) = manager
-            .register_collector(collector_id.clone(), collector_version)
+            .register_collector(collector_id.clone(), collector_version, credential_delivery)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -1231,6 +1266,8 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 stats.recent_warn_count,
                 stats.recent_error_count,
                 receiver_records,
+                stats.applied_assignment_generation,
+                stats.authority_epoch,
             );
         }
         tracing::debug!(
@@ -2529,9 +2566,12 @@ async fn target_conn_info_from_config(
     target: &TargetConfig,
     credentials: &CredentialVault,
 ) -> Result<TargetConnInfo, Status> {
-    let conn_security = crate::gnmi_security::resolve_conn_security(target, Some(credentials))
-        .await
-        .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
+    // Remediation is operational device I/O: legacy-inferred plaintext is
+    // readable configuration but not authorized transport (M5.2A).
+    let conn_security =
+        crate::gnmi_security::resolve_conn_security_for_acquisition(target, Some(credentials))
+            .await
+            .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
 
     let resolved_credentials = resolve_target_credentials(target, credentials)
         .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;

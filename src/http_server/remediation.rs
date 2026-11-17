@@ -782,10 +782,15 @@ pub(super) async fn target_conn_info_for_http(
         .map_err(|e| format!("{e:#}"))?
         .ok_or_else(|| format!("unknown target '{device_address}'"))?;
 
-    let conn_security =
-        crate::gnmi_security::resolve_conn_security(&target, Some(&state.credentials))
-            .await
-            .map_err(|e| format!("{e:#}"))?;
+    // Remediation Set RPCs are operational device I/O: legacy-inferred
+    // plaintext is readable configuration but not authorized transport
+    // (M5.2A) — no credentials may be sent over it.
+    let conn_security = crate::gnmi_security::resolve_conn_security_for_acquisition(
+        &target,
+        Some(&state.credentials),
+    )
+    .await
+    .map_err(|e| format!("{e:#}"))?;
 
     let resolved_credentials = resolve_http_target_credentials(&target, &state.credentials)
         .map_err(|e| format!("{e:#}"))?;

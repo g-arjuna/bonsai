@@ -199,7 +199,9 @@ fn subscriber(
         None,
         None,
         None,
-        bonsai::gnmi_security::ConnSecurity::plaintext(false),
+        // Explicit isolated-laboratory plaintext opt-in (M5.2A): legacy-inferred
+        // plaintext is no longer authorized for device sessions.
+        bonsai::gnmi_security::ConnSecurity::plaintext(true),
         InProcessBus::new(64),
         None,
         Some(plan_tx),

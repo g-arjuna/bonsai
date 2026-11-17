@@ -38,3 +38,6 @@ address  = "172.100.102.21:57400"
 hostname = "xrd-pe1"
 username = "cisco"
 password = "cisco123!"
+# Isolated-lab gNMI cleartext: explicit opt-in (M5.2A). Legacy configs
+# without `security` are readable but NOT authorized for device sessions.
+security = "plaintext"
