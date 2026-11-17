@@ -89,6 +89,26 @@ impl GnmiSubscriber {
         }
     }
 
+    /// Publish a non-submitted plan (rejected/blocked/failed) so the
+    /// verifier supersedes any previously tracked plan for this target.
+    /// The plan_id is suffixed with a detail hash so a *changed* failure
+    /// reason is not deduplicated away by the verifier's plan-id check.
+    async fn publish_blocked_plan(&self, state: &str, detail: String) {
+        let base = acquisition_plan_id(self.acquisition, &[]);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        use std::hash::{Hash, Hasher};
+        detail.hash(&mut hasher);
+        self.publish_plan(SubscriptionPlan {
+            target: self.target.clone(),
+            paths: Vec::new(),
+            plan_id: format!("{}#{}:{:016x}", base, state, hasher.finish()),
+            state: state.to_string(),
+            acquisition: self.acquisition.as_str().to_string(),
+            detail,
+        })
+        .await;
+    }
+
     pub async fn run_forever(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
         let mut backoff = BACKOFF_INITIAL;
         loop {
@@ -170,6 +190,43 @@ impl GnmiSubscriber {
                 }
                 AcquisitionPlan::Ready { .. } => {}
             }
+        }
+
+        // Authorized-transport gate (M5.2A): legacy-inferred plaintext is
+        // readable configuration, not an authorized operational channel.
+        // Only the explicit laboratory opt-in or a TLS mode may carry a
+        // device session — including credential metadata.
+        if !self.conn_security.effective.authorized_for_acquisition() {
+            warn!(
+                target = %self.target,
+                security = self.conn_security.effective.label(),
+                "legacy plaintext transport not authorized for acquisition \
+                 (migration_required) — no RPC will be emitted"
+            );
+            self.publish_blocked_plan(
+                "rejected",
+                "migration_required: legacy plaintext transport is not \
+                 authorized for device sessions; set security=\"plaintext\" \
+                 for an isolated laboratory or configure a TLS mode"
+                    .to_string(),
+            )
+            .await;
+            idle_until_shutdown(shutdown).await;
+            return Ok(());
+        }
+
+        // Credential metadata must be encodable as gRPC headers before
+        // any RPC — invalid values fail closed rather than being silently
+        // dropped from the request.
+        if let Err(error) = crate::gnmi_security::validate_auth_metadata(
+            self.username.as_deref(),
+            self.password.as_deref(),
+        ) {
+            warn!(target = %self.target, %error, "credential metadata invalid");
+            self.publish_blocked_plan("rejected", format!("{error:#}"))
+                .await;
+            idle_until_shutdown(shutdown).await;
+            return Ok(());
         }
 
         let channel = self.connect().await?;
@@ -476,12 +533,23 @@ impl GnmiSubscriber {
     }
 }
 
-pub type SubscriberHandleMap = HashMap<String, (watch::Sender<bool>, JoinHandle<()>)>;
+/// A running subscriber plus the effective-assignment fingerprint it was
+/// spawned for. The fingerprint is process-local (keyed by a random
+/// per-process salt) and is NEVER logged, persisted, sent over the wire,
+/// or placed in plan IDs — it exists only so assignment reconciliation
+/// can detect whether the effective assignment changed.
+pub struct SubscriberEntry {
+    pub shutdown_tx: watch::Sender<bool>,
+    pub handle: JoinHandle<()>,
+    pub assignment_fingerprint: String,
+}
+
+pub type SubscriberHandleMap = HashMap<String, SubscriberEntry>;
 
 pub async fn stop_subscriber(address: &str, subscribers: &mut SubscriberHandleMap) {
-    if let Some((shutdown_tx, handle)) = subscribers.remove(address) {
-        let _ = shutdown_tx.send(true);
-        let _ = handle.await;
+    if let Some(entry) = subscribers.remove(address) {
+        let _ = entry.shutdown_tx.send(true);
+        let _ = entry.handle.await;
         info!(address = %address, "subscriber stopped");
     }
 }
@@ -493,39 +561,172 @@ pub async fn stop_all_subscribers(subscribers: &mut SubscriberHandleMap) {
     }
 }
 
-/// Resolve the transport security contract for a target (filesystem-only,
-/// used by collector mode where no vault is present).
+/// Per-process random key for assignment fingerprints. Generated once;
+/// fingerprints from different processes are incomparable by design.
+fn assignment_fingerprint_key() -> &'static [u8; 32] {
+    static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+    KEY.get_or_init(rand::random)
+}
+
+/// Effective-assignment fingerprint (M5.2A): detects every change that
+/// must replace the running subscriber — acquisition intent, resolved
+/// path selection (order-independent), transport security mode/domain,
+/// certificate MATERIAL (content hash, so rotation under an unchanged
+/// reference is detected), credentials (content), and the vendor hint
+/// that steers capability fallback. Hostname/role/site are telemetry
+/// metadata rather than connection configuration and are excluded.
+/// Secret-derived material is hashed with a process-local salt and the
+/// result is never exposed outside this map.
+pub fn assignment_fingerprint(
+    target: &TargetConfig,
+    conn_security: &crate::gnmi_security::ConnSecurity,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"bonsai-assignment-fp-v1");
+    h.update(assignment_fingerprint_key());
+    h.update(target.address.as_bytes());
+    h.update([u8::from(target.enabled), u8::from(target.inventory_only)]);
+    h.update(target.acquisition.as_str().as_bytes());
+    h.update(target.vendor.as_deref().unwrap_or("").as_bytes());
+    let mut paths: Vec<String> = target
+        .selected_paths
+        .iter()
+        .map(|p| {
+            format!(
+                "{}|{}|{}|{}|{}",
+                p.origin, p.path, p.mode, p.sample_interval_ns, p.optional
+            )
+        })
+        .collect();
+    paths.sort();
+    for p in paths {
+        h.update(p.as_bytes());
+        h.update([0xff]);
+    }
+    h.update(conn_security.effective.label().as_bytes());
+    h.update(conn_security.tls_domain.as_bytes());
+    if let Some(pem) = &conn_security.ca_cert_pem {
+        h.update(pem);
+    }
+    if let Some(pem) = &conn_security.client_cert_pem {
+        h.update(pem);
+    }
+    if let Some(pem) = &conn_security.client_key_pem {
+        h.update(pem);
+    }
+    if let Some(u) = username {
+        h.update(u.as_bytes());
+    }
+    h.update([0x00]);
+    if let Some(p) = password {
+        h.update(p.as_bytes());
+    }
+    hex::encode(h.finalize())
+}
+
+/// Outcome of an assignment reconciliation attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnOutcome {
+    /// A new subscriber task was spawned; any obsolete subscriber was
+    /// stopped and awaited first.
+    Started,
+    /// The effective assignment is identical to the running subscriber's
+    /// — it was preserved untouched (idempotent duplicate delivery).
+    Unchanged,
+    /// The assignment requests no acquisition (disabled target or
+    /// inventory-only asset); any previous subscriber was stopped.
+    Stopped,
+}
+
+/// Resolve transport security for a target (filesystem-only, used by
+/// collector mode where no vault is present). Acquisition sessions
+/// require an authorized transport — legacy-inferred plaintext fails
+/// closed with `migration_required`.
 pub async fn conn_security_for_target_fs(
     target: &TargetConfig,
 ) -> Result<crate::gnmi_security::ConnSecurity> {
-    crate::gnmi_security::resolve_conn_security(target, None).await
+    crate::gnmi_security::resolve_conn_security_for_acquisition(target, None).await
 }
 
+/// Spawn or reconcile the subscriber for `target` against the running
+/// set (M5.2A assignment reconciliation):
+///
+/// - Unchanged effective assignment → existing healthy subscriber is
+///   preserved (`Unchanged`).
+/// - Changed effective assignment → the obsolete subscriber is stopped
+///   AND awaited before the replacement is spawned (`Started`).
+/// - Disabled / inventory-only → any previous stream is stopped and no
+///   replacement is started (`Stopped`).
+/// - Invalid/unauthorized replacement configuration → `Err`; the caller
+///   MUST stop any existing subscriber (fail closed — never silently
+///   preserve an obsolete insecure or broader subscription).
 pub async fn spawn_subscriber_with_creds(
     target: TargetConfig,
     bus: &std::sync::Arc<InProcessBus>,
     debouncer: Option<Arc<TelemetryDebouncer>>,
     subscription_plan_tx: Option<&mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut SubscriberHandleMap,
-) -> Result<()> {
+) -> Result<SpawnOutcome> {
     let address = target.address.clone();
     if !target.enabled {
         info!(address = %address, "subscriber start skipped because target is disabled");
-        return Ok(());
+        stop_subscriber(&address, subscribers).await;
+        return Ok(SpawnOutcome::Stopped);
     }
     if target.inventory_only {
         info!(
             address = %address,
             "subscriber start skipped: inventory-only asset has no collection plan"
         );
-        return Ok(());
-    }
-    if subscribers.contains_key(&address) {
-        info!(address = %address, "subscriber already running");
-        return Ok(());
+        stop_subscriber(&address, subscribers).await;
+        return Ok(SpawnOutcome::Stopped);
     }
 
+    // Resolve security + credentials BEFORE deciding: an unresolvable
+    // replacement must not silently keep the obsolete subscriber.
     let conn_security = conn_security_for_target_fs(&target).await?;
+    crate::gnmi_security::validate_auth_metadata(
+        target.username.as_deref(),
+        target.password.as_deref(),
+    )
+    .context("assignment credential metadata invalid")?;
+
+    let fingerprint = assignment_fingerprint(
+        &target,
+        &conn_security,
+        target.username.as_deref(),
+        target.password.as_deref(),
+    );
+
+    if let Some(entry) = subscribers.get(&address)
+        && entry.assignment_fingerprint == fingerprint
+    {
+        info!(address = %address, "assignment unchanged — preserving subscriber");
+        return Ok(SpawnOutcome::Unchanged);
+    }
+    if subscribers.contains_key(&address) {
+        info!(address = %address, "assignment changed — stopping obsolete subscriber");
+        stop_subscriber(&address, subscribers).await;
+    }
+
+    // An effective plan that acquires nothing (explicit empty selection,
+    // disabled intent, or rejected path set) must not leave a resident
+    // task: no device contact, no Subscribe RPC — just the truthful plan
+    // status. The obsolete stream was already stopped above.
+    let plan = planned_subscription_plan_for_target(&target);
+    if plan.state == "disabled" || plan.state == "rejected" {
+        let state = plan.state.clone();
+        if let Some(tx) = subscription_plan_tx {
+            if tx.try_send(plan).is_err() {
+                warn!(address = %address, "subscription plan channel full — status dropped");
+            }
+        }
+        info!(address = %address, state = %state, "no acquisition plan — no subscriber");
+        return Ok(SpawnOutcome::Stopped);
+    }
 
     let subscriber = GnmiSubscriber::new(
         target.address.clone(),
@@ -544,9 +745,16 @@ pub async fn spawn_subscriber_with_creds(
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
-    subscribers.insert(address.clone(), (shutdown_tx, handle));
+    subscribers.insert(
+        address.clone(),
+        SubscriberEntry {
+            shutdown_tx,
+            handle,
+            assignment_fingerprint: fingerprint,
+        },
+    );
     info!(address = %address, "subscriber started");
-    Ok(())
+    Ok(SpawnOutcome::Started)
 }
 
 pub fn planned_subscription_plan_for_target(
@@ -594,6 +802,28 @@ pub fn planned_subscription_plan_for_target(
             detail: String::new(),
         },
     }
+}
+
+/// Build a non-submitted SubscriptionPlan for a target whose assignment
+/// could not be honoured (rejected / blocked / failed). The plan_id is
+/// derived from the desired plan plus a detail hash so a *changed*
+/// failure reason is not deduplicated away by the verifier's plan-id
+/// check, and paths are cleared so every previously tracked path for
+/// the target is superseded.
+pub fn blocked_subscription_plan(
+    target: &TargetConfig,
+    state: &str,
+    detail: String,
+) -> SubscriptionPlan {
+    let mut plan = planned_subscription_plan_for_target(target);
+    plan.state = state.to_string();
+    plan.detail = detail.clone();
+    plan.paths = Vec::new();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    detail.hash(&mut hasher);
+    plan.plan_id = format!("{}#{}:{:016x}", plan.plan_id, state, hasher.finish());
+    plan
 }
 
 // ── capabilities ──────────────────────────────────────────────────────────────

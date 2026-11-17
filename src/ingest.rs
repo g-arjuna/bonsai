@@ -2289,6 +2289,13 @@ pub async fn run_collector_manager(
 
     let startup_instant = Instant::now();
     let mut subscribers: crate::subscriber::SubscriberHandleMap = HashMap::new();
+    // Last AssignmentUpdate.generation applied — persists across
+    // reconnects because core numbers updates per collector id, so a
+    // delayed update from a previous session cannot restore authority.
+    let mut last_applied_generation: u64 = 0;
+    // Bounded disconnect policy: subscribers survive a brief assignment
+    // stream outage but are stopped once the lease expires.
+    let mut disconnected_since: Option<Instant> = None;
 
     loop {
         let mut client = match create_ingest_client(&cfg).await {
@@ -2297,7 +2304,10 @@ pub async fn run_collector_manager(
                 warn!(%error, %collector_id, "failed to connect to core for assignments; retrying in 5s");
                 tokio::select! {
                     _ = shutdown.changed() => return Ok(()),
-                    _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                        enforce_assignment_disconnect_lease(&mut subscribers, &mut disconnected_since).await;
+                        continue;
+                    }
                 }
             }
         };
@@ -2327,10 +2337,16 @@ pub async fn run_collector_manager(
                 warn!(%error, %collector_id, "failed to register collector; retrying in 5s");
                 tokio::select! {
                     _ = shutdown.changed() => return Ok(()),
-                    _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                        enforce_assignment_disconnect_lease(&mut subscribers, &mut disconnected_since).await;
+                        continue;
+                    }
                 }
             }
         };
+        // Assignment authority re-established: the disconnect lease is
+        // cancelled and the next full sync reconciles actual state.
+        disconnected_since = None;
 
         let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
 
@@ -2349,14 +2365,21 @@ pub async fn run_collector_manager(
                                 &bus,
                                 &subscription_plan_tx,
                                 &mut subscribers,
+                                &mut last_applied_generation,
                             ).await;
                         }
                         Ok(None) => {
                             warn!("assignment stream closed by core; reconnecting");
+                            if disconnected_since.is_none() {
+                                disconnected_since = Some(Instant::now());
+                            }
                             break;
                         }
                         Err(error) => {
                             warn!(%error, "assignment stream error; reconnecting");
+                            if disconnected_since.is_none() {
+                                disconnected_since = Some(Instant::now());
+                            }
                             break;
                         }
                     }
@@ -2422,6 +2445,7 @@ pub async fn run_collector_manager(
                         recent_warn_count: 0,
                         recent_error_count: 0,
                         receiver_statuses: receiver_snapshots,
+                        applied_assignment_generation: last_applied_generation,
                     };
                     if let Err(error) = client.heartbeat(stats).await {
                         warn!(%error, "failed to send heartbeat");
@@ -2432,23 +2456,65 @@ pub async fn run_collector_manager(
     }
 }
 
-async fn handle_assignment_update(
+/// Bounded disconnected-assignment policy (M5.2A): while the assignment
+/// stream is down the collector keeps its last-applied subscribers for at
+/// most this long, then stops them. Stale remote authority is never held
+/// indefinitely; recovery inside the lease preserves streams.
+pub const DISCONNECTED_ASSIGNMENT_LEASE: Duration = Duration::from_secs(90);
+
+/// Apply one assignment update to the local subscriber set.
+///
+/// - Generation fencing: only strictly newer `update.generation` values
+///   mutate subscriber state (legacy collectors send 0 and are always
+///   applied). Duplicate or stale generations are ignored, so a delayed
+///   update cannot restore previous authority.
+/// - Full sync: subscribers whose address is absent (or rejected) are
+///   stopped; present devices are reconciled by effective-assignment
+///   fingerprint — unchanged keeps the healthy stream, changed stops and
+///   awaits the obsolete subscriber before spawning its replacement.
+/// - `rejected` assignments carry an explicit core-side failure
+///   (credential unavailable, contract incompatibility): no subscriber
+///   is started, any existing one is stopped, and the reason is
+///   published as plan status — never delivered as usable.
+/// - Spawn failure fails closed: the obsolete subscriber is stopped so
+///   an invalid replacement cannot silently preserve an insecure or
+///   broader stream.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_assignment_update(
     update: AssignmentUpdate,
     bus: &Arc<InProcessBus>,
     subscription_plan_tx: &Option<mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut crate::subscriber::SubscriberHandleMap,
+    last_applied_generation: &mut u64,
 ) {
+    if update.generation > 0 {
+        if update.generation <= *last_applied_generation {
+            tracing::debug!(
+                update_generation = update.generation,
+                last_applied_generation = *last_applied_generation,
+                "stale or duplicate assignment generation ignored"
+            );
+            return;
+        }
+        *last_applied_generation = update.generation;
+    }
+
     if update.is_full_sync {
-        info!("full assignment sync received, stopping unassigned subscribers");
+        info!(
+            generation = update.generation,
+            "full assignment sync received, reconciling subscribers"
+        );
         let assigned_addresses: std::collections::HashSet<String> = update
             .assignments
             .iter()
+            .filter(|a| !a.rejected)
             .filter_map(|a| a.device.as_ref().map(|d| d.address.clone()))
             .collect();
 
         let current_addresses: Vec<String> = subscribers.keys().cloned().collect();
         for addr in current_addresses {
             if !assigned_addresses.contains(&addr) {
+                info!(address = %addr, "assignment withdrawn — stopping subscriber");
                 crate::subscriber::stop_subscriber(&addr, subscribers).await;
             }
         }
@@ -2470,10 +2536,24 @@ async fn handle_assignment_update(
         target.username = Some(assignment.username);
         target.password = Some(assignment.password);
 
-        // In collector mode, we don't have a vault, so we pass a dummy/empty vault or update spawn_subscriber
-        // For now, we'll pass the Arc<InProcessBus> and Option<mpsc::Sender<SubscriptionPlan>> correctly.
-        if let Err(error) = crate::subscriber::spawn_subscriber_with_creds(
-            target,
+        if assignment.rejected {
+            warn!(
+                address = %target.address,
+                reason = %assignment.reject_reason,
+                "assignment rejected by core — ensuring no subscriber runs"
+            );
+            crate::subscriber::stop_subscriber(&target.address, subscribers).await;
+            publish_assignment_plan_status(
+                subscription_plan_tx,
+                &target,
+                "rejected",
+                assignment.reject_reason.clone(),
+            );
+            continue;
+        }
+
+        match crate::subscriber::spawn_subscriber_with_creds(
+            target.clone(),
             bus,
             None, // debouncer is local to core
             subscription_plan_tx.as_ref(),
@@ -2481,8 +2561,72 @@ async fn handle_assignment_update(
         )
         .await
         {
-            warn!(%error, "failed to start assigned subscriber");
+            Ok(crate::subscriber::SpawnOutcome::Unchanged) => {}
+            Ok(crate::subscriber::SpawnOutcome::Started) => {
+                info!(address = %target.address, "assigned subscriber (re)started");
+            }
+            Ok(crate::subscriber::SpawnOutcome::Stopped) => {
+                info!(address = %target.address, "assignment requires no acquisition — stream stopped");
+            }
+            Err(error) => {
+                // Fail closed: an invalid replacement must not preserve
+                // an obsolete insecure or broader subscription.
+                warn!(address = %target.address, %error, "assigned subscriber failed to start");
+                crate::subscriber::stop_subscriber(&target.address, subscribers).await;
+                publish_assignment_plan_status(
+                    subscription_plan_tx,
+                    &target,
+                    "rejected",
+                    format!("{error:#}"),
+                );
+            }
         }
+    }
+}
+
+/// Enforce the bounded disconnected-assignment lease: once the
+/// assignment stream has been down longer than
+/// `DISCONNECTED_ASSIGNMENT_LEASE`, every remaining subscriber is
+/// stopped so stale remote authority cannot persist indefinitely.
+/// Called on each reconnect retry; a no-op while connected or inside
+/// the lease.
+pub async fn enforce_assignment_disconnect_lease(
+    subscribers: &mut crate::subscriber::SubscriberHandleMap,
+    disconnected_since: &mut Option<Instant>,
+) {
+    let Some(since) = *disconnected_since else {
+        return;
+    };
+    if since.elapsed() < DISCONNECTED_ASSIGNMENT_LEASE || subscribers.is_empty() {
+        return;
+    }
+    warn!(
+        lease_secs = DISCONNECTED_ASSIGNMENT_LEASE.as_secs(),
+        held_subscribers = subscribers.len(),
+        "assignment stream disconnect lease expired — stopping subscribers"
+    );
+    crate::subscriber::stop_all_subscribers(subscribers).await;
+}
+
+/// Publish a non-acquiring plan status (rejected/disabled) for an
+/// assignment outcome. Uses the deterministic plan identity of the
+/// target's acquisition config so status lands on the same plan the
+/// operator sees; paths are cleared — nothing was requested.
+fn publish_assignment_plan_status(
+    subscription_plan_tx: &Option<mpsc::Sender<SubscriptionPlan>>,
+    target: &crate::config::TargetConfig,
+    state: &str,
+    detail: String,
+) {
+    let Some(tx) = subscription_plan_tx else {
+        return;
+    };
+    let mut plan = crate::subscriber::planned_subscription_plan_for_target(target);
+    plan.state = state.to_string();
+    plan.detail = detail;
+    plan.paths.clear();
+    if tx.try_send(plan).is_err() {
+        warn!(address = %target.address, "subscription plan status channel full — status dropped");
     }
 }
 

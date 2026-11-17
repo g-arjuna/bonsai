@@ -7,7 +7,9 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
 use crate::api::pb::{AssignmentUpdate, DeviceAssignment};
-use crate::api::{ACQUISITION_CONTRACT_VERSION, SECURITY_CONTRACT_VERSION};
+use crate::api::{
+    ACQUISITION_CONTRACT_VERSION, ASSIGNMENT_LIFECYCLE_CONTRACT_VERSION, SECURITY_CONTRACT_VERSION,
+};
 use crate::config::{AcquisitionMode, AssignmentRule, TargetConfig};
 use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::graph::{BonsaiEvent, SiteRecord};
@@ -22,6 +24,12 @@ struct CollectorSession {
     /// below ACQUISITION_CONTRACT_VERSION cannot enforce explicit/disabled
     /// acquisition intent and must never receive those assignments.
     protocol_version: u32,
+    /// Whether this session may receive credential-bearing assignments
+    /// (M5.2A): transport-attested mTLS principal, a validated collector
+    /// PSK, or an explicit isolated-lab opt-in. Version compatibility is
+    /// NOT authentication — an unauthenticated dev-compat session gets
+    /// rejected assignments instead of device credentials.
+    credential_delivery: bool,
     /// Held only for channel liveness: dropping the session (on
     /// unregister/supersede) closes the receiver and ends the stream.
     #[allow(dead_code)]
@@ -34,6 +42,20 @@ pub struct CollectorManager {
     active_collectors: Arc<Mutex<HashMap<String, CollectorSession>>>,
     /// Per-collector monotonically increasing session generation.
     session_generations: Arc<Mutex<HashMap<String, u64>>>,
+    /// Per-collector monotonically increasing ASSIGNMENT update
+    /// generation (M5.2A). Never resets across sessions — the collector
+    /// fences stale/duplicate updates and acknowledges applied
+    /// generations via heartbeat so core can confirm withdrawals.
+    update_generations: Arc<Mutex<HashMap<String, u64>>>,
+    /// (collector_id, device_address) -> generation of the update that
+    /// removed the device. A withdrawal is "pending/unconfirmed" until a
+    /// heartbeat reports an applied generation >= this value; there is
+    /// no claim of remote withdrawal completion without that ack.
+    pending_withdrawals: Arc<Mutex<HashMap<(String, String), u64>>>,
+    /// collector_id -> addresses carried by the last sent full sync.
+    /// Used to diff withdrawals; persists across sessions so a reconnect
+    /// full-sync that drops a device is still tracked as a withdrawal.
+    last_sent_assignments: Arc<Mutex<HashMap<String, std::collections::HashSet<String>>>>,
     runtime_state: Arc<Mutex<HashMap<String, CollectorRuntimeState>>>,
     /// Routing rules sorted descending by priority (highest first).
     rules: Arc<Mutex<Vec<AssignmentRule>>>,
@@ -59,6 +81,9 @@ struct CollectorRuntimeState {
     recent_warn_count: u32,
     recent_error_count: u32,
     receiver_statuses: Vec<ReceiverStatusRecord>,
+    /// Last AssignmentUpdate.generation the collector reported applying
+    /// (0 = legacy collector without generation reporting).
+    applied_assignment_generation: u64,
 }
 
 #[derive(Clone, Default)]
@@ -84,6 +109,9 @@ impl CollectorManager {
             credentials,
             active_collectors: Arc::new(Mutex::new(HashMap::new())),
             session_generations: Arc::new(Mutex::new(HashMap::new())),
+            update_generations: Arc::new(Mutex::new(HashMap::new())),
+            pending_withdrawals: Arc::new(Mutex::new(HashMap::new())),
+            last_sent_assignments: Arc::new(Mutex::new(HashMap::new())),
             runtime_state: Arc::new(Mutex::new(HashMap::new())),
             rules: Arc::new(Mutex::new(rules)),
             sites_cache: Arc::new(Mutex::new(Vec::new())),
@@ -205,10 +233,15 @@ impl CollectorManager {
     /// collector id supersedes the previous session: the old sender is
     /// dropped, ending the old stream, and the old generation can no
     /// longer unregister or trigger device reassignment.
+    ///
+    /// `credential_delivery` is the authenticated-boundary decision made
+    /// by the transport layer (mTLS principal / validated PSK / explicit
+    /// lab opt-in). It is NOT derived from protocol version.
     pub async fn register_collector(
         &self,
         collector_id: String,
         protocol_version: u32,
+        credential_delivery: bool,
     ) -> Result<(mpsc::Receiver<AssignmentUpdate>, u64)> {
         // G6: Emit metric for collector connection
         metrics::gauge!("bonsai_collector_connected_total").increment(1);
@@ -240,6 +273,7 @@ impl CollectorManager {
                 CollectorSession {
                     generation,
                     protocol_version,
+                    credential_delivery,
                     tx: tx.clone(),
                 },
             );
@@ -251,36 +285,9 @@ impl CollectorManager {
             entry.last_heartbeat_ns = now_ns();
         }
 
-        let (assignments, blocked) = self.build_assignments(&collector_id, protocol_version);
-        for (address, reason) in &blocked {
-            // Fail closed AND visible: an incompatible collector must never
-            // receive intent it cannot enforce (it would interpret explicit
-            // acquisition as automatic, or silently drop mTLS client
-            // identity), so the device is unassigned and the operator sees
-            // it return to the unassigned pool.
-            warn!(
-                %collector_id,
-                device = %address,
-                protocol_version,
-                reason,
-                "assignment withheld: collector predates a required contract"
-            );
-            metrics::counter!("bonsai_assignment_blocked_protocol_total").increment(1);
-            if let Err(e) = self
-                .registry
-                .assign_device_with_audit(address, None, "system", reason)
-            {
-                warn!(device = %address, %e, "failed to unassign incompatible device");
-            }
-        }
-
-        if tx
-            .send(AssignmentUpdate {
-                assignments,
-                is_full_sync: true,
-            })
+        if !self
+            .deliver_full_sync(&collector_id, &tx, protocol_version, credential_delivery)
             .await
-            .is_err()
         {
             // Receiver already gone — do not leak the session.
             self.unregister_collector(&collector_id, generation);
@@ -408,22 +415,47 @@ impl CollectorManager {
         recent_warn_count: u32,
         recent_error_count: u32,
         receiver_statuses: Vec<ReceiverStatusRecord>,
+        applied_assignment_generation: u64,
     ) {
-        let mut runtime = self.runtime_state.lock().unwrap();
-        let entry = runtime.entry(collector_id.to_string()).or_default();
-        entry.connected = true;
-        entry.queue_depth_updates = queue_depth_updates;
-        entry.subscription_count = subscription_count;
-        entry.uptime_secs = uptime_secs;
-        entry.last_heartbeat_ns = now_ns();
-        entry.queue_bytes = queue_bytes;
-        entry.queue_utilization_pct = queue_utilization_pct;
-        entry.active_subscribers = active_subscribers;
-        entry.failed_subscribers = failed_subscribers;
-        entry.memory_used_bytes = memory_used_bytes;
-        entry.recent_warn_count = recent_warn_count;
-        entry.recent_error_count = recent_error_count;
-        entry.receiver_statuses = receiver_statuses;
+        {
+            let mut runtime = self.runtime_state.lock().unwrap();
+            let entry = runtime.entry(collector_id.to_string()).or_default();
+            entry.connected = true;
+            entry.queue_depth_updates = queue_depth_updates;
+            entry.subscription_count = subscription_count;
+            entry.uptime_secs = uptime_secs;
+            entry.last_heartbeat_ns = now_ns();
+            entry.queue_bytes = queue_bytes;
+            entry.queue_utilization_pct = queue_utilization_pct;
+            entry.active_subscribers = active_subscribers;
+            entry.failed_subscribers = failed_subscribers;
+            entry.memory_used_bytes = memory_used_bytes;
+            entry.recent_warn_count = recent_warn_count;
+            entry.recent_error_count = recent_error_count;
+            entry.receiver_statuses = receiver_statuses;
+            entry.applied_assignment_generation = applied_assignment_generation;
+        }
+        // Withdrawal acknowledgement (M5.2A): a heartbeat reporting an
+        // applied assignment generation at or beyond the removing
+        // update's generation confirms the collector has seen the
+        // withdrawal. Until then the withdrawal stays pending — remote
+        // withdrawal is never claimed complete without this ack.
+        if applied_assignment_generation > 0 {
+            let mut pending = self.pending_withdrawals.lock().unwrap();
+            let before = pending.len();
+            pending.retain(|(cid, _), required| {
+                !(cid == collector_id && applied_assignment_generation >= *required)
+            });
+            let confirmed = before - pending.len();
+            if confirmed > 0 {
+                info!(
+                    %collector_id,
+                    confirmed,
+                    applied_assignment_generation,
+                    "collector acknowledged assignment withdrawals"
+                );
+            }
+        }
     }
 
     /// Lists all devices and their assignment status for the UI.
@@ -458,12 +490,18 @@ impl CollectorManager {
         all_ids.extend(by_collector.keys().cloned());
         all_ids.extend(runtime.keys().cloned());
 
+        let pending = self.pending_withdrawals.lock().unwrap();
         let mut collectors: Vec<CollectorStatus> = all_ids
             .into_iter()
             .map(|id| {
                 let assigned = by_collector.get(&id).cloned().unwrap_or_default();
                 let runtime_state = runtime.get(&id).cloned().unwrap_or_default();
                 let connected = connected_ids.contains(&id) || runtime_state.connected;
+                let pending_withdrawal_devices = pending
+                    .iter()
+                    .filter(|((cid, _), _)| cid == &id)
+                    .map(|((_, addr), _)| addr.clone())
+                    .collect();
                 CollectorStatus {
                     id,
                     connected,
@@ -481,6 +519,7 @@ impl CollectorManager {
                     recent_warn_count: runtime_state.recent_warn_count,
                     recent_error_count: runtime_state.recent_error_count,
                     receiver_statuses: runtime_state.receiver_statuses,
+                    pending_withdrawal_devices,
                 }
             })
             .collect();
@@ -498,11 +537,15 @@ impl CollectorManager {
     /// at or above ACQUISITION_CONTRACT_VERSION, and mTLS devices only to
     /// collectors at or above SECURITY_CONTRACT_VERSION (older collectors
     /// would silently drop the client identity and downgrade to plain TLS
-    /// verify). Returns (assignments, blocked (address, audit reason)).
+    /// verify). Credential-bearing assignments additionally require an
+    /// authenticated session boundary (`credential_delivery`) — version
+    /// compatibility is not authentication. Returns (assignments,
+    /// blocked (address, audit reason)).
     fn build_assignments(
         &self,
         collector_id: &str,
         protocol_version: u32,
+        credential_delivery: bool,
     ) -> (Vec<DeviceAssignment>, Vec<(String, &'static str)>) {
         let targets = match self.registry.list_assigned_to(collector_id) {
             Ok(targets) => targets,
@@ -513,6 +556,7 @@ impl CollectorManager {
         };
         let acquisition_aware = protocol_version >= ACQUISITION_CONTRACT_VERSION;
         let security_aware = protocol_version >= SECURITY_CONTRACT_VERSION;
+        let lifecycle_aware = protocol_version >= ASSIGNMENT_LIFECYCLE_CONTRACT_VERSION;
         let mut assignments = Vec::new();
         let mut blocked = Vec::new();
         for target in targets {
@@ -527,35 +571,67 @@ impl CollectorManager {
                 blocked.push((target.address.clone(), "security_requires_newer_collector"));
                 continue;
             }
-            assignments.push(create_assignment(
-                &target,
-                &self.credentials,
-                &self.registry,
-            ));
+            let mut assignment =
+                match try_create_assignment(&target, &self.credentials, &self.registry) {
+                    Ok(assignment) => assignment,
+                    Err(reject_reason) => rejected_assignment(&target, reject_reason),
+                };
+            // Credential-bearing assignments require the authenticated
+            // boundary decided at registration — never implied by version.
+            if !assignment.rejected
+                && !credential_delivery
+                && assignment_carries_credentials(&assignment)
+            {
+                assignment.username.clear();
+                assignment.password.clear();
+                assignment.rejected = true;
+                assignment.reject_reason =
+                    "credentials_require_authenticated_collector".to_string();
+            }
+            // A collector that predates the lifecycle contract cannot
+            // express rejected/unavailable outcomes — delivering one
+            // would be silently misread as a usable assignment. Withhold
+            // and unassign instead (fail closed).
+            if assignment.rejected && !lifecycle_aware {
+                blocked.push((
+                    target.address.clone(),
+                    "assignment_requires_newer_collector",
+                ));
+                continue;
+            }
+            assignments.push(assignment);
         }
         (assignments, blocked)
     }
 
-    /// Re-send a full assignment sync to a live collector session. Used when
-    /// a device's acquisition intent changes so an obsolete broader
-    /// subscription is withdrawn promptly instead of surviving until the
-    /// next reconnect.
-    pub async fn resync_collector(&self, collector_id: &str) {
-        let (tx, version) = {
-            let collectors = self.active_collectors.lock().unwrap();
-            match collectors.get(collector_id) {
-                Some(session) => (session.tx.clone(), session.protocol_version),
-                None => return,
-            }
-        };
-        let (assignments, blocked) = self.build_assignments(collector_id, version);
+    /// Build, gate, version-stamp and deliver a full assignment sync.
+    /// Records per-device withdrawals against the update generation so
+    /// core can distinguish "sent" from "acknowledged". Returns false
+    /// when the session channel is already closed.
+    async fn deliver_full_sync(
+        &self,
+        collector_id: &str,
+        tx: &mpsc::Sender<AssignmentUpdate>,
+        protocol_version: u32,
+        credential_delivery: bool,
+    ) -> bool {
+        let (assignments, blocked) =
+            self.build_assignments(collector_id, protocol_version, credential_delivery);
         for (address, reason) in &blocked {
+            // Fail closed AND visible: an incompatible collector must never
+            // receive intent it cannot enforce (it would interpret explicit
+            // acquisition as automatic, silently drop mTLS client identity,
+            // or misread a rejected assignment as usable), so the device is
+            // unassigned and the operator sees it return to the unassigned
+            // pool.
             warn!(
                 %collector_id,
                 device = %address,
+                protocol_version,
                 reason,
-                "resync withheld contract-incompatible assignment"
+                "assignment withheld: collector predates a required contract"
             );
+            metrics::counter!("bonsai_assignment_blocked_protocol_total").increment(1);
             if let Err(e) = self
                 .registry
                 .assign_device_with_audit(address, None, "system", reason)
@@ -563,13 +639,61 @@ impl CollectorManager {
                 warn!(device = %address, %e, "failed to unassign incompatible device");
             }
         }
-        if tx
-            .send(AssignmentUpdate {
-                assignments,
-                is_full_sync: true,
-            })
+
+        let generation = {
+            let mut generations = self.update_generations.lock().unwrap();
+            let next = generations.entry(collector_id.to_string()).or_insert(0);
+            *next += 1;
+            *next
+        };
+
+        // Withdrawal diff: devices present in the previous full sync but
+        // absent from this one are pending until the collector's heartbeat
+        // acknowledges this generation.
+        let current: std::collections::HashSet<String> = assignments
+            .iter()
+            .filter_map(|a| a.device.as_ref().map(|d| d.address.clone()))
+            .collect();
+        {
+            let mut last_sent = self.last_sent_assignments.lock().unwrap();
+            if let Some(previous) = last_sent.insert(collector_id.to_string(), current.clone()) {
+                let mut pending = self.pending_withdrawals.lock().unwrap();
+                for address in previous {
+                    if !current.contains(&address) {
+                        pending.insert((collector_id.to_string(), address), generation);
+                    }
+                }
+            }
+        }
+
+        tx.send(AssignmentUpdate {
+            assignments,
+            is_full_sync: true,
+            generation,
+        })
+        .await
+        .is_ok()
+    }
+
+    /// Re-send a full assignment sync to a live collector session. Used when
+    /// a device's acquisition intent changes so an obsolete broader
+    /// subscription is withdrawn promptly instead of surviving until the
+    /// next reconnect.
+    pub async fn resync_collector(&self, collector_id: &str) {
+        let (tx, version, credential_delivery) = {
+            let collectors = self.active_collectors.lock().unwrap();
+            match collectors.get(collector_id) {
+                Some(session) => (
+                    session.tx.clone(),
+                    session.protocol_version,
+                    session.credential_delivery,
+                ),
+                None => return,
+            }
+        };
+        if !self
+            .deliver_full_sync(collector_id, &tx, version, credential_delivery)
             .await
-            .is_err()
         {
             warn!(%collector_id, "assignment resync dropped: session channel closed");
         }
@@ -611,6 +735,11 @@ pub struct CollectorStatus {
     pub recent_warn_count: u32,
     pub recent_error_count: u32,
     pub receiver_statuses: Vec<ReceiverStatusRecord>,
+    /// Devices removed from this collector's assignment set whose
+    /// withdrawal has NOT yet been acknowledged by an applied-generation
+    /// heartbeat. Non-empty means remote withdrawal is pending — never
+    /// report it as complete.
+    pub pending_withdrawal_devices: Vec<String>,
 }
 
 pub struct CollectorStatusSummary {
@@ -781,7 +910,7 @@ mod tests {
     async fn pre_contract_collector_never_receives_explicit_assignment() {
         let (manager, registry, _dir) = manager_with_device(AcquisitionMode::Explicit).await;
         let (mut rx, _gen) = manager
-            .register_collector("c1".to_string(), ACQUISITION_CONTRACT_VERSION - 1)
+            .register_collector("c1".to_string(), ACQUISITION_CONTRACT_VERSION - 1, true)
             .await
             .unwrap();
         let update = rx.recv().await.expect("initial sync");
@@ -805,7 +934,7 @@ mod tests {
     async fn pre_contract_collector_never_receives_disabled_assignment() {
         let (manager, registry, _dir) = manager_with_device(AcquisitionMode::Disabled).await;
         let (mut rx, _gen) = manager
-            .register_collector("c1".to_string(), 1)
+            .register_collector("c1".to_string(), 1, true)
             .await
             .unwrap();
         let update = rx.recv().await.expect("initial sync");
@@ -824,7 +953,7 @@ mod tests {
     async fn pre_contract_collector_still_receives_automatic_assignment() {
         let (manager, _registry, _dir) = manager_with_device(AcquisitionMode::Automatic).await;
         let (mut rx, _gen) = manager
-            .register_collector("c1".to_string(), 1)
+            .register_collector("c1".to_string(), 1, true)
             .await
             .unwrap();
         let update = rx.recv().await.expect("initial sync");
@@ -835,7 +964,7 @@ mod tests {
     async fn contract_collector_receives_explicit_assignment() {
         let (manager, _registry, _dir) = manager_with_device(AcquisitionMode::Explicit).await;
         let (mut rx, _gen) = manager
-            .register_collector("c1".to_string(), ACQUISITION_CONTRACT_VERSION)
+            .register_collector("c1".to_string(), ACQUISITION_CONTRACT_VERSION, true)
             .await
             .unwrap();
         let update = rx.recv().await.expect("initial sync");
@@ -883,7 +1012,7 @@ mod tests {
         // v2 understands the acquisition contract but predates security
         // intent — delivering mtls would silently drop client identity.
         let (mut rx, _gen) = manager
-            .register_collector("c1".to_string(), SECURITY_CONTRACT_VERSION - 1)
+            .register_collector("c1".to_string(), SECURITY_CONTRACT_VERSION - 1, true)
             .await
             .unwrap();
         let update = rx.recv().await.expect("initial sync");
@@ -905,7 +1034,7 @@ mod tests {
     async fn security_collector_receives_mtls_assignment() {
         let (manager, _registry, _dir) = manager_with_mtls_device().await;
         let (mut rx, _gen) = manager
-            .register_collector("c1".to_string(), SECURITY_CONTRACT_VERSION)
+            .register_collector("c1".to_string(), SECURITY_CONTRACT_VERSION, true)
             .await
             .unwrap();
         let update = rx.recv().await.expect("initial sync");
@@ -915,26 +1044,231 @@ mod tests {
         assert_eq!(device.client_cert, "client.pem");
         assert_eq!(device.client_key, "client.key");
     }
+
+    async fn manager_with_custom_target(
+        target: TargetConfig,
+    ) -> (CollectorManager, Arc<ApiRegistry>, tempfile::TempDir) {
+        unsafe { std::env::set_var("BONSAI_ASSIGNMENT_TEST_VAULT", "test-passphrase") };
+        let dir = tempfile::tempdir().unwrap();
+        let registry =
+            Arc::new(ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap());
+        let credentials = Arc::new(
+            CredentialVault::open(dir.path().join("vault"), "BONSAI_ASSIGNMENT_TEST_VAULT")
+                .unwrap(),
+        );
+        registry
+            .add_device_with_audit(target.clone(), "test", "test_add")
+            .unwrap();
+        registry
+            .assign_device_with_audit(
+                &target.address,
+                Some("c1".to_string()),
+                "test",
+                "test_assign",
+            )
+            .unwrap();
+        (
+            CollectorManager::new(registry.clone(), credentials, vec![]),
+            registry,
+            dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn unresolvable_credential_alias_is_rejected_never_anonymous() {
+        let mut target = acquisition_target("10.0.0.3", AcquisitionMode::Automatic);
+        target.credential_alias = Some("no-such-alias".to_string());
+        let (manager, _registry, _dir) = manager_with_custom_target(target).await;
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("initial sync");
+        assert_eq!(update.assignments.len(), 1);
+        let assignment = &update.assignments[0];
+        assert!(assignment.rejected, "unresolvable alias must reject");
+        assert!(
+            assignment.reject_reason.contains("credential_unavailable"),
+            "reason: {}",
+            assignment.reject_reason
+        );
+        assert!(assignment.username.is_empty() && assignment.password.is_empty());
+    }
+
+    #[tokio::test]
+    async fn credential_bearing_assignment_requires_authenticated_boundary() {
+        let mut target = acquisition_target("10.0.0.4", AcquisitionMode::Automatic);
+        target.username = Some("lab".to_string());
+        target.password = Some("lab-pass".to_string());
+        let (manager, _registry, _dir) = manager_with_custom_target(target.clone()).await;
+
+        // Unauthenticated session (no mTLS principal, no PSK, no lab
+        // opt-in): credentials must be stripped and the assignment
+        // rejected — version compatibility is not authentication.
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, false)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("initial sync");
+        let assignment = &update.assignments[0];
+        assert!(assignment.rejected);
+        assert_eq!(
+            assignment.reject_reason,
+            "credentials_require_authenticated_collector"
+        );
+        assert!(assignment.username.is_empty() && assignment.password.is_empty());
+        drop(rx);
+
+        // Authenticated boundary: credentials delivered.
+        let (mut rx2, _gen2) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let update2 = rx2.recv().await.expect("resync");
+        let assignment2 = &update2.assignments[0];
+        assert!(!assignment2.rejected);
+        assert_eq!(assignment2.username, "lab");
+        assert_eq!(assignment2.password, "lab-pass");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_unaware_collector_never_receives_rejected_assignment() {
+        let mut target = acquisition_target("10.0.0.5", AcquisitionMode::Automatic);
+        target.credential_alias = Some("no-such-alias".to_string());
+        let (manager, registry, _dir) = manager_with_custom_target(target).await;
+        // v3 understands credentials but not rejected/unavailable — the
+        // assignment must be withheld entirely (fail closed), not
+        // delivered as apparently usable.
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), SECURITY_CONTRACT_VERSION, true)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("initial sync");
+        assert!(
+            update.assignments.is_empty(),
+            "rejected assignment must not reach a lifecycle-unaware collector"
+        );
+        assert!(
+            registry
+                .get_device("10.0.0.5")
+                .unwrap()
+                .unwrap()
+                .collector_id
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_inline_credentials_are_rejected() {
+        let mut target = acquisition_target("10.0.0.6", AcquisitionMode::Automatic);
+        target.username = Some("lab".to_string());
+        // password missing → incomplete credential metadata, explicit
+        // rejection rather than silent empty-password completion.
+        let (manager, _registry, _dir) = manager_with_custom_target(target).await;
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("initial sync");
+        let assignment = &update.assignments[0];
+        assert!(assignment.rejected);
+        assert!(assignment.reject_reason.contains("credential_incomplete"));
+    }
+
+    #[tokio::test]
+    async fn assignment_update_generation_is_stamped_and_monotonic() {
+        let (manager, _registry, _dir) = manager_with_device(AcquisitionMode::Automatic).await;
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let first = rx.recv().await.expect("initial sync");
+        assert!(first.generation > 0);
+        // Trigger a resync — generation must strictly increase.
+        manager.resync_collector("c1").await;
+        let second = rx.recv().await.expect("resync");
+        assert!(second.generation > first.generation);
+    }
 }
 
-fn create_assignment(
+/// Whether an assignment carries credential material that requires the
+/// authenticated collector boundary: resolved login credentials or a
+/// client-key reference (private-key material stays collector-local but
+/// its use is still credential-bearing).
+fn assignment_carries_credentials(assignment: &DeviceAssignment) -> bool {
+    !assignment.username.is_empty()
+        || !assignment.password.is_empty()
+        || assignment
+            .device
+            .as_ref()
+            .is_some_and(|d| !d.client_key.trim().is_empty())
+}
+
+/// Build an explicit rejected/unavailable assignment. The device
+/// configuration is still delivered so the collector can attribute and
+/// report the rejection, but NO credentials are included and the
+/// collector must not run a subscriber for it.
+fn rejected_assignment(target: &TargetConfig, reject_reason: String) -> DeviceAssignment {
+    DeviceAssignment {
+        device: Some(crate::api::managed_device_from_target(target)),
+        username: String::new(),
+        password: String::new(),
+        rejected: true,
+        reject_reason,
+    }
+}
+
+/// Create a device assignment, resolving credentials on core.
+///
+/// A configured `credential_alias` that fails to resolve (missing,
+/// locked, revoked, malformed) is an explicit rejected outcome — the
+/// assignment is NEVER delivered as an apparently usable anonymous
+/// assignment. Certificate-only (mTLS) authentication and explicitly
+/// unauthenticated devices remain valid anonymous assignments.
+fn try_create_assignment(
     target: &TargetConfig,
     vault: &CredentialVault,
     registry: &ApiRegistry,
-) -> DeviceAssignment {
+) -> std::result::Result<DeviceAssignment, String> {
     let mut username = String::new();
     let mut password = String::new();
 
-    if let Some(alias) = &target.credential_alias {
-        if let Ok(creds) = vault.resolve(alias, ResolvePurpose::Subscribe) {
-            let resolved_password = creds.password_string();
+    let credential_result: std::result::Result<(), String> = (|| {
+        let alias = target
+            .credential_alias
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty());
+        if let Some(alias) = alias {
+            // Required login credential: resolution failure rejects the
+            // whole assignment. Error text carries the alias and cause —
+            // never secret material.
+            let creds = vault
+                .resolve(alias, ResolvePurpose::Subscribe)
+                .map_err(|e| format!("credential_unavailable: '{alias}' ({e:#})"))?;
+            password = creds.password_string();
             username = creds.username;
-            password = resolved_password;
+        } else {
+            let resolved_user = target.resolved_username().filter(|u| !u.trim().is_empty());
+            let resolved_pass = target.resolved_password().filter(|p| !p.is_empty());
+            match (resolved_user, resolved_pass) {
+                (Some(u), Some(p)) => {
+                    username = u;
+                    password = p;
+                }
+                (None, None) => {}
+                // Partial credential metadata must not be silently
+                // completed with an empty password.
+                _ => {
+                    return Err(
+                        "credential_incomplete: username and password must both resolve"
+                            .to_string(),
+                    );
+                }
+            }
         }
-    } else if let Some(u) = target.resolved_username() {
-        username = u;
-        password = target.resolved_password().unwrap_or_default();
-    }
+        Ok(())
+    })();
 
     let mut target_clone = target.clone();
     let overrides = registry.list_overrides().unwrap_or_default();
@@ -942,10 +1276,15 @@ fn create_assignment(
         crate::discovery::resolve_subscription_paths(&target_clone, &overrides);
     target_clone.selected_paths = resolved_paths;
 
-    DeviceAssignment {
-        device: Some(crate::api::managed_device_from_target(&target_clone)),
-        username,
-        password,
+    match credential_result {
+        Ok(()) => Ok(DeviceAssignment {
+            device: Some(crate::api::managed_device_from_target(&target_clone)),
+            username,
+            password,
+            rejected: false,
+            reject_reason: String::new(),
+        }),
+        Err(reject_reason) => Ok(rejected_assignment(&target_clone, reject_reason)),
     }
 }
 
