@@ -30,6 +30,10 @@ struct MockGnmi {
     requests: Arc<Mutex<Vec<SubscribeRequest>>>,
     capability_calls: Arc<AtomicUsize>,
     subscribe_calls: Arc<AtomicUsize>,
+    /// Live Subscribe response streams: incremented when a Subscribe RPC
+    /// opens a stream, decremented when the server drops it — which only
+    /// happens when the client cancels the RPC.
+    active_streams: Arc<AtomicUsize>,
 }
 
 #[tonic::async_trait]
@@ -42,7 +46,7 @@ impl GNmi for MockGnmi {
         Ok(Response::new(self.caps.clone()))
     }
 
-    type SubscribeStream = ReceiverStream<Result<SubscribeResponse, Status>>;
+    type SubscribeStream = GuardedStream;
 
     async fn subscribe(
         &self,
@@ -57,10 +61,16 @@ impl GNmi for MockGnmi {
             }
         });
         // Hold the response stream open so the client stays subscribed
-        // until the test shuts it down.
+        // until the test shuts it down. The drop guard proves real RPC
+        // cancellation: tonic drops this stream only when the client
+        // cancels or the RPC ends.
+        self.active_streams.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = mpsc::channel::<Result<SubscribeResponse, Status>>(8);
         std::mem::forget(tx);
-        Ok(Response::new(ReceiverStream::new(rx)))
+        Ok(Response::new(GuardedStream {
+            inner: ReceiverStream::new(rx),
+            _guard: StreamGuard(Arc::clone(&self.active_streams)),
+        }))
     }
 
     async fn get(
@@ -78,11 +88,37 @@ impl GNmi for MockGnmi {
     }
 }
 
+/// Response stream that decrements `active_streams` on drop — proof the
+/// client cancelled the Subscribe RPC rather than merely going idle.
+struct GuardedStream {
+    inner: ReceiverStream<Result<SubscribeResponse, Status>>,
+    _guard: StreamGuard,
+}
+
+struct StreamGuard(Arc<AtomicUsize>);
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl tokio_stream::Stream for GuardedStream {
+    type Item = Result<SubscribeResponse, Status>;
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::pin::Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
 struct Lab {
     addr: String,
     requests: Arc<Mutex<Vec<SubscribeRequest>>>,
     capability_calls: Arc<AtomicUsize>,
     subscribe_calls: Arc<AtomicUsize>,
+    active_streams: Arc<AtomicUsize>,
     _shutdown: watch::Sender<bool>,
     _handle: tokio::task::JoinHandle<()>,
 }
@@ -91,6 +127,7 @@ async fn start_lab(models: Vec<&str>) -> Lab {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let capability_calls = Arc::new(AtomicUsize::new(0));
     let subscribe_calls = Arc::new(AtomicUsize::new(0));
+    let active_streams = Arc::new(AtomicUsize::new(0));
     let svc = MockGnmi {
         caps: CapabilityResponse {
             supported_models: models
@@ -108,6 +145,7 @@ async fn start_lab(models: Vec<&str>) -> Lab {
         requests: Arc::clone(&requests),
         capability_calls: Arc::clone(&capability_calls),
         subscribe_calls: Arc::clone(&subscribe_calls),
+        active_streams: Arc::clone(&active_streams),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -129,6 +167,7 @@ async fn start_lab(models: Vec<&str>) -> Lab {
         requests,
         capability_calls,
         subscribe_calls,
+        active_streams,
         _shutdown: shutdown_tx,
         _handle: handle,
     }
@@ -706,4 +745,123 @@ async fn query_subscription_statuses(db: &Arc<lbug::Database>) -> Vec<(String, S
     })
     .await
     .unwrap()
+}
+
+/// Live plan supersession: an active Subscribe stream must be actually
+/// cancelled when the acquisition plan is withdrawn, an explicit empty
+/// selection must emit no further Subscribe RPC, and a changed selection
+/// must produce exactly one new request carrying only the new paths.
+#[tokio::test]
+async fn plan_change_cancels_stream_and_empty_emits_no_request() {
+    let lab = start_lab(vec!["openconfig-interfaces"]).await;
+
+    // Phase 1 — explicit selection A is live.
+    let (plan_tx, _plan_rx) = mpsc::channel(8);
+    let sub_a = subscriber(
+        &lab,
+        vec![selected(
+            "interfaces/interface[name=Ethernet1/1]/state/counters",
+            "ON_CHANGE",
+        )],
+        AcquisitionMode::Explicit,
+        plan_tx,
+    );
+    let (_stx_a, mut srx_a) = watch::channel(false);
+    let handle_a = tokio::spawn(async move { sub_a.subscribe_telemetry(&mut srx_a).await });
+    assert!(
+        wait_for(
+            || lab.subscribe_calls.load(Ordering::SeqCst) == 1,
+            Duration::from_secs(10)
+        )
+        .await,
+        "expected initial Subscribe RPC"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Phase 2 — withdraw plan A: the previous stream must be cancelled
+    // for real (server drops the response stream), not just idle.
+    assert_eq!(lab.active_streams.load(Ordering::SeqCst), 1);
+    _stx_a.send(true).unwrap();
+    let _ = handle_a.await;
+    assert!(
+        wait_for(
+            || lab.active_streams.load(Ordering::SeqCst) == 0,
+            Duration::from_secs(5)
+        )
+        .await,
+        "previous Subscribe stream was not cancelled"
+    );
+
+    // Phase 3 — explicit empty selection: disabled plan, no new RPC.
+    let (plan_tx_b, mut plan_rx_b) = mpsc::channel(8);
+    let sub_b = subscriber(&lab, vec![], AcquisitionMode::Explicit, plan_tx_b);
+    let (_stx_b, mut srx_b) = watch::channel(false);
+    let handle_b = tokio::spawn(async move { sub_b.subscribe_telemetry(&mut srx_b).await });
+    let plan_b = tokio::time::timeout(Duration::from_secs(5), plan_rx_b.recv())
+        .await
+        .expect("disabled plan published")
+        .expect("plan channel open");
+    assert_eq!(plan_b.state, "disabled");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        lab.subscribe_calls.load(Ordering::SeqCst),
+        1,
+        "explicit empty selection must not emit a Subscribe RPC"
+    );
+    _stx_b.send(true).unwrap();
+    let _ = handle_b.await;
+
+    // Phase 4 — changed explicit selection: exactly one new request with
+    // only the new path; the old plan's stream stays cancelled.
+    let (plan_tx_c, _plan_rx_c) = mpsc::channel(8);
+    let sub_c = subscriber(
+        &lab,
+        vec![selected(
+            "network-instances/network-instance[name=default]/protocols",
+            "SAMPLE",
+        )],
+        AcquisitionMode::Explicit,
+        plan_tx_c,
+    );
+    let (_stx_c, mut srx_c) = watch::channel(false);
+    let handle_c = tokio::spawn(async move { sub_c.subscribe_telemetry(&mut srx_c).await });
+    assert!(
+        wait_for(
+            || lab.subscribe_calls.load(Ordering::SeqCst) == 2,
+            Duration::from_secs(10)
+        )
+        .await,
+        "expected a second Subscribe RPC for the changed plan"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let requests = lab.requests.lock().await;
+    assert_eq!(requests.len(), 2, "exactly two Subscribe requests expected");
+    let subs = subscription_list(&requests[1]);
+    assert_eq!(subs.len(), 1, "new plan must carry only its own path");
+    let emitted = path_string(subs[0].path.as_ref().unwrap());
+    assert!(
+        emitted.contains("network-instances"),
+        "unexpected path in new plan: {emitted}"
+    );
+    assert!(
+        !emitted.contains("Ethernet1/1"),
+        "obsolete path leaked into new plan: {emitted}"
+    );
+    drop(requests);
+    assert_eq!(
+        lab.active_streams.load(Ordering::SeqCst),
+        1,
+        "exactly the new plan's stream may be live"
+    );
+
+    _stx_c.send(true).unwrap();
+    let _ = handle_c.await;
+    assert!(
+        wait_for(
+            || lab.active_streams.load(Ordering::SeqCst) == 0,
+            Duration::from_secs(5)
+        )
+        .await,
+        "final stream was not cancelled"
+    );
 }
