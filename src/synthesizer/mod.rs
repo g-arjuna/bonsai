@@ -606,6 +606,7 @@ pub fn selected_paths_from_report(report: &SynthesizerReport) -> Vec<SelectedSub
         .recommended_paths
         .iter()
         .map(|path| SelectedSubscriptionPath {
+            provenance: String::new(),
             path: path.path.clone(),
             origin: path.origin.clone(),
             mode: path.mode.clone(),
@@ -624,6 +625,7 @@ mod tests {
 
     fn target(role: &str, vendor: &str) -> TargetConfig {
         TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),

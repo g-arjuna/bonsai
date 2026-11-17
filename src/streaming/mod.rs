@@ -345,6 +345,7 @@ mod tests {
     #[test]
     fn streaming_readiness_prefers_gnmi_then_bmp_for_bgp_roles() {
         let target = TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),

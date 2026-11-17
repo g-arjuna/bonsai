@@ -54,5 +54,20 @@ pub trait BonsaiStore: Send + Sync {
         status: crate::graph::SubscriptionStatusWrite,
     ) -> Result<()>;
 
+    /// Mark persisted subscription statuses for `device_address` that are
+    /// NOT in `keep` (keyed by path/origin/mode/sample_interval_ns) as
+    /// "superseded". Called when a new acquisition plan registers so rows
+    /// left behind by an obsolete plan — including across restarts, where
+    /// the verifier's in-memory tracking is empty — cannot remain
+    /// displayed as current. Stores without persistent status read access
+    /// may use the default no-op.
+    async fn supersede_subscription_statuses_outside_plan(
+        &self,
+        _device_address: &str,
+        _keep: &std::collections::HashSet<(String, String, String, i64)>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn publish_event(&self, event: BonsaiEvent);
 }

@@ -1981,6 +1981,16 @@ pub struct TargetConfig {
     /// Operator-selected subscription paths from onboarding discovery.
     #[serde(default)]
     pub selected_paths: Vec<SelectedSubscriptionPath>,
+    /// Explicit acquisition-selection contract (M4 selective gNMI).
+    /// `automatic` (default/legacy): capability/profile-derived plan; selected
+    /// paths are honoured when present, with the historical capability
+    /// fallback when they produce no valid subscriptions.
+    /// `explicit`: the resolved selected_paths set IS the complete desired
+    /// plan — no automatic defaults are appended and an empty effective set
+    /// means no telemetry is requested.
+    /// `disabled`: acquisition is off; no Subscribe RPC is emitted.
+    #[serde(default)]
+    pub acquisition: AcquisitionMode,
     /// Flat list of gNMI paths for this device (used by SQLite store and replication).
     #[serde(default)]
     pub paths: Vec<String>,
@@ -2027,11 +2037,54 @@ pub struct TargetConfig {
     pub inventory_tenant: Option<String>,
 }
 
+/// Operator acquisition intent for gNMI telemetry collection.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AcquisitionMode {
+    /// Legacy/default: derive the plan from capabilities/profile; honour
+    /// selected_paths when present with historical fallback semantics.
+    #[default]
+    Automatic,
+    /// The resolved selected_paths set is the complete desired plan.
+    Explicit,
+    /// Acquisition disabled — no Subscribe RPC is emitted. Also the
+    /// representation of an explicit empty selection.
+    Disabled,
+}
+
+impl AcquisitionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Explicit => "explicit",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    /// Strict parse for API/proto boundaries — unknown values are rejected,
+    /// never silently mapped to automatic.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "automatic" | "auto" => Some(Self::Automatic),
+            "explicit" => Some(Self::Explicit),
+            "disabled" | "none" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 pub struct SelectedSubscriptionPath {
     pub path: String,
+    /// gNMI Path.origin — the YANG model origin (e.g. "openconfig").
+    /// Empty means the device resolves the origin.
     #[serde(default)]
     pub origin: String,
+    /// Provenance/audit label (e.g. "override: site-override(...)",
+    /// "profile: ios-xe"). NOT a gNMI model origin — kept distinct so
+    /// descriptive labels never leak into SubscribeRequest Path.origin.
+    #[serde(default)]
+    pub provenance: String,
     pub mode: String,
     #[serde(default)]
     pub sample_interval_ns: u64,

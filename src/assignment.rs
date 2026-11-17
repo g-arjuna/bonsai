@@ -6,8 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
+use crate::api::ACQUISITION_CONTRACT_VERSION;
 use crate::api::pb::{AssignmentUpdate, DeviceAssignment};
-use crate::config::{AssignmentRule, TargetConfig};
+use crate::config::{AcquisitionMode, AssignmentRule, TargetConfig};
 use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::graph::{BonsaiEvent, SiteRecord};
 use crate::registry::ApiRegistry;
@@ -17,6 +18,10 @@ use crate::registry::ApiRegistry;
 /// registered under the same collector id (BN-021g G4).
 struct CollectorSession {
     generation: u64,
+    /// Collector-advertised protocol version from CollectorIdentity. Sessions
+    /// below ACQUISITION_CONTRACT_VERSION cannot enforce explicit/disabled
+    /// acquisition intent and must never receive those assignments.
+    protocol_version: u32,
     /// Held only for channel liveness: dropping the session (on
     /// unregister/supersede) closes the receiver and ends the stream.
     #[allow(dead_code)]
@@ -203,6 +208,7 @@ impl CollectorManager {
     pub async fn register_collector(
         &self,
         collector_id: String,
+        protocol_version: u32,
     ) -> Result<(mpsc::Receiver<AssignmentUpdate>, u64)> {
         // G6: Emit metric for collector connection
         metrics::gauge!("bonsai_collector_connected_total").increment(1);
@@ -233,6 +239,7 @@ impl CollectorManager {
                 collector_id.clone(),
                 CollectorSession {
                     generation,
+                    protocol_version,
                     tx: tx.clone(),
                 },
             );
@@ -244,20 +251,27 @@ impl CollectorManager {
             entry.last_heartbeat_ns = now_ns();
         }
 
-        let targets = match self.registry.list_assigned_to(&collector_id) {
-            Ok(targets) => targets,
-            Err(e) => {
-                self.unregister_collector(&collector_id, generation);
-                return Err(e);
+        let (assignments, blocked) = self.build_assignments(&collector_id, protocol_version);
+        for address in &blocked {
+            // Fail closed AND visible: an incompatible collector must never
+            // receive explicit/disabled intent (it would interpret it as
+            // automatic collection), so the device is unassigned and the
+            // operator sees it return to the unassigned pool.
+            warn!(
+                %collector_id,
+                device = %address,
+                protocol_version,
+                "assignment withheld: collector predates the acquisition contract"
+            );
+            metrics::counter!("bonsai_assignment_blocked_protocol_total").increment(1);
+            if let Err(e) = self.registry.assign_device_with_audit(
+                address,
+                None,
+                "system",
+                "acquisition_requires_newer_collector",
+            ) {
+                warn!(device = %address, %e, "failed to unassign incompatible device");
             }
-        };
-        let mut assignments = Vec::new();
-        for target in targets {
-            assignments.push(create_assignment(
-                &target,
-                &self.credentials,
-                &self.registry,
-            ));
         }
 
         if tx
@@ -477,6 +491,97 @@ impl CollectorManager {
             unassigned_devices,
         }
     }
+
+    /// Build the DeviceAssignment list for a collector session, enforcing
+    /// the acquisition contract: devices with non-Automatic acquisition
+    /// intent are only delivered to collectors at or above
+    /// ACQUISITION_CONTRACT_VERSION. Returns (assignments, blocked addresses).
+    fn build_assignments(
+        &self,
+        collector_id: &str,
+        protocol_version: u32,
+    ) -> (Vec<DeviceAssignment>, Vec<String>) {
+        let targets = match self.registry.list_assigned_to(collector_id) {
+            Ok(targets) => targets,
+            Err(e) => {
+                warn!(%collector_id, %e, "failed to list assigned targets");
+                return (Vec::new(), Vec::new());
+            }
+        };
+        let acquisition_aware = protocol_version >= ACQUISITION_CONTRACT_VERSION;
+        let mut assignments = Vec::new();
+        let mut blocked = Vec::new();
+        for target in targets {
+            if !acquisition_aware && target.acquisition != AcquisitionMode::Automatic {
+                blocked.push(target.address.clone());
+                continue;
+            }
+            assignments.push(create_assignment(
+                &target,
+                &self.credentials,
+                &self.registry,
+            ));
+        }
+        (assignments, blocked)
+    }
+
+    /// Re-send a full assignment sync to a live collector session. Used when
+    /// a device's acquisition intent changes so an obsolete broader
+    /// subscription is withdrawn promptly instead of surviving until the
+    /// next reconnect.
+    pub async fn resync_collector(&self, collector_id: &str) {
+        let (tx, version) = {
+            let collectors = self.active_collectors.lock().unwrap();
+            match collectors.get(collector_id) {
+                Some(session) => (session.tx.clone(), session.protocol_version),
+                None => return,
+            }
+        };
+        let (assignments, blocked) = self.build_assignments(collector_id, version);
+        for address in &blocked {
+            warn!(
+                %collector_id,
+                device = %address,
+                "resync withheld acquisition-incompatible assignment"
+            );
+            if let Err(e) = self.registry.assign_device_with_audit(
+                address,
+                None,
+                "system",
+                "acquisition_requires_newer_collector",
+            ) {
+                warn!(device = %address, %e, "failed to unassign incompatible device");
+            }
+        }
+        if tx
+            .send(AssignmentUpdate {
+                assignments,
+                is_full_sync: true,
+            })
+            .await
+            .is_err()
+        {
+            warn!(%collector_id, "assignment resync dropped: session channel closed");
+        }
+    }
+
+    /// Whether the named collector session can enforce this target's
+    /// acquisition intent. Unknown/offline collectors return true — the
+    /// delivery-time filter in `build_assignments` is the enforcement point.
+    pub fn collector_supports_acquisition(
+        &self,
+        collector_id: &str,
+        target: &TargetConfig,
+    ) -> bool {
+        if target.acquisition == AcquisitionMode::Automatic {
+            return true;
+        }
+        let collectors = self.active_collectors.lock().unwrap();
+        match collectors.get(collector_id) {
+            Some(session) => session.protocol_version >= ACQUISITION_CONTRACT_VERSION,
+            None => true,
+        }
+    }
 }
 
 pub struct CollectorStatus {
@@ -593,6 +698,137 @@ mod tests {
     fn empty_cache_falls_back_to_exact_match() {
         let result = site_ancestor_set("dc-london", &[]);
         assert_eq!(result, vec!["dc-london".to_string()]);
+    }
+
+    fn acquisition_target(address: &str, acquisition: AcquisitionMode) -> TargetConfig {
+        TargetConfig {
+            acquisition,
+            extra_ips: Vec::new(),
+            optional: false,
+            paths: Vec::new(),
+            address: address.to_string(),
+            enabled: true,
+            tls_domain: None,
+            ca_cert: None,
+            vendor: None,
+            credential_alias: None,
+            username_env: None,
+            password_env: None,
+            username: None,
+            password: None,
+            hostname: None,
+            role: None,
+            site: None,
+            collector_id: Some("c1".to_string()),
+            selected_paths: Vec::new(),
+            external_id: None,
+            inventory_only: false,
+            inventory_platform: None,
+            inventory_status: None,
+            inventory_tenant: None,
+            created_at_ns: 0,
+            updated_at_ns: 0,
+            created_by: String::new(),
+            updated_by: String::new(),
+            last_operator_action: String::new(),
+        }
+    }
+
+    async fn manager_with_device(
+        acquisition: AcquisitionMode,
+    ) -> (CollectorManager, Arc<ApiRegistry>, tempfile::TempDir) {
+        unsafe { std::env::set_var("BONSAI_ASSIGNMENT_TEST_VAULT", "test-passphrase") };
+        let dir = tempfile::tempdir().unwrap();
+        let registry =
+            Arc::new(ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap());
+        let credentials = Arc::new(
+            CredentialVault::open(dir.path().join("vault"), "BONSAI_ASSIGNMENT_TEST_VAULT")
+                .unwrap(),
+        );
+        let target = acquisition_target("10.0.0.1", acquisition);
+        registry
+            .add_device_with_audit(target.clone(), "test", "test_add")
+            .unwrap();
+        registry
+            .assign_device_with_audit(
+                &target.address,
+                Some("c1".to_string()),
+                "test",
+                "test_assign",
+            )
+            .unwrap();
+        (
+            CollectorManager::new(registry.clone(), credentials, vec![]),
+            registry,
+            dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn pre_contract_collector_never_receives_explicit_assignment() {
+        let (manager, registry, _dir) = manager_with_device(AcquisitionMode::Explicit).await;
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), ACQUISITION_CONTRACT_VERSION - 1)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("initial sync");
+        assert!(update.is_full_sync);
+        assert!(
+            update.assignments.is_empty(),
+            "explicit plan must not reach a pre-contract collector"
+        );
+        // The device is unassigned — operator-visible, not silently delivered.
+        assert!(
+            registry
+                .get_device("10.0.0.1")
+                .unwrap()
+                .unwrap()
+                .collector_id
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_contract_collector_never_receives_disabled_assignment() {
+        let (manager, registry, _dir) = manager_with_device(AcquisitionMode::Disabled).await;
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), 1)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("initial sync");
+        assert!(update.assignments.is_empty());
+        assert!(
+            registry
+                .get_device("10.0.0.1")
+                .unwrap()
+                .unwrap()
+                .collector_id
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_contract_collector_still_receives_automatic_assignment() {
+        let (manager, _registry, _dir) = manager_with_device(AcquisitionMode::Automatic).await;
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), 1)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("initial sync");
+        assert_eq!(update.assignments.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn contract_collector_receives_explicit_assignment() {
+        let (manager, _registry, _dir) = manager_with_device(AcquisitionMode::Explicit).await;
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), ACQUISITION_CONTRACT_VERSION)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("initial sync");
+        assert_eq!(update.assignments.len(), 1);
+        let device = update.assignments[0].device.as_ref().unwrap();
+        assert_eq!(device.acquisition, "explicit");
     }
 }
 

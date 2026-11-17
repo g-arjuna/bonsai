@@ -259,6 +259,7 @@ pub(super) async fn save_managed_device(
     state: AppState,
     req: ManagedDeviceRequest,
 ) -> Result<Json<MutationResponse>, (StatusCode, String)> {
+    let acquisition_specified = req.acquisition.is_some();
     let mut target = target_from_request(req)?;
     if let Ok(Some(existing)) = state.registry.get_device(&target.address) {
         if target.credential_alias.is_none() {
@@ -276,8 +277,16 @@ pub(super) async fn save_managed_device(
         if target.password.is_none() {
             target.password = existing.password;
         }
-        if target.selected_paths.is_empty() {
-            target.selected_paths = existing.selected_paths;
+        // Legacy clients that omit `acquisition` keep the stored intent and
+        // the historical selected_paths inheritance. A request that
+        // specifies acquisition is authoritative: explicit+empty persists
+        // as a disabled plan and can never silently reactivate automatic
+        // collection.
+        if !acquisition_specified {
+            target.acquisition = existing.acquisition;
+            if target.selected_paths.is_empty() {
+                target.selected_paths = existing.selected_paths;
+            }
         }
         // Preserve TLS and identity fields — critical to avoid bootstrap re-registration
         // clobbering the ca_cert/tls_domain configured via bonsai.toml or manual onboarding.
@@ -310,6 +319,11 @@ pub(super) async fn save_managed_device(
             target.external_id = existing.external_id.clone();
         }
     }
+    // Validate the FINAL effective configuration — after credential/TLS/
+    // acquisition/selected_paths inheritance — so no caller can persist an
+    // invalid explicit plan through inheritance that request-level
+    // validation never saw.
+    validate_explicit_paths(&target.acquisition, &target.selected_paths)?;
     let address = target.address.clone();
     let result = match state
         .registry
@@ -345,6 +359,14 @@ pub(super) async fn save_managed_device(
                 }));
             }
             let statuses = read_subscription_statuses(state.store.db()).await?;
+            // Propagate acquisition/selection changes to a live collector
+            // promptly: a full resync withdraws obsolete broader
+            // subscriptions instead of waiting for reconnect.
+            if let Some(cid) = device.collector_id.as_deref()
+                && let Some(manager) = state.collector_manager.as_ref()
+            {
+                manager.resync_collector(cid).await;
+            }
             Ok(Json(MutationResponse {
                 success: true,
                 error: String::new(),
@@ -1171,7 +1193,14 @@ pub(super) fn managed_device_json(
     statuses: &HashMap<String, Vec<SubscriptionStatusJson>>,
     overrides: &[crate::registry::PathOverride],
 ) -> ManagedDeviceJson {
-    let (_, audit) = crate::discovery::resolve_subscription_paths(&target, overrides);
+    let (resolved_paths, audit) = crate::discovery::resolve_subscription_paths(&target, overrides);
+    // The displayed plan must be the EFFECTIVE plan — the same override-
+    // resolved selection that assignment delivers to the collector — not
+    // the raw desired selection. Plan identity therefore matches what is
+    // actually submitted to the device.
+    let mut plan_target = target.clone();
+    plan_target.selected_paths = resolved_paths;
+    let plan = crate::subscriber::planned_subscription_plan_for_target(&plan_target);
     let address = target.address;
     ManagedDeviceJson {
         enabled: target.enabled,
@@ -1186,6 +1215,11 @@ pub(super) fn managed_device_json(
         role: target.role.unwrap_or_default(),
         site: target.site.unwrap_or_default(),
         selected_paths: target.selected_paths.clone(),
+        resolved_selected_paths: plan_target.selected_paths.clone(),
+        acquisition: target.acquisition.as_str().to_string(),
+        acquisition_plan_state: plan.state,
+        acquisition_plan_id: plan.plan_id,
+        acquisition_plan_detail: plan.detail,
         subscription_statuses: statuses.get(&address).cloned().unwrap_or_default(),
         address,
         resolution_audit: audit,
@@ -1217,6 +1251,8 @@ pub(super) fn target_from_request(
             format!("password env var '{}' is not set", req.password_env.trim()),
         ));
     }
+    let acquisition = acquisition_mode_from_request(&req)?;
+    validate_explicit_paths(&acquisition, &req.selected_paths)?;
 
     Ok(TargetConfig {
         address: req.address.trim().to_string(),
@@ -1240,6 +1276,7 @@ pub(super) fn target_from_request(
             .into_iter()
             .filter(|path| !path.path.trim().is_empty())
             .collect(),
+        acquisition,
         extra_ips: Vec::new(),
         created_at_ns: 0,
         updated_at_ns: 0,
@@ -1255,6 +1292,65 @@ pub(super) fn target_from_request(
         optional: false,
     })
 }
+/// Parse the optional acquisition intent. Absent → Automatic (legacy).
+/// Unknown values are rejected — never silently mapped.
+fn acquisition_mode_from_request(
+    req: &ManagedDeviceRequest,
+) -> Result<crate::config::AcquisitionMode, (StatusCode, String)> {
+    match &req.acquisition {
+        None => Ok(crate::config::AcquisitionMode::Automatic),
+        Some(value) => crate::config::AcquisitionMode::parse(value).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "unsupported acquisition mode '{}'; expected automatic, explicit or disabled",
+                    value
+                ),
+            )
+        }),
+    }
+}
+
+/// Atomic validation for explicit acquisition plans: every selected path
+/// must be a well-formed structured gNMI path with a supported mode.
+/// Invalid plans are rejected wholesale — no partial acceptance, no silent
+/// drops, no automatic fallback.
+pub(super) fn validate_explicit_paths(
+    acquisition: &crate::config::AcquisitionMode,
+    paths: &[crate::config::SelectedSubscriptionPath],
+) -> Result<(), (StatusCode, String)> {
+    if *acquisition != crate::config::AcquisitionMode::Explicit {
+        return Ok(());
+    }
+    let mut errors = Vec::new();
+    for p in paths {
+        match crate::gnmi_path::parse_path(&p.origin, &p.path) {
+            Ok(_) => {}
+            Err(e) => errors.push(format!("'{}': {}", p.path, e)),
+        }
+        match p.mode.trim().to_ascii_uppercase().as_str() {
+            "SAMPLE" => {
+                if p.sample_interval_ns == 0 {
+                    errors.push(format!(
+                        "'{}': SAMPLE mode requires a positive sample_interval_ns",
+                        p.path
+                    ));
+                }
+            }
+            "ON_CHANGE" => {}
+            other => errors.push(format!("'{}': unsupported mode '{}'", p.path, other)),
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            format!("invalid explicit acquisition plan: {}", errors.join("; ")),
+        ))
+    }
+}
+
 pub(super) fn site_json(site: SiteRecord) -> SiteJson {
     SiteJson {
         id: site.id,

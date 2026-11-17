@@ -400,6 +400,7 @@ fn target(
     vendor: &str,
 ) -> TargetConfig {
     TargetConfig {
+        acquisition: Default::default(),
         extra_ips: Vec::new(),
         optional: false,
         paths: Vec::new(),

@@ -1505,6 +1505,7 @@ mod tests {
     #[test]
     fn resolves_syslog_hostname_to_managed_target() {
         let targets = vec![TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),

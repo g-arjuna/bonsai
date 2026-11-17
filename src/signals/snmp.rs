@@ -1531,6 +1531,7 @@ mod tests {
     #[test]
     fn resolves_target_by_source_ip() {
         let targets = vec![TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),
@@ -1598,6 +1599,7 @@ mod tests {
     #[test]
     fn duplicate_target_ips_are_ambiguous_not_arbitrary() {
         let mk = |address: &str, site: &str| TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),

@@ -786,26 +786,31 @@ pub fn resolve_subscription_paths(
             device.selected_paths.len()
         ));
         for p in &device.selected_paths {
-            paths.insert(p.path.clone(), p.clone());
+            paths.insert(subscription_dedup_key(p), p.clone());
         }
     }
 
     // Sort overrides correctly or apply them in order
     // Apply Role-Env overrides
-    let role = device.role.as_deref().unwrap_or("");
-    let _env = device.site.as_deref().unwrap_or("data_center"); // or look up actual env
-    // Actually we need the environment, but the environment might be fetched from site or inferred.
-
     for ovr in overrides {
         let matches = match &ovr.scope {
             crate::registry::OverrideScope::Site(s) => device.site.as_deref() == Some(s.as_str()),
             crate::registry::OverrideScope::RoleEnv {
                 role: r,
-                environment: _e,
+                environment: e,
             } => {
-                // Here we would ideally check actual environment, for now just matching role as a best effort
-                // In production, we'd pass environment to this function.
-                role == r.as_str()
+                // RoleEnv scope requires BOTH role and environment. This
+                // resolver is synchronous and has no site→environment
+                // lookup, so it cannot prove the environment half of the
+                // scope — fail closed rather than applying the override
+                // outside its intended scope. RoleEnv overrides still
+                // apply on the recommendation path (synthesizer), which
+                // resolves the real environment.
+                audit.push(format!(
+                    "Skipped role-env override ({}/{}) for '{}': environment unresolved in this context",
+                    r, e, device.address
+                ));
+                false
             }
             crate::registry::OverrideScope::Device(d) => device.address == d.as_str(),
         };
@@ -825,34 +830,42 @@ pub fn resolve_subscription_paths(
                     audit.push(format!("Applied {}: added path '{}'", scope_str, ovr.path));
                     let p = crate::config::SelectedSubscriptionPath {
                         path: ovr.path.clone(),
-                        origin: format!("override: {}", scope_str),
+                        // gNMI model origin stays empty — the device resolves
+                        // it. The override scope is audit provenance only and
+                        // must never leak into Path.origin on the wire.
+                        origin: String::new(),
+                        provenance: format!("override: {}", scope_str),
                         mode: "SAMPLE".to_string(),
                         sample_interval_ns: ovr.sample_interval_s.unwrap_or(10) * 1_000_000_000,
                         rationale: "Added by override".to_string(),
                         optional: ovr.optional.unwrap_or(false),
                     };
-                    paths.insert(ovr.path.clone(), p);
+                    paths.insert(subscription_dedup_key(&p), p);
                 }
                 crate::registry::OverrideAction::Drop => {
-                    if paths.remove(&ovr.path).is_some() {
-                        audit.push(format!(
-                            "Applied {}: dropped path '{}'",
-                            scope_str, ovr.path
-                        ));
+                    for key in override_match_keys(&paths, &ovr.path) {
+                        if paths.remove(&key).is_some() {
+                            audit.push(format!(
+                                "Applied {}: dropped path '{}'",
+                                scope_str, ovr.path
+                            ));
+                        }
                     }
                 }
                 crate::registry::OverrideAction::Modify => {
-                    if let Some(p) = paths.get_mut(&ovr.path) {
-                        audit.push(format!(
-                            "Applied {}: modified path '{}'",
-                            scope_str, ovr.path
-                        ));
-                        p.origin = format!("override(mod): {}", scope_str);
-                        if let Some(s) = ovr.sample_interval_s {
-                            p.sample_interval_ns = s * 1_000_000_000;
-                        }
-                        if let Some(opt) = ovr.optional {
-                            p.optional = opt;
+                    for key in override_match_keys(&paths, &ovr.path) {
+                        if let Some(p) = paths.get_mut(&key) {
+                            audit.push(format!(
+                                "Applied {}: modified path '{}'",
+                                scope_str, ovr.path
+                            ));
+                            p.provenance = format!("override(mod): {}", scope_str);
+                            if let Some(s) = ovr.sample_interval_s {
+                                p.sample_interval_ns = s * 1_000_000_000;
+                            }
+                            if let Some(opt) = ovr.optional {
+                                p.optional = opt;
+                            }
                         }
                     }
                 }
@@ -862,4 +875,35 @@ pub fn resolve_subscription_paths(
 
     audit.push(format!("Final path list has {} paths", paths.len()));
     (paths.into_values().collect(), audit)
+}
+
+/// Origin-sensitive canonical dedup key: equivalent structured paths with
+/// the same gNMI origin collapse; different origins or different keyed
+/// paths never do. Falls back to a raw marker for unparseable input so
+/// malformed entries still occupy a distinct slot (validation rejects them
+/// downstream rather than dropping them silently).
+fn subscription_dedup_key(p: &crate::config::SelectedSubscriptionPath) -> String {
+    crate::gnmi_path::canonical_path_key(&p.origin, &p.path)
+        .map(|k| format!("gnmi:{}", k))
+        .unwrap_or_else(|| format!("raw:{}", p.path))
+}
+
+/// Path-only canonical key used to match override actions against resolved
+/// entries regardless of each entry's gNMI origin.
+fn path_only_key(raw: &str) -> String {
+    crate::gnmi_path::canonical_path_key("", raw)
+        .map(|k| format!("gnmi:{}", k))
+        .unwrap_or_else(|| format!("raw:{}", raw))
+}
+
+fn override_match_keys(
+    paths: &std::collections::BTreeMap<String, crate::config::SelectedSubscriptionPath>,
+    override_path: &str,
+) -> Vec<String> {
+    let want = path_only_key(override_path);
+    paths
+        .iter()
+        .filter(|(_, p)| path_only_key(&p.path) == want)
+        .map(|(k, _)| k.clone())
+        .collect()
 }
