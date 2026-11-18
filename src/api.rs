@@ -2179,16 +2179,16 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             // Device must be currently assigned to THIS collector —
             // lifecycle evidence can never establish authority for an
             // unrelated device.
-            let device_assigned = self
+            let assigned_target = self
                 .registry
                 .find_by_canonical_address(&event.device_address)
                 .map_err(|e| {
                     tracing::error!(%e, "lifecycle authorization registry lookup failed");
                     Status::internal("device registry error")
-                })?
-                .is_some_and(|t| {
-                    t.enabled && t.collector_id.as_deref() == Some(grant.collector_id())
-                });
+                })?;
+            let device_assigned = assigned_target.as_ref().is_some_and(|t| {
+                t.enabled && t.collector_id.as_deref() == Some(grant.collector_id())
+            });
             if !device_assigned {
                 rejected += 1;
                 metrics::counter!(
@@ -2253,9 +2253,71 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                     sample_interval_ns: p.sample_interval_ns,
                 })
                 .collect();
-            if !submitted_paths.is_empty() {
+            // Live execution states (submitted/synchronizing/synchronized)
+            // must carry the actual submitted manifest: a missing or
+            // malformed manifest can never establish an authoritative
+            // submitted execution (M5.2B review D). Plan-level and
+            // terminal outcomes legitimately carry no manifest.
+            let live_manifest_state = matches!(
+                event.state.as_str(),
+                "submitted" | "synchronizing" | "synchronized"
+            );
+            let mut manifest_acquisition: Option<crate::config::AcquisitionMode> = None;
+            if live_manifest_state {
                 let Some(acquisition) = crate::config::AcquisitionMode::parse(&event.acquisition)
                 else {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "bad_manifest"
+                    )
+                    .increment(1);
+                    continue;
+                };
+                // Acquisition intent must agree with the authoritative
+                // assignment, and a disabled assignment can never carry
+                // a live execution manifest.
+                let assigned_acquisition = assigned_target
+                    .as_ref()
+                    .map(|t| t.acquisition)
+                    .unwrap_or(crate::config::AcquisitionMode::Disabled);
+                if acquisition != assigned_acquisition
+                    || acquisition == crate::config::AcquisitionMode::Disabled
+                {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "acquisition_mismatch"
+                    )
+                    .increment(1);
+                    tracing::warn!(
+                        collector_id = %grant.collector_id(),
+                        device = %event.device_address,
+                        declared = %event.acquisition,
+                        assigned = %assigned_acquisition.as_str(),
+                        "lifecycle event denied: acquisition intent disagrees with assignment"
+                    );
+                    continue;
+                }
+                if submitted_paths.is_empty() {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "missing_manifest"
+                    )
+                    .increment(1);
+                    continue;
+                }
+                manifest_acquisition = Some(acquisition);
+            }
+            if !submitted_paths.is_empty() {
+                // Recompute plan_id over the normalized manifest under
+                // the declared acquisition intent: manifest integrity —
+                // the claimed plan_id must be the deterministic identity
+                // of exactly what was submitted.
+                let acquisition = manifest_acquisition
+                    .or_else(|| crate::config::AcquisitionMode::parse(&event.acquisition));
+                let Some(acquisition) = acquisition else {
                     rejected += 1;
                     metrics::counter!(
                         "bonsai_subscription_lifecycle_rejected_total",
@@ -2291,6 +2353,50 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                         "lifecycle event denied: plan_id does not match submitted manifest"
                     );
                     continue;
+                }
+                // Explicit acquisition must not broaden the authorized
+                // selection: every submitted (origin, path, mode,
+                // interval) must come from the assignment's resolved
+                // explicit set. Automatic keeps its documented
+                // capability-derived contract — the manifest itself is
+                // the effective plan.
+                if acquisition == crate::config::AcquisitionMode::Explicit
+                    && let Some(target) = assigned_target.as_ref()
+                {
+                    match crate::subscriber::authorized_explicit_entries(target) {
+                        Ok(authorized) => {
+                            let broadened = entries.iter().any(|e| !authorized.contains(e));
+                            if broadened {
+                                rejected += 1;
+                                metrics::counter!(
+                                    "bonsai_subscription_lifecycle_rejected_total",
+                                    "reason" => "manifest_broadens_assignment"
+                                )
+                                .increment(1);
+                                tracing::warn!(
+                                    collector_id = %grant.collector_id(),
+                                    device = %event.device_address,
+                                    "lifecycle event denied: explicit manifest exceeds authorized selection"
+                                );
+                                continue;
+                            }
+                        }
+                        Err(error) => {
+                            rejected += 1;
+                            metrics::counter!(
+                                "bonsai_subscription_lifecycle_rejected_total",
+                                "reason" => "manifest_broadens_assignment"
+                            )
+                            .increment(1);
+                            tracing::warn!(
+                                collector_id = %grant.collector_id(),
+                                device = %event.device_address,
+                                %error,
+                                "lifecycle event denied: authorized explicit selection is invalid"
+                            );
+                            continue;
+                        }
+                    }
                 }
             }
 
@@ -2339,7 +2445,11 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             // for automatic plans), never a core-side fallback
             // prediction. Re-sent on `synchronized` so a healed resend
             // carrying only the latest state still registers the
-            // manifest before coverage can be authorized.
+            // manifest before coverage can be authorized. The session
+            // gate is released first: registry mutation (validate +
+            // apply) is complete, and an unbounded await must never
+            // hold the authority mutex (M5.2B review D).
+            drop(_authority_gate);
             if matches!(outcome, crate::subscription_sessions::ApplyOutcome::Applied)
                 && matches!(internal.state.as_str(), "submitted" | "synchronized")
                 && !internal.submitted_paths.is_empty()
@@ -2365,12 +2475,15 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                     acquisition: internal.acquisition.clone(),
                     detail: String::new(),
                 };
-                if tx.try_send(plan).is_err() {
+                // Reliable delivery: a full channel must never
+                // permanently lose the effective plan while the session
+                // becomes current — await capacity instead of dropping.
+                if tx.send(plan).await.is_err() {
                     metrics::counter!("bonsai_subscription_plan_forward_dropped_total")
                         .increment(1);
                     tracing::warn!(
                         device = %internal.target,
-                        "submitted plan manifest dropped: verifier channel full"
+                        "submitted plan manifest dropped: verifier channel closed"
                     );
                 }
             }

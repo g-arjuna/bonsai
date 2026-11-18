@@ -407,6 +407,13 @@ struct TrackedPath {
     /// persisted yet). The northbound reads the store, so presentation
     /// stays truthful while `status` reconciles.
     durable_status: String,
+    /// `last_observed_at_ns` value confirmed persisted alongside
+    /// `durable_status`. A successful write acknowledges ONLY the exact
+    /// row identity AND the timestamp snapshot it carried — a queued
+    /// write for path A can never mark path B durable, and a stale
+    /// same-status snapshot cannot silently absorb newer evidence
+    /// timestamps (M5.2B review E).
+    durable_last_observed_at_ns: i64,
     first_observed_at_ns: i64,
     last_observed_at_ns: i64,
     deadline: Instant,
@@ -710,6 +717,7 @@ async fn register_plan<S: BonsaiStore>(
                     session_id: plan.session_id.clone(),
                     status: existing.status.clone(),
                     durable_status: existing.durable_status.clone(),
+                    durable_last_observed_at_ns: existing.durable_last_observed_at_ns,
                     first_observed_at_ns: existing.first_observed_at_ns,
                     last_observed_at_ns: existing.last_observed_at_ns,
                     deadline,
@@ -726,6 +734,7 @@ async fn register_plan<S: BonsaiStore>(
             session_id: plan.session_id.clone(),
             status: "pending".to_string(),
             durable_status: String::new(),
+            durable_last_observed_at_ns: 0,
             first_observed_at_ns: 0,
             last_observed_at_ns: 0,
             deadline,
@@ -785,20 +794,21 @@ async fn observe_update<S: BonsaiStore>(
         pending.note(update, received_at);
         return;
     }
-    let matching_keys: Vec<(String, String)> = tracked
+    let matching: Vec<((String, String), CoverageMatch)> = tracked
         .iter()
-        .filter(|((target, _), tracked_path)| {
+        .filter_map(|(key, tracked_path)| {
             // Coverage is plan-bound: an observation authorized under
             // one plan can never satisfy expectations registered under
             // a different plan, even on the same target/path (B1/B3).
-            target == &update.target
-                && tracked_path.plan_id == update.plan_id
-                && path_matches_update(&tracked_path.expectation, &update)
+            (key.0 == update.target && tracked_path.plan_id == update.plan_id)
+                .then(|| {
+                    coverage_match(&tracked_path.expectation, update).map(|m| (key.clone(), m))
+                })
+                .flatten()
         })
-        .map(|(key, _)| key.clone())
         .collect();
 
-    if matching_keys.is_empty() {
+    if matching.is_empty() {
         // Current-session evidence that matches no registered
         // expectation can be legitimate early evidence: the plan
         // registration may still be in flight on the plan channel.
@@ -815,7 +825,7 @@ async fn observe_update<S: BonsaiStore>(
     // available on the telemetry update itself for diagnostics.
     let now = now_ns();
 
-    for key in matching_keys {
+    for (key, coverage) in matching {
         let Some(tracked_path) = tracked.get_mut(&key) else {
             continue;
         };
@@ -837,16 +847,35 @@ async fn observe_update<S: BonsaiStore>(
         // replayed pre-sync observation keeps its original (older)
         // freshness instead of being renewed by replay time (B6/B7).
         tracked_path.last_seen = received_at;
-        // Delete/tombstone evidence (M5.2B B3): a current-session
-        // Notification.delete invalidates the path's current coverage
-        // until a fresh observation arrives. Stale-session deletes are
-        // already fenced by update_has_current_session above.
-        let new_status = if update.is_delete {
-            "deleted"
-        } else {
-            "observed"
+        // Delete/tombstone evidence (M5.2B B3/B9): a current-session
+        // Notification.delete that is the expectation path or a proper
+        // ancestor invalidates coverage as `deleted`; a delete INSIDE
+        // the expectation's subtree only QUALIFIES it — current
+        // `observed` coverage drops to `stale` because one deleted
+        // descendant never proves complete subtree absence, but the
+        // evidence can no longer support a current claim. Stale-session
+        // deletes are already fenced by update_has_current_session.
+        let new_status = match coverage {
+            CoverageMatch::Observe => "observed",
+            CoverageMatch::DeleteComplete => "deleted",
+            CoverageMatch::DeletePartial => {
+                if tracked_path.status == "observed" {
+                    "stale"
+                } else {
+                    continue;
+                }
+            }
         };
         if tracked_path.status == new_status {
+            // Same-status positive evidence still advances the
+            // last-observed timestamp — repeated ON_CHANGE/SAMPLE
+            // observations are real freshness. The dirty-status
+            // reconcile persists the advance on the next sweep, so
+            // persisted timestamps move forward without one durable
+            // write per observation (M5.2B review F).
+            if new_status == "observed" && !update.is_delete {
+                tracked_path.last_observed_at_ns = now;
+            }
             continue;
         }
         // Desired-status transition commits in memory immediately; the
@@ -881,6 +910,7 @@ async fn observe_update<S: BonsaiStore>(
             Ok(()) => {
                 if let Some(tp) = tracked.get_mut(&key) {
                     tp.durable_status = new_status.to_string();
+                    tp.durable_last_observed_at_ns = status.last_observed_at_ns;
                 }
             }
             Err(error) => {
@@ -982,7 +1012,10 @@ async fn transition_status<S: BonsaiStore>(
     tracked_path.status = new_status.to_string();
     let status = status_write_for(key, tracked_path, now);
     match persist_status(store, &status).await {
-        Ok(()) => tracked_path.durable_status = new_status.to_string(),
+        Ok(()) => {
+            tracked_path.durable_status = new_status.to_string();
+            tracked_path.durable_last_observed_at_ns = tracked_path.last_observed_at_ns;
+        }
         Err(error) => {
             warn!(%error, target = %key.0, path_key = %key.1, "failed to write subscription status; queued for retry");
             if pending_writes.len() >= 4096 {
@@ -1024,28 +1057,45 @@ async fn reconcile_statuses<S: BonsaiStore>(
     let mut i = 0;
     while i < pending_writes.len() {
         let write = pending_writes[i].clone();
-        let current = tracked.iter().find_map(|((t, _), tp)| {
+        // A queued write is a snapshot. It is obsolete when the tracked
+        // path's desired status has since advanced — drop it (the
+        // dirty-status reconcile below persists the current desire).
+        // On success acknowledge ONLY the exact persisted row identity
+        // with the timestamp snapshot the write actually carried: one
+        // path's successful retry can never mark a different path
+        // durable, and a stale same-status snapshot cannot absorb newer
+        // evidence timestamps — any residual skew is re-dirtied and
+        // reconciled on the next pass (M5.2B review E).
+        let current = tracked.iter().find_map(|(key, tp)| {
             let e = &tp.expectation;
-            (t == &write.device_address
+            (key.0 == write.device_address
                 && e.path == write.path
                 && e.origin == write.origin
                 && e.mode == write.mode
                 && e.sample_interval_ns as i64 == write.sample_interval_ns)
-                .then(|| tp.status.clone())
+                .then(|| (tp.status.clone(), tp.last_observed_at_ns))
         });
-        if current.as_ref().is_some_and(|s| *s != write.status) {
+        if current.as_ref().is_some_and(|(s, _)| *s != write.status) {
             pending_writes.remove(i);
             continue;
         }
         match persist_status(store, &write).await {
             Ok(()) => {
                 pending_writes.remove(i);
-                if current.as_deref() == Some(write.status.as_str()) {
-                    for ((t, _), tp) in tracked.iter_mut() {
-                        if *t == write.device_address && tp.status == write.status {
-                            tp.durable_status = write.status.clone();
-                        }
-                    }
+                if let Some(tp) = tracked
+                    .iter_mut()
+                    .find(|(key, tp)| {
+                        let e = &tp.expectation;
+                        key.0 == write.device_address
+                            && e.path == write.path
+                            && e.origin == write.origin
+                            && e.mode == write.mode
+                            && e.sample_interval_ns as i64 == write.sample_interval_ns
+                    })
+                    .map(|(_, tp)| tp)
+                {
+                    tp.durable_status = write.status.clone();
+                    tp.durable_last_observed_at_ns = write.last_observed_at_ns;
                 }
             }
             Err(error) => {
@@ -1111,12 +1161,17 @@ async fn reconcile_statuses<S: BonsaiStore>(
         }
     }
 
-    // Durable reconciliation: any desired status not yet confirmed
-    // persisted is retried every sweep — a one-shot observation whose
-    // write failed transiently converges without further telemetry.
+    // Durable reconciliation: any desired status — or last-observed
+    // timestamp advance — not yet confirmed persisted is retried every
+    // sweep, so a one-shot observation whose write failed transiently
+    // converges without further telemetry, and repeated same-status
+    // observations still move persisted freshness forward.
     let dirty_keys: Vec<(String, String)> = tracked
         .iter()
-        .filter(|(_, path)| path.status != path.durable_status)
+        .filter(|(_, path)| {
+            path.status != path.durable_status
+                || path.last_observed_at_ns != path.durable_last_observed_at_ns
+        })
         .map(|(key, _)| key.clone())
         .collect();
     for key in dirty_keys {
@@ -1125,7 +1180,10 @@ async fn reconcile_statuses<S: BonsaiStore>(
         };
         let status = status_write_for(&key, tracked_path, now);
         match persist_status(store, &status).await {
-            Ok(()) => tracked_path.durable_status = tracked_path.status.clone(),
+            Ok(()) => {
+                tracked_path.durable_status = tracked_path.status.clone();
+                tracked_path.durable_last_observed_at_ns = status.last_observed_at_ns;
+            }
             Err(error) => {
                 warn!(%error, target = %key.0, path_key = %key.1, "subscription status reconcile failed; will retry");
             }
@@ -1177,32 +1235,55 @@ fn subscription_status_event(status: &SubscriptionStatusWrite) -> BonsaiEvent {
 /// resolved notification path(s) carried on the update must contain
 /// the parsed expectation path (origin-compatible, element-exact with
 /// unkeyed elements acting as instance wildcards). Expectations or
-/// observations that fail to parse, and updates without structured
-/// paths, are explicit non-coverage; string containment is never used.
-fn path_matches_update(
+/// How a single observation relates to one tracked expectation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CoverageMatch {
+    /// Positive evidence: the observation covers the expectation.
+    Observe,
+    /// Complete delete evidence: the tombstone is the expectation path
+    /// or a proper ancestor — the whole expectation scope is absent.
+    DeleteComplete,
+    /// Qualified delete evidence: the tombstone lies INSIDE the
+    /// expectation's subtree (one deleted instance/leaf). It must
+    /// invalidate current coverage conservatively — a single descendant
+    /// delete never proves complete subtree absence (M5.2B review B9).
+    DeletePartial,
+}
+
+/// Structured coverage classification. Positive matches use
+/// [`crate::gnmi_path::observation_covers`]; delete/tombstone evidence
+/// uses [`crate::gnmi_path::delete_covers`] for complete absence and
+/// falls back to `observation_covers` to detect in-scope descendant
+/// deletes that only QUALIFY coverage. Observations that fail to parse,
+/// and updates without structured paths, are explicit non-coverage;
+/// string containment is never used.
+fn coverage_match(
     expectation: &SubscriptionPathExpectation,
     update: &TelemetryUpdate,
-) -> bool {
+) -> Option<CoverageMatch> {
     if update.gnmi_path.is_empty() {
-        return false;
+        return None;
     }
     let Ok(expected) = crate::gnmi_path::parse_path(&expectation.origin, &expectation.path) else {
-        return false;
+        return None;
     };
     if update.is_delete {
-        // Delete/tombstone evidence uses conservative absence semantics
-        // (M5.2B review B9): ancestor deletes invalidate descendant
-        // expectations; wildcard expectations and unrelated instances
-        // are never implied absent by a single concrete delete.
-        update
-            .gnmi_path
-            .iter()
-            .any(|obs| crate::gnmi_path::delete_covers(&expected, obs))
+        let mut qualified = false;
+        for obs in &update.gnmi_path {
+            if crate::gnmi_path::delete_covers(&expected, obs) {
+                return Some(CoverageMatch::DeleteComplete);
+            }
+            if crate::gnmi_path::observation_covers(&expected, obs) {
+                qualified = true;
+            }
+        }
+        qualified.then_some(CoverageMatch::DeletePartial)
     } else {
         update
             .gnmi_path
             .iter()
             .any(|obs| crate::gnmi_path::observation_covers(&expected, obs))
+            .then_some(CoverageMatch::Observe)
     }
 }
 
@@ -1292,41 +1373,53 @@ mod tests {
             "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets",
         );
         // Container expectation is covered by a descendant leaf.
-        assert!(path_matches_update(
-            &expectation(
-                "interfaces/interface[name=ethernet-1/1]/state/counters",
-                "SAMPLE"
+        assert_eq!(
+            coverage_match(
+                &expectation(
+                    "interfaces/interface[name=ethernet-1/1]/state/counters",
+                    "SAMPLE"
+                ),
+                &update
             ),
-            &update
-        ));
+            Some(CoverageMatch::Observe)
+        );
         // A different keyed instance never satisfies.
-        assert!(!path_matches_update(
-            &expectation(
-                "interfaces/interface[name=ethernet-1/2]/state/counters",
-                "SAMPLE"
+        assert_eq!(
+            coverage_match(
+                &expectation(
+                    "interfaces/interface[name=ethernet-1/2]/state/counters",
+                    "SAMPLE"
+                ),
+                &update
             ),
-            &update
-        ));
+            None
+        );
         // A deeper expectation is not covered by a shallower observation.
-        assert!(!path_matches_update(
-            &expectation(
-                "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets/extra",
-                "SAMPLE"
+        assert_eq!(
+            coverage_match(
+                &expectation(
+                    "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets/extra",
+                    "SAMPLE"
+                ),
+                &update
             ),
-            &update
-        ));
+            None
+        );
         // Malformed expectations are explicit non-coverage.
-        assert!(!path_matches_update(
-            &expectation("interfaces/interface[name=ethernet-1/1", "SAMPLE"),
-            &update
-        ));
+        assert_eq!(
+            coverage_match(
+                &expectation("interfaces/interface[name=ethernet-1/1", "SAMPLE"),
+                &update
+            ),
+            None
+        );
         // Updates without structured paths never satisfy.
         let mut bare = update.clone();
         bare.gnmi_path = Vec::new();
-        assert!(!path_matches_update(
-            &expectation("interfaces", "SAMPLE"),
-            &bare
-        ));
+        assert_eq!(
+            coverage_match(&expectation("interfaces", "SAMPLE"), &bare),
+            None
+        );
     }
 
     #[test]
@@ -1366,15 +1459,18 @@ mod tests {
             .map(|p| vec![p])
             .unwrap_or_default();
 
-        assert!(path_matches_update(
-            &expectation("network-instances", "ON_CHANGE"),
-            &update
-        ));
+        assert_eq!(
+            coverage_match(&expectation("network-instances", "ON_CHANGE"), &update),
+            Some(CoverageMatch::Observe)
+        );
         // Ancestor observation cannot cover a descendant expectation.
-        assert!(!path_matches_update(
-            &expectation("network-instances/protocols/bgp", "ON_CHANGE"),
-            &update
-        ));
+        assert_eq!(
+            coverage_match(
+                &expectation("network-instances/protocols/bgp", "ON_CHANGE"),
+                &update
+            ),
+            None
+        );
     }
 
     fn provenance_update(target: &str, plan_id: &str, session_id: &str) -> TelemetryUpdate {
@@ -1675,6 +1771,7 @@ mod tests {
                 session_id: "sess-1".to_string(),
                 status: "pending".to_string(),
                 durable_status: String::new(),
+                durable_last_observed_at_ns: 0,
                 first_observed_at_ns: 0,
                 last_observed_at_ns: 0,
                 deadline: Instant::now() + Duration::from_secs(60),
@@ -1767,5 +1864,167 @@ mod tests {
         assert!(pending.sweep(&sessions).is_empty());
         assert_eq!(pending.total, 0, "superseded session evidence discarded");
         assert!(pending.buckets.is_empty());
+    }
+
+    /// Delegating store that fails subscription-status writes for ONE
+    /// configured path — per-path fault injection for durable-ack
+    /// identity (M5.2B review E).
+    struct SelectiveFailStore {
+        inner: crate::graph::GraphStore,
+        fail_path: std::sync::Mutex<Option<String>>,
+    }
+
+    #[tonic::async_trait]
+    impl BonsaiStore for SelectiveFailStore {
+        fn db(&self) -> Arc<lbug::Database> {
+            BonsaiStore::db(&self.inner)
+        }
+        fn write_lock(&self) -> Arc<std::sync::Mutex<()>> {
+            BonsaiStore::write_lock(&self.inner)
+        }
+        fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<crate::graph::BonsaiEvent> {
+            BonsaiStore::subscribe_events(&self.inner)
+        }
+        async fn write(&self, u: TelemetryUpdate) -> anyhow::Result<()> {
+            BonsaiStore::write(&self.inner, u).await
+        }
+        async fn write_detection(
+            &self,
+            a: String,
+            b: String,
+            c: String,
+            d: String,
+            e: String,
+            f: i64,
+            g: i64,
+            h: String,
+            i: Vec<String>,
+        ) -> anyhow::Result<String> {
+            BonsaiStore::write_detection(&self.inner, a, b, c, d, e, f, g, h, i).await
+        }
+        async fn write_remediation(
+            &self,
+            a: String,
+            b: String,
+            c: String,
+            d: String,
+            e: i64,
+            f: i64,
+        ) -> anyhow::Result<String> {
+            BonsaiStore::write_remediation(&self.inner, a, b, c, d, e, f).await
+        }
+        async fn sync_sites_from_targets(
+            &self,
+            t: Vec<crate::config::TargetConfig>,
+        ) -> anyhow::Result<()> {
+            BonsaiStore::sync_sites_from_targets(&self.inner, t).await
+        }
+        async fn list_sites(&self) -> anyhow::Result<Vec<crate::graph::SiteRecord>> {
+            BonsaiStore::list_sites(&self.inner).await
+        }
+        async fn upsert_site(
+            &self,
+            site: crate::graph::SiteRecord,
+        ) -> anyhow::Result<crate::graph::SiteRecord> {
+            BonsaiStore::upsert_site(&self.inner, site).await
+        }
+        async fn write_subscription_status(
+            &self,
+            status: crate::graph::SubscriptionStatusWrite,
+        ) -> anyhow::Result<()> {
+            if self.fail_path.lock().unwrap().as_deref() == Some(status.path.as_str()) {
+                anyhow::bail!("injected per-path status write failure");
+            }
+            BonsaiStore::write_subscription_status(&self.inner, status).await
+        }
+        fn publish_event(&self, e: crate::graph::BonsaiEvent) {
+            BonsaiStore::publish_event(&self.inner, e)
+        }
+    }
+
+    /// M5.2B review E: a successful queued write acknowledges ONLY its
+    /// exact row identity. Two paths on one device both desire
+    /// `observed`; path B's writes keep failing while A's succeed —
+    /// A becomes durable, B stays dirty and converges only after its
+    /// own failure clears.
+    #[tokio::test]
+    async fn durable_ack_is_exact_row_identity_not_device_status() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SelectiveFailStore {
+            inner: crate::graph::GraphStore::open(
+                dir.path().join("g.lbug").to_str().unwrap(),
+                256 * 1024 * 1024,
+            )
+            .expect("open graph store"),
+            fail_path: std::sync::Mutex::new(Some(
+                "interfaces/interface[name=ethernet-1/2]/state/counters/in-octets".to_string(),
+            )),
+        };
+        let sessions = registered_sessions(&[("dut:57400", "plan-1", "sess-1")]);
+        let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
+        let mut pending_writes: VecDeque<crate::graph::SubscriptionStatusWrite> = VecDeque::new();
+        let now = now_ns();
+        for path in [
+            "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets",
+            "interfaces/interface[name=ethernet-1/2]/state/counters/in-octets",
+        ] {
+            let exp = expectation(path, "ON_CHANGE");
+            let key = tracked_key("dut:57400", &exp);
+            tracked.insert(
+                key.clone(),
+                TrackedPath {
+                    expectation: exp,
+                    plan_id: "plan-1".to_string(),
+                    session_id: "sess-1".to_string(),
+                    status: "observed".to_string(),
+                    durable_status: "pending".to_string(),
+                    durable_last_observed_at_ns: 0,
+                    first_observed_at_ns: now - 1000,
+                    last_observed_at_ns: now,
+                    deadline: Instant::now() + Duration::from_secs(60),
+                    last_seen: Instant::now(),
+                    last_evidence_at: None,
+                    stale_after: Duration::MAX,
+                },
+            );
+            let tp = tracked.get(&key).unwrap();
+            pending_writes.push_back(status_write_for(&key, tp, now));
+        }
+
+        // First reconcile: A's queued write lands, B's keeps failing.
+        reconcile_statuses(&store, &sessions, &mut tracked, &mut pending_writes).await;
+        let key_a = tracked_key(
+            "dut:57400",
+            &expectation(
+                "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets",
+                "ON_CHANGE",
+            ),
+        );
+        let key_b = tracked_key(
+            "dut:57400",
+            &expectation(
+                "interfaces/interface[name=ethernet-1/2]/state/counters/in-octets",
+                "ON_CHANGE",
+            ),
+        );
+        let a = tracked.get(&key_a).unwrap();
+        let b = tracked.get(&key_b).unwrap();
+        assert_eq!(a.durable_status, "observed", "A's own write acknowledged");
+        assert_eq!(
+            a.durable_last_observed_at_ns, now,
+            "A's durable timestamp is the snapshot its write carried"
+        );
+        assert_ne!(
+            b.durable_status, "observed",
+            "B must NOT be marked durable by A's successful write"
+        );
+
+        // B's failure clears: the next reconcile converges B without
+        // any new telemetry.
+        *store.fail_path.lock().unwrap() = None;
+        reconcile_statuses(&store, &sessions, &mut tracked, &mut pending_writes).await;
+        let b = tracked.get(&key_b).unwrap();
+        assert_eq!(b.durable_status, "observed");
+        assert_eq!(b.durable_last_observed_at_ns, now);
     }
 }

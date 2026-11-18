@@ -1121,29 +1121,41 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let covering = bonsai::gnmi_path::parse_path("openconfig", leaf)
-        .map(|p| vec![p])
-        .unwrap_or_default();
-    let mk = |session_id: &str, is_delete: bool, ts: i64| TelemetryUpdate {
-        plan_id: "plan-1".to_string(),
-        session_id: session_id.to_string(),
-        source_protocol: "gnmi".to_string(),
-        gnmi_path: covering.clone(),
-        is_delete,
-        collector_id: String::new(),
-        target: target.clone(),
-        vendor: String::new(),
-        hostname: String::new(),
-        role: String::new(),
-        site: String::new(),
-        timestamp_ns: ts,
-        path: leaf.to_string(),
-        value: if is_delete {
-            serde_json::Value::Null
-        } else {
-            serde_json::json!({"in-octets": ts})
-        },
-    };
+    let mk =
+        |session_id: &str, is_delete: bool, ts: i64| mk_at(session_id, is_delete, ts, leaf, leaf);
+    // `gnmi`/`path_str` may differ: a delete notification can carry a
+    // different (ancestor or descendant) structured path than the
+    // covering leaf observation.
+    fn mk_at(
+        session_id: &str,
+        is_delete: bool,
+        ts: i64,
+        gnmi: &str,
+        path_str: &str,
+    ) -> TelemetryUpdate {
+        TelemetryUpdate {
+            plan_id: "plan-1".to_string(),
+            session_id: session_id.to_string(),
+            source_protocol: "gnmi".to_string(),
+            gnmi_path: bonsai::gnmi_path::parse_path("openconfig", gnmi)
+                .map(|p| vec![p])
+                .unwrap_or_default(),
+            is_delete,
+            collector_id: String::new(),
+            target: "dut:57400".to_string(),
+            vendor: String::new(),
+            hostname: String::new(),
+            role: String::new(),
+            site: String::new(),
+            timestamp_ns: ts,
+            path: path_str.to_string(),
+            value: if is_delete {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!({"in-octets": ts})
+            },
+        }
+    }
 
     // Wait until the plan is actually registered (pending row
     // persisted) — under parallel gate load register_plan can lag the
@@ -1167,8 +1179,15 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
     publish_bus.publish(mk("sess-b", false, 1));
     wait_for_status(&db, &target, "observed").await;
 
-    // 2. Current-session delete -> deleted (coverage invalidated).
-    publish_bus.publish(mk("sess-b", true, 2));
+    // 2. Current-session delete of the expectation path itself ->
+    // deleted (complete absence evidence).
+    publish_bus.publish(mk_at(
+        "sess-b",
+        true,
+        2,
+        "interfaces/interface[name=Ethernet1/1]/state/counters",
+        "interfaces/interface[name=Ethernet1/1]/state/counters",
+    ));
     wait_for_status(&db, &target, "deleted").await;
 
     // 3. Stale-session observation and delete are both fenced.
@@ -1762,7 +1781,10 @@ async fn failed_status_write_is_retried_not_claimed() {
             &self,
             s: bonsai::graph::SubscriptionStatusWrite,
         ) -> anyhow::Result<()> {
-            if self.fail_writes.swap(false, Ordering::SeqCst) {
+            // Fail every status write while armed — a single-shot
+            // failure would be legitimately healed by the bounded
+            // durable-retry queue before the assertion runs.
+            if self.fail_writes.load(Ordering::SeqCst) {
                 anyhow::bail!("injected subscription-status write failure");
             }
             BonsaiStore::write_subscription_status(&*self.inner, s).await
@@ -1828,8 +1850,9 @@ async fn failed_status_write_is_retried_not_claimed() {
     wait_pending_row(&db, &target).await;
     sync_session(&sessions, &target, "plan-1", "sess-a");
 
-    // Arm the failure: the FIRST observed write fails. In-memory state
-    // must NOT claim observed, and no row may appear.
+    // Arm the failure: every status write fails while armed. The
+    // in-memory desired status commits, but no durable row may claim
+    // observed, and the bounded retry queue keeps failing.
     fail_writes.store(true, Ordering::SeqCst);
     publish_bus.publish(gnmi_obs(
         &target,
@@ -1848,17 +1871,10 @@ async fn failed_status_write_is_retried_not_claimed() {
         statuses
     );
 
-    // Storage restored: the NEXT covering observation retries the
-    // transition and it lands durably.
-    publish_bus.publish(gnmi_obs(
-        &target,
-        "plan-1",
-        "sess-a",
-        "gnmi",
-        "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
-        "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
-        false,
-    ));
+    // Storage restored: the bounded durable-retry queue converges the
+    // transition WITHOUT any further device telemetry — a one-shot
+    // observation survives a transient persistence failure.
+    fail_writes.store(false, Ordering::SeqCst);
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut observed = false;
     while std::time::Instant::now() < deadline {

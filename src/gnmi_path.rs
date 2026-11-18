@@ -146,7 +146,8 @@ pub fn observation_covers(expectation: &Path, observation: &Path) -> bool {
 ///   by a single concrete delete: one deleted instance never implies
 ///   exhaustive absence across a wildcard/subtree expectation.
 /// - A delete deeper than the expectation (one instance under a broader
-///   expectation) never invalidates the expectation.
+///   expectation) is NOT proof of absence: it must be qualified by the
+///   caller, never treated as a complete subtree delete.
 pub fn delete_covers(expectation: &Path, deletion: &Path) -> bool {
     if !expectation.origin.is_empty() && expectation.origin != deletion.origin {
         return false;
@@ -446,5 +447,77 @@ mod tests {
         // extra key never satisfies a smaller expectation key set.
         let one_key = parse_path("", "foo[name=*]/bar").unwrap();
         assert!(!observation_covers(&one_key, &obs_multi));
+    }
+
+    #[test]
+    fn delete_covers_is_conservative_and_structured() {
+        let container = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters",
+        )
+        .unwrap();
+        // Exact delete of the expectation path invalidates it.
+        let exact = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters",
+        )
+        .unwrap();
+        assert!(delete_covers(&container, &exact));
+        // Ancestor delete (parent list instance) invalidates descendants.
+        let iface = parse_path("openconfig", "interfaces/interface[name=Ethernet1/1]").unwrap();
+        assert!(delete_covers(&container, &iface));
+        let interfaces = parse_path("openconfig", "interfaces").unwrap();
+        assert!(delete_covers(&container, &interfaces));
+        // A delete DEEPER than the expectation is never proof of
+        // complete absence — the caller qualifies it separately.
+        let leaf = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!delete_covers(&container, &leaf));
+        // A different keyed instance's delete never invalidates.
+        let other = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/2]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!delete_covers(&container, &other));
+        // Sibling subtree delete never invalidates.
+        let sibling = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/description",
+        )
+        .unwrap();
+        assert!(!delete_covers(&container, &sibling));
+        // Wildcard expectation: ONE concrete instance delete must not
+        // imply absence across the whole wildcard scope.
+        let wildcard = parse_path(
+            "openconfig",
+            "interfaces/interface[name=*]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!delete_covers(&wildcard, &leaf));
+        // Unkeyed (match-any) expectation element is likewise not
+        // invalidated by a single keyed instance delete.
+        let unkeyed = parse_path("openconfig", "interfaces/interface/state/counters").unwrap();
+        let keyed_leaf = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!delete_covers(&unkeyed, &keyed_leaf));
+        // Partially-keyed expectation: a delete of one fully-keyed
+        // instance must not imply absence for the partial-key scope.
+        let partial = parse_path("", "foo[name=a]/bar").unwrap();
+        let full = parse_path("", "foo[name=a][role=x]/bar/baz").unwrap();
+        assert!(!delete_covers(&partial, &full));
+        // Origin mismatch never matches.
+        let ietf_leaf = parse_path(
+            "ietf",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!delete_covers(&container, &ietf_leaf));
     }
 }

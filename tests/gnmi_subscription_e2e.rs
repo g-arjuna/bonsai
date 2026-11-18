@@ -1299,3 +1299,193 @@ async fn foreign_collector_observations_never_satisfy_coverage() {
     let _ = ghandle.await;
     let _ = client_b;
 }
+
+// ── M5.2B review D: submitted-manifest authorization ────────────────────────
+
+/// Forged-but-correctly-hashed manifests must still be rejected when they
+/// exceed the authoritative assignment: explicit selections cannot broaden
+/// authorized paths/modes/intervals, acquisition intent must agree with the
+/// assignment, and a missing manifest never establishes a live execution.
+#[tokio::test]
+async fn lifecycle_manifest_must_agree_with_assignment() {
+    use bonsai::api::pb::{SubscriptionLifecycleEvent, SubscriptionPath};
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let pki = make_pki();
+    let leaf_a = issue_leaf(&pki, "e2e-col-a", false);
+    let device_addr = "dut:57400".to_string();
+
+    let mut device = device_target(&device_addr);
+    device.collector_id = Some("e2e-col-a".to_string());
+    let lab = start_lab(&pki, device.clone()).await;
+    lab.registry
+        .add_device_with_audit(device.clone(), "test", "test_add")
+        .unwrap();
+    lab.registry
+        .assign_device_with_audit(
+            &device_addr,
+            Some("e2e-col-a".to_string()),
+            "test",
+            "test_assign",
+        )
+        .unwrap();
+    bind_collector(&lab.sqlite, "e2e-col-a", &leaf_a.fingerprint);
+
+    let epoch = lab.manager.authority_epoch();
+    let (mut assign_rx, _gen) = lab
+        .manager
+        .register_collector("e2e-col-a".to_string(), PROTOCOL_VERSION_CURRENT, true)
+        .await
+        .unwrap();
+    let assigned_gen = assign_rx.recv().await.expect("initial sync").generation;
+
+    // The three authorized explicit selections (device_target).
+    let auth_entries: Vec<(String, String, String, u64)> = vec![
+        (
+            "openconfig".to_string(),
+            "interfaces/interface[name=Ethernet1/1]/state/counters".to_string(),
+            "SAMPLE".to_string(),
+            10_000_000_000,
+        ),
+        (
+            "openconfig".to_string(),
+            "interfaces/interface[name=Ethernet1/2]/state/oper-status".to_string(),
+            "ON_CHANGE".to_string(),
+            0,
+        ),
+        (
+            "openconfig".to_string(),
+            "interfaces/interface[name=Ethernet1/3]/state/oper-status".to_string(),
+            "ON_CHANGE".to_string(),
+            0,
+        ),
+    ];
+    let to_pb = |entries: &[(String, String, String, u64)]| -> Vec<SubscriptionPath> {
+        entries
+            .iter()
+            .map(|(origin, path, mode, interval)| SubscriptionPath {
+                path: path.clone(),
+                origin: origin.clone(),
+                mode: mode.clone(),
+                sample_interval_ns: *interval,
+                ..Default::default()
+            })
+            .collect()
+    };
+    let ev = |plan_id: &str,
+              session_id: &str,
+              state: &str,
+              seq: u64,
+              acquisition: &str,
+              paths: Vec<SubscriptionPath>| SubscriptionLifecycleEvent {
+        collector_id: "e2e-col-a".to_string(),
+        device_address: device_addr.clone(),
+        plan_id: plan_id.to_string(),
+        session_id: session_id.to_string(),
+        state: state.to_string(),
+        transition_seq: seq,
+        authority_epoch: epoch,
+        assignment_generation: assigned_gen,
+        occurred_at_ns: 1,
+        detail: String::new(),
+        protocol_version: PROTOCOL_VERSION_CURRENT,
+        submitted_paths: paths,
+        acquisition: acquisition.to_string(),
+    };
+
+    // Broad manifest: the three authorized paths PLUS an unauthorized
+    // fourth — plan_id is the CORRECT deterministic identity of the
+    // broad manifest (integrity passes, authorization must not).
+    let mut broad = auth_entries.clone();
+    broad.push((
+        "openconfig".to_string(),
+        "network-instances/protocols/protocol/bgp".to_string(),
+        "ON_CHANGE".to_string(),
+        0,
+    ));
+    let broad_plan = bonsai::subscriber::acquisition_plan_id(AcquisitionMode::Explicit, &broad);
+    let good_plan =
+        bonsai::subscriber::acquisition_plan_id(AcquisitionMode::Explicit, &auth_entries);
+
+    let (ev_tx, ev_rx) = mpsc::channel::<SubscriptionLifecycleEvent>(16);
+    let mut client = connect_client(&pki, &leaf_a, lab.addr).await;
+    let call = tokio::spawn(async move {
+        client
+            .subscription_lifecycle(Request::new(ReceiverStream::new(ev_rx)))
+            .await
+    });
+
+    // 1. Correctly-hashed but unauthorized broader manifest → rejected.
+    ev_tx
+        .send(ev(
+            &broad_plan,
+            "sess-broad",
+            "submitted",
+            1,
+            "explicit",
+            to_pb(&broad),
+        ))
+        .await
+        .unwrap();
+    // 2. Missing manifest on a live execution state → rejected.
+    ev_tx
+        .send(ev(
+            "whatever",
+            "sess-nomanifest",
+            "submitted",
+            1,
+            "explicit",
+            vec![],
+        ))
+        .await
+        .unwrap();
+    // 3. Acquisition intent disagreeing with the explicit assignment →
+    // rejected even though the manifest itself is authorized.
+    ev_tx
+        .send(ev(
+            &good_plan,
+            "sess-wrongacq",
+            "submitted",
+            1,
+            "automatic",
+            to_pb(&auth_entries),
+        ))
+        .await
+        .unwrap();
+    // 4. Positive control: exact authorized manifest → accepted and the
+    // session becomes current.
+    for (state, seq) in [("submitted", 1), ("synchronizing", 2), ("synchronized", 3)] {
+        ev_tx
+            .send(ev(
+                &good_plan,
+                "sess-good",
+                state,
+                seq,
+                "explicit",
+                to_pb(&auth_entries),
+            ))
+            .await
+            .unwrap();
+    }
+    drop(ev_tx);
+
+    let resp = call
+        .await
+        .expect("lifecycle rpc task")
+        .expect("lifecycle rpc")
+        .into_inner();
+    assert_eq!(
+        resp.rejected, 3,
+        "broad/missing/mismatched manifests must each be rejected: {resp:?}"
+    );
+    assert_eq!(resp.accepted, 3, "authorized manifest lifecycle accepted");
+
+    // Only the authorized session may hold current coverage authority.
+    assert_eq!(
+        lab.sessions.current_session(&device_addr),
+        Some((good_plan.clone(), "sess-good".to_string())),
+        "rejected manifests must never register coverage authority"
+    );
+
+    let _ = lab;
+}

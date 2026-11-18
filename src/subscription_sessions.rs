@@ -20,7 +20,7 @@
 //! `session_id` rather than reviving the old one. Only a `synchronized`
 //! session with verified provenance may authorize current coverage.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 /// Lifecycle states carried on `SubscriptionLifecycleEvent.state`.
@@ -80,6 +80,16 @@ fn transition_allowed(current: &str, next: &str) -> bool {
 /// evicted oldest-first once the bound is exceeded; the current
 /// coverage session and every non-terminal record are never evicted.
 const MAX_SESSIONS_PER_TARGET: usize = 64;
+
+/// Maximum retired session identities remembered per target for the
+/// anti-replay fence (M5.2B review C). This bound is INDEPENDENT of
+/// terminal-record retention: an evicted session's identity can never
+/// re-register, so a delayed `synchronized` replay cannot resurrect an
+/// old session after newer sessions have churned past the record cap.
+/// Reconnects mint fresh session_ids by contract, so legitimate traffic
+/// never needs a retired identity; oldest ids fall out of the FIFO only
+/// after this many newer retirements.
+const RETIRED_SESSION_ID_CAP: usize = 256;
 
 /// One path entry in the actual submitted Subscribe manifest carried
 /// on `submitted` lifecycle events (M5.2B review B3). This is the
@@ -160,6 +170,10 @@ struct TargetSessions {
     sessions: HashMap<String, SessionRecord>,
     /// Session key currently authorized to satisfy coverage, if any.
     current: Option<String>,
+    /// Bounded FIFO of retired session identities — the execution-order
+    /// fence that survives terminal-record eviction (see
+    /// [`RETIRED_SESSION_ID_CAP`]).
+    retired_session_ids: VecDeque<String>,
 }
 
 /// Process-local authoritative session registry. Remote collectors feed
@@ -227,6 +241,22 @@ impl SubscriptionSessionRegistry {
         let entry = targets.entry(event.target.clone()).or_default();
 
         let existing = entry.sessions.get(&key).cloned();
+        // Anti-replay fence (M5.2B review C): a session identity that
+        // was registered and later evicted can never re-register. A
+        // delayed replay of an old session's `synchronized` event must
+        // not regain authority after newer sessions have churned past
+        // the bounded terminal retention — legitimate reconnects always
+        // mint fresh session_ids.
+        if existing.is_none()
+            && !event.session_id.is_empty()
+            && entry
+                .retired_session_ids
+                .iter()
+                .any(|id| id == &event.session_id)
+        {
+            metrics::counter!("bonsai_subscription_session_replay_rejected_total").increment(1);
+            return ApplyOutcome::Rejected("retired session identity replay");
+        }
         if let Some(record) = &existing {
             // Ordered transitions: seq must strictly increase. seq == 0
             // is the unordered plan-level channel (disabled/rejected
@@ -358,6 +388,14 @@ impl SubscriptionSessionRegistry {
                 .map(|(k, _)| k.clone());
             let Some(key) = victim else { break };
             entry.sessions.remove(&key);
+            // Retire the identity into the bounded replay fence —
+            // `plan:<id>` keys are plan-level outcomes, not sessions.
+            if !key.starts_with("plan:") {
+                entry.retired_session_ids.push_back(key.clone());
+                while entry.retired_session_ids.len() > RETIRED_SESSION_ID_CAP {
+                    entry.retired_session_ids.pop_front();
+                }
+            }
             metrics::counter!("bonsai_subscription_session_evicted_total").increment(1);
         }
     }
@@ -561,5 +599,72 @@ mod tests {
         assert_eq!(reg.current_session("dut"), None);
         reg.apply(&ev(state::SYNCHRONIZING, 2, "s1"), true);
         assert_eq!(reg.current_session("dut"), None);
+    }
+
+    /// M5.2B review C: an evicted session identity can never re-register.
+    /// Bounded terminal retention alone is not an anti-replay fence —
+    /// enough churn evicts the record, and a delayed `synchronized`
+    /// replay must still be rejected rather than regain authority.
+    #[test]
+    fn evicted_session_identity_cannot_replay_into_authority() {
+        // `ev_at` stamps occurred_at so eviction (oldest-terminal-first)
+        // is deterministic: sess-a/b carry the oldest timestamps.
+        let ev_at = |state: &str, seq: u64, session: &str, ts: i64| {
+            let mut e = ev(state, seq, session);
+            e.occurred_at_ns = ts;
+            e
+        };
+        let reg = SubscriptionSessionRegistry::new();
+        // Session A establishes and is superseded.
+        reg.apply(&ev_at(state::SUBMITTED, 1, "sess-a", 1), true);
+        reg.apply(&ev_at(state::SYNCHRONIZED, 2, "sess-a", 2), true);
+        reg.apply(&ev_at(state::SUBMITTED, 1, "sess-b", 3), true);
+        reg.apply(&ev_at(state::SYNCHRONIZED, 2, "sess-b", 4), true);
+        assert_eq!(
+            reg.current_session("dut"),
+            Some(("plan".to_string(), "sess-b".to_string()))
+        );
+
+        // Churn enough distinct sessions to evict every terminal record
+        // (MAX_SESSIONS_PER_TARGET = 64; sess-a/sess-b terminal records
+        // are evicted oldest-first while the live session is retained).
+        for i in 0..80 {
+            let sid = format!("churn-{i}");
+            let ts = 10 + i as i64;
+            reg.apply(&ev_at(state::SUBMITTED, 1, &sid, ts), true);
+            reg.apply(&ev_at(state::SYNCHRONIZED, 2, &sid, ts + 1), true);
+            reg.apply(&ev_at(state::DISCONNECTED, 3, &sid, ts + 2), true);
+        }
+        // Current session Z.
+        reg.apply(&ev_at(state::SUBMITTED, 1, "sess-z", 10_000), true);
+        reg.apply(&ev_at(state::SYNCHRONIZED, 2, "sess-z", 10_001), true);
+        assert_eq!(
+            reg.current_session("dut"),
+            Some(("plan".to_string(), "sess-z".to_string()))
+        );
+
+        // Delayed replay of evicted sess-a's synchronized transition,
+        // otherwise historically valid: rejected by the retired-id
+        // fence — sess-z remains current and sess-a cannot re-register.
+        let replay = ev_at(state::SYNCHRONIZED, 2, "sess-a", 2);
+        assert_eq!(
+            reg.apply(&replay, true),
+            ApplyOutcome::Rejected("retired session identity replay")
+        );
+        assert_eq!(
+            reg.current_session("dut"),
+            Some(("plan".to_string(), "sess-z".to_string()))
+        );
+        // Even a fresh-sequence replay under the retired identity is
+        // rejected — the fence keys on identity, not revision.
+        let replay2 = ev_at(state::SUBMITTED, 9, "sess-a", 10_002);
+        assert!(matches!(
+            reg.apply(&replay2, true),
+            ApplyOutcome::Rejected(_)
+        ));
+        assert_eq!(
+            reg.current_session("dut"),
+            Some(("plan".to_string(), "sess-z".to_string()))
+        );
     }
 }

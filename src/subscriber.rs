@@ -1533,7 +1533,7 @@ enum AcquisitionPlan {
 /// textual path spellings that parse to the same structured path produce
 /// the same identity only when their normalized form matches — dedup of
 /// subscriptions themselves happens on the structured Path, not the string.
-pub(crate) fn acquisition_plan_id(
+pub fn acquisition_plan_id(
     acquisition: AcquisitionMode,
     entries: &[(String, String, String, u64)],
 ) -> String {
@@ -1550,6 +1550,28 @@ pub(crate) fn acquisition_plan_id(
     acquisition.as_str().hash(&mut hasher);
     canonical.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+/// Authorized explicit-manifest entries for `target`: the normalized
+/// `(origin, path, mode, sample_interval_ns)` tuples an explicit
+/// acquisition may legitimately submit — exactly the set
+/// [`build_acquisition_plan`] would resolve from `selected_paths`.
+/// Returns `Err` when the selection itself is invalid (the plan would
+/// be `Rejected`, never submitted) so callers fail closed. An empty
+/// set means explicit-empty → Disabled: no live plan may be submitted.
+/// Used by the authenticated lifecycle boundary to reject manifests
+/// that broaden the authorized path/mode/interval set (M5.2B review D).
+pub(crate) fn authorized_explicit_entries(
+    target: &crate::config::TargetConfig,
+) -> Result<std::collections::HashSet<(String, String, String, u64)>, String> {
+    let mut authorized = std::collections::HashSet::new();
+    for selected in &target.selected_paths {
+        let (sub, _canonical) = subscription_from_selected_path(selected)?;
+        if let Some(e) = subscription_expectation(&sub) {
+            authorized.insert((e.origin, e.path, e.mode, e.sample_interval_ns));
+        }
+    }
+    Ok(authorized)
 }
 
 /// Build the effective acquisition plan.
