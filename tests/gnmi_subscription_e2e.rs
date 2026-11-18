@@ -99,6 +99,8 @@ struct MockGnmi {
     /// One response channel per open Subscribe stream; the test injects
     /// Update/SyncResponse notifications through the newest sender.
     streams: Arc<Mutex<Vec<mpsc::Sender<Result<SubscribeResponse, Status>>>>>,
+    /// Every SubscribeRequest message received, for wire-level assertions.
+    requests: Arc<std::sync::Mutex<Vec<SubscribeRequest>>>,
     subscribe_calls: Arc<AtomicUsize>,
 }
 
@@ -118,8 +120,13 @@ impl GNmi for MockGnmi {
         request: Request<Streaming<SubscribeRequest>>,
     ) -> Result<Response<Self::SubscribeStream>, Status> {
         self.subscribe_calls.fetch_add(1, Ordering::SeqCst);
+        let requests = Arc::clone(&self.requests);
         let mut inner = request.into_inner();
-        tokio::spawn(async move { while let Ok(Some(_)) = inner.message().await {} });
+        tokio::spawn(async move {
+            while let Ok(Some(msg)) = inner.message().await {
+                requests.lock().unwrap().push(msg);
+            }
+        });
         let (tx, rx) = mpsc::channel::<Result<SubscribeResponse, Status>>(64);
         self.streams.lock().await.push(tx);
         Ok(Response::new(ReceiverStream::new(rx)))
@@ -156,15 +163,18 @@ fn caps_response() -> CapabilityResponse {
 async fn start_mock() -> (
     String,
     Arc<Mutex<Vec<mpsc::Sender<Result<SubscribeResponse, Status>>>>>,
+    Arc<std::sync::Mutex<Vec<SubscribeRequest>>>,
     Arc<AtomicUsize>,
     watch::Sender<bool>,
     tokio::task::JoinHandle<()>,
 ) {
     let streams = Arc::new(Mutex::new(Vec::new()));
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
     let subscribe_calls = Arc::new(AtomicUsize::new(0));
     let svc = MockGnmi {
         caps: caps_response(),
         streams: Arc::clone(&streams),
+        requests: Arc::clone(&requests),
         subscribe_calls: Arc::clone(&subscribe_calls),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -179,7 +189,7 @@ async fn start_mock() -> (
             .await
             .unwrap();
     });
-    (addr, streams, subscribe_calls, sd, handle)
+    (addr, streams, requests, subscribe_calls, sd, handle)
 }
 
 fn leaf_path(name: &str) -> Path {
@@ -540,6 +550,18 @@ fn device_target(address: &str) -> TargetConfig {
                 rationale: String::new(),
                 optional: false,
             },
+            // Path C: third Subscription entry — exercises the gNMI
+            // sync boundary: ONE SubscriptionList gets ONE
+            // SyncResponse regardless of entry count (spec 3.5.1.4).
+            SelectedSubscriptionPath {
+                path: "interfaces/interface[name=Ethernet1/3]/state/oper-status".to_string(),
+                origin: "openconfig".to_string(),
+                provenance: String::new(),
+                mode: "ON_CHANGE".to_string(),
+                sample_interval_ns: 0,
+                rationale: String::new(),
+                optional: false,
+            },
         ],
         external_id: None,
         inventory_only: false,
@@ -643,7 +665,7 @@ async fn distributed_subscription_evidence_reaches_verified_coverage() {
     let collector_leaf = issue_leaf(&pki, "e2e-col", false);
 
     // Mock gNMI device.
-    let (gnmi_addr, streams, subscribe_calls, gsd, ghandle) = start_mock().await;
+    let (gnmi_addr, streams, requests, subscribe_calls, gsd, ghandle) = start_mock().await;
     let device_addr = gnmi_addr.trim_start_matches("http://").to_string();
     let device_addr = device_addr.trim_end_matches('/').to_string();
 
@@ -759,13 +781,61 @@ async fn distributed_subscription_evidence_reaches_verified_coverage() {
         )
         .await
     );
+
+    // Wire-level contract: exactly one Subscribe RPC carrying ONE
+    // SubscriptionList with all three Subscription entries in STREAM
+    // mode — the sync boundary the mock must honor.
+    // The request drain task records messages asynchronously — wait
+    // (bounded) for the wire record rather than racing it.
+    assert!(
+        wait_for(
+            || !requests.lock().unwrap().is_empty(),
+            Duration::from_secs(10),
+            "subscribe request recorded"
+        )
+        .await
+    );
+    {
+        let reqs = requests.lock().unwrap();
+        assert_eq!(
+            reqs.len(),
+            1,
+            "expected exactly one SubscribeRequest: {reqs:?}"
+        );
+        let Some(bonsai::proto::gnmi::subscribe_request::Request::Subscribe(list)) =
+            &reqs[0].request
+        else {
+            panic!("expected Subscribe request, got {:?}", reqs[0].request);
+        };
+        assert_eq!(
+            list.subscription.len(),
+            3,
+            "expected 3 Subscription entries"
+        );
+        assert_eq!(
+            list.mode,
+            bonsai::proto::gnmi::subscription_list::Mode::Stream as i32
+        );
+    }
+
     {
         let guard = streams.lock().await;
         let tx = guard.last().expect("subscribe stream").clone();
-        // gNMI completes initial sync per Subscription: the request
-        // carries one Subscription per selected path, so each needs
-        // its own SyncResponse before the session may synchronize.
-        tx.send(Ok(sync_notification())).await.unwrap();
+        // Initial-sync ordering, protocol-correct: matching telemetry
+        // for path A plus an unrelated keyed instance are delivered
+        // BEFORE the single SyncResponse(true). The gNMI sync boundary
+        // is the SubscriptionList/RPC (spec 3.5.1.4/3.5.2.3) — one
+        // list, one Subscribe RPC, one SyncResponse regardless of
+        // entry count; a second sync would be protocol noise. The
+        // early path-A update exercises the bounded pending buffer:
+        // it must be released only once the session is authoritatively
+        // current, never dropped into a false subscribed_but_silent.
+        tx.send(Ok(update_notification(&leaf_path("Ethernet9/9"), 7)))
+            .await
+            .unwrap();
+        tx.send(Ok(update_notification(&leaf_path("Ethernet1/1"), 42)))
+            .await
+            .unwrap();
         tx.send(Ok(sync_notification())).await.unwrap();
     }
 
@@ -784,54 +854,19 @@ async fn distributed_subscription_evidence_reaches_verified_coverage() {
         "lifecycle registration never reached core registry"
     );
 
-    // SyncResponse alone must NOT establish observation: both expected
-    // paths are still pending immediately after registration.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let early = query_subscription_statuses(&lab.graph).await;
-    assert!(
-        early.iter().all(|r| r.4 != "observed"),
-        "sync_response alone must not mark observed: {early:?}"
-    );
-    assert!(
-        early.iter().any(|r| r.0 == device_addr
-            && r.1 == "interfaces/interface[name=Ethernet1/1]/state/counters"
-            && r.2 == "openconfig"
-            && r.3 == "SAMPLE"
-            && r.4 == "pending"),
-        "path A must be pending with exact origin/mode: {early:?}"
-    );
-
-    // Negative: an unrelated keyed instance satisfies neither path.
-    {
-        let guard = streams.lock().await;
-        let tx = guard.last().expect("subscribe stream").clone();
-        let unrelated = leaf_path("Ethernet9/9");
-        tx.send(Ok(update_notification(&unrelated, 7)))
-            .await
-            .unwrap();
-    }
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    let after_unrelated = query_subscription_statuses(&lab.graph).await;
-    assert!(
-        after_unrelated.iter().all(|r| r.4 != "observed"),
-        "unrelated interface update must not cover A or B: {after_unrelated:?}"
-    );
-
-    // Now inject the covering observation for path A only — evaluated
-    // against the registered current session.
-    {
-        let guard = streams.lock().await;
-        let tx = guard.last().expect("subscribe stream").clone();
-        let notif_path = leaf_path("Ethernet1/1");
-        tx.send(Ok(update_notification(&notif_path, 42)))
-            .await
-            .unwrap();
-    }
+    // Path B and path C receive NO telemetry at all — the sync-first /
+    // no-update case: synchronization alone must never produce coverage
+    // (no updates_only semantics are claimed or required). Path A's
+    // matching evidence arrived BEFORE the SyncResponse; the bounded
+    // pending buffer releases it through the normal fenced path once
+    // this session is current. The unrelated Ethernet9/9 update sent
+    // pre-sync must never satisfy any configured path.
+    let path_a = "interfaces/interface[name=Ethernet1/1]/state/counters";
+    let path_b = "interfaces/interface[name=Ethernet1/2]/state/oper-status";
+    let path_c = "interfaces/interface[name=Ethernet1/3]/state/oper-status";
 
     // Coverage: exact structured path observation → observed for path A
     // ONLY, with exact device/path/origin/mode identity.
-    let path_a = "interfaces/interface[name=Ethernet1/1]/state/counters";
-    let path_b = "interfaces/interface[name=Ethernet1/2]/state/oper-status";
     let mut last_rows = Vec::new();
     let mut a_observed = false;
     for _ in 0..100 {
@@ -857,6 +892,12 @@ async fn distributed_subscription_evidence_reaches_verified_coverage() {
             .iter()
             .all(|r| !(r.0 == device_addr && r.1 == path_b && r.4 == "observed")),
         "path B must never be observed without matching evidence: {last_rows:?}"
+    );
+    assert!(
+        last_rows
+            .iter()
+            .all(|r| !(r.0 == device_addr && r.1 == path_c && r.4 == "observed")),
+        "path C must never be observed without matching evidence: {last_rows:?}"
     );
 
     fsd.send(true).unwrap();

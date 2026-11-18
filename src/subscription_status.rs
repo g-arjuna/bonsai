@@ -51,65 +51,197 @@ const PENDING_OBSERVATION_PER_SESSION_CAP: usize = 128;
 const PENDING_OBSERVATION_SESSION_CAP: usize = 512;
 const PENDING_OBSERVATION_GLOBAL_CAP: usize = 16_384;
 const PENDING_OBSERVATION_TTL: Duration = Duration::from_secs(90);
+/// Conservative per-observation evidence budget. Structured gNMI paths
+/// are normally hundreds of bytes; anything larger is discarded rather
+/// than buffered so per-entry memory stays bounded by construction,
+/// not by assumption.
+const PENDING_OBSERVATION_MAX_EVIDENCE_BYTES: usize = 8 * 1024;
+/// Hard caps on structured-path shape retained as evidence.
+const PENDING_OBSERVATION_MAX_PATHS: usize = 8;
+const PENDING_OBSERVATION_MAX_ELEMS: usize = 256;
+const PENDING_OBSERVATION_MAX_KEYS_PER_ELEM: usize = 16;
 
 /// (target, plan_id, session_id) identity of a pending-observation bucket.
 type PendingKey = (String, String, String);
 
+/// Compact coverage evidence retained for a buffered observation.
+/// Only the fields the fenced coverage path consumes are kept — the
+/// telemetry `value` payload and classification metadata are NEVER
+/// buffered, bounding per-entry memory regardless of update size.
+#[derive(Clone)]
+struct PendingObservation {
+    target: String,
+    plan_id: String,
+    session_id: String,
+    source_protocol: String,
+    gnmi_path: Vec<crate::proto::gnmi::Path>,
+    is_delete: bool,
+    timestamp_ns: i64,
+    /// Trusted receipt time — the verifier's processing instant when the
+    /// observation arrived. Carried through replay so buffered evidence
+    /// keeps its ORIGINAL age: an observation buffered for 80s must not
+    /// become fresh SAMPLE evidence merely because the session has just
+    /// synchronized. Distinct from `timestamp_ns` (device time),
+    /// replay time and persistence time.
+    received_at: Instant,
+}
+
+impl PendingObservation {
+    /// Conservative byte estimate of the retained evidence: identity
+    /// strings plus every structured-path name/key byte. The telemetry
+    /// `value` payload is never retained, so this bounds the entry.
+    fn evidence_bytes(update: &TelemetryUpdate) -> usize {
+        let mut n = update.target.len()
+            + update.plan_id.len()
+            + update.session_id.len()
+            + update.source_protocol.len()
+            + 64;
+        for path in &update.gnmi_path {
+            n += path.origin.len() + 16;
+            for elem in &path.elem {
+                n += elem.name.len() + 16;
+                for (k, v) in &elem.key {
+                    n += k.len() + v.len() + 8;
+                }
+            }
+        }
+        n
+    }
+
+    /// Returns None for evidence exceeding the size/shape budget —
+    /// oversized observations are dropped with a metric rather than
+    /// buffered, keeping per-entry memory bounded by construction.
+    fn from_update(update: &TelemetryUpdate, received_at: Instant) -> Option<Self> {
+        let elems: usize = update.gnmi_path.iter().map(|p| p.elem.len()).sum();
+        let max_keys = update
+            .gnmi_path
+            .iter()
+            .flat_map(|p| p.elem.iter())
+            .map(|e| e.key.len())
+            .max()
+            .unwrap_or(0);
+        if update.gnmi_path.len() > PENDING_OBSERVATION_MAX_PATHS
+            || elems > PENDING_OBSERVATION_MAX_ELEMS
+            || max_keys > PENDING_OBSERVATION_MAX_KEYS_PER_ELEM
+            || Self::evidence_bytes(update) > PENDING_OBSERVATION_MAX_EVIDENCE_BYTES
+        {
+            metrics::counter!("bonsai_subscription_pending_oversized_total").increment(1);
+            return None;
+        }
+        Some(Self {
+            target: update.target.clone(),
+            plan_id: update.plan_id.clone(),
+            session_id: update.session_id.clone(),
+            source_protocol: update.source_protocol.clone(),
+            gnmi_path: update.gnmi_path.clone(),
+            is_delete: update.is_delete,
+            timestamp_ns: update.timestamp_ns,
+            received_at,
+        })
+    }
+
+    /// Rehydrate into the update shape `observe_update` consumes. The
+    /// value/classification fields are irrelevant to coverage and are
+    /// left empty — replayed evidence can only re-prove acquisition,
+    /// never fabricate a semantic classification. Returns the update
+    /// plus its ORIGINAL receipt instant for freshness accounting.
+    fn into_update(self) -> (std::sync::Arc<TelemetryUpdate>, Instant) {
+        let received_at = self.received_at;
+        (
+            std::sync::Arc::new(TelemetryUpdate {
+                target: self.target,
+                vendor: String::new(),
+                hostname: String::new(),
+                role: String::new(),
+                site: String::new(),
+                timestamp_ns: self.timestamp_ns,
+                path: String::new(),
+                value: serde_json::Value::Null,
+                plan_id: self.plan_id,
+                session_id: self.session_id,
+                source_protocol: self.source_protocol,
+                gnmi_path: self.gnmi_path,
+                is_delete: self.is_delete,
+            }),
+            received_at,
+        )
+    }
+}
+
 struct PendingBucket {
     /// Arrival-ordered observations with their buffer-insertion time.
-    updates: VecDeque<(Instant, std::sync::Arc<TelemetryUpdate>)>,
+    updates: VecDeque<(Instant, PendingObservation)>,
     created: Instant,
     last_seen: Instant,
 }
 
-#[derive(Default)]
 struct PendingObservations {
     buckets: HashMap<PendingKey, PendingBucket>,
+    /// Observation count across all buckets — the enforced global cap.
     total: usize,
+    /// Per-observation TTL; a field (not just the const) so tests can
+    /// exercise expiry without waiting out the production window.
+    ttl: Duration,
+}
+
+impl Default for PendingObservations {
+    fn default() -> Self {
+        Self {
+            buckets: HashMap::new(),
+            total: 0,
+            ttl: PENDING_OBSERVATION_TTL,
+        }
+    }
 }
 
 impl PendingObservations {
     /// Buffer one non-current gNMI observation. Non-gNMI producers and
     /// updates lacking session provenance are ignored — they can never
-    /// become coverage evidence later.
-    fn note(&mut self, update: &std::sync::Arc<TelemetryUpdate>) {
+    /// become coverage evidence later. `received_at` is the trusted
+    /// receipt instant of THIS evidence — replayed observations keep
+    /// their original receipt time rather than being re-aged.
+    fn note(&mut self, update: &TelemetryUpdate, received_at: Instant) {
         if update.source_protocol != "gnmi"
             || update.plan_id.is_empty()
             || update.session_id.is_empty()
         {
             return;
         }
+        let now = received_at;
+        let Some(obs) = PendingObservation::from_update(update, now) else {
+            return;
+        };
         let key: PendingKey = (
             update.target.clone(),
             update.plan_id.clone(),
             update.session_id.clone(),
         );
-        let now = Instant::now();
         if let Some(bucket) = self.buckets.get_mut(&key) {
             if bucket.updates.len() >= PENDING_OBSERVATION_PER_SESSION_CAP {
                 bucket.updates.pop_front();
                 self.total = self.total.saturating_sub(1);
+                metrics::counter!("bonsai_subscription_pending_session_overflow_total")
+                    .increment(1);
             }
-            bucket
-                .updates
-                .push_back((now, std::sync::Arc::clone(update)));
+            bucket.updates.push_back((now, obs));
             bucket.last_seen = now;
-            self.total += 1;
-            return;
+        } else {
+            if self.buckets.len() >= PENDING_OBSERVATION_SESSION_CAP {
+                self.evict_oldest_bucket();
+            }
+            let mut updates = VecDeque::new();
+            updates.push_back((now, obs));
+            self.buckets.insert(
+                key,
+                PendingBucket {
+                    updates,
+                    created: now,
+                    last_seen: now,
+                },
+            );
         }
-        if self.buckets.len() >= PENDING_OBSERVATION_SESSION_CAP {
-            self.evict_oldest_bucket();
-        }
-        let mut updates = VecDeque::new();
-        updates.push_back((now, std::sync::Arc::clone(update)));
-        self.buckets.insert(
-            key,
-            PendingBucket {
-                updates,
-                created: now,
-                last_seen: now,
-            },
-        );
+        // The global cap binds EVERY insertion — including growth of an
+        // existing bucket — so `total` can never exceed it.
         self.total += 1;
         while self.total > PENDING_OBSERVATION_GLOBAL_CAP {
             if !self.evict_oldest_bucket() {
@@ -127,7 +259,13 @@ impl PendingObservations {
             .min_by_key(|(_, b)| b.created)
             .map(|(k, _)| k.clone());
         let Some(key) = victim else { return false };
+        metrics::counter!("bonsai_subscription_pending_evicted_total").increment(1);
         if let Some(bucket) = self.buckets.remove(&key) {
+            // Bucket-count and observation-count metrics are distinct:
+            // this counter tracks evicted BUCKETS, the obs counter the
+            // observations they carried.
+            metrics::counter!("bonsai_subscription_pending_evicted_obs_total")
+                .increment(bucket.updates.len() as u64);
             self.total = self.total.saturating_sub(bucket.updates.len());
             true
         } else {
@@ -142,7 +280,26 @@ impl PendingObservations {
         let now = Instant::now();
         let mut ready = Vec::new();
         self.buckets.retain(|key, bucket| {
-            if now.duration_since(bucket.last_seen) > PENDING_OBSERVATION_TTL {
+            // Per-observation expiry FIRST: a steady stream of new
+            // evidence must not keep aged-out observations alive —
+            // each entry expires on its own receipt instant.
+            let before = bucket.updates.len();
+            bucket
+                .updates
+                .retain(|(received, _)| now.duration_since(*received) <= self.ttl);
+            let expired_obs = before - bucket.updates.len();
+            if expired_obs > 0 {
+                metrics::counter!("bonsai_subscription_pending_expired_obs_total")
+                    .increment(expired_obs as u64);
+            }
+            if bucket.updates.is_empty() {
+                metrics::counter!("bonsai_subscription_pending_expired_total").increment(1);
+                return false;
+            }
+            // A bucket whose newest evidence is itself older than the
+            // TTL can hold nothing live.
+            if now.duration_since(bucket.last_seen) > self.ttl {
+                metrics::counter!("bonsai_subscription_pending_expired_total").increment(1);
                 return false;
             }
             // Terminal sessions can never become current again — their
@@ -150,6 +307,7 @@ impl PendingObservations {
             if let Some((state, _, _)) = sessions.session_state(&key.0, &key.2)
                 && crate::subscription_sessions::is_terminal(&state)
             {
+                metrics::counter!("bonsai_subscription_pending_terminal_total").increment(1);
                 return false;
             }
             if sessions
@@ -165,13 +323,25 @@ impl PendingObservations {
         ready
     }
 
-    /// Take the buffered observations for `key` (arrival order).
-    fn take(&mut self, key: &PendingKey) -> Vec<std::sync::Arc<TelemetryUpdate>> {
+    /// Take the LIVE buffered observations for `key` (arrival order),
+    /// rehydrated into the update shape the fenced path consumes.
+    /// Per-observation TTL is enforced again immediately before
+    /// release: evidence that aged out while waiting for its session
+    /// can never become coverage.
+    fn take(&mut self, key: &PendingKey) -> Vec<(std::sync::Arc<TelemetryUpdate>, Instant)> {
         let Some(bucket) = self.buckets.remove(key) else {
             return Vec::new();
         };
-        self.total = self.total.saturating_sub(bucket.updates.len());
-        bucket.updates.into_iter().map(|(_, u)| u).collect()
+        let now = Instant::now();
+        let len = bucket.updates.len();
+        let live: Vec<_> = bucket
+            .updates
+            .into_iter()
+            .filter(|(received, _)| now.duration_since(*received) <= self.ttl)
+            .map(|(_, u)| u.into_update())
+            .collect();
+        self.total = self.total.saturating_sub(len);
+        live
     }
 }
 
@@ -304,8 +474,15 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
             event = telemetry_rx.recv() => {
                 match event {
                     Some(update) => {
-                        observe_update(&store, &mut tracked, &sessions, &mut pending, update)
-                            .await;
+                        observe_update(
+                            &store,
+                            &mut tracked,
+                            &sessions,
+                            &mut pending,
+                            &update,
+                            Instant::now(),
+                        )
+                        .await;
                         // drain backlog without yielding — avoids queue saturation
                         while let Ok(update) = telemetry_rx.try_recv() {
                             observe_update(
@@ -313,7 +490,8 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
                                 &mut tracked,
                                 &sessions,
                                 &mut pending,
-                                update,
+                                &update,
+                                Instant::now(),
                             )
                             .await;
                         }
@@ -326,13 +504,14 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
                 // has since become current, expire stale buckets, then
                 // run the silence/freshness sweeps.
                 for key in pending.sweep(&sessions) {
-                    for update in pending.take(&key) {
+                    for (update, received_at) in pending.take(&key) {
                         observe_update(
                             &store,
                             &mut tracked,
                             &sessions,
                             &mut pending,
-                            update,
+                            &update,
+                            received_at,
                         )
                         .await;
                     }
@@ -472,9 +651,13 @@ async fn observe_update<S: BonsaiStore>(
     tracked: &mut HashMap<(String, String), TrackedPath>,
     sessions: &SubscriptionSessionRegistry,
     pending: &mut PendingObservations,
-    update: std::sync::Arc<TelemetryUpdate>,
+    update: &TelemetryUpdate,
+    // Trusted receipt instant of THIS evidence. Live bus events pass
+    // `Instant::now()`; buffered replays pass their ORIGINAL receipt
+    // time so replay never renews freshness.
+    received_at: Instant,
 ) {
-    if !update_has_current_session(sessions, &update) {
+    if !update_has_current_session(sessions, update) {
         // Not current-authorized. A gNMI observation carrying session
         // provenance may be early initial-sync evidence whose
         // `synchronized` lifecycle transition is still in flight — hold
@@ -482,7 +665,7 @@ async fn observe_update<S: BonsaiStore>(
         // exact (plan_id, session_id) becoming current. Everything else
         // (non-gNMI, missing provenance, stale/superseded sessions past
         // TTL) is dropped by `note`'s filters or expires unauthenticated.
-        pending.note(&update);
+        pending.note(update, received_at);
         return;
     }
     let now = update.timestamp_ns.max(now_ns());
@@ -498,7 +681,7 @@ async fn observe_update<S: BonsaiStore>(
         let Some(tracked_path) = tracked.get_mut(&key) else {
             continue;
         };
-        tracked_path.last_seen = Instant::now();
+        tracked_path.last_seen = received_at;
         // Delete/tombstone evidence (M5.2B B3): a current-session
         // Notification.delete invalidates the path's current coverage
         // until a fresh observation arrives. Stale-session deletes are
@@ -1019,5 +1202,233 @@ mod tests {
                 "mode {mode}"
             );
         }
+    }
+
+    fn pending_gnmi_update(target: &str, plan_id: &str, session_id: &str) -> TelemetryUpdate {
+        let mut u = provenance_update(target, plan_id, session_id);
+        u.gnmi_path = crate::gnmi_path::parse_path(
+            "",
+            "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets",
+        )
+        .map(|p| vec![p])
+        .unwrap_or_default();
+        u
+    }
+
+    #[test]
+    fn pending_buffer_global_cap_binds_every_insertion() {
+        let mut pending = PendingObservations::default();
+        let now = Instant::now();
+        // Grow MANY existing buckets past the global cap: every session
+        // bucket is filled beyond its per-session cap (which pops its
+        // own oldest), so `total` can only stay bounded if the global
+        // cap is enforced on the existing-bucket growth path too.
+        let per_session = PENDING_OBSERVATION_PER_SESSION_CAP;
+        let sessions = PENDING_OBSERVATION_GLOBAL_CAP / per_session + 2;
+        for s in 0..sessions {
+            for _ in 0..(per_session + 8) {
+                pending.note(
+                    &pending_gnmi_update("dut:57400", &format!("plan-{s}"), &format!("sess-{s}")),
+                    now,
+                );
+            }
+        }
+        // Hammer one existing bucket further — the growth branch must
+        // still never let `total` exceed the global cap.
+        for _ in 0..500 {
+            pending.note(&pending_gnmi_update("dut:57400", "plan-0", "sess-0"), now);
+        }
+        assert!(pending.total <= PENDING_OBSERVATION_GLOBAL_CAP);
+        assert!(pending.buckets.len() <= PENDING_OBSERVATION_SESSION_CAP);
+        let accounted: usize = pending.buckets.values().map(|b| b.updates.len()).sum();
+        assert_eq!(pending.total, accounted);
+    }
+
+    #[test]
+    fn pending_buffer_expires_each_observation_by_receipt_time() {
+        let mut pending = PendingObservations::default();
+        pending.ttl = Duration::from_millis(250);
+        let key = (
+            "dut:57400".to_string(),
+            "plan-1".to_string(),
+            "sess-1".to_string(),
+        );
+        // Old evidence first, then NEWER evidence for the same session:
+        // bucket.last_seen stays fresh, but the old observation must
+        // still expire on its own receipt instant.
+        pending.note(
+            &pending_gnmi_update("dut:57400", "plan-1", "sess-1"),
+            Instant::now() - Duration::from_millis(400),
+        );
+        pending.note(
+            &pending_gnmi_update("dut:57400", "plan-1", "sess-1"),
+            Instant::now(),
+        );
+        let sessions = SubscriptionSessionRegistry::new();
+        assert!(pending.sweep(&sessions).is_empty());
+        assert_eq!(pending.total, 1, "only the fresh observation survives");
+        // Immediate pre-release expiry: evidence aged past TTL while
+        // waiting can never be released even if take() runs first.
+        pending.note(
+            &pending_gnmi_update("dut:57400", "plan-1", "sess-1"),
+            Instant::now() - Duration::from_secs(120),
+        );
+        let live = pending.take(&key);
+        assert_eq!(live.len(), 1, "expired evidence filtered at release");
+        assert!(pending.total <= 1);
+    }
+
+    #[test]
+    fn pending_take_preserves_arrival_order_and_receipt_times() {
+        let mut pending = PendingObservations::default();
+        let key = (
+            "dut:57400".to_string(),
+            "plan-1".to_string(),
+            "sess-1".to_string(),
+        );
+        let t0 = Instant::now();
+        let mut upd = pending_gnmi_update("dut:57400", "plan-1", "sess-1");
+        upd.is_delete = false;
+        pending.note(&upd, t0);
+        let mut del = pending_gnmi_update("dut:57400", "plan-1", "sess-1");
+        del.is_delete = true;
+        pending.note(&del, t0 + Duration::from_millis(1));
+        let live = pending.take(&key);
+        assert_eq!(live.len(), 2);
+        // Buffered update/delete ordering is preserved for replay.
+        assert!(!live[0].0.is_delete);
+        assert!(live[1].0.is_delete);
+        // Original trusted receipt instants survive the round trip.
+        assert_eq!(live[0].1, t0);
+        assert_eq!(live[1].1, t0 + Duration::from_millis(1));
+    }
+
+    #[test]
+    fn pending_buffer_rejects_oversized_evidence() {
+        let mut pending = PendingObservations::default();
+        let mut u = pending_gnmi_update("dut:57400", "plan-1", "sess-1");
+        // Byte-budget violation: one enormous element name.
+        let mut huge = u.gnmi_path[0].clone();
+        huge.elem[0].name = "x".repeat(PENDING_OBSERVATION_MAX_EVIDENCE_BYTES);
+        u.gnmi_path = vec![huge];
+        pending.note(&u, Instant::now());
+        assert_eq!(pending.total, 0);
+        assert!(pending.buckets.is_empty());
+        // Shape-cap violation: more resolved paths than the budget.
+        let mut u2 = pending_gnmi_update("dut:57400", "plan-1", "sess-1");
+        let one = u2.gnmi_path[0].clone();
+        u2.gnmi_path = vec![one; PENDING_OBSERVATION_MAX_PATHS + 1];
+        pending.note(&u2, Instant::now());
+        assert_eq!(pending.total, 0);
+        assert!(pending.buckets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replayed_pending_evidence_keeps_original_receipt_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::graph::GraphStore::open(
+            dir.path().join("g.lbug").to_str().unwrap(),
+            256 * 1024 * 1024,
+        )
+        .expect("open graph store");
+        let sessions = registered_sessions(&[("dut:57400", "plan-1", "sess-1")]);
+        let exp = expectation(
+            "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets",
+            "SAMPLE",
+        );
+        let key = tracked_key("dut:57400", &exp);
+        let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
+        tracked.insert(
+            key.clone(),
+            TrackedPath {
+                expectation: exp,
+                status: "pending".to_string(),
+                first_observed_at_ns: 0,
+                last_observed_at_ns: 0,
+                deadline: Instant::now() + Duration::from_secs(60),
+                last_seen: Instant::now(),
+                stale_after: Duration::from_secs(30),
+            },
+        );
+        let mut pending = PendingObservations::default();
+        // Evidence received ~80s ago: covering update then delete.
+        let t0 = Instant::now() - Duration::from_secs(80);
+        pending.note(&pending_gnmi_update("dut:57400", "plan-1", "sess-1"), t0);
+        let mut del = pending_gnmi_update("dut:57400", "plan-1", "sess-1");
+        del.is_delete = true;
+        pending.note(&del, t0 + Duration::from_secs(1));
+
+        // Session already current: sweep releases in arrival order and
+        // each replayed update passes its ORIGINAL receipt instant.
+        let ready = pending.sweep(&sessions);
+        assert_eq!(ready.len(), 1);
+        for (update, received_at) in pending.take(&ready[0]) {
+            observe_update(
+                &store,
+                &mut tracked,
+                &sessions,
+                &mut pending,
+                &update,
+                received_at,
+            )
+            .await;
+        }
+        let tp = tracked.get(&key).expect("tracked path");
+        // Update→delete replay order yields "deleted", and last_seen
+        // reflects the ~80s-old receipt — replay did NOT renew freshness.
+        assert_eq!(tp.status, "deleted");
+        assert!(
+            tp.last_seen.elapsed() >= Duration::from_secs(75),
+            "freshness must use original receipt time, not replay time"
+        );
+    }
+
+    #[test]
+    fn pending_sweep_fences_foreign_and_discards_terminal_sessions() {
+        use crate::subscription_sessions::{SessionLifecycleEvent, state};
+        let ev = |session_id: &str, st: &str, seq: u64, verified_collector: &str| {
+            SessionLifecycleEvent {
+                collector_id: verified_collector.to_string(),
+                target: "dut:57400".to_string(),
+                plan_id: "plan-1".to_string(),
+                session_id: session_id.to_string(),
+                state: st.to_string(),
+                transition_seq: seq,
+                authority_epoch: 0,
+                assignment_generation: 0,
+                occurred_at_ns: 0,
+                detail: String::new(),
+            }
+        };
+        let mut pending = PendingObservations::default();
+        pending.note(
+            &pending_gnmi_update("dut:57400", "plan-1", "sess-old"),
+            Instant::now(),
+        );
+        let sessions = SubscriptionSessionRegistry::new();
+
+        // A foreign collector claims the SAME plan/session identifiers
+        // but its lifecycle is unverified — never current, never ready.
+        sessions.apply(
+            &ev("sess-old", state::SUBMITTED, 1, "other-collector"),
+            false,
+        );
+        assert!(pending.sweep(&sessions).is_empty());
+        assert_eq!(pending.total, 1, "unverified claim must not release");
+
+        // The authorized session is a DIFFERENT session id for the same
+        // plan. Entering the live lifecycle supersedes sess-old's record
+        // (terminal), so its buffered evidence is fenced AND discarded —
+        // it can never be released under the sibling session.
+        for (st, seq) in [
+            (state::SUBMITTED, 1),
+            (state::SYNCHRONIZING, 2),
+            (state::SYNCHRONIZED, 3),
+        ] {
+            sessions.apply(&ev("sess-new", st, seq, "owner-collector"), true);
+        }
+        assert!(pending.sweep(&sessions).is_empty());
+        assert_eq!(pending.total, 0, "superseded session evidence discarded");
+        assert!(pending.buckets.is_empty());
     }
 }

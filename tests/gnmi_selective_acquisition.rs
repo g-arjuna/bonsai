@@ -1473,6 +1473,106 @@ async fn unregistered_session_observation_never_covers() {
     let _ = verifier.await;
 }
 
+/// PendingObservations authority isolation: buffered early-sync
+/// evidence is bound to the exact verified (plan_id, session_id) the
+/// authenticated lifecycle stream authorized. A foreign collector
+/// claiming the same identifiers without verified authority, a
+/// different authorized session for the same plan, and withdrawal
+/// before release can never turn buffered evidence into coverage.
+#[tokio::test]
+async fn pending_evidence_requires_the_authorized_session_identity() {
+    use bonsai::subscription_status::run_subscription_verifier_with_windows;
+    use bonsai::subscription_sessions::state;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = bonsai::graph::GraphStore::open(
+        dir.path().join("graph.db").to_str().unwrap(),
+        256 * 1024 * 1024,
+    )
+    .expect("open graph store");
+    let db = store.db();
+    let bus = InProcessBus::new(64);
+    let publish_bus = bus.clone();
+    let (plan_tx, plan_rx) = mpsc::channel(8);
+    let (_stx, srx) = watch::channel(false);
+    let sessions = Arc::new(bonsai::subscription_sessions::SubscriptionSessionRegistry::new());
+    let verifier = tokio::spawn(run_subscription_verifier_with_windows(
+        store,
+        bus,
+        plan_rx,
+        Arc::clone(&sessions),
+        srx,
+        Duration::from_millis(50),
+        Duration::from_millis(10_000),
+    ));
+
+    let target = "dut:57400".to_string();
+    plan_tx
+        .send(SubscriptionPlan {
+            target: target.clone(),
+            paths: vec![SubscriptionPathExpectation {
+                path: "interfaces/interface[name=Ethernet1/1]/state/counters".to_string(),
+                origin: "openconfig".to_string(),
+                mode: "ON_CHANGE".to_string(),
+                sample_interval_ns: 0,
+            }],
+            plan_id: "plan-1".to_string(),
+            session_id: String::new(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            detail: String::new(),
+        })
+        .await
+        .unwrap();
+    wait_pending_row(&db, &target).await;
+
+    // Buffer evidence for sess-old before any registration.
+    publish_bus.publish(gnmi_obs(
+        &target,
+        "plan-1",
+        "sess-old",
+        "gnmi",
+        "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        false,
+    ));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // A foreign collector claims the SAME plan/session identifiers, but
+    // unverified lifecycle can never authorize coverage (in production
+    // `verified` is only set after authenticated authority validation).
+    let mut foreign = lifecycle_ev(&target, "plan-1", "sess-old", state::SUBMITTED, 1);
+    foreign.collector_id = "other-collector".to_string();
+    sessions.apply(&foreign, false);
+
+    // The legitimately authorized session is a DIFFERENT session id.
+    sync_session(&sessions, &target, "plan-1", "sess-new");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().all(|(_, _, s)| s != "observed"),
+        "foreign claim or sibling session must not release buffered evidence: {:?}",
+        statuses
+    );
+
+    // Withdrawal before release: the authorized session disconnects and
+    // the pending bucket's session goes terminal — evidence is dropped.
+    sessions.apply(
+        &lifecycle_ev(&target, "plan-1", "sess-new", state::DISCONNECTED, 4),
+        true,
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().all(|(_, _, s)| s != "observed"),
+        "withdrawn session must not leave coverage: {:?}",
+        statuses
+    );
+
+    _stx.send(true).unwrap();
+    let _ = verifier.await;
+}
+
 /// D: acquisition coverage is independent of semantic classification.
 /// A gNMI observation whose path matches NO Bonsai classifier still
 /// establishes subscription coverage (gnmi_path evidence only); and a

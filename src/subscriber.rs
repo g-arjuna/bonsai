@@ -15,9 +15,10 @@ const BACKOFF_MAX: Duration = Duration::from_secs(60);
 const BACKOFF_RESET_THRESHOLD: Duration = Duration::from_secs(60);
 const SAMPLE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Bounded deadline for the initial synchronization sequence after a
-/// Subscribe RPC is established. sync_response=true per subscription
-/// completes it; a device that never syncs fails the session rather
-/// than holding submitted-but-unverified authority forever.
+/// Subscribe RPC is established. One sync_response=true per
+/// SubscriptionList (i.e. per Subscribe RPC stream) completes it; a
+/// device that never syncs fails the session rather than holding
+/// submitted-but-unverified authority forever.
 const INITIAL_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
 
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
@@ -560,7 +561,6 @@ impl GnmiSubscriber {
             "subscribing"
         );
 
-        let subscription_count = subscriptions.len();
         let req = SubscribeRequest {
             request: Some(subscribe_request::Request::Subscribe(SubscriptionList {
                 subscription: subscriptions,
@@ -589,9 +589,9 @@ impl GnmiSubscriber {
         .await;
 
         // Authoritative lifecycle: a successful Subscribe RPC establishes
-        // SUBMISSION only — never synchronization. Initial sync completes
-        // when every subscription's sync_response arrives (bounded by
-        // INITIAL_SYNC_TIMEOUT).
+        // SUBMISSION only — never synchronization. Initial sync
+        // completes when the SubscriptionList's sync_response arrives
+        // (bounded by INITIAL_SYNC_TIMEOUT).
         // Track the live session so teardown paths that bypass the
         // stream loop (shutdown during connect/backoff) can still retire
         // its authority with an explicit terminal transition.
@@ -610,7 +610,14 @@ impl GnmiSubscriber {
         );
         emitter.emit("submitted", "").await;
         emitter.emit("synchronizing", "").await;
-        let mut pending_sync = subscription_count;
+        // gNMI sync boundary is the SubscriptionList/RPC, NOT each
+        // Subscription entry (spec 3.5.1.4/3.5.2.3): one Subscribe RPC
+        // carries one SubscriptionList, and the target emits exactly
+        // one SyncResponse(true) after the initial updates for ALL
+        // paths in that list. Requiring one sync per Subscription
+        // would deadlock multi-path subscriptions into
+        // INITIAL_SYNC_TIMEOUT.
+        let mut pending_sync = 1_u32;
         let sync_sleep =
             tokio::time::sleep_until(tokio::time::Instant::now() + INITIAL_SYNC_TIMEOUT);
         tokio::pin!(sync_sleep);
@@ -809,8 +816,8 @@ impl GnmiSubscriber {
                                 // follow — it is NOT completion and NOT an
                                 // error. Per-leaf coverage is proven by
                                 // observations, never by sync alone.
-                                if sync_response {
-                                    pending_sync = pending_sync.saturating_sub(1);
+                                if sync_response && pending_sync > 0 {
+                                    pending_sync -= 1;
                                     if pending_sync == 0 {
                                         emitter.emit("synchronized", "").await;
                                     }
