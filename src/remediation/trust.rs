@@ -1,8 +1,9 @@
 //! TrustState model and per-tuple persistence.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -104,11 +105,18 @@ pub struct TrustRecord {
 
 const TRUST_STATE_FILE: &str = "trust_state.json";
 
+/// Ordered persistence messages for the single writer thread. Snapshots
+/// are applied strictly in submission order — concurrent writer threads
+/// could otherwise complete out of order and resurrect stale state.
+enum TrustWrite {
+    Snapshot(String),
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
 pub struct TrustStore {
     records: HashMap<String, TrustRecord>,
-    path: PathBuf,
     config: RemediationConfig,
-    pending_writes: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    write_tx: std::sync::mpsc::Sender<TrustWrite>,
 }
 
 pub type SharedTrustStore = Arc<RwLock<TrustStore>>;
@@ -121,11 +129,29 @@ impl TrustStore {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         tracing::info!(count = records.len(), "trust state records loaded");
+        // Single ordered writer: snapshots are serialized at submit
+        // time and written in submission order, so a later state can
+        // never be overwritten by an earlier snapshot's delayed write.
+        let (write_tx, write_rx) = std::sync::mpsc::channel::<TrustWrite>();
+        let writer_path = path.clone();
+        std::thread::spawn(move || {
+            while let Ok(msg) = write_rx.recv() {
+                match msg {
+                    TrustWrite::Snapshot(json) => {
+                        if let Err(e) = std::fs::write(&writer_path, &json) {
+                            tracing::warn!("failed to persist trust_state.json: {e}");
+                        }
+                    }
+                    TrustWrite::Flush(ack) => {
+                        let _ = ack.send(());
+                    }
+                }
+            }
+        });
         Self {
             records,
-            path,
             config,
-            pending_writes: Mutex::new(Vec::new()),
+            write_tx,
         }
     }
 
@@ -134,24 +160,22 @@ impl TrustStore {
     /// shutdown paths and tests — must flush explicitly instead of racing
     /// the background thread.
     pub fn flush_pending_writes(&self) {
-        let handles = std::mem::take(&mut *self.pending_writes.lock().unwrap());
-        for h in handles {
-            let _ = h.join();
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        if self.write_tx.send(TrustWrite::Flush(ack_tx)).is_ok() {
+            // Bounded wait: a dead writer must not hang shutdown/tests.
+            let _ = ack_rx.recv_timeout(Duration::from_secs(30));
         }
     }
 
     fn persist(&self) {
-        // Serialize under the lock, then write on a background thread so the disk I/O
-        // doesn't block other lock-holders (Q-10).
+        // Serialize under the lock, then hand the snapshot to the
+        // ordered writer thread so disk I/O doesn't block other
+        // lock-holders (Q-10) while still guaranteeing write order.
         match serde_json::to_string_pretty(&self.records) {
             Ok(json) => {
-                let path = self.path.clone();
-                let handle = std::thread::spawn(move || {
-                    if let Err(e) = std::fs::write(&path, &json) {
-                        tracing::warn!("failed to persist trust_state.json: {e}");
-                    }
-                });
-                self.pending_writes.lock().unwrap().push(handle);
+                if let Err(e) = self.write_tx.send(TrustWrite::Snapshot(json)) {
+                    warn!("failed to queue trust state persistence: {e}");
+                }
             }
             Err(e) => warn!("failed to serialize trust state: {e}"),
         }
