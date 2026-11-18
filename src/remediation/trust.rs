@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -113,10 +113,69 @@ enum TrustWrite {
     Flush(std::sync::mpsc::Sender<()>),
 }
 
+/// Bounded hand-off between persist() callers and the single writer
+/// thread. Every snapshot is a COMPLETE serialized state, so consecutive
+/// snapshots coalesce into the newest one — intermediate states can
+/// never be observed on disk anyway. The queue is capped; overflow drops
+/// the OLDEST queued snapshot (never a Flush ack) and is counted, since
+/// the newest snapshot always carries the full current state.
+const TRUST_WRITE_QUEUE_CAP: usize = 64;
+
+struct TrustWriter {
+    queue: Mutex<std::collections::VecDeque<TrustWrite>>,
+    ready: std::sync::Condvar,
+    /// Set when the last TrustStore clone drops so the writer can exit
+    /// instead of parking on the condvar forever.
+    shutdown: std::sync::atomic::AtomicBool,
+}
+
+impl TrustWriter {
+    fn submit(&self, write: TrustWrite) {
+        let mut queue = self.queue.lock().unwrap();
+        // Coalesce: a queued snapshot is fully superseded by the next
+        // one — only the newest pending state needs to hit disk.
+        if matches!(write, TrustWrite::Snapshot(_))
+            && matches!(queue.back(), Some(TrustWrite::Snapshot(_)))
+        {
+            *queue.back_mut().unwrap() = write;
+            self.ready.notify_one();
+            return;
+        }
+        if queue.len() >= TRUST_WRITE_QUEUE_CAP {
+            // Drop the oldest SNAPSHOT; Flush markers are never dropped
+            // (their ack senders would be lost). Under sustained overflow
+            // a flush may still be dropped once snapshots are exhausted —
+            // its bounded recv_timeout then returns, never hangs.
+            if let Some(pos) = queue
+                .iter()
+                .position(|w| matches!(w, TrustWrite::Snapshot(_)))
+            {
+                queue.remove(pos);
+                metrics::counter!("bonsai_trust_write_coalesced_total").increment(1);
+            } else {
+                queue.pop_front();
+            }
+        }
+        queue.push_back(write);
+        self.ready.notify_one();
+    }
+}
+
 pub struct TrustStore {
     records: HashMap<String, TrustRecord>,
     config: RemediationConfig,
-    write_tx: std::sync::mpsc::Sender<TrustWrite>,
+    writer: Arc<TrustWriter>,
+}
+
+impl Drop for TrustStore {
+    fn drop(&mut self) {
+        // Signal the writer to drain and exit once the last store is
+        // gone; queued snapshots still land before the thread returns.
+        self.writer
+            .shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.writer.ready.notify_all();
+    }
 }
 
 pub type SharedTrustStore = Arc<RwLock<TrustStore>>;
@@ -132,26 +191,60 @@ impl TrustStore {
         // Single ordered writer: snapshots are serialized at submit
         // time and written in submission order, so a later state can
         // never be overwritten by an earlier snapshot's delayed write.
-        let (write_tx, write_rx) = std::sync::mpsc::channel::<TrustWrite>();
-        let writer_path = path.clone();
-        std::thread::spawn(move || {
-            while let Ok(msg) = write_rx.recv() {
-                match msg {
-                    TrustWrite::Snapshot(json) => {
-                        if let Err(e) = std::fs::write(&writer_path, &json) {
-                            tracing::warn!("failed to persist trust_state.json: {e}");
+        // Writes go through a bounded coalescing queue and land via
+        // atomic rename so a crash mid-write can never leave a
+        // truncated trust_state.json.
+        let writer = Arc::new(TrustWriter {
+            queue: Mutex::new(std::collections::VecDeque::new()),
+            ready: std::sync::Condvar::new(),
+            shutdown: std::sync::atomic::AtomicBool::new(false),
+        });
+        {
+            let writer = Arc::clone(&writer);
+            let writer_path = path.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let msg = {
+                        let mut queue = writer.queue.lock().unwrap();
+                        loop {
+                            if let Some(msg) = queue.pop_front() {
+                                break msg;
+                            }
+                            if writer.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                                // Drain remaining queued writes before
+                                // exit so shutdown loses nothing that
+                                // was already accepted.
+                                if queue.is_empty() {
+                                    return;
+                                }
+                                continue;
+                            }
+                            queue = writer.ready.wait(queue).unwrap();
+                        }
+                    };
+                    match msg {
+                        TrustWrite::Snapshot(json) => {
+                            // Atomic replacement: write to a sibling
+                            // temp file then rename, so readers never
+                            // observe a partial trust_state.json.
+                            let tmp = writer_path.with_extension("json.tmp");
+                            let result = std::fs::write(&tmp, &json)
+                                .and_then(|_| std::fs::rename(&tmp, &writer_path));
+                            if let Err(e) = result {
+                                tracing::warn!("failed to persist trust_state.json: {e}");
+                            }
+                        }
+                        TrustWrite::Flush(ack) => {
+                            let _ = ack.send(());
                         }
                     }
-                    TrustWrite::Flush(ack) => {
-                        let _ = ack.send(());
-                    }
                 }
-            }
-        });
+            });
+        }
         Self {
             records,
             config,
-            write_tx,
+            writer,
         }
     }
 
@@ -161,10 +254,9 @@ impl TrustStore {
     /// the background thread.
     pub fn flush_pending_writes(&self) {
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-        if self.write_tx.send(TrustWrite::Flush(ack_tx)).is_ok() {
-            // Bounded wait: a dead writer must not hang shutdown/tests.
-            let _ = ack_rx.recv_timeout(Duration::from_secs(30));
-        }
+        self.writer.submit(TrustWrite::Flush(ack_tx));
+        // Bounded wait: a dead writer must not hang shutdown/tests.
+        let _ = ack_rx.recv_timeout(Duration::from_secs(30));
     }
 
     fn persist(&self) {
@@ -172,11 +264,7 @@ impl TrustStore {
         // ordered writer thread so disk I/O doesn't block other
         // lock-holders (Q-10) while still guaranteeing write order.
         match serde_json::to_string_pretty(&self.records) {
-            Ok(json) => {
-                if let Err(e) = self.write_tx.send(TrustWrite::Snapshot(json)) {
-                    warn!("failed to queue trust state persistence: {e}");
-                }
-            }
+            Ok(json) => self.writer.submit(TrustWrite::Snapshot(json)),
             Err(e) => warn!("failed to serialize trust state: {e}"),
         }
     }
@@ -479,5 +567,86 @@ mod tests {
         let rec = store2.get(&k).unwrap();
         assert_eq!(rec.state, TrustState::AutoWithNotification);
         assert_eq!(rec.operator_approvals, 1);
+    }
+
+    /// Rapid back-to-back persists must land in submission order: the
+    /// on-disk snapshot is always the NEWEST state, never an older
+    /// delayed write resurrecting stale records (the original race).
+    #[test]
+    fn rapid_persists_converge_to_newest_state() {
+        let dir = tmp_dir();
+        {
+            let mut store = TrustStore::load(dir.path(), RemediationConfig::default());
+            let k = key("ordered-rule");
+            for i in 0..50 {
+                store.record_approval(&k, 100 + i);
+            }
+            store.flush_pending_writes();
+        }
+        let store2 = TrustStore::load(dir.path(), RemediationConfig::default());
+        let rec = store2.get(&key("ordered-rule")).unwrap();
+        assert_eq!(
+            rec.consecutive_successes, 50,
+            "every approved mutation must be reflected in the final snapshot"
+        );
+    }
+
+    /// More persists than the bounded queue capacity: coalescing keeps
+    /// only the newest pending snapshot, which is always the complete
+    /// current state — the final durable record must still be correct.
+    #[test]
+    fn queue_overflow_still_converges_to_latest_state() {
+        let dir = tmp_dir();
+        {
+            let mut store = TrustStore::load(dir.path(), RemediationConfig::default());
+            let k = key("overflow-rule");
+            for i in 0..(TRUST_WRITE_QUEUE_CAP * 4) {
+                store.record_approval(&k, 100 + i as i64);
+            }
+            store.flush_pending_writes();
+        }
+        let store2 = TrustStore::load(dir.path(), RemediationConfig::default());
+        let rec = store2.get(&key("overflow-rule")).unwrap();
+        assert_eq!(
+            rec.consecutive_successes,
+            (TRUST_WRITE_QUEUE_CAP * 4) as u32,
+            "coalesced queue must not lose the newest complete snapshot"
+        );
+    }
+
+    /// A failing writer (unwritable state file) must not hang
+    /// flush_pending_writes, panic, or corrupt in-memory state; the
+    /// bounded ack still returns and the store remains usable.
+    #[test]
+    fn failed_persistence_write_is_bounded_and_non_fatal() {
+        let dir = tmp_dir();
+        {
+            // Make the runtime dir unwritable so snapshot+rename fail.
+            let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                perms.set_mode(0o500);
+            }
+            std::fs::set_permissions(dir.path(), perms).unwrap();
+
+            let mut store = TrustStore::load(dir.path(), RemediationConfig::default());
+            let k = key("readonly-rule");
+            store.record_approval(&k, 1);
+            // Bounded: returns via the flush ack even though every
+            // snapshot write fails; must not hang for the timeout.
+            store.flush_pending_writes();
+            // In-memory state is unaffected by the durable failure.
+            assert_eq!(store.get(&k).unwrap().operator_approvals, 1);
+            drop(store);
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+                perms.set_mode(0o700);
+                std::fs::set_permissions(dir.path(), perms).unwrap();
+            }
+        }
     }
 }
