@@ -1446,6 +1446,9 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         // credential→collector binding authorization. ApiRegistry already
         // opened it (same DB the HTTP identity admin API writes to).
         let sqlite_for_api = registry_for_api.sqlite_store();
+        // M5.2B B3: remote collectors' authenticated submitted manifests
+        // are forwarded into the subscription verifier's plan stream.
+        let subscription_plan_tx_for_api = subscription_plan_tx.clone();
         // BN-021g G5: explicit runtime auth policy — "required" fails
         // closed; "development-compat" is an explicit local-dev opt-in.
         let auth_policy = cfg.runtime.auth_policy()?;
@@ -1489,7 +1492,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         )
                         .with_auth_policy(auth_policy)
                         .with_dev_open_credential_assignments(dev_open_cred_assignments)
-                        .with_session_registry(std::sync::Arc::clone(&session_registry)),
+                        .with_session_registry(std::sync::Arc::clone(&session_registry))
+                        .with_subscription_plan_tx(subscription_plan_tx_for_api),
                     )
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {

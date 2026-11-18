@@ -394,14 +394,19 @@ async fn start_lab(pki: &Pki, device: TargetConfig) -> Lab {
             let _ = BonsaiStore::write(graph_for_writer.as_ref(), u).await;
         }
     });
-    let manager = Arc::new(CollectorManager::new(
-        Arc::clone(&registry),
-        Arc::clone(&credentials),
-        vec![],
-    ));
     let sessions = Arc::new(SubscriptionSessionRegistry::new());
+    let manager = Arc::new(
+        CollectorManager::new(Arc::clone(&registry), Arc::clone(&credentials), vec![])
+            // Production wiring (server_startup): assignment withdrawal and
+            // collector disconnect retire session authority core-side.
+            .with_session_registry(Arc::clone(&sessions)),
+    );
     let sidecars = Arc::new(SidecarRegistry::new(vec![]));
 
+    // Seed the verifier plan exactly as server_startup does for core
+    // mode; the same channel also carries authenticated submitted
+    // manifests forwarded by the lifecycle RPC (M5.2B B3).
+    let (plan_tx, plan_rx) = mpsc::channel::<bonsai::subscription_status::SubscriptionPlan>(128);
     let svc = CoreService::new(
         Arc::clone(&graph),
         Arc::clone(&registry),
@@ -415,10 +420,9 @@ async fn start_lab(pki: &Pki, device: TargetConfig) -> Lab {
         None,
     )
     .with_auth_policy(AuthPolicy::Required)
-    .with_session_registry(Arc::clone(&sessions));
+    .with_session_registry(Arc::clone(&sessions))
+    .with_subscription_plan_tx(Some(plan_tx.clone()));
 
-    // Seed the verifier plan exactly as server_startup does for core mode.
-    let (plan_tx, plan_rx) = mpsc::channel::<bonsai::subscription_status::SubscriptionPlan>(128);
     let plan = bonsai::subscriber::planned_subscription_plan_for_target(&device);
     plan_tx.send(plan).await.unwrap();
     let verifier_store = SharedStore(Arc::clone(&graph));
@@ -909,4 +913,389 @@ async fn distributed_subscription_evidence_reaches_verified_coverage() {
     let _ = sub_handle.await;
     let _ = ghandle.await;
     let _ = collector_client;
+}
+
+/// M5.2B review B1 — trusted coverage provenance: two DISTINCT
+/// authenticated collector principals deliberately reuse Device A's
+/// exact target/plan_id/session_id. Collector B's observations —
+/// recognized AND semantically unclassified, before AND after
+/// synchronization, and after authority withdrawal — must never
+/// satisfy Collector A's subscription. Only A's own authenticated
+/// evidence establishes coverage.
+#[tokio::test]
+async fn foreign_collector_observations_never_satisfy_coverage() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let pki = make_pki();
+    let leaf_a = issue_leaf(&pki, "e2e-col-a", false);
+    let leaf_b = issue_leaf(&pki, "e2e-col-b", false);
+
+    let (gnmi_addr, streams, _requests, subscribe_calls, gsd, ghandle) = start_mock().await;
+    let device_addr = gnmi_addr
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+
+    let mut device = device_target(&device_addr);
+    device.collector_id = Some("e2e-col-a".to_string());
+    let lab = start_lab(&pki, device.clone()).await;
+    lab.registry
+        .add_device_with_audit(device.clone(), "test", "test_add")
+        .unwrap();
+    lab.registry
+        .assign_device_with_audit(
+            &device_addr,
+            Some("e2e-col-a".to_string()),
+            "test",
+            "test_assign",
+        )
+        .unwrap();
+    bind_collector(&lab.sqlite, "e2e-col-a", &leaf_a.fingerprint);
+    bind_collector(&lab.sqlite, "e2e-col-b", &leaf_b.fingerprint);
+
+    // Collector A registration → assignment authority.
+    let epoch = lab.manager.authority_epoch();
+    let (mut assign_rx, _gen) = lab
+        .manager
+        .register_collector("e2e-col-a".to_string(), PROTOCOL_VERSION_CURRENT, true)
+        .await
+        .unwrap();
+    let assigned_gen = assign_rx.recv().await.expect("initial sync").generation;
+    assert!(
+        lab.manager
+            .validate_session_authority("e2e-col-a", &device_addr, epoch, assigned_gen)
+    );
+
+    // Tee the lifecycle channel so the test observes the minted
+    // session identity, then forwards to the real RPC forwarder.
+    let recorded = Arc::new(std::sync::Mutex::new(Vec::<
+        bonsai::subscription_sessions::SessionLifecycleEvent,
+    >::new()));
+    let (sub_tx, mut sub_rx) =
+        mpsc::channel::<bonsai::subscription_sessions::SessionLifecycleEvent>(256);
+    let (lc_tx, lc_rx) = mpsc::channel::<bonsai::subscription_sessions::SessionLifecycleEvent>(256);
+    {
+        let recorded = Arc::clone(&recorded);
+        let fwd_tx = lc_tx.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = sub_rx.recv().await {
+                recorded.lock().unwrap().push(ev.clone());
+                if fwd_tx.send(ev).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    let tls_files = write_tls_files(&pki, &leaf_a, lab._dir.path());
+    let runtime_cfg = Arc::new(RuntimeConfig {
+        collector_id: "e2e-col-a".to_string(),
+        core_ingest_endpoint: format!("https://{}", lab.addr),
+        tls: tls_files,
+        ..Default::default()
+    });
+    let (fsd, fsrx) = watch::channel(false);
+    let lifecycle_fwd = tokio::spawn(run_lifecycle_forwarder(
+        Arc::clone(&runtime_cfg),
+        "e2e-col-a".to_string(),
+        lc_rx,
+        fsrx,
+    ));
+
+    // Collector B's authenticated clients — a DIFFERENT principal that
+    // will deliberately claim A's identifiers.
+    let client_b = connect_client(&pki, &leaf_b, lab.addr).await;
+    let send_foreign = {
+        let client = client_b.clone();
+        let device_addr = device_addr.clone();
+        move |plan_id: String, session_id: String, flattened: &str, gnmi: &str| {
+            let client = client.clone();
+            let device_addr = device_addr.clone();
+            let flattened = flattened.to_string();
+            let gnmi = gnmi.to_string();
+            async move {
+                let structured = bonsai::gnmi_path::parse_path("openconfig", &gnmi)
+                    .expect("structured path parses");
+                let update = bonsai::telemetry::TelemetryUpdate {
+                    target: device_addr,
+                    vendor: String::new(),
+                    hostname: String::new(),
+                    role: String::new(),
+                    site: String::new(),
+                    timestamp_ns: 1,
+                    path: flattened,
+                    value: serde_json::json!({"oper-status": "up"}),
+                    plan_id,
+                    session_id,
+                    source_protocol: "gnmi".to_string(),
+                    gnmi_path: vec![structured],
+                    is_delete: false,
+                    collector_id: String::new(),
+                };
+                let proto =
+                    telemetry_to_ingest_update("e2e-col-b", &update).expect("proto conversion");
+                let mut c = client;
+                let _ = c
+                    .telemetry_ingest(Request::new(tokio_stream::iter(vec![proto])))
+                    .await;
+            }
+        }
+    };
+
+    // Collector A's bus → TelemetryIngest forwarder (same as prod).
+    let collector_bus = InProcessBus::new(256);
+    let mut ingest_rx = collector_bus.subscribe();
+    let ingest_client = connect_client(&pki, &leaf_a, lab.addr).await;
+    let (isd, mut is_rx) = watch::channel(false);
+    let ingest_fwd = tokio::spawn(async move {
+        let client = ingest_client;
+        loop {
+            tokio::select! {
+                _ = is_rx.changed() => break,
+                update = ingest_rx.recv() => {
+                    let Ok(update) = update else { break };
+                    let proto = match telemetry_to_ingest_update("e2e-col-a", &update) {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+                    let mut c = client.clone();
+                    tokio::spawn(async move {
+                        let _ = c
+                            .telemetry_ingest(Request::new(tokio_stream::iter(vec![proto])))
+                            .await;
+                    });
+                }
+            }
+        }
+    });
+
+    // Real subscriber for Collector A (explicit plan, 3 paths).
+    let lifecycle = LifecycleHandle {
+        tx: sub_tx,
+        authority_epoch: epoch,
+        assignment_generation: assigned_gen,
+    };
+    let subscriber = GnmiSubscriber::new(
+        device_addr.clone(),
+        None,
+        None,
+        None,
+        Some("e2e-dut".to_string()),
+        None,
+        Some("dc-e2e".to_string()),
+        bonsai::gnmi_security::ConnSecurity::plaintext(true),
+        Arc::clone(&collector_bus),
+        None,
+        None,
+        device.selected_paths.clone(),
+        AcquisitionMode::Explicit,
+        Some(lifecycle),
+    );
+    let (ssd, mut ssrx) = watch::channel(false);
+    let sub_handle = tokio::spawn(async move { subscriber.subscribe_telemetry(&mut ssrx).await });
+    let _ = ssd;
+
+    assert!(
+        wait_for(
+            || subscribe_calls.load(Ordering::SeqCst) >= 1,
+            Duration::from_secs(10),
+            "subscribe rpc"
+        )
+        .await
+    );
+
+    // Wait for the `submitted` transition to learn the minted session
+    // identity, then fire Collector B's PRE-SYNCHRONIZATION foreign
+    // observations — before any SyncResponse has been sent.
+    let (plan_id, session_id) = {
+        let mut found = None;
+        for _ in 0..100 {
+            let evs = recorded.lock().unwrap();
+            if let Some(ev) = evs.iter().find(|e| e.state == "submitted") {
+                found = Some((ev.plan_id.clone(), ev.session_id.clone()));
+                break;
+            }
+            drop(evs);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        found.expect("submitted lifecycle event recorded")
+    };
+
+    let path_b_expectation = "interfaces/interface[name=Ethernet1/2]/state/oper-status";
+    // (1) Unclassified flattened path + structured path matching an
+    // expectation — the dangerous case: Ignored authority skips
+    // assigned-device authorization, so only the collector stamp fences it.
+    send_foreign(
+        plan_id.clone(),
+        session_id.clone(),
+        "unclassified/foreign-leaf",
+        path_b_expectation,
+    )
+    .await;
+    // (2) Recognized flattened path (interface oper-status classifies as
+    // device state) — denied even earlier at observation authorization.
+    send_foreign(
+        plan_id.clone(),
+        session_id.clone(),
+        "interfaces/interface[name=Ethernet1/2]/state/oper-status",
+        path_b_expectation,
+    )
+    .await;
+
+    // Now complete A's initial sync and deliver A's own legitimate
+    // early evidence for path A (buffered → released post-sync).
+    {
+        let guard = streams.lock().await;
+        let tx = guard.last().expect("subscribe stream").clone();
+        tx.send(Ok(update_notification(&leaf_path("Ethernet1/1"), 42)))
+            .await
+            .unwrap();
+        tx.send(Ok(sync_notification())).await.unwrap();
+    }
+
+    assert!(
+        wait_for(
+            || {
+                lab.sessions
+                    .current_session(&device_addr)
+                    .is_some_and(|(p, s)| !p.is_empty() && !s.is_empty())
+            },
+            Duration::from_secs(10),
+            "session registered"
+        )
+        .await,
+        "lifecycle registration never reached core registry"
+    );
+
+    // Collector B POST-SYNCHRONIZATION foreign observations against
+    // path B and path C — neither has any legitimate evidence.
+    send_foreign(
+        plan_id.clone(),
+        session_id.clone(),
+        "unclassified/foreign-leaf-2",
+        path_b_expectation,
+    )
+    .await;
+    send_foreign(
+        plan_id.clone(),
+        session_id.clone(),
+        "interfaces/interface[name=Ethernet1/3]/state/oper-status",
+        "interfaces/interface[name=Ethernet1/3]/state/oper-status",
+    )
+    .await;
+
+    let path_a = "interfaces/interface[name=Ethernet1/1]/state/counters";
+    let path_b = path_b_expectation;
+    let path_c = "interfaces/interface[name=Ethernet1/3]/state/oper-status";
+
+    // Positive control: A's own buffered evidence yields observed for
+    // path A ONLY.
+    let mut last_rows = Vec::new();
+    let mut a_observed = false;
+    for _ in 0..100 {
+        last_rows = query_subscription_statuses(&lab.graph).await;
+        if last_rows
+            .iter()
+            .any(|r| r.0 == device_addr && r.1 == path_a && r.4 == "observed")
+        {
+            a_observed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        a_observed,
+        "legitimate path A coverage missing: {last_rows:?}"
+    );
+    // Foreign evidence must NEVER satisfy B or C — give the verifier
+    // several sweep intervals to (incorrectly) do so before asserting.
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    last_rows = query_subscription_statuses(&lab.graph).await;
+    assert!(
+        last_rows
+            .iter()
+            .all(|r| !(r.0 == device_addr && r.1 == path_b && r.4 == "observed")),
+        "foreign collector satisfied path B: {last_rows:?}"
+    );
+    assert!(
+        last_rows
+            .iter()
+            .all(|r| !(r.0 == device_addr && r.1 == path_c && r.4 == "observed")),
+        "foreign collector satisfied path C: {last_rows:?}"
+    );
+
+    // Authority withdrawal: core-side removal retires the session
+    // immediately; delayed evidence under the old identity must not
+    // re-establish coverage, and observed history must reconcile to
+    // stale rather than remain "observed".
+    lab.registry
+        .assign_device_with_audit(&device_addr, None, "test", "unassign")
+        .unwrap();
+    lab.manager.resync_collector("e2e-col-a").await;
+    assert!(
+        wait_for(
+            || lab.sessions.current_session(&device_addr).is_none(),
+            Duration::from_secs(10),
+            "session retired"
+        )
+        .await,
+        "withdrawal did not retire the session"
+    );
+
+    // Delayed lifecycle evidence stamped with the previously-valid
+    // generation must be rejected at the authority gate — the same
+    // check the authenticated RPC performs before registry mutation.
+    assert!(
+        !lab.manager
+            .validate_session_authority("e2e-col-a", &device_addr, epoch, assigned_gen),
+        "withdrawn generation still validates as current authority"
+    );
+    let stale_ev = bonsai::subscription_sessions::SessionLifecycleEvent {
+        collector_id: "e2e-col-a".to_string(),
+        target: device_addr.clone(),
+        plan_id: plan_id.clone(),
+        session_id: session_id.clone(),
+        state: "synchronized".to_string(),
+        transition_seq: 90,
+        authority_epoch: epoch,
+        assignment_generation: assigned_gen,
+        occurred_at_ns: 0,
+        detail: String::new(),
+        submitted_paths: Vec::new(),
+        acquisition: String::new(),
+    };
+    let outcome = lab.sessions.apply(&stale_ev, true);
+    assert!(
+        !matches!(
+            outcome,
+            bonsai::subscription_sessions::ApplyOutcome::Applied
+        ),
+        "delayed post-withdrawal lifecycle event was applied: {outcome:?}"
+    );
+
+    // Even the LEGITIMATE collector's delayed telemetry under the
+    // retired session cannot restore coverage.
+    {
+        let guard = streams.lock().await;
+        let tx = guard.last().expect("subscribe stream").clone();
+        tx.send(Ok(update_notification(&leaf_path("Ethernet1/1"), 43)))
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    last_rows = query_subscription_statuses(&lab.graph).await;
+    assert!(
+        last_rows
+            .iter()
+            .all(|r| !(r.0 == device_addr && r.1 == path_a && r.4 == "observed")),
+        "withdrawn session retained observed coverage: {last_rows:?}"
+    );
+
+    fsd.send(true).unwrap();
+    isd.send(true).unwrap();
+    ssd.send(true).unwrap();
+    gsd.send(true).unwrap();
+    let _ = lifecycle_fwd.await;
+    let _ = ingest_fwd.await;
+    let _ = sub_handle.await;
+    let _ = ghandle.await;
+    let _ = client_b;
 }

@@ -40,6 +40,14 @@ pub struct TelemetryUpdate {
     /// value; `value` is Null. Only updates from the current
     /// authorized session may invalidate subscription coverage.
     pub is_delete: bool,
+    /// Authenticated collector identity that DELIVERED this observation,
+    /// stamped by the core ingest boundary from the transport-verified
+    /// collector grant — never decoded from the telemetry payload
+    /// (M5.2B review B1). Empty for trusted in-process producers and
+    /// unauthenticated development-compat ingestion; a non-empty value
+    /// must equal the current session's owning collector for the
+    /// observation to satisfy subscription coverage.
+    pub collector_id: String,
 }
 
 /// Classified form of a TelemetryUpdate after path parsing.

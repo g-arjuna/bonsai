@@ -131,6 +131,36 @@ pub fn observation_covers(expectation: &Path, observation: &Path) -> bool {
         })
 }
 
+/// Conservative structured DELETE coverage (M5.2B review B9): does a
+/// `Notification.delete` for `deletion` invalidate `expectation`?
+///
+/// A delete is evidence of absence, so matching is deliberately
+/// stricter than [`observation_covers`]:
+///
+/// - The deleted path must be the expectation path itself or a proper
+///   ANCESTOR of it — deleting a parent list instance or container
+///   invalidates every descendant expectation.
+/// - Every element of the deleted prefix must match the expectation
+///   element NAME- and KEY-EXACTLY. Expectation wildcards (`name=*`,
+///   unkeyed elements) and partially-keyed expectations are NOT covered
+///   by a single concrete delete: one deleted instance never implies
+///   exhaustive absence across a wildcard/subtree expectation.
+/// - A delete deeper than the expectation (one instance under a broader
+///   expectation) never invalidates the expectation.
+pub fn delete_covers(expectation: &Path, deletion: &Path) -> bool {
+    if !expectation.origin.is_empty() && expectation.origin != deletion.origin {
+        return false;
+    }
+    if deletion.elem.len() > expectation.elem.len() {
+        return false;
+    }
+    expectation
+        .elem
+        .iter()
+        .zip(deletion.elem.iter())
+        .all(|(e, d)| e.name == d.name && e.key == d.key)
+}
+
 /// Split on '/' separators outside '[' ... ']' key expressions. An unclosed
 /// '[' keeps the remainder inside the current segment so the segment parser
 /// rejects it as malformed. A backslash escapes the next character.

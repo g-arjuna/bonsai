@@ -179,6 +179,19 @@ impl TelemetryDebouncer {
 
         let classified = update.classify();
 
+        // M5.2B review B8: gNMI observations carrying subscription
+        // session provenance are coverage evidence — debounce keys bind
+        // only (target, path[, if_name]), not the session, so an
+        // unchanged ON_CHANGE value across a reconnect would be dropped
+        // and the new session could never establish coverage. These
+        // updates bypass debounce entirely and reach the verifier (and
+        // graph writer) raw; overload is still bounded downstream by
+        // the event-bus router, whose rejection aborts the ingest
+        // stream explicitly rather than silently dropping evidence.
+        if update.source_protocol == "gnmi" && !update.session_id.is_empty() {
+            return false;
+        }
+
         // Value-aware debounce: drop non-counter updates whose value hasn't changed within the window.
         // State changes (different value) always pass through immediately.
         match &classified {
@@ -313,6 +326,7 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
             source_protocol: update.source_protocol,
             gnmi_path: Vec::new(),
             is_delete: false,
+            collector_id: String::new(),
             target: update.target,
             vendor: update.vendor,
             hostname: update.hostname,
@@ -334,6 +348,7 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
         source_protocol: update.source_protocol,
         gnmi_path,
         is_delete: update.is_delete,
+        collector_id: String::new(),
         target: update.target,
         vendor: update.vendor,
         hostname: update.hostname,
@@ -1351,6 +1366,7 @@ mod tests {
             source_protocol: String::new(),
             gnmi_path: Vec::new(),
             is_delete: false,
+            collector_id: String::new(),
             target: "10.0.0.1:57400".to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "srl1".to_string(),
@@ -1388,6 +1404,7 @@ mod tests {
                 source_protocol: String::new(),
                 gnmi_path: Vec::new(),
                 is_delete: false,
+                collector_id: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1435,6 +1452,7 @@ mod tests {
                 source_protocol: String::new(),
                 gnmi_path: Vec::new(),
                 is_delete: false,
+                collector_id: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1568,6 +1586,7 @@ mod tests {
                 source_protocol: String::new(),
                 gnmi_path: Vec::new(),
                 is_delete: false,
+                collector_id: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -2385,6 +2404,18 @@ fn lifecycle_event_to_proto(
         occurred_at_ns: ev.occurred_at_ns,
         detail: ev.detail.clone(),
         protocol_version: crate::api::PROTOCOL_VERSION,
+        submitted_paths: ev
+            .submitted_paths
+            .iter()
+            .map(|e| crate::api::pb::SubscriptionPath {
+                path: e.path.clone(),
+                origin: e.origin.clone(),
+                mode: e.mode.clone(),
+                sample_interval_ns: e.sample_interval_ns,
+                ..Default::default()
+            })
+            .collect(),
+        acquisition: ev.acquisition.clone(),
     }
 }
 
@@ -2631,6 +2662,108 @@ pub async fn run_collector_manager(
 /// lifecycle delivery across stream reconnects (M5.2B B3).
 const LIFECYCLE_RESEND_INDEX_CAP: usize = 4096;
 
+/// Bounded latest-state resend index for the lifecycle forwarder
+/// (M5.2B review B10). Retains the newest event per
+/// (target, session_id); eviction is true LRU by last-note order, so a
+/// frequently updated live session is never evicted in favor of a stale
+/// terminal record — the old FIFO-by-first-seen order could drop live
+/// sessions under churn. `drain` replays in note order; per-session
+/// `transition_seq` remains the authoritative ordering core-side, so
+/// cross-session replay order carries no authority semantics.
+#[derive(Default)]
+struct LifecycleResendIndex {
+    entries: HashMap<(String, String), (u64, SessionLifecycleEvent)>,
+    clock: u64,
+}
+
+impl LifecycleResendIndex {
+    fn note(&mut self, ev: &SessionLifecycleEvent) {
+        self.clock += 1;
+        let key = (ev.target.clone(), ev.session_id.clone());
+        if !self.entries.contains_key(&key) && self.entries.len() >= LIFECYCLE_RESEND_INDEX_CAP {
+            if let Some(victim) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (seq, _))| *seq)
+                .map(|(k, _)| k.clone())
+            {
+                self.entries.remove(&victim);
+                metrics::counter!("bonsai_lifecycle_resend_evicted_total").increment(1);
+            }
+        }
+        self.entries.insert(key, (self.clock, ev.clone()));
+    }
+
+    /// Newest event per session, oldest-noted first.
+    fn drain(&self) -> Vec<SessionLifecycleEvent> {
+        let mut ordered: Vec<&(u64, SessionLifecycleEvent)> = self.entries.values().collect();
+        ordered.sort_by_key(|(seq, _)| *seq);
+        ordered.into_iter().map(|(_, ev)| ev.clone()).collect()
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_resend_tests {
+    use super::{LIFECYCLE_RESEND_INDEX_CAP, LifecycleResendIndex};
+    use crate::subscription_sessions::SessionLifecycleEvent;
+
+    fn ev(session_id: &str, seq: u64) -> SessionLifecycleEvent {
+        SessionLifecycleEvent {
+            collector_id: "c1".to_string(),
+            target: "dut:57400".to_string(),
+            plan_id: "plan-1".to_string(),
+            session_id: session_id.to_string(),
+            state: "synchronized".to_string(),
+            transition_seq: seq,
+            authority_epoch: 1,
+            assignment_generation: 1,
+            occurred_at_ns: 0,
+            detail: String::new(),
+            submitted_paths: Vec::new(),
+            acquisition: String::new(),
+        }
+    }
+
+    #[test]
+    fn resend_index_keeps_latest_per_session_and_drains_in_note_order() {
+        let mut idx = LifecycleResendIndex::default();
+        idx.note(&ev("s1", 1));
+        idx.note(&ev("s2", 1));
+        // Newer transition for s1 replaces the older record.
+        idx.note(&ev("s1", 2));
+        let drained = idx.drain();
+        assert_eq!(drained.len(), 2);
+        let s1 = drained.iter().find(|e| e.session_id == "s1").unwrap();
+        assert_eq!(s1.transition_seq, 2, "latest per session wins");
+    }
+
+    #[test]
+    fn resend_index_eviction_is_lru_not_fifo() {
+        let mut idx = LifecycleResendIndex::default();
+        // Fill the index, then refresh the FIRST session so it becomes
+        // most-recently-noted; churn must evict a stale session instead.
+        idx.note(&ev("keep", 1));
+        for i in 0..LIFECYCLE_RESEND_INDEX_CAP {
+            idx.note(&ev(&format!("flood-{i}"), 1));
+        }
+        // 'keep' was noted first and would be the FIFO victim; refresh it.
+        idx.note(&ev("keep", 2));
+        // One more distinct session forces exactly one eviction.
+        idx.note(&ev("trigger", 1));
+        let drained = idx.drain();
+        assert!(
+            drained
+                .iter()
+                .any(|e| e.session_id == "keep" && e.transition_seq == 2)
+        );
+        assert!(drained.iter().any(|e| e.session_id == "trigger"));
+        assert_eq!(drained.len(), LIFECYCLE_RESEND_INDEX_CAP);
+        // The evicted victim is the least-recently-noted flood entry,
+        // never the refreshed live session.
+        assert!(!drained.iter().any(|e| e.session_id == "flood-0"));
+    }
+}
+
 #[doc(hidden)]
 pub async fn run_lifecycle_forwarder(
     cfg: Arc<RuntimeConfig>,
@@ -2645,30 +2778,11 @@ pub async fn run_lifecycle_forwarder(
     // idempotent core-side — already-applied sequences dedup, lost
     // terminal states are restored. Events still queued in a dead
     // stream's request channel are covered by this resend.
-    let mut latest: HashMap<(String, String), SessionLifecycleEvent> = HashMap::new();
-    let mut latest_order: std::collections::VecDeque<(String, String)> =
-        std::collections::VecDeque::new();
+    let mut resend_index = LifecycleResendIndex::default();
     // Resend backlog drained ahead of fresh rx events on reconnect so
     // older evidence never overtakes newer.
     let mut resend: std::collections::VecDeque<SessionLifecycleEvent> =
         std::collections::VecDeque::new();
-
-    fn note_latest(
-        latest: &mut HashMap<(String, String), SessionLifecycleEvent>,
-        order: &mut std::collections::VecDeque<(String, String)>,
-        ev: &SessionLifecycleEvent,
-    ) {
-        let key = (ev.target.clone(), ev.session_id.clone());
-        if !latest.contains_key(&key) {
-            if latest.len() >= LIFECYCLE_RESEND_INDEX_CAP {
-                if let Some(oldest) = order.pop_front() {
-                    latest.remove(&oldest);
-                }
-            }
-            order.push_back(key.clone());
-        }
-        latest.insert(key, ev.clone());
-    }
 
     'outer: loop {
         // Next outbound event: resend backlog first (older evidence),
@@ -2685,7 +2799,7 @@ pub async fn run_lifecycle_forwarder(
         let Some(first) = first else {
             return Ok(()); // all producers gone
         };
-        note_latest(&mut latest, &mut latest_order, &first);
+        resend_index.note(&first);
 
         let client = loop {
             match create_ingest_client(&cfg).await {
@@ -2765,7 +2879,7 @@ pub async fn run_lifecycle_forwarder(
                         // Core dedups by transition_seq, so this is
                         // idempotent for already-applied states and
                         // restores any lost terminal transition.
-                        resend.extend(latest.values().cloned());
+                        resend.extend(resend_index.drain());
                         continue 'outer;
                     }
                     ev = rx.recv() => break ev,
@@ -2773,7 +2887,7 @@ pub async fn run_lifecycle_forwarder(
             };
             match next {
                 Some(ev) => {
-                    note_latest(&mut latest, &mut latest_order, &ev);
+                    resend_index.note(&ev);
                     let proto = lifecycle_event_to_proto(&collector_id, &ev);
                     let sent = tokio::select! {
                         _ = shutdown.changed() => return Ok(()),
@@ -2784,7 +2898,7 @@ pub async fn run_lifecycle_forwarder(
                                 _ = shutdown.changed() => return Ok(()),
                                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                             }
-                            resend.extend(latest.values().cloned());
+                            resend.extend(resend_index.drain());
                             continue 'outer;
                         }
                         r = req_tx.send(proto) => r,

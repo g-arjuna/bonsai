@@ -253,6 +253,7 @@ fn publish_event(
         source_protocol: "bmp".to_string(),
         gnmi_path: Vec::new(),
         is_delete: false,
+        collector_id: String::new(),
         target: resolved.address,
         vendor: resolved.vendor,
         hostname: resolved.hostname,

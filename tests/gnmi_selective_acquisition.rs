@@ -958,6 +958,8 @@ async fn stale_session_observation_never_projects_coverage() {
                     assignment_generation: 0,
                     occurred_at_ns: 0,
                     detail: String::new(),
+                    submitted_paths: Vec::new(),
+                    acquisition: String::new(),
                 },
                 true,
             );
@@ -976,6 +978,7 @@ async fn stale_session_observation_never_projects_coverage() {
         source_protocol: "gnmi".to_string(),
         gnmi_path: vec![covering_path.clone()],
         is_delete: false,
+        collector_id: String::new(),
         target: target.clone(),
         vendor: String::new(),
         hostname: String::new(),
@@ -1002,6 +1005,7 @@ async fn stale_session_observation_never_projects_coverage() {
         source_protocol: "gnmi".to_string(),
         gnmi_path: vec![covering_path],
         is_delete: false,
+        collector_id: String::new(),
         target: target.clone(),
         vendor: String::new(),
         hostname: String::new(),
@@ -1108,6 +1112,8 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
                     assignment_generation: 0,
                     occurred_at_ns: 0,
                     detail: String::new(),
+                    submitted_paths: Vec::new(),
+                    acquisition: String::new(),
                 },
                 true,
             );
@@ -1124,6 +1130,7 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
         source_protocol: "gnmi".to_string(),
         gnmi_path: covering.clone(),
         is_delete,
+        collector_id: String::new(),
         target: target.clone(),
         vendor: String::new(),
         hostname: String::new(),
@@ -1211,6 +1218,8 @@ fn lifecycle_ev(
         assignment_generation: 0,
         occurred_at_ns: 0,
         detail: String::new(),
+        submitted_paths: Vec::new(),
+        acquisition: String::new(),
     }
 }
 
@@ -1270,6 +1279,7 @@ fn gnmi_obs(
             .map(|p| vec![p])
             .unwrap_or_default(),
         is_delete,
+        collector_id: String::new(),
         target: target.to_string(),
         vendor: String::new(),
         hostname: String::new(),

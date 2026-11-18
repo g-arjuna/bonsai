@@ -15,7 +15,7 @@ use bonsai::config::OtlpConfig;
 use bonsai::event_bus::InProcessBus;
 use bonsai::streaming::otlp::run_otlp_receiver;
 use bonsai::telemetry::TelemetryUpdate;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
@@ -344,8 +344,9 @@ fn otlp_span_update(source_key: &str, service: &str, peer: &str, extra: Value) -
         plan_id: String::new(),
         session_id: String::new(),
         source_protocol: String::new(),
-            gnmi_path: Vec::new(),
-            is_delete: false,
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: source_key.to_string(),
         vendor: String::new(),
         hostname: String::new(),
@@ -392,8 +393,9 @@ fn otlp_metric_update(
         plan_id: String::new(),
         session_id: String::new(),
         source_protocol: String::new(),
-            gnmi_path: Vec::new(),
-            is_delete: false,
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: source_key.to_string(),
         vendor: String::new(),
         hostname: String::new(),
@@ -734,9 +736,10 @@ async fn live_ingestion_produces_provisional_evidence() {
             .expect("event timeout")
             .expect("recv");
         assert_eq!(ev.source_type, "otlp");
-        assert!(ev
-            .device_address
-            .starts_with("otlpsrc/live-site/http/127.0.0.1:"));
+        assert!(
+            ev.device_address
+                .starts_with("otlpsrc/live-site/http/127.0.0.1:")
+        );
         match ev.event_type.as_str() {
             "otlp_span_event" => saw_span = true,
             "otlp_metric_event" => saw_metric = true,
@@ -817,7 +820,12 @@ async fn invalid_metric_values_are_rejected_not_zeroed() {
         .await;
     assert_eq!(status, 200);
     assert_eq!(body["partialSuccess"]["rejectedDataPoints"], 1);
-    assert_no_update(&mut rx, "streaming/otlp/metrics", Duration::from_millis(300)).await;
+    assert_no_update(
+        &mut rx,
+        "streaming/otlp/metrics",
+        Duration::from_millis(300),
+    )
+    .await;
 
     // Non-numeric AnyValue kind → rejected.
     let (status, body) = lab
@@ -852,20 +860,14 @@ async fn invalid_metric_values_are_rejected_not_zeroed() {
     assert_eq!(u.value["value"], 0.0);
 
     // Canonical OTLP int64 string encoding → accepted as 42.0.
-    lab.post(
-        "/v1/metrics",
-        &gauge_body(dp_with(json!({"asInt": "42"}))),
-    )
-    .await;
+    lab.post("/v1/metrics", &gauge_body(dp_with(json!({"asInt": "42"}))))
+        .await;
     let u = next_update(&mut rx, "streaming/otlp/metrics").await;
     assert_eq!(u.value["value"], 42.0);
 
     // Bare JSON integer asInt → accepted.
-    lab.post(
-        "/v1/metrics",
-        &gauge_body(dp_with(json!({"asInt": 7}))),
-    )
-    .await;
+    lab.post("/v1/metrics", &gauge_body(dp_with(json!({"asInt": 7}))))
+        .await;
     let u = next_update(&mut rx, "streaming/otlp/metrics").await;
     assert_eq!(u.value["value"], 7.0);
 
@@ -985,9 +987,12 @@ async fn malformed_structures_are_not_acknowledged() {
         400
     );
     assert_eq!(
-        lab.post_json("/v1/traces", &json!({"resourceSpans": [{"scopeSpans": "x"}]}))
-            .await
-            .0,
+        lab.post_json(
+            "/v1/traces",
+            &json!({"resourceSpans": [{"scopeSpans": "x"}]})
+        )
+        .await
+        .0,
         400
     );
     assert_eq!(lab.post_json("/v1/traces", &json!([])).await.0, 400);
@@ -1000,7 +1005,8 @@ async fn malformed_structures_are_not_acknowledged() {
         200
     );
     assert_eq!(
-        lab.post("/v1/metrics", &json!({"resourceMetrics": []})).await,
+        lab.post("/v1/metrics", &json!({"resourceMetrics": []}))
+            .await,
         200
     );
     // A resource group with no scopeSpans is an accepted no-op.
@@ -1105,27 +1111,49 @@ async fn candidate_probe_reports_ambiguity() {
             .unwrap();
         // peer.address matching BOTH a Device and a HostEndpoint →
         // multi-kind match set > 1 → ambiguous, not an arbitrary pick.
-        conn.query("CREATE (d4:Device {address: '10.3.0.1', hostname: 'multi-kind', site: 'dc-a'})")
-            .unwrap();
+        conn.query(
+            "CREATE (d4:Device {address: '10.3.0.1', hostname: 'multi-kind', site: 'dc-a'})",
+        )
+        .unwrap();
         conn.query("CREATE (h:HostEndpoint {id: '10.3.0.1', ip: '10.3.0.1', kind: 'server', site_id: 'dc-a'})")
             .unwrap();
     }
 
     let key = "otlpsrc/amb/http/127.0.0.1:4000";
     store
-        .write(otlp_span_update(key, "svc", "", json!({"host_name": "dup-host"})))
+        .write(otlp_span_update(
+            key,
+            "svc",
+            "",
+            json!({"host_name": "dup-host"}),
+        ))
         .await
         .unwrap();
     store
-        .write(otlp_span_update(key, "svc", "10.3.0.1", json!({"host_name": ""})))
+        .write(otlp_span_update(
+            key,
+            "svc",
+            "10.3.0.1",
+            json!({"host_name": ""}),
+        ))
         .await
         .unwrap();
     store
-        .write(otlp_span_update(key, "svc", "", json!({"host_name": "uniq-host"})))
+        .write(otlp_span_update(
+            key,
+            "svc",
+            "",
+            json!({"host_name": "uniq-host"}),
+        ))
         .await
         .unwrap();
     store
-        .write(otlp_span_update(key, "svc", "192.0.2.1", json!({"host_name": "no-such"})))
+        .write(otlp_span_update(
+            key,
+            "svc",
+            "192.0.2.1",
+            json!({"host_name": "no-such"}),
+        ))
         .await
         .unwrap();
 

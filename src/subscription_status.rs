@@ -74,6 +74,12 @@ struct PendingObservation {
     plan_id: String,
     session_id: String,
     source_protocol: String,
+    /// Authenticated collector stamp applied at the core ingest
+    /// boundary (empty for local/dev-compat). Retained so replayed
+    /// evidence is fenced by the SAME collector binding as live
+    //  evidence — a foreign collector's buffered observation can never
+    //  be released under another collector's session.
+    collector_id: String,
     gnmi_path: Vec<crate::proto::gnmi::Path>,
     is_delete: bool,
     timestamp_ns: i64,
@@ -95,6 +101,7 @@ impl PendingObservation {
             + update.plan_id.len()
             + update.session_id.len()
             + update.source_protocol.len()
+            + update.collector_id.len()
             + 64;
         for path in &update.gnmi_path {
             n += path.origin.len() + 16;
@@ -133,6 +140,7 @@ impl PendingObservation {
             plan_id: update.plan_id.clone(),
             session_id: update.session_id.clone(),
             source_protocol: update.source_protocol.clone(),
+            collector_id: update.collector_id.clone(),
             gnmi_path: update.gnmi_path.clone(),
             is_delete: update.is_delete,
             timestamp_ns: update.timestamp_ns,
@@ -160,6 +168,7 @@ impl PendingObservation {
                 plan_id: self.plan_id,
                 session_id: self.session_id,
                 source_protocol: self.source_protocol,
+                collector_id: self.collector_id,
                 gnmi_path: self.gnmi_path,
                 is_delete: self.is_delete,
             }),
@@ -310,6 +319,10 @@ impl PendingObservations {
                 metrics::counter!("bonsai_subscription_pending_terminal_total").increment(1);
                 return false;
             }
+            // Release gate: the exact (plan_id, session_id) must be
+            // current. Per-observation collector binding is enforced
+            // again inside observe_update — buffered foreign-collector
+            // evidence can be released but never authorized.
             if sessions
                 .current_session(&key.0)
                 .is_some_and(|(plan_id, session_id)| plan_id == key.1 && session_id == key.2)
@@ -379,13 +392,34 @@ pub struct SubscriptionPathExpectation {
 #[derive(Clone, Debug)]
 struct TrackedPath {
     expectation: SubscriptionPathExpectation,
+    /// Plan identity that registered this expectation.
+    plan_id: String,
+    /// Device-facing session expected to produce coverage for this
+    /// path. Empty for desired/predicted plans that carry no session
+    /// binding yet — such paths are covered by whatever current
+    /// session the registry authorizes for the plan.
+    session_id: String,
+    /// Desired logical status. Transitions commit here immediately;
+    /// `durable_status` records what the store has actually persisted
+    /// so failed writes are retried until they land (M5.2B review B7).
     status: String,
+    /// Last status confirmed written to the graph store ("" = nothing
+    /// persisted yet). The northbound reads the store, so presentation
+    /// stays truthful while `status` reconciles.
+    durable_status: String,
     first_observed_at_ns: i64,
     last_observed_at_ns: i64,
     deadline: Instant,
     /// Monotonic timestamp of the most recent covering observation —
     /// drives SAMPLE freshness independent of wall-clock ns.
     last_seen: Instant,
+    /// Receipt instant of the newest APPLIED covering observation.
+    /// `None` until the first covering observation lands — pre-sync
+    /// buffered evidence is legitimately older than registration and
+    /// must still apply. Once set, earlier-received evidence can never
+    /// overwrite newer authoritative state — the buffered→live
+    /// ordering fence (M5.2B review B6).
+    last_evidence_at: Option<Instant>,
     /// How long an observed SAMPLE path may stay quiet before it is
     /// reported stale. `Duration::MAX` for ON_CHANGE: a quiet ON_CHANGE
     /// subscription remains valid (M5.2B B3).
@@ -440,6 +474,19 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
     // are held under (target, plan_id, session_id) and released only
     // when that exact session becomes current — see PendingObservations.
     let mut pending = PendingObservations::default();
+    // Bounded durable-retry queue (M5.2B review B7): status writes that
+    // failed at transition time are retained here and retried each
+    // sweep. Entries are keyed by status identity so a re-registered
+    // path drops its obsolete superseded write — a stale retry can
+    // never overwrite newer session state.
+    let mut pending_writes: VecDeque<SubscriptionStatusWrite> = VecDeque::new();
+    // Persisted rows describe the PREVIOUS boot's sessions: nothing is
+    // current until new verified evidence arrives, so historical
+    // observed/deleted/pending rows are expired to `stale` up front
+    // (raw graph state and the northbound read the same rows).
+    if let Err(error) = store.expire_subscription_statuses_on_boot().await {
+        warn!(%error, "failed to expire persisted subscription statuses on boot");
+    }
     // target -> last registered plan identity INCLUDING lifecycle
     // revision (state + detail). plan_id alone is the stable desired/
     // effective identity; a changed failure outcome under the same
@@ -469,7 +516,8 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
                     continue;
                 }
                 registered_plans.insert(plan.target.clone(), key);
-                register_plan(&store, &mut tracked, plan, freshness_floor).await;
+                register_plan(&store, &mut tracked, &mut pending_writes, plan, freshness_floor)
+                    .await;
             }
             event = telemetry_rx.recv() => {
                 match event {
@@ -479,6 +527,7 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
                             &mut tracked,
                             &sessions,
                             &mut pending,
+                            &mut pending_writes,
                             &update,
                             Instant::now(),
                         )
@@ -490,6 +539,7 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
                                 &mut tracked,
                                 &sessions,
                                 &mut pending,
+                                &mut pending_writes,
                                 &update,
                                 Instant::now(),
                             )
@@ -502,7 +552,8 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
             _ = interval.tick() => {
                 // Release buffered early-sync observations whose session
                 // has since become current, expire stale buckets, then
-                // run the silence/freshness sweeps.
+                // run the silence/freshness/authority sweeps and retry
+                // failed durable writes.
                 for key in pending.sweep(&sessions) {
                     for (update, received_at) in pending.take(&key) {
                         observe_update(
@@ -510,21 +561,56 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
                             &mut tracked,
                             &sessions,
                             &mut pending,
+                            &mut pending_writes,
                             &update,
                             received_at,
                         )
                         .await;
                     }
                 }
-                mark_silent_paths(&store, &mut tracked).await;
+                reconcile_statuses(&store, &sessions, &mut tracked, &mut pending_writes).await;
             }
         }
+    }
+}
+
+/// Identity of a persisted status row — mirrors the store's
+/// `subscription_status_id` so durable retries can be deduplicated and
+/// obsolete entries dropped when a path re-registers.
+fn status_write_id(status: &SubscriptionStatusWrite) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        status.device_address, status.origin, status.mode, status.sample_interval_ns, status.path
+    )
+}
+
+/// Queue a failed durable write for bounded retry. Dedup by row
+/// identity: the newest desired write for a row replaces any older
+/// queued one, so retries always converge to current state and an
+/// obsolete superseded write can never overwrite a re-registered path
+/// (its queued entry is dropped at re-registration).
+async fn queue_or_persist<S: BonsaiStore>(
+    store: &S,
+    pending_writes: &mut VecDeque<SubscriptionStatusWrite>,
+    status: SubscriptionStatusWrite,
+) {
+    const PENDING_WRITE_CAP: usize = 4096;
+    let id = status_write_id(&status);
+    pending_writes.retain(|w| status_write_id(w) != id);
+    if let Err(error) = persist_status(store, &status).await {
+        warn!(%error, target = %status.device_address, path = %status.path, "subscription status write failed; queued for retry");
+        if pending_writes.len() >= PENDING_WRITE_CAP {
+            pending_writes.pop_front();
+            metrics::counter!("bonsai_subscription_status_retry_overflow_total").increment(1);
+        }
+        pending_writes.push_back(status);
     }
 }
 
 async fn register_plan<S: BonsaiStore>(
     store: &S,
     tracked: &mut HashMap<(String, String), TrackedPath>,
+    pending_writes: &mut VecDeque<SubscriptionStatusWrite>,
     plan: SubscriptionPlan,
     freshness_floor: Duration,
 ) {
@@ -535,7 +621,9 @@ async fn register_plan<S: BonsaiStore>(
     // Supersede every previously-tracked path for this target that is not
     // part of the new submitted plan, so an obsolete plan is never left
     // represented as current/active. Disabled and rejected plans supersede
-    // the entire previous plan.
+    // the entire previous plan. The durable write is queued for bounded
+    // retry BEFORE the in-memory entry is dropped — a failed supersede
+    // can never silently lose the reconciliation (M5.2B review B7).
     let new_keys: std::collections::HashSet<String> = plan
         .paths
         .iter()
@@ -559,12 +647,7 @@ async fn register_plan<S: BonsaiStore>(
                 last_observed_at_ns: tracked_path.last_observed_at_ns,
                 updated_at_ns: now,
             };
-            let event = subscription_status_event(&status);
-            if let Err(error) = store.write_subscription_status(status).await {
-                warn!(%error, target = %target, path_key = %key.1, "failed to write superseded subscription status");
-            } else {
-                store.publish_event(event);
-            }
+            queue_or_persist(store, pending_writes, status).await;
         }
     }
 
@@ -614,34 +697,66 @@ async fn register_plan<S: BonsaiStore>(
 
     for expectation in plan.paths {
         let key = tracked_key(&target, &expectation);
-        tracked.insert(
-            key.clone(),
-            TrackedPath {
-                expectation: expectation.clone(),
+        // Unchanged re-registration (same plan, same session, same
+        // expectation — e.g. an unrelated inventory update re-seeding
+        // the plan) must not reset valid coverage: carry the existing
+        // status and evidence timestamps forward. A NEW session_id or
+        // plan_id always starts pending — coverage is session-bound.
+        let carried = tracked.get(&key).and_then(|existing| {
+            (existing.plan_id == plan.plan_id && existing.session_id == plan.session_id).then(
+                || TrackedPath {
+                    expectation: expectation.clone(),
+                    plan_id: plan.plan_id.clone(),
+                    session_id: plan.session_id.clone(),
+                    status: existing.status.clone(),
+                    durable_status: existing.durable_status.clone(),
+                    first_observed_at_ns: existing.first_observed_at_ns,
+                    last_observed_at_ns: existing.last_observed_at_ns,
+                    deadline,
+                    last_seen: existing.last_seen,
+                    last_evidence_at: existing.last_evidence_at,
+                    stale_after: sample_stale_after(&expectation, freshness_floor),
+                },
+            )
+        });
+        let is_new = carried.is_none();
+        let tracked_path = carried.unwrap_or_else(|| TrackedPath {
+            expectation: expectation.clone(),
+            plan_id: plan.plan_id.clone(),
+            session_id: plan.session_id.clone(),
+            status: "pending".to_string(),
+            durable_status: String::new(),
+            first_observed_at_ns: 0,
+            last_observed_at_ns: 0,
+            deadline,
+            last_seen: Instant::now(),
+            last_evidence_at: None,
+            stale_after: sample_stale_after(&expectation, freshness_floor),
+        });
+        tracked.insert(key.clone(), tracked_path);
+        if is_new {
+            // A re-registered path may have a queued obsolete
+            // superseded write — drop it so the retry can never
+            // overwrite the fresh pending/observed state.
+            pending_writes.retain(|w| {
+                !(w.device_address == target
+                    && w.path == expectation.path
+                    && w.origin == expectation.origin
+                    && w.mode == expectation.mode
+                    && w.sample_interval_ns == expectation.sample_interval_ns as i64)
+            });
+            let status = SubscriptionStatusWrite {
+                device_address: target.clone(),
+                path: expectation.path.clone(),
+                origin: expectation.origin.clone(),
+                mode: expectation.mode.clone(),
+                sample_interval_ns: expectation.sample_interval_ns as i64,
                 status: "pending".to_string(),
                 first_observed_at_ns: 0,
                 last_observed_at_ns: 0,
-                deadline,
-                last_seen: Instant::now(),
-                stale_after: sample_stale_after(&expectation, freshness_floor),
-            },
-        );
-        let status = SubscriptionStatusWrite {
-            device_address: target.clone(),
-            path: expectation.path,
-            origin: expectation.origin,
-            mode: expectation.mode,
-            sample_interval_ns: expectation.sample_interval_ns as i64,
-            status: "pending".to_string(),
-            first_observed_at_ns: 0,
-            last_observed_at_ns: 0,
-            updated_at_ns: now,
-        };
-        let event = subscription_status_event(&status);
-        if let Err(error) = store.write_subscription_status(status).await {
-            warn!(%error, target = %target, path_key = %key.1, "failed to write pending subscription status");
-        } else {
-            store.publish_event(event);
+                updated_at_ns: now,
+            };
+            queue_or_persist(store, pending_writes, status).await;
         }
     }
 }
@@ -651,6 +766,7 @@ async fn observe_update<S: BonsaiStore>(
     tracked: &mut HashMap<(String, String), TrackedPath>,
     sessions: &SubscriptionSessionRegistry,
     pending: &mut PendingObservations,
+    pending_writes: &mut VecDeque<SubscriptionStatusWrite>,
     update: &TelemetryUpdate,
     // Trusted receipt instant of THIS evidence. Live bus events pass
     // `Instant::now()`; buffered replays pass their ORIGINAL receipt
@@ -662,25 +778,64 @@ async fn observe_update<S: BonsaiStore>(
         // provenance may be early initial-sync evidence whose
         // `synchronized` lifecycle transition is still in flight — hold
         // it in the bounded pending buffer; release is gated on the
-        // exact (plan_id, session_id) becoming current. Everything else
-        // (non-gNMI, missing provenance, stale/superseded sessions past
-        // TTL) is dropped by `note`'s filters or expires unauthenticated.
+        // exact (plan_id, session_id, collector) becoming current.
+        // Everything else (non-gNMI, missing provenance, stale/
+        // superseded sessions past TTL) is dropped by `note`'s filters
+        // or expires unauthenticated.
         pending.note(update, received_at);
         return;
     }
-    let now = update.timestamp_ns.max(now_ns());
     let matching_keys: Vec<(String, String)> = tracked
         .iter()
         .filter(|((target, _), tracked_path)| {
-            target == &update.target && path_matches_update(&tracked_path.expectation, &update)
+            // Coverage is plan-bound: an observation authorized under
+            // one plan can never satisfy expectations registered under
+            // a different plan, even on the same target/path (B1/B3).
+            target == &update.target
+                && tracked_path.plan_id == update.plan_id
+                && path_matches_update(&tracked_path.expectation, &update)
         })
         .map(|(key, _)| key.clone())
         .collect();
+
+    if matching_keys.is_empty() {
+        // Current-session evidence that matches no registered
+        // expectation can be legitimate early evidence: the plan
+        // registration may still be in flight on the plan channel.
+        // Hold it in the same bounded buffer — release replays through
+        // this function once expectations exist (M5.2B review B6).
+        // Non-gNMI/unprovenanced updates are filtered by `note`.
+        pending.note(update, received_at);
+        return;
+    }
+
+    // Persisted evidence timestamps use CORE receipt time, never the
+    // device timestamp: a future or malformed device timestamp must not
+    // become trusted freshness (M5.2B review B7). Device time remains
+    // available on the telemetry update itself for diagnostics.
+    let now = now_ns();
 
     for key in matching_keys {
         let Some(tracked_path) = tracked.get_mut(&key) else {
             continue;
         };
+        // Ordering fence (M5.2B review B6): evidence received BEFORE the
+        // newest already-applied observation can never overwrite newer
+        // authoritative state. This is what keeps an older buffered
+        // update from reversing a newer live delete after the session
+        // synchronized.
+        if tracked_path
+            .last_evidence_at
+            .is_some_and(|prev| received_at < prev)
+        {
+            metrics::counter!("bonsai_subscription_stale_evidence_total").increment(1);
+            continue;
+        }
+        tracked_path.last_evidence_at = Some(received_at);
+        // `last_seen` mirrors the newest APPLIED evidence receipt — the
+        // fence above guarantees `received_at` never regresses, so a
+        // replayed pre-sync observation keeps its original (older)
+        // freshness instead of being renewed by replay time (B6/B7).
         tracked_path.last_seen = received_at;
         // Delete/tombstone evidence (M5.2B B3): a current-session
         // Notification.delete invalidates the path's current coverage
@@ -694,12 +849,10 @@ async fn observe_update<S: BonsaiStore>(
         if tracked_path.status == new_status {
             continue;
         }
-        // Persistence truthfulness (M5.2B B3): the graph write is
-        // attempted BEFORE the in-memory transition commits, and the
-        // success event is published only after the write lands. A
-        // failed write leaves the old status in memory so the next
-        // observation/tick retries — memory can never claim a persisted
-        // state the store does not hold.
+        // Desired-status transition commits in memory immediately; the
+        // durable write is attempted now and queued for bounded retry
+        // on failure, so a one-shot observation survives a transient
+        // store error without needing another device update (B7).
         let first_observed = if new_status == "observed" {
             now
         } else {
@@ -710,6 +863,9 @@ async fn observe_update<S: BonsaiStore>(
         } else {
             now
         };
+        tracked_path.status = new_status.to_string();
+        tracked_path.first_observed_at_ns = first_observed;
+        tracked_path.last_observed_at_ns = last_observed;
         let status = SubscriptionStatusWrite {
             device_address: key.0.clone(),
             path: tracked_path.expectation.path.clone(),
@@ -721,13 +877,22 @@ async fn observe_update<S: BonsaiStore>(
             last_observed_at_ns: last_observed,
             updated_at_ns: now,
         };
-        if let Err(error) = persist_status(store, &status).await {
-            warn!(%error, target = %key.0, path_key = %key.1, "failed to write subscription status");
-            continue;
+        match persist_status(store, &status).await {
+            Ok(()) => {
+                if let Some(tp) = tracked.get_mut(&key) {
+                    tp.durable_status = new_status.to_string();
+                }
+            }
+            Err(error) => {
+                warn!(%error, target = %key.0, path_key = %key.1, "failed to write subscription status; queued for retry");
+                if pending_writes.len() >= 4096 {
+                    pending_writes.pop_front();
+                    metrics::counter!("bonsai_subscription_status_retry_overflow_total")
+                        .increment(1);
+                }
+                pending_writes.push_back(status);
+            }
         }
-        tracked_path.status = new_status.to_string();
-        tracked_path.first_observed_at_ns = first_observed;
-        tracked_path.last_observed_at_ns = last_observed;
     }
 }
 
@@ -756,47 +921,162 @@ fn sample_stale_after(expectation: &SubscriptionPathExpectation, floor: Duration
     (interval.saturating_mul(3)).max(floor)
 }
 
-async fn mark_silent_paths<S: BonsaiStore>(
+/// Whether the session bound to a tracked path still holds current
+/// coverage authority. Session-bound paths (real `session_id`) require
+/// the exact current (plan_id, session_id); desired/legacy plans with
+/// no session binding are covered by whatever session the registry
+/// currently authorizes for the target — plan identity is reconciled
+/// at registration. Loss of current authority (disconnect, withdrawal,
+/// supersession, reassignment) makes observed evidence historical.
+fn tracked_session_current(
+    sessions: &SubscriptionSessionRegistry,
+    target: &str,
+    plan_id: &str,
+    session_id: &str,
+) -> bool {
+    let Some((cur_plan, cur_session, _)) = sessions.current_session_provenance(target) else {
+        return false;
+    };
+    if cur_session.is_empty() {
+        return false;
+    }
+    if session_id.is_empty() {
+        // Session-unbound (desired/predicted) expectations are covered
+        // by whatever current session the registry authorizes for the
+        // plan — but ONLY while such a session exists. With no live
+        // verified session there is no current coverage authority.
+        cur_plan == plan_id
+    } else {
+        cur_session == session_id && cur_plan == plan_id
+    }
+}
+
+/// Build the durable write for a tracked path's CURRENT desired state.
+fn status_write_for(
+    key: &(String, String),
+    tracked_path: &TrackedPath,
+    now: i64,
+) -> SubscriptionStatusWrite {
+    SubscriptionStatusWrite {
+        device_address: key.0.clone(),
+        path: tracked_path.expectation.path.clone(),
+        origin: tracked_path.expectation.origin.clone(),
+        mode: tracked_path.expectation.mode.clone(),
+        sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
+        status: tracked_path.status.clone(),
+        first_observed_at_ns: tracked_path.first_observed_at_ns,
+        last_observed_at_ns: tracked_path.last_observed_at_ns,
+        updated_at_ns: now,
+    }
+}
+
+/// Set a tracked path's desired status and persist-or-queue it.
+async fn transition_status<S: BonsaiStore>(
     store: &S,
+    pending_writes: &mut VecDeque<SubscriptionStatusWrite>,
+    key: &(String, String),
+    tracked_path: &mut TrackedPath,
+    new_status: &str,
+    now: i64,
+) {
+    tracked_path.status = new_status.to_string();
+    let status = status_write_for(key, tracked_path, now);
+    match persist_status(store, &status).await {
+        Ok(()) => tracked_path.durable_status = new_status.to_string(),
+        Err(error) => {
+            warn!(%error, target = %key.0, path_key = %key.1, "failed to write subscription status; queued for retry");
+            if pending_writes.len() >= 4096 {
+                pending_writes.pop_front();
+                metrics::counter!("bonsai_subscription_status_retry_overflow_total").increment(1);
+            }
+            pending_writes.push_back(status);
+        }
+    }
+}
+
+/// Periodic reconciliation sweep (M5.2B review B5/B7):
+///
+/// - pending paths past their deadline become `subscribed_but_silent`;
+/// - observed SAMPLE paths quiet past their freshness bound become
+///   `stale`;
+/// - observed paths whose bound session lost current authority
+///   (disconnect, withdrawal, supersession, reassignment, core restart)
+///   become `stale` — observed history is never presented as current
+///   monitoring without a live verified session;
+/// - every desired status that has not been durably persisted is
+///   retried, and the bounded pending-write queue is drained, so failed
+///   pending/superseded/disconnected/observed/deleted/stale transitions
+///   eventually reconcile without needing new telemetry.
+async fn reconcile_statuses<S: BonsaiStore>(
+    store: &S,
+    sessions: &SubscriptionSessionRegistry,
     tracked: &mut HashMap<(String, String), TrackedPath>,
+    pending_writes: &mut VecDeque<SubscriptionStatusWrite>,
 ) {
     let now_instant = Instant::now();
     let now = now_ns();
+
+    // Drain the bounded durable-retry queue first. A queued write is a
+    // snapshot: if the row is still tracked and now desires a DIFFERENT
+    // status, the queued write is obsolete — drop it (the dirty-status
+    // reconcile below persists the current desire). Otherwise persist
+    // it; on success reflect durable progress on the tracked path.
+    let mut i = 0;
+    while i < pending_writes.len() {
+        let write = pending_writes[i].clone();
+        let current = tracked.iter().find_map(|((t, _), tp)| {
+            let e = &tp.expectation;
+            (t == &write.device_address
+                && e.path == write.path
+                && e.origin == write.origin
+                && e.mode == write.mode
+                && e.sample_interval_ns as i64 == write.sample_interval_ns)
+                .then(|| tp.status.clone())
+        });
+        if current.as_ref().is_some_and(|s| *s != write.status) {
+            pending_writes.remove(i);
+            continue;
+        }
+        match persist_status(store, &write).await {
+            Ok(()) => {
+                pending_writes.remove(i);
+                if current.as_deref() == Some(write.status.as_str()) {
+                    for ((t, _), tp) in tracked.iter_mut() {
+                        if *t == write.device_address && tp.status == write.status {
+                            tp.durable_status = write.status.clone();
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                warn!(%error, target = %write.device_address, path = %write.path, "subscription status retry failed");
+                i += 1;
+            }
+        }
+    }
+
+    // Pending → subscribed_but_silent on deadline.
     let silent_keys: Vec<(String, String)> = tracked
         .iter()
         .filter(|(_, path)| path.status == "pending" && now_instant >= path.deadline)
         .map(|(key, _)| key.clone())
         .collect();
-
     for key in silent_keys {
-        let Some(tracked_path) = tracked.get_mut(&key) else {
-            continue;
-        };
-        let status = SubscriptionStatusWrite {
-            device_address: key.0.clone(),
-            path: tracked_path.expectation.path.clone(),
-            origin: tracked_path.expectation.origin.clone(),
-            mode: tracked_path.expectation.mode.clone(),
-            sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
-            status: "subscribed_but_silent".to_string(),
-            first_observed_at_ns: 0,
-            last_observed_at_ns: 0,
-            updated_at_ns: now,
-        };
-        // Write before commit: a failed store write keeps the pending
-        // status so the next sweep retries instead of claiming a
-        // persisted state that does not exist.
-        if let Err(error) = persist_status(store, &status).await {
-            warn!(%error, target = %key.0, path_key = %key.1, "failed to write silent subscription status");
-            continue;
+        if let Some(tracked_path) = tracked.get_mut(&key) {
+            transition_status(
+                store,
+                pending_writes,
+                &key,
+                tracked_path,
+                "subscribed_but_silent",
+                now,
+            )
+            .await;
         }
-        tracked_path.status = "subscribed_but_silent".to_string();
     }
 
-    // SAMPLE freshness (M5.2B B3): an observed SAMPLE path that has
-    // gone quiet past its freshness bound is stale — the subscription
-    // may still be live but the evidence is no longer current. ON_CHANGE
-    // and non-observed states are untouched.
+    // SAMPLE freshness: observed SAMPLE paths quiet past their bound
+    // are stale. ON_CHANGE and non-observed states are untouched.
     let stale_keys: Vec<(String, String)> = tracked
         .iter()
         .filter(|(_, path)| {
@@ -806,27 +1086,50 @@ async fn mark_silent_paths<S: BonsaiStore>(
         })
         .map(|(key, _)| key.clone())
         .collect();
-
     for key in stale_keys {
+        if let Some(tracked_path) = tracked.get_mut(&key) {
+            transition_status(store, pending_writes, &key, tracked_path, "stale", now).await;
+        }
+    }
+
+    // Current-vs-historical authority (M5.2B review B5): an observed
+    // path stays "observed" only while its bound session remains the
+    // current verified session. Disconnect, withdrawal, supersession,
+    // reassignment and core restart all revoke that — quiet ON_CHANGE
+    // values are legitimate only inside a live session.
+    let revoked_keys: Vec<(String, String)> = tracked
+        .iter()
+        .filter(|((target, _), path)| {
+            path.status == "observed"
+                && !tracked_session_current(sessions, target, &path.plan_id, &path.session_id)
+        })
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in revoked_keys {
+        if let Some(tracked_path) = tracked.get_mut(&key) {
+            transition_status(store, pending_writes, &key, tracked_path, "stale", now).await;
+        }
+    }
+
+    // Durable reconciliation: any desired status not yet confirmed
+    // persisted is retried every sweep — a one-shot observation whose
+    // write failed transiently converges without further telemetry.
+    let dirty_keys: Vec<(String, String)> = tracked
+        .iter()
+        .filter(|(_, path)| path.status != path.durable_status)
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in dirty_keys {
         let Some(tracked_path) = tracked.get_mut(&key) else {
             continue;
         };
-        let status = SubscriptionStatusWrite {
-            device_address: key.0.clone(),
-            path: tracked_path.expectation.path.clone(),
-            origin: tracked_path.expectation.origin.clone(),
-            mode: tracked_path.expectation.mode.clone(),
-            sample_interval_ns: tracked_path.expectation.sample_interval_ns as i64,
-            status: "stale".to_string(),
-            first_observed_at_ns: tracked_path.first_observed_at_ns,
-            last_observed_at_ns: tracked_path.last_observed_at_ns,
-            updated_at_ns: now,
-        };
-        if let Err(error) = persist_status(store, &status).await {
-            warn!(%error, target = %key.0, path_key = %key.1, "failed to write stale subscription status");
-            continue;
+        let status = status_write_for(&key, tracked_path, now);
+        match persist_status(store, &status).await {
+            Ok(()) => tracked_path.durable_status = tracked_path.status.clone(),
+            Err(error) => {
+                warn!(%error, target = %key.0, path_key = %key.1, "subscription status reconcile failed; will retry");
+            }
         }
-        tracked_path.status = "stale".to_string();
     }
 }
 
@@ -886,19 +1189,35 @@ fn path_matches_update(
     let Ok(expected) = crate::gnmi_path::parse_path(&expectation.origin, &expectation.path) else {
         return false;
     };
-    update
-        .gnmi_path
-        .iter()
-        .any(|obs| crate::gnmi_path::observation_covers(&expected, obs))
+    if update.is_delete {
+        // Delete/tombstone evidence uses conservative absence semantics
+        // (M5.2B review B9): ancestor deletes invalidate descendant
+        // expectations; wildcard expectations and unrelated instances
+        // are never implied absent by a single concrete delete.
+        update
+            .gnmi_path
+            .iter()
+            .any(|obs| crate::gnmi_path::delete_covers(&expected, obs))
+    } else {
+        update
+            .gnmi_path
+            .iter()
+            .any(|obs| crate::gnmi_path::observation_covers(&expected, obs))
+    }
 }
 
-/// Session + protocol fencing (M5.2B): only observations carrying the
-/// CURRENT authorized (plan_id, session_id) pair from a gNMI producer
-/// may satisfy coverage. The current session is established exclusively
-/// by authoritative lifecycle registration — telemetry can never
-/// self-register. Legacy/empty provenance, non-gNMI protocols and
-/// late data from a superseded session are received telemetry but
-/// grant no subscription coverage.
+/// Session + protocol + collector fencing (M5.2B review B1): only
+/// observations carrying the CURRENT authorized (plan_id, session_id)
+/// pair from a gNMI producer AND stamped with the session's owning
+/// authenticated collector may satisfy coverage. The current session is
+/// established exclusively by authoritative lifecycle registration —
+/// telemetry can never self-register, and payload-supplied identifiers
+/// alone never establish authority: the collector stamp is applied by
+/// the core at the authenticated ingest boundary. Legacy/empty
+/// provenance, non-gNMI protocols, unauthenticated development-compat
+/// ingestion (empty stamp vs verified collector session) and late data
+/// from a superseded session are received telemetry but grant no
+/// subscription coverage.
 fn update_has_current_session(
     sessions: &SubscriptionSessionRegistry,
     update: &TelemetryUpdate,
@@ -907,9 +1226,12 @@ fn update_has_current_session(
         return false;
     }
     sessions
-        .current_session(&update.target)
-        .is_some_and(|(plan_id, session_id)| {
-            !session_id.is_empty() && update.plan_id == plan_id && update.session_id == session_id
+        .current_session_provenance(&update.target)
+        .is_some_and(|(plan_id, session_id, collector_id)| {
+            !session_id.is_empty()
+                && update.plan_id == plan_id
+                && update.session_id == session_id
+                && update.collector_id == collector_id
         })
 }
 
@@ -951,6 +1273,7 @@ mod tests {
                 .map(|p| vec![p])
                 .unwrap_or_default(),
             is_delete: false,
+            collector_id: String::new(),
             target: "dut:57400".to_string(),
             vendor: "openconfig".to_string(),
             hostname: "dut".to_string(),
@@ -1014,6 +1337,7 @@ mod tests {
             source_protocol: String::new(),
             gnmi_path: Vec::new(),
             is_delete: false,
+            collector_id: String::new(),
             target: "dut:57400".to_string(),
             vendor: "openconfig".to_string(),
             hostname: "dut".to_string(),
@@ -1060,6 +1384,7 @@ mod tests {
             source_protocol: "gnmi".to_string(),
             gnmi_path: Vec::new(),
             is_delete: false,
+            collector_id: String::new(),
             target: target.to_string(),
             vendor: String::new(),
             hostname: String::new(),
@@ -1088,6 +1413,8 @@ mod tests {
                         assignment_generation: 0,
                         occurred_at_ns: 0,
                         detail: String::new(),
+                        submitted_paths: Vec::new(),
+                        acquisition: String::new(),
                     },
                     true,
                 );
@@ -1155,6 +1482,8 @@ mod tests {
                 assignment_generation: 0,
                 occurred_at_ns: 0,
                 detail: String::new(),
+                submitted_paths: Vec::new(),
+                acquisition: String::new(),
             },
             true,
         );
@@ -1342,11 +1671,15 @@ mod tests {
             key.clone(),
             TrackedPath {
                 expectation: exp,
+                plan_id: "plan-1".to_string(),
+                session_id: "sess-1".to_string(),
                 status: "pending".to_string(),
+                durable_status: String::new(),
                 first_observed_at_ns: 0,
                 last_observed_at_ns: 0,
                 deadline: Instant::now() + Duration::from_secs(60),
                 last_seen: Instant::now(),
+                last_evidence_at: None,
                 stale_after: Duration::from_secs(30),
             },
         );
@@ -1362,12 +1695,14 @@ mod tests {
         // each replayed update passes its ORIGINAL receipt instant.
         let ready = pending.sweep(&sessions);
         assert_eq!(ready.len(), 1);
+        let mut pending_writes: VecDeque<crate::graph::SubscriptionStatusWrite> = VecDeque::new();
         for (update, received_at) in pending.take(&ready[0]) {
             observe_update(
                 &store,
                 &mut tracked,
                 &sessions,
                 &mut pending,
+                &mut pending_writes,
                 &update,
                 received_at,
             )
@@ -1398,6 +1733,8 @@ mod tests {
                 assignment_generation: 0,
                 occurred_at_ns: 0,
                 detail: String::new(),
+                submitted_paths: Vec::new(),
+                acquisition: String::new(),
             }
         };
         let mut pending = PendingObservations::default();

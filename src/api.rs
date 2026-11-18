@@ -115,6 +115,12 @@ pub struct BonsaiService<S: BonsaiStore> {
     /// in-process; the subscription verifier reads current sessions
     /// from it.
     session_registry: Arc<crate::subscription_sessions::SubscriptionSessionRegistry>,
+    /// Channel into the subscription verifier's plan stream (M5.2B
+    /// review B3): authenticated submitted manifests from remote
+    /// collectors are forwarded here so coverage expectations bind to
+    /// the actual Subscribe path set. `None` when no verifier runs.
+    subscription_plan_tx:
+        Option<tokio::sync::mpsc::Sender<crate::subscription_status::SubscriptionPlan>>,
 }
 
 impl<S: BonsaiStore> BonsaiService<S> {
@@ -150,7 +156,18 @@ impl<S: BonsaiStore> BonsaiService<S> {
             session_registry: Arc::new(
                 crate::subscription_sessions::SubscriptionSessionRegistry::new(),
             ),
+            subscription_plan_tx: None,
         }
+    }
+
+    /// Wire the subscription verifier's plan channel so authenticated
+    /// submitted manifests reach the coverage verifier (M5.2B B3).
+    pub fn with_subscription_plan_tx(
+        mut self,
+        tx: Option<tokio::sync::mpsc::Sender<crate::subscription_status::SubscriptionPlan>>,
+    ) -> Self {
+        self.subscription_plan_tx = tx;
+        self
     }
 
     /// Share the authoritative session registry with the subscription
@@ -2022,6 +2039,18 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 return Err(status);
             }
 
+            // M5.2B review B1: stamp the AUTHENTICATED collector identity
+            // onto the observation. Coverage provenance is derived here,
+            // at the trust boundary — never decoded from the telemetry
+            // payload — so a collector can never satisfy another
+            // collector's session by replaying its identifiers. Dev-compat
+            // plaintext keeps an empty stamp and can never match a
+            // verified (non-empty collector) session.
+            telemetry.collector_id = grant
+                .as_ref()
+                .map(|g| g.collector_id().to_string())
+                .unwrap_or_default();
+
             if let Some(ref d) = self.debouncer
                 && d.should_drop(&telemetry)
             {
@@ -2179,6 +2208,10 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             // generation inside this device's assigned-authority window.
             // Marks are keyed by the assigned device address verbatim —
             // the same string the collector stamps on lifecycle events.
+            // The session gate is held across validation AND registry
+            // mutation so an assignment withdrawal cannot interleave
+            // between the two (M5.2B review B2).
+            let _authority_gate = self.collector_manager.as_ref().map(|m| m.session_gate());
             let authority_ok = self.collector_manager.as_ref().is_some_and(|m| {
                 m.validate_session_authority(
                     grant.collector_id(),
@@ -2204,6 +2237,63 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 continue;
             }
 
+            // B3: a manifest-carrying event must prove its plan_id is
+            // the deterministic identity of the normalized submitted
+            // manifest under the declared acquisition intent. A mismatch
+            // means the claimed plan does not describe what was actually
+            // submitted — reject fail-closed rather than register
+            // coverage expectations against a false identity.
+            let submitted_paths: Vec<crate::subscription_sessions::LifecyclePathEntry> = event
+                .submitted_paths
+                .iter()
+                .map(|p| crate::subscription_sessions::LifecyclePathEntry {
+                    path: p.path.clone(),
+                    origin: p.origin.clone(),
+                    mode: p.mode.clone(),
+                    sample_interval_ns: p.sample_interval_ns,
+                })
+                .collect();
+            if !submitted_paths.is_empty() {
+                let Some(acquisition) = crate::config::AcquisitionMode::parse(&event.acquisition)
+                else {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "bad_manifest"
+                    )
+                    .increment(1);
+                    continue;
+                };
+                let entries: Vec<(String, String, String, u64)> = submitted_paths
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.origin.clone(),
+                            e.path.clone(),
+                            e.mode.clone(),
+                            e.sample_interval_ns,
+                        )
+                    })
+                    .collect();
+                let expected_plan = crate::subscriber::acquisition_plan_id(acquisition, &entries);
+                if expected_plan != event.plan_id {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "plan_manifest_mismatch"
+                    )
+                    .increment(1);
+                    tracing::warn!(
+                        collector_id = %grant.collector_id(),
+                        device = %event.device_address,
+                        plan_id = %event.plan_id,
+                        expected_plan_id = %expected_plan,
+                        "lifecycle event denied: plan_id does not match submitted manifest"
+                    );
+                    continue;
+                }
+            }
+
             let internal = crate::subscription_sessions::SessionLifecycleEvent {
                 collector_id: grant.collector_id().to_string(),
                 // Session identity keys on the same target string the
@@ -2218,8 +2308,11 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 assignment_generation: event.assignment_generation,
                 occurred_at_ns: event.occurred_at_ns,
                 detail: event.detail,
+                submitted_paths,
+                acquisition: event.acquisition,
             };
-            match self.session_registry.apply(&internal, true) {
+            let outcome = self.session_registry.apply(&internal, true);
+            match &outcome {
                 crate::subscription_sessions::ApplyOutcome::Applied
                 | crate::subscription_sessions::ApplyOutcome::Duplicate => {
                     accepted += 1;
@@ -2237,6 +2330,48 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                         "reason" => "invalid_transition"
                     )
                     .increment(1);
+                }
+            }
+
+            // B3: the authenticated submitted manifest IS the effective
+            // plan — forward it to the coverage verifier so expectations
+            // bind to what was actually submitted (capability-derived
+            // for automatic plans), never a core-side fallback
+            // prediction. Re-sent on `synchronized` so a healed resend
+            // carrying only the latest state still registers the
+            // manifest before coverage can be authorized.
+            if matches!(outcome, crate::subscription_sessions::ApplyOutcome::Applied)
+                && matches!(internal.state.as_str(), "submitted" | "synchronized")
+                && !internal.submitted_paths.is_empty()
+                && let Some(tx) = &self.subscription_plan_tx
+            {
+                let plan = crate::subscription_status::SubscriptionPlan {
+                    target: internal.target.clone(),
+                    paths: internal
+                        .submitted_paths
+                        .iter()
+                        .map(
+                            |e| crate::subscription_status::SubscriptionPathExpectation {
+                                path: e.path.clone(),
+                                origin: e.origin.clone(),
+                                mode: e.mode.clone(),
+                                sample_interval_ns: e.sample_interval_ns,
+                            },
+                        )
+                        .collect(),
+                    plan_id: internal.plan_id.clone(),
+                    session_id: internal.session_id.clone(),
+                    state: "submitted".to_string(),
+                    acquisition: internal.acquisition.clone(),
+                    detail: String::new(),
+                };
+                if tx.try_send(plan).is_err() {
+                    metrics::counter!("bonsai_subscription_plan_forward_dropped_total")
+                        .increment(1);
+                    tracing::warn!(
+                        device = %internal.target,
+                        "submitted plan manifest dropped: verifier channel full"
+                    );
                 }
             }
         }

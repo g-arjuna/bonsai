@@ -31,7 +31,7 @@ use crate::config::TargetConfig;
 use crate::config::{AcquisitionMode, SelectedSubscriptionPath};
 use crate::event_bus::InProcessBus;
 use crate::ingest::TelemetryDebouncer;
-use crate::subscription_sessions::SessionLifecycleEvent;
+use crate::subscription_sessions::{LifecyclePathEntry, SessionLifecycleEvent};
 use crate::subscription_status::{SubscriptionPathExpectation, SubscriptionPlan};
 use crate::telemetry::TelemetryUpdate;
 
@@ -59,6 +59,12 @@ pub struct SessionEmitter {
     authority_epoch: u64,
     assignment_generation: u64,
     seq: u64,
+    /// Actual submitted Subscribe manifest + acquisition intent,
+    /// attached to `submitted`/`synchronized` transitions so the core
+    /// can bind coverage expectations to the real effective plan
+    /// (M5.2B review B3). Empty for plan-level emitters.
+    submitted_paths: Vec<LifecyclePathEntry>,
+    acquisition: String,
     /// Set once this emitter publishes a terminal state, so teardown
     /// paths can skip a redundant terminal transition.
     terminated: Option<Arc<AtomicBool>>,
@@ -91,8 +97,23 @@ impl SessionEmitter {
             authority_epoch: lifecycle.map_or(0, |h| h.authority_epoch),
             assignment_generation: lifecycle.map_or(0, |h| h.assignment_generation),
             seq: 0,
+            submitted_paths: Vec::new(),
+            acquisition: String::new(),
             terminated,
         }
+    }
+
+    /// Attach the actual submitted manifest + acquisition intent.
+    /// Only `submitted`-family transitions carry it; terminal and
+    /// plan-level outcomes leave it empty.
+    pub fn with_manifest(
+        mut self,
+        acquisition: AcquisitionMode,
+        paths: Vec<LifecyclePathEntry>,
+    ) -> Self {
+        self.acquisition = acquisition.as_str().to_string();
+        self.submitted_paths = paths;
+        self
     }
 
     fn event(&self, state: &str, seq: u64, detail: &str) -> SessionLifecycleEvent {
@@ -107,6 +128,8 @@ impl SessionEmitter {
             assignment_generation: self.assignment_generation,
             occurred_at_ns: now_unix_ns(),
             detail: detail.to_string(),
+            submitted_paths: self.submitted_paths.clone(),
+            acquisition: self.acquisition.clone(),
         }
     }
 
@@ -295,6 +318,8 @@ impl GnmiSubscriber {
             assignment_generation: handle.assignment_generation,
             occurred_at_ns: now_unix_ns(),
             detail: detail.to_string(),
+            submitted_paths: Vec::new(),
+            acquisition: String::new(),
         };
         match tokio::time::timeout(Duration::from_secs(2), handle.tx.send(ev)).await {
             Ok(Ok(())) => {
@@ -579,7 +604,7 @@ impl GnmiSubscriber {
 
         self.publish_plan(SubscriptionPlan {
             target: target.clone(),
-            paths: plan_paths,
+            paths: plan_paths.clone(),
             plan_id: submitted_plan_id.clone(),
             session_id: session_id.clone(),
             state: "submitted".to_string(),
@@ -601,13 +626,28 @@ impl GnmiSubscriber {
             plan_id: submitted_plan_id.clone(),
             terminated: Arc::clone(&terminated),
         });
+        // The submitted manifest is the ACTUAL SubscriptionList path
+        // set (capability-derived for automatic plans, the validated
+        // selection for explicit plans) — carried on the authenticated
+        // lifecycle stream so the core binds coverage expectations to
+        // what was really submitted, never a fallback prediction (B3).
+        let manifest = plan_paths
+            .iter()
+            .map(|e| LifecyclePathEntry {
+                path: e.path.clone(),
+                origin: e.origin.clone(),
+                mode: e.mode.clone(),
+                sample_interval_ns: e.sample_interval_ns,
+            })
+            .collect();
         let mut emitter = SessionEmitter::new(
             self.lifecycle.as_ref(),
             &target,
             &submitted_plan_id,
             &session_id,
             Some(terminated),
-        );
+        )
+        .with_manifest(self.acquisition, manifest);
         emitter.emit("submitted", "").await;
         emitter.emit("synchronizing", "").await;
         // gNMI sync boundary is the SubscriptionList/RPC, NOT each
@@ -743,6 +783,7 @@ impl GnmiSubscriber {
                                         source_protocol: "gnmi".to_string(),
                                         gnmi_path: gnmi_paths,
                                         is_delete: false,
+                                        collector_id: String::new(),
                                         target: target.clone(),
                                         vendor: caps.vendor_label.clone(),
                                         hostname: self.hostname.clone().unwrap_or_default(),
@@ -791,6 +832,7 @@ impl GnmiSubscriber {
                                         source_protocol: "gnmi".to_string(),
                                         gnmi_path: gnmi_paths,
                                         is_delete: true,
+                                        collector_id: String::new(),
                                         target: target.clone(),
                                         vendor: caps.vendor_label.clone(),
                                         hostname: self.hostname.clone().unwrap_or_default(),
@@ -1491,7 +1533,7 @@ enum AcquisitionPlan {
 /// textual path spellings that parse to the same structured path produce
 /// the same identity only when their normalized form matches — dedup of
 /// subscriptions themselves happens on the structured Path, not the string.
-fn acquisition_plan_id(
+pub(crate) fn acquisition_plan_id(
     acquisition: AcquisitionMode,
     entries: &[(String, String, String, u64)],
 ) -> String {

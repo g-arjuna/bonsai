@@ -63,6 +63,7 @@ impl HealthEmitter {
             source_protocol: String::new(),
             gnmi_path: Vec::new(),
             is_delete: false,
+            collector_id: String::new(),
             target: "health-emitter".to_string(),
             vendor: String::new(),
             hostname: String::new(),

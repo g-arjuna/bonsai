@@ -286,6 +286,19 @@ message SubscriptionLifecycleEvent {
   // Never contains secrets.
   string detail                = 10;
   uint32 protocol_version      = 11;
+  // Actual submitted Subscribe manifest: the exact (path, origin,
+  // mode, sample_interval) set carried by the SubscriptionList that
+  // produced this transition. Populated on `submitted` and reaffirmed
+  // on `synchronized`; empty for plan-level outcomes and for collectors
+  // predating the manifest contract. The core validates the
+  // deterministic plan_id against this normalized manifest and binds
+  // coverage expectations to it — payload claims alone never define
+  // the expected path set (M5.2B review B3).
+  repeated SubscriptionPath submitted_paths = 12;
+  // Acquisition intent the manifest was built under
+  // ("automatic" | "explicit" | "disabled"); required to recompute
+  // deterministic plan identity core-side. Empty on legacy records.
+  string acquisition           = 13;
 }
 
 message SubscriptionLifecycleResponse {

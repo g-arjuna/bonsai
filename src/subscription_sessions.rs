@@ -49,19 +49,49 @@ pub(crate) fn is_terminal(state: &str) -> bool {
 
 /// Whether `next` is a legal forward transition from `current`.
 /// Same-state re-emission is handled by the caller as an idempotent
-/// refresh, not a transition.
+/// refresh, not a transition. The table is strictly forward along the
+/// device-facing chain — a synchronized session can never regress to
+/// submitted/synchronizing under the same session identity (a real
+/// resubmission mints a NEW session_id), and pre-submission states are
+/// unreachable once submission has occurred.
 fn transition_allowed(current: &str, next: &str) -> bool {
     use state::*;
     if current == next || is_terminal(current) {
         return false;
     }
     match next {
-        SUBMITTED | SYNCHRONIZING | SYNCHRONIZED | FAILED | DISCONNECTED | DISABLED
-        | SUPERSEDED => true,
-        // Early pre-submission states may only move forward.
-        DESIRED | VALIDATED | CONNECTING => matches!(current, DESIRED | VALIDATED | CONNECTING),
+        VALIDATED => current == DESIRED,
+        CONNECTING => matches!(current, DESIRED | VALIDATED),
+        SUBMITTED => matches!(current, DESIRED | VALIDATED | CONNECTING),
+        // gNMI emits exactly one SyncResponse per SubscriptionList; a
+        // lost `synchronizing` transition must not deadlock the session,
+        // so synchronization may follow submission directly.
+        SYNCHRONIZING => current == SUBMITTED,
+        SYNCHRONIZED => matches!(current, SUBMITTED | SYNCHRONIZING),
+        // Terminal outcomes are reachable from any live state.
+        FAILED | DISCONNECTED | DISABLED | SUPERSEDED => true,
+        // `desired` is only an initial state — never a transition target.
+        DESIRED => false,
         _ => false,
     }
+}
+
+/// Maximum session records retained per target. Terminal records are
+/// evicted oldest-first once the bound is exceeded; the current
+/// coverage session and every non-terminal record are never evicted.
+const MAX_SESSIONS_PER_TARGET: usize = 64;
+
+/// One path entry in the actual submitted Subscribe manifest carried
+/// on `submitted` lifecycle events (M5.2B review B3). This is the
+/// collector-attested effective path set — the core binds coverage
+/// expectations to exactly these entries, never to a core-side
+/// fallback prediction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LifecyclePathEntry {
+    pub path: String,
+    pub origin: String,
+    pub mode: String,
+    pub sample_interval_ns: u64,
 }
 
 /// One device-facing lifecycle transition, already stripped of transport
@@ -79,6 +109,13 @@ pub struct SessionLifecycleEvent {
     pub assignment_generation: u64,
     pub occurred_at_ns: i64,
     pub detail: String,
+    /// Actual submitted Subscribe manifest — populated on `submitted`
+    /// and reaffirmed on `synchronized`; empty for plan-level outcomes
+    /// and legacy producers.
+    pub submitted_paths: Vec<LifecyclePathEntry>,
+    /// Acquisition intent the manifest was built under
+    /// ("automatic" | "explicit" | "disabled"); empty on legacy records.
+    pub acquisition: String,
 }
 
 /// Outcome of applying one lifecycle event.
@@ -223,9 +260,39 @@ impl SubscriptionSessionRegistry {
             {
                 return ApplyOutcome::InvalidTransition;
             }
+            // Session identity is immutable once registered: a later
+            // event under the same session key can never re-attribute
+            // the session to a different collector or plan. Authority
+            // fields (epoch/generation) may legitimately advance within
+            // the assignment window across confirming resyncs.
+            if record.collector_id != event.collector_id || record.plan_id != event.plan_id {
+                return ApplyOutcome::Rejected("session identity mutation");
+            }
+            // An unverified event can never modify a verified session —
+            // verified provenance is sticky and only ever strengthened
+            // by equally-verified producers.
+            if record.verified && !verified {
+                return ApplyOutcome::InvalidTransition;
+            }
         } else if is_terminal(&event.state) && event.session_id.is_empty() {
             // A terminal plan-level event for a plan that never
             // registered is still meaningful (disabled before submit).
+        }
+
+        // A plan-level terminal outcome (disabled/failed acquisition)
+        // retires every live session of that plan for the target: the
+        // core-side decision is authoritative and must not depend on
+        // terminal messages from the collector.
+        if event.session_id.is_empty() && matches!(event.state.as_str(), DISABLED | FAILED) {
+            for (other_key, other) in entry.sessions.iter_mut() {
+                if other.plan_id == event.plan_id && !is_terminal(&other.state) {
+                    other.state = SUPERSEDED.to_string();
+                    other.detail = event.detail.clone();
+                    if entry.current.as_deref() == Some(other_key.as_str()) {
+                        entry.current = None;
+                    }
+                }
+            }
         }
 
         let record = SessionRecord {
@@ -269,19 +336,57 @@ impl SubscriptionSessionRegistry {
         {
             entry.current = None;
         }
+        Self::evict_bounded(entry);
         ApplyOutcome::Applied
+    }
+
+    /// Bound per-target session retention. Terminal records are
+    /// evicted oldest-first; the current coverage session and every
+    /// non-terminal record are never evicted, so eviction can never
+    /// destroy live authority. Anti-replay is preserved: an evicted
+    /// session's late events re-register as new records and can never
+    /// impersonate a retained newer session (identity pinning above).
+    fn evict_bounded(entry: &mut TargetSessions) {
+        while entry.sessions.len() > MAX_SESSIONS_PER_TARGET {
+            let victim = entry
+                .sessions
+                .iter()
+                .filter(|(k, r)| {
+                    is_terminal(&r.state) && entry.current.as_deref() != Some(k.as_str())
+                })
+                .min_by_key(|(_, r)| r.updated_at_ns)
+                .map(|(k, _)| k.clone());
+            let Some(key) = victim else { break };
+            entry.sessions.remove(&key);
+            metrics::counter!("bonsai_subscription_session_evicted_total").increment(1);
+        }
     }
 
     /// Current coverage-authorized session for `target`:
     /// `(plan_id, session_id)` of the synchronized, verified session,
     /// or `None` when no session may satisfy coverage.
     pub fn current_session(&self, target: &str) -> Option<(String, String)> {
+        self.current_session_provenance(target)
+            .map(|(plan_id, session_id, _)| (plan_id, session_id))
+    }
+
+    /// Current coverage-authorized session INCLUDING the authenticated
+    /// collector identity that owns it (empty for trusted local
+    /// acquisition). Coverage evidence must match all three: an
+    /// observation stamped with a different collector can never satisfy
+    /// this session (M5.2B review B1).
+    pub fn current_session_provenance(&self, target: &str) -> Option<(String, String, String)> {
         let targets = self.inner.lock().unwrap();
         let entry = targets.get(target)?;
         let key = entry.current.as_ref()?;
         let record = entry.sessions.get(key)?;
-        (record.state == state::SYNCHRONIZED && record.verified)
-            .then(|| (record.plan_id.clone(), record.session_id.clone()))
+        (record.state == state::SYNCHRONIZED && record.verified).then(|| {
+            (
+                record.plan_id.clone(),
+                record.session_id.clone(),
+                record.collector_id.clone(),
+            )
+        })
     }
 
     /// State of a specific session for status reporting.
@@ -357,6 +462,8 @@ mod tests {
             assignment_generation: 1,
             occurred_at_ns: 0,
             detail: String::new(),
+            submitted_paths: Vec::new(),
+            acquisition: String::new(),
         }
     }
 

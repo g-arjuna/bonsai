@@ -1409,6 +1409,7 @@ fn publish_flow(
         source_protocol: "netflow".to_string(),
         gnmi_path: Vec::new(),
         is_delete: false,
+        collector_id: String::new(),
         target: src.source_key.clone(),
         vendor: String::new(),
         hostname: String::new(),
