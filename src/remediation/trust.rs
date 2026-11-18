@@ -109,24 +109,31 @@ const TRUST_STATE_FILE: &str = "trust_state.json";
 /// are applied strictly in submission order — concurrent writer threads
 /// could otherwise complete out of order and resurrect stale state.
 enum TrustWrite {
-    Snapshot(String),
-    Flush(std::sync::mpsc::Sender<FlushOutcome>),
+    Snapshot {
+        json: String,
+        rev: u64,
+    },
+    Flush {
+        min_rev: u64,
+        ack: std::sync::mpsc::Sender<FlushOutcome>,
+    },
 }
 
 /// Result of a `flush_pending_writes` barrier. A flush ack is only
-/// `Persisted` when the newest queued snapshot was actually renamed
-/// into place — failed or timed-out persistence must never be reported
-/// as durable.
+/// `Persisted` when the requested snapshot revision or a newer
+/// complete snapshot has actually been renamed into place — failed,
+/// dropped or timed-out persistence must never be reported as durable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlushOutcome {
-    /// Every snapshot queued before the flush was durably written
-    /// (the newest complete state is on disk).
+    /// A snapshot at or above the revision requested by the flush
+    /// barrier landed on disk (the newest complete state is durable).
     Persisted,
-    /// At least the newest snapshot write failed; on-disk trust state
-    /// may be stale. In-memory records are unaffected.
+    /// The newest snapshot write covering the barrier failed and no
+    /// newer queued snapshot succeeded; on-disk trust state may be
+    /// stale. In-memory records are unaffected.
     WriteFailed,
     /// The writer did not acknowledge within the bounded wait (dead
-    /// thread or full-of-flushes queue overflow).
+    /// thread or saturated pending-flush barrier list).
     Timeout,
 }
 
@@ -138,48 +145,78 @@ pub enum FlushOutcome {
 /// the newest snapshot always carries the full current state.
 const TRUST_WRITE_QUEUE_CAP: usize = 64;
 
+/// Pending flush barriers awaiting their covering snapshot revision.
+/// Bounded: a barrier that cannot be confirmed is dropped and its
+/// caller observes `Timeout` — never a silent durable claim.
+const TRUST_PENDING_FLUSH_CAP: usize = TRUST_WRITE_QUEUE_CAP;
+
+struct TrustWriterState {
+    queue: std::collections::VecDeque<TrustWrite>,
+    /// Set under the same mutex as `queue` so the writer can never
+    /// miss the shutdown notification (no notify-before-wait race).
+    shutdown: bool,
+}
+
 struct TrustWriter {
-    queue: Mutex<std::collections::VecDeque<TrustWrite>>,
+    state: Mutex<TrustWriterState>,
     ready: std::sync::Condvar,
-    /// Set when the last TrustStore clone drops so the writer can exit
-    /// instead of parking on the condvar forever.
-    shutdown: std::sync::atomic::AtomicBool,
-    /// Outcome of the most recent snapshot write, read by Flush
-    /// handlers running on the same writer thread. A failed write
-    /// followed by a successful one reports Persisted — the newest
-    /// complete snapshot is what lands on disk.
-    last_write_failed: std::sync::atomic::AtomicBool,
+    /// Monotonic snapshot revision counter. Every accepted snapshot
+    /// gets a unique increasing `rev`; flush barriers carry the newest
+    /// submitted rev so `Persisted` is only reported once a snapshot
+    /// with `rev >= min_rev` has actually landed on disk.
+    next_rev: std::sync::atomic::AtomicU64,
+    /// Join handle for deterministic shutdown drain.
+    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl TrustWriter {
     fn submit(&self, write: TrustWrite) {
-        let mut queue = self.queue.lock().unwrap();
+        let mut st = self.state.lock().unwrap();
         // Coalesce: a queued snapshot is fully superseded by the next
-        // one — only the newest pending state needs to hit disk.
-        if matches!(write, TrustWrite::Snapshot(_))
-            && matches!(queue.back(), Some(TrustWrite::Snapshot(_)))
+        // one — only the newest pending state needs to hit disk. The
+        // replacement carries the NEWER revision, so flush barriers
+        // below it remain satisfiable.
+        if matches!(write, TrustWrite::Snapshot { .. })
+            && matches!(st.queue.back(), Some(TrustWrite::Snapshot { .. }))
         {
-            *queue.back_mut().unwrap() = write;
+            *st.queue.back_mut().unwrap() = write;
             self.ready.notify_one();
             return;
         }
-        if queue.len() >= TRUST_WRITE_QUEUE_CAP {
+        if st.queue.len() >= TRUST_WRITE_QUEUE_CAP {
             // Drop the oldest SNAPSHOT; Flush markers are never dropped
-            // (their ack senders would be lost). Under sustained overflow
-            // a flush may still be dropped once snapshots are exhausted —
-            // its bounded recv_timeout then returns, never hangs.
-            if let Some(pos) = queue
+            // (their ack senders would be lost). Under sustained
+            // overflow a flush may still be dropped once snapshots are
+            // exhausted — its bounded recv_timeout then returns
+            // Timeout, never a false success.
+            if let Some(pos) = st
+                .queue
                 .iter()
-                .position(|w| matches!(w, TrustWrite::Snapshot(_)))
+                .position(|w| matches!(w, TrustWrite::Snapshot { .. }))
             {
-                queue.remove(pos);
+                st.queue.remove(pos);
                 metrics::counter!("bonsai_trust_write_coalesced_total").increment(1);
             } else {
-                queue.pop_front();
+                st.queue.pop_front();
             }
         }
-        queue.push_back(write);
+        st.queue.push_back(write);
         self.ready.notify_one();
+    }
+
+    /// Signal shutdown and block until the writer has drained every
+    /// accepted write. Called from `TrustStore::drop` so graceful
+    /// process shutdown deterministically persists queued snapshots
+    /// instead of racing a detached thread.
+    fn shutdown(&self) {
+        {
+            let mut st = self.state.lock().unwrap();
+            st.shutdown = true;
+        }
+        self.ready.notify_all();
+        if let Some(handle) = self.thread.lock().unwrap().take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -191,12 +228,10 @@ pub struct TrustStore {
 
 impl Drop for TrustStore {
     fn drop(&mut self) {
-        // Signal the writer to drain and exit once the last store is
-        // gone; queued snapshots still land before the thread returns.
-        self.writer
-            .shutdown
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        self.writer.ready.notify_all();
+        // Signal the writer and JOIN it: queued snapshots are drained
+        // before this returns, so graceful process shutdown cannot
+        // exit while accepted writes are still in flight.
+        self.writer.shutdown();
     }
 }
 
@@ -217,79 +252,129 @@ impl TrustStore {
         // atomic rename so a crash mid-write can never leave a
         // truncated trust_state.json.
         let writer = Arc::new(TrustWriter {
-            queue: Mutex::new(std::collections::VecDeque::new()),
+            state: Mutex::new(TrustWriterState {
+                queue: std::collections::VecDeque::new(),
+                shutdown: false,
+            }),
             ready: std::sync::Condvar::new(),
-            shutdown: std::sync::atomic::AtomicBool::new(false),
-            last_write_failed: std::sync::atomic::AtomicBool::new(false),
+            next_rev: std::sync::atomic::AtomicU64::new(0),
+            thread: Mutex::new(None),
         });
         {
-            let writer = Arc::clone(&writer);
+            let writer_for_thread = Arc::clone(&writer);
             let writer_path = path.clone();
-            std::thread::spawn(move || {
+            let handle = std::thread::spawn(move || {
+                // Highest snapshot revision durably renamed into place.
+                let mut durable_rev: u64 = 0;
+                // Outcome of the most recently processed snapshot.
+                let mut last_rev: u64 = 0;
+                let mut last_ok = true;
+                // Flush barriers not yet resolved, oldest first.
+                let mut pending_flushes: Vec<(u64, std::sync::mpsc::Sender<FlushOutcome>)> =
+                    Vec::new();
+
+                // Resolve every pending barrier whose covering
+                // revision has landed, and fail barriers that can no
+                // longer be satisfied (covering write failed and no
+                // snapshot remains queued to supersede it).
+                macro_rules! evaluate_flushes {
+                    () => {{
+                        let has_queued_snapshot = writer_for_thread
+                            .state
+                            .lock()
+                            .unwrap()
+                            .queue
+                            .iter()
+                            .any(|w| matches!(w, TrustWrite::Snapshot { .. }));
+                        let hopeless = !has_queued_snapshot && !last_ok && last_rev > 0;
+                        pending_flushes.retain_mut(|(min_rev, ack)| {
+                            if durable_rev >= *min_rev {
+                                let _ = ack.send(FlushOutcome::Persisted);
+                                false
+                            } else if hopeless && *min_rev <= last_rev {
+                                let _ = ack.send(FlushOutcome::WriteFailed);
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                    }};
+                }
+
                 loop {
                     let msg = {
-                        let mut queue = writer.queue.lock().unwrap();
+                        let mut st = writer_for_thread.state.lock().unwrap();
                         loop {
-                            if let Some(msg) = queue.pop_front() {
+                            if let Some(msg) = st.queue.pop_front() {
                                 break msg;
                             }
-                            if writer.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
-                                // Drain remaining queued writes before
-                                // exit so shutdown loses nothing that
-                                // was already accepted.
-                                if queue.is_empty() {
-                                    return;
+                            if st.shutdown {
+                                // Queue drained: fail any barrier that
+                                // could not be satisfied, then exit.
+                                for (_, ack) in pending_flushes.drain(..) {
+                                    let _ = ack.send(FlushOutcome::WriteFailed);
                                 }
-                                continue;
+                                return;
                             }
-                            queue = writer.ready.wait(queue).unwrap();
+                            st = writer_for_thread.ready.wait(st).unwrap();
                         }
                     };
                     match msg {
-                        TrustWrite::Snapshot(json) => {
+                        TrustWrite::Snapshot { json, rev } => {
                             // Atomic replacement: write to a sibling
-                            // temp file, fsync it, then rename, so
-                            // readers never observe a partial
-                            // trust_state.json and a crash cannot
-                            // resurrect a torn page-cache write. The
-                            // directory itself is not fsynced — a crash
-                            // may lose the newest rename but never
-                            // exposes corrupt content (last fully
-                            // persisted snapshot or the previous file
-                            // remains).
+                            // temp file, fsync it, rename, then fsync
+                            // the parent directory where the platform
+                            // supports it, so readers never observe a
+                            // partial trust_state.json and a crash
+                            // cannot resurrect a torn page-cache write
+                            // or lose the newest rename.
                             let tmp = writer_path.with_extension("json.tmp");
                             let result = std::fs::write(&tmp, &json)
                                 .and_then(|_| std::fs::File::open(&tmp).and_then(|f| f.sync_all()))
-                                .and_then(|_| std::fs::rename(&tmp, &writer_path));
+                                .and_then(|_| std::fs::rename(&tmp, &writer_path))
+                                .map(|_| {
+                                    if let Some(dir) = writer_path.parent() {
+                                        if let Ok(d) = std::fs::File::open(dir) {
+                                            // Best-effort:
+                                            // directory fsync is
+                                            // unsupported on some
+                                            // platforms.
+                                            let _ = d.sync_all();
+                                        }
+                                    }
+                                });
                             match result {
-                                Ok(()) => writer
-                                    .last_write_failed
-                                    .store(false, std::sync::atomic::Ordering::SeqCst),
+                                Ok(()) => {
+                                    durable_rev = rev;
+                                    last_rev = rev;
+                                    last_ok = true;
+                                }
                                 Err(e) => {
-                                    writer
-                                        .last_write_failed
-                                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                                    last_rev = rev;
+                                    last_ok = false;
                                     tracing::warn!("failed to persist trust_state.json: {e}");
                                 }
                             }
+                            evaluate_flushes!();
                         }
-                        TrustWrite::Flush(ack) => {
-                            // The ack reports the durability of the
-                            // newest snapshot processed before this
-                            // marker — never a blanket success.
-                            let outcome = if writer
-                                .last_write_failed
-                                .load(std::sync::atomic::Ordering::SeqCst)
-                            {
-                                FlushOutcome::WriteFailed
-                            } else {
-                                FlushOutcome::Persisted
-                            };
-                            let _ = ack.send(outcome);
+                        TrustWrite::Flush { min_rev, ack } => {
+                            // Register the barrier, then resolve it
+                            // against everything already durable or
+                            // still queued — never against a blanket
+                            // "last write" flag.
+                            if pending_flushes.len() >= TRUST_PENDING_FLUSH_CAP {
+                                // Saturated: drop the OLDEST barrier;
+                                // its caller observes Timeout.
+                                pending_flushes.remove(0);
+                                metrics::counter!("bonsai_trust_flush_dropped_total").increment(1);
+                            }
+                            pending_flushes.push((min_rev, ack));
+                            evaluate_flushes!();
                         }
                     }
                 }
             });
+            *writer.thread.lock().unwrap() = Some(handle);
         }
         Self {
             records,
@@ -306,7 +391,18 @@ impl TrustStore {
     /// `WriteFailed`/`Timeout` as NOT durable.
     pub fn flush_pending_writes(&self) -> FlushOutcome {
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-        self.writer.submit(TrustWrite::Flush(ack_tx));
+        // Barrier revision: the newest snapshot submitted so far.
+        // `Persisted` is only possible once a snapshot with
+        // `rev >= min_rev` has actually been renamed into place —
+        // queue coalescing or overflow can never invalidate that.
+        let min_rev = self
+            .writer
+            .next_rev
+            .load(std::sync::atomic::Ordering::SeqCst);
+        self.writer.submit(TrustWrite::Flush {
+            min_rev,
+            ack: ack_tx,
+        });
         // Bounded wait: a dead writer must not hang shutdown/tests.
         match ack_rx.recv_timeout(Duration::from_secs(30)) {
             Ok(outcome) => outcome,
@@ -319,7 +415,14 @@ impl TrustStore {
         // ordered writer thread so disk I/O doesn't block other
         // lock-holders (Q-10) while still guaranteeing write order.
         match serde_json::to_string_pretty(&self.records) {
-            Ok(json) => self.writer.submit(TrustWrite::Snapshot(json)),
+            Ok(json) => {
+                let rev = self
+                    .writer
+                    .next_rev
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                self.writer.submit(TrustWrite::Snapshot { json, rev });
+            }
             Err(e) => warn!("failed to serialize trust state: {e}"),
         }
     }
@@ -768,6 +871,145 @@ mod tests {
         assert_eq!(
             store2.get(&key("drain-rule")).unwrap().operator_approvals,
             1
+        );
+    }
+
+    /// Deterministic queue-pressure regression for flush barriers.
+    ///
+    /// The writer's sibling temp path is replaced by a FIFO, so the
+    /// FIRST snapshot write blocks inside `open(2)` until a reader
+    /// attaches — a genuinely stalled writer, not a timing assumption.
+    /// While stalled we submit more snapshot+flush pairs than the
+    /// bounded queue capacity; overflow deterministically drops the
+    /// OLDEST queued snapshots, including snapshots that precede
+    /// existing Flush markers. After the stall is released every
+    /// barrier must resolve on revision evidence — `Persisted` only
+    /// because a covering-or-newer snapshot actually landed — and a
+    /// deliberately failing phase must yield `WriteFailed`, never a
+    /// concealed success.
+    #[test]
+    #[cfg(unix)]
+    fn flush_barriers_survive_stalled_writer_queue_pressure() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tmp_dir();
+        // trust_state.json -> with_extension("json.tmp") yields this.
+        let tmp_path = dir.path().join("trust_state.json.tmp");
+        let c_path = std::ffi::CString::new(tmp_path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+
+        let k = key("pressure-rule");
+        let mut store = TrustStore::load(dir.path(), RemediationConfig::default());
+        // rev1: the writer picks this up and stalls on the FIFO open.
+        store.record_approval(&k, 1);
+
+        // 40 snapshot+flush pairs = 80 queued items > cap 64, so
+        // overflow deterministically drops the oldest snapshots —
+        // while staying below the point where flush markers themselves
+        // would be dropped (each barrier must still be acknowledged).
+        // Each flush carries the newest submitted revision, exactly
+        // like flush_pending_writes().
+        let mut flush_rxs = Vec::new();
+        for _ in 0..(TRUST_WRITE_QUEUE_CAP / 2 + 8) {
+            store.record_approval(&k, 2);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let min_rev = store
+                .writer
+                .next_rev
+                .load(std::sync::atomic::Ordering::SeqCst);
+            store.writer.submit(TrustWrite::Flush { min_rev, ack: tx });
+            flush_rxs.push(rx);
+        }
+
+        // Release the stall: an O_RDWR handle on the FIFO satisfies
+        // BOTH directions without blocking, so the writer's
+        // open-for-write rendezvous completes AND its later
+        // open-for-read (the fsync step) can never deadlock waiting
+        // for a writer that has already closed. The first snapshot
+        // then fails at fsync(2) (EINVAL on a FIFO) and the rename is
+        // skipped; unlink the FIFO promptly so the NEXT snapshot
+        // creates a regular temp file and persistence recovers. Even
+        // if a snapshot or two still observes the FIFO, every flush
+        // barrier stays satisfiable by a newer successful snapshot.
+        let _fifo_end = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&tmp_path)
+            .unwrap();
+        for _ in 0..10_000 {
+            if !tmp_path.exists() || std::fs::remove_file(&tmp_path).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        // Phase 1: every barrier must resolve Persisted — each flush's
+        // covering revision (or a newer surviving snapshot) lands.
+        for rx in &flush_rxs {
+            let outcome = rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("flush barrier must be acknowledged");
+            assert_eq!(
+                outcome,
+                FlushOutcome::Persisted,
+                "covering-or-newer snapshot landed; barrier must succeed"
+            );
+        }
+
+        // Phase 2: make every subsequent write fail, then submit more
+        // barriers under the same pressure. With no queued snapshot
+        // able to supersede the failed covering revision, each barrier
+        // must report WriteFailed — a failed newer snapshot must not
+        // be concealed by the earlier successful writes.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+            perms.set_mode(0o500);
+            std::fs::set_permissions(dir.path(), perms).unwrap();
+        }
+        let mut failed_rxs = Vec::new();
+        for _ in 0..(TRUST_WRITE_QUEUE_CAP / 2 + 8) {
+            store.record_approval(&k, 3);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let min_rev = store
+                .writer
+                .next_rev
+                .load(std::sync::atomic::Ordering::SeqCst);
+            store.writer.submit(TrustWrite::Flush { min_rev, ack: tx });
+            failed_rxs.push(rx);
+        }
+        for rx in &failed_rxs {
+            let outcome = rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("flush barrier must be acknowledged");
+            assert_eq!(
+                outcome,
+                FlushOutcome::WriteFailed,
+                "covering write failed with nothing newer queued"
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+            perms.set_mode(0o700);
+            std::fs::set_permissions(dir.path(), perms).unwrap();
+        }
+
+        // Phase 3: recovery — a fresh barrier succeeds and the newest
+        // COMPLETE snapshot (including the phase-2 mutations that
+        // failed durably) lands on disk.
+        store.record_approval(&k, 4);
+        assert_eq!(store.flush_pending_writes(), FlushOutcome::Persisted);
+        drop(store);
+
+        let store2 = TrustStore::load(dir.path(), RemediationConfig::default());
+        let rec = store2.get(&k).unwrap();
+        assert_eq!(
+            rec.operator_approvals,
+            1 + (TRUST_WRITE_QUEUE_CAP / 2 + 8) as u32 * 2 + 1,
+            "final durable snapshot must be the newest complete state"
         );
     }
 }
