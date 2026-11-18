@@ -1574,11 +1574,42 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
     // update path, subscriber map and per-update lifecycle channel.
     let bus = InProcessBus::new(64);
     let mut subscribers = bonsai::subscriber::SubscriberHandleMap::new();
+
+    // Collector bus → authenticated TelemetryIngest RPC against the
+    // CURRENT core (the client slot is swapped across the restart).
+    // This is the same wire path production collectors use, so the
+    // persisted SubscriptionStatus rows asserted below are produced by
+    // real authenticated telemetry ingestion — not registry identity
+    // alone (M5.2B review B4).
+    let telemetry_client: Arc<std::sync::Mutex<Option<BonsaiGraphClient<Channel>>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let mut telemetry_rx = bus.subscribe();
+    let telemetry_fwd = {
+        let client_slot = Arc::clone(&telemetry_client);
+        tokio::spawn(async move {
+            while let Ok(update) = telemetry_rx.recv().await {
+                let update = Arc::unwrap_or_clone(update);
+                let proto = match telemetry_to_ingest_update("e2e-col", &update) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                let client = client_slot.lock().unwrap().clone();
+                let Some(mut client) = client else { continue };
+                tokio::spawn(async move {
+                    let _ = client
+                        .telemetry_ingest(Request::new(tokio_stream::iter(vec![proto])))
+                        .await;
+                });
+            }
+        })
+    };
     let (plan_tx, _plan_rx) = mpsc::channel::<bonsai::subscription_status::SubscriptionPlan>(64);
     let plans = Some(plan_tx);
     let mut last_epoch = 0u64;
     let mut last_gen = 0u64;
 
+    *telemetry_client.lock().unwrap() =
+        Some(connect_client(&pki, &collector_leaf, lab1.addr).await);
     let (lc1_tx, lc1_rx) =
         mpsc::channel::<bonsai::subscription_sessions::SessionLifecycleEvent>(256);
     let tls1 = write_tls_files(&pki, &collector_leaf, lab1._dir.path());
@@ -1651,6 +1682,11 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
         .1;
     let calls_phase1 = subscribe_calls.load(Ordering::SeqCst);
 
+    // B4: exact persisted coverage on the FIRST authority — path A
+    // observed via authenticated telemetry; paths B/C remain pending
+    // (no matching evidence was ever injected for them).
+    assert_exact_coverage(&lab1.graph, &device_addr).await;
+
     // ── Phase 2: core restart — new epoch, empty registry, SAME
     // assignment configuration. The subscriber must be re-established
     // under the new authority, not preserved with the dead epoch. ──
@@ -1667,6 +1703,8 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
         )
         .unwrap();
     bind_collector(&lab2.sqlite, "e2e-col", &collector_leaf.fingerprint);
+    *telemetry_client.lock().unwrap() =
+        Some(connect_client(&pki, &collector_leaf, lab2.addr).await);
     let epoch2 = lab2.manager.authority_epoch();
     assert!(
         epoch2 > epoch1,
@@ -1764,6 +1802,11 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
         session1, session2,
         "new authority must mint a fresh execution identity"
     );
+
+    // B4: the renewed authority must reproduce the SAME exact
+    // persisted coverage — registry identity alone is not proof that
+    // observed path coverage survived the core restart.
+    assert_exact_coverage(&lab2.graph, &device_addr).await;
 
     // Old authority cannot regain coverage on the new core: a delayed
     // epoch-1-stamped lifecycle event is fenced before the registry.
@@ -2028,6 +2071,7 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
         .await,
         "monitoring did not resume after reassignment"
     );
+    assert_exact_coverage(&lab2.graph, &device_addr).await;
 
     // The predecessor core legitimately loses coverage: the collector
     // renewed authority under the new epoch, so its epoch-1 session was
@@ -2040,5 +2084,263 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
 
     let _ = gsd.send(true);
     let _ = ghandle.await;
+    let _ = telemetry_fwd.abort();
     let _ = session_gen1;
+}
+
+/// B4 helper: poll the persisted graph until the exact expected
+/// SubscriptionStatus rows are present — path A `observed` with exact
+/// device/path/origin/mode identity, paths B/C `pending` (registered
+/// but never evidenced). Fails rather than timing out silently.
+async fn assert_exact_coverage(graph: &GraphStore, device_addr: &str) {
+    let path_a = "interfaces/interface[name=Ethernet1/1]/state/counters";
+    let path_b = "interfaces/interface[name=Ethernet1/2]/state/oper-status";
+    let path_c = "interfaces/interface[name=Ethernet1/3]/state/oper-status";
+    let mut last_rows = Vec::new();
+    for _ in 0..150 {
+        last_rows = query_subscription_statuses(graph).await;
+        let status_of = |path: &str| -> Option<&str> {
+            last_rows
+                .iter()
+                .find(|r| r.0 == device_addr && r.1 == path)
+                .map(|r| r.4.as_str())
+        };
+        if status_of(path_a) == Some("observed")
+            && status_of(path_b) == Some("pending")
+            && status_of(path_c) == Some("pending")
+        {
+            let row_a = last_rows
+                .iter()
+                .find(|r| r.0 == device_addr && r.1 == path_a)
+                .expect("path A row");
+            assert_eq!(row_a.2, "openconfig", "path A origin");
+            assert_eq!(row_a.3, "SAMPLE", "path A mode");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("exact persisted coverage never reached: {last_rows:?}");
+}
+
+// ── M5.2B review B3: collector registration generation fencing ───────────────
+
+/// A delayed lifecycle event stamped with a SUPERSEDED collector
+/// session generation must never establish authority — even before the
+/// new registration's first device execution arrives. Generation zero
+/// and post-disconnect events are fenced the same way.
+#[tokio::test]
+async fn stale_collector_session_generation_cannot_establish_authority() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let pki = make_pki();
+    let collector_leaf = issue_leaf(&pki, "e2e-col", false);
+    let (_gnmi_addr, _streams, _requests, _subscribe_calls, _gsd, _ghandle) = start_mock().await;
+
+    let mut device = device_target("127.0.0.1:1");
+    device.security = Some(GnmiSecurityMode::Plaintext);
+    device.collector_id = Some("e2e-col".to_string());
+    let device_addr = device.address.clone();
+
+    let lab = start_lab(&pki, device.clone()).await;
+    lab.registry
+        .add_device_with_audit(device.clone(), "test", "test_add")
+        .unwrap();
+    lab.registry
+        .assign_device_with_audit(
+            &device_addr,
+            Some("e2e-col".to_string()),
+            "test",
+            "test_assign",
+        )
+        .unwrap();
+    bind_collector(&lab.sqlite, "e2e-col", &collector_leaf.fingerprint);
+
+    // Explicit authorized manifest (same construction as the manifest
+    // authorization test): plan_id is the deterministic identity.
+    let entries: Vec<(String, String, String, u64)> = device
+        .selected_paths
+        .iter()
+        .map(|p| {
+            (
+                p.origin.clone(),
+                p.path.clone(),
+                p.mode.clone(),
+                p.sample_interval_ns,
+            )
+        })
+        .collect();
+    let good_plan = bonsai::subscriber::acquisition_plan_id(AcquisitionMode::Explicit, &entries);
+    let to_pb =
+        |entries: &[(String, String, String, u64)]| -> Vec<bonsai::api::pb::SubscriptionPath> {
+            entries
+                .iter()
+                .map(
+                    |(origin, path, mode, interval)| bonsai::api::pb::SubscriptionPath {
+                        path: path.clone(),
+                        origin: origin.clone(),
+                        mode: mode.clone(),
+                        sample_interval_ns: *interval,
+                        ..Default::default()
+                    },
+                )
+                .collect()
+        };
+    let manifest = to_pb(&entries);
+
+    let epoch = lab.manager.authority_epoch();
+
+    // Registration generation 1.
+    let (mut assign_rx1, _sg1) = lab
+        .manager
+        .register_collector("e2e-col".to_string(), PROTOCOL_VERSION_CURRENT, true)
+        .await
+        .unwrap();
+    let sync1 = assign_rx1.recv().await.expect("sync1");
+    let assigned_gen1 = sync1.generation;
+    let session_gen1 = sync1.collector_session_generation;
+
+    let ev = |session_gen: u64,
+              session: &str,
+              exec_gen: u64,
+              assigned_gen: u64,
+              state: &str,
+              seq: u64| bonsai::api::pb::SubscriptionLifecycleEvent {
+        collector_id: "e2e-col".to_string(),
+        device_address: device_addr.clone(),
+        plan_id: good_plan.clone(),
+        session_id: session.to_string(),
+        state: state.to_string(),
+        transition_seq: seq,
+        authority_epoch: epoch,
+        assignment_generation: assigned_gen,
+        collector_session_generation: session_gen,
+        execution_generation: exec_gen,
+        occurred_at_ns: 1,
+        detail: String::new(),
+        protocol_version: PROTOCOL_VERSION_CURRENT,
+        submitted_paths: manifest.clone(),
+        acquisition: "explicit".to_string(),
+    };
+
+    // Baseline: a gen-1-stamped synchronized execution IS admitted
+    // while generation 1 is current.
+    let (ev_tx, ev_rx) = mpsc::channel::<bonsai::api::pb::SubscriptionLifecycleEvent>(8);
+    let mut client = connect_client(&pki, &collector_leaf, lab.addr).await;
+    let call = tokio::spawn(async move {
+        client
+            .subscription_lifecycle(Request::new(ReceiverStream::new(ev_rx)))
+            .await
+    });
+    for (state, seq) in [("submitted", 1), ("synchronized", 2)] {
+        ev_tx
+            .send(ev(session_gen1, "sess-gen1", 1, assigned_gen1, state, seq))
+            .await
+            .unwrap();
+    }
+    drop(ev_tx);
+    let resp = call.await.expect("rpc").expect("resp").into_inner();
+    assert_eq!(
+        resp.rejected, 0,
+        "gen-1 baseline must be accepted: {resp:?}"
+    );
+    assert!(
+        wait_for(
+            || lab.sessions.current_session(&device_addr).is_some(),
+            Duration::from_secs(10),
+            "gen-1 coverage"
+        )
+        .await
+    );
+
+    // Registration generation 2 — the collector reconnects before any
+    // gen-2 device lifecycle event arrives.
+    let (mut assign_rx2, session_gen2_reg) = lab
+        .manager
+        .register_collector("e2e-col".to_string(), PROTOCOL_VERSION_CURRENT, true)
+        .await
+        .unwrap();
+    let sync2 = assign_rx2.recv().await.expect("sync2");
+    let session_gen2 = sync2.collector_session_generation;
+    assert!(session_gen2 > session_gen1);
+
+    // A DELAYED gen-1 event attempting to register a different
+    // execution must be fenced at the authenticated boundary.
+    let (ev_tx2, ev_rx2) = mpsc::channel::<bonsai::api::pb::SubscriptionLifecycleEvent>(8);
+    let mut client2 = connect_client(&pki, &collector_leaf, lab.addr).await;
+    let call2 = tokio::spawn(async move {
+        client2
+            .subscription_lifecycle(Request::new(ReceiverStream::new(ev_rx2)))
+            .await
+    });
+    for (state, seq) in [("submitted", 1), ("synchronized", 2)] {
+        ev_tx2
+            .send(ev(
+                session_gen1,
+                "sess-stale-gen1",
+                50,
+                sync2.generation,
+                state,
+                seq,
+            ))
+            .await
+            .unwrap();
+    }
+    // Generation zero — never a valid registration.
+    ev_tx2
+        .send(ev(0, "sess-gen0", 1, sync2.generation, "synchronized", 1))
+        .await
+        .unwrap();
+    drop(ev_tx2);
+    let resp2 = call2.await.expect("rpc2").expect("resp2").into_inner();
+    assert!(
+        resp2.rejected >= 3,
+        "stale/zero-generation events must be rejected: {resp2:?}"
+    );
+    assert_eq!(
+        lab.sessions.current_session(&device_addr),
+        Some((good_plan.clone(), "sess-gen1".to_string())),
+        "stale registration must not disturb or replace current authority"
+    );
+
+    // Disconnected collector: after unregister + resync withdrawal,
+    // even a current-generation-stamped event cannot establish
+    // authority.
+    assert!(
+        lab.manager
+            .unregister_collector("e2e-col", session_gen2_reg)
+    );
+    lab.registry
+        .assign_device_with_audit(&device_addr, None, "test", "test_unassign")
+        .unwrap();
+    lab.manager.resync_collector("e2e-col").await;
+    let _ = assign_rx2.recv().await;
+
+    let (ev_tx3, ev_rx3) = mpsc::channel::<bonsai::api::pb::SubscriptionLifecycleEvent>(4);
+    let mut client3 = connect_client(&pki, &collector_leaf, lab.addr).await;
+    let call3 = tokio::spawn(async move {
+        client3
+            .subscription_lifecycle(Request::new(ReceiverStream::new(ev_rx3)))
+            .await
+    });
+    ev_tx3
+        .send(ev(
+            session_gen2,
+            "sess-post-disconnect",
+            1,
+            sync2.generation,
+            "synchronized",
+            1,
+        ))
+        .await
+        .unwrap();
+    drop(ev_tx3);
+    let resp3 = call3.await.expect("rpc3").expect("resp3").into_inner();
+    assert!(
+        resp3.rejected >= 1,
+        "post-disconnect event must be rejected: {resp3:?}"
+    );
+    assert_eq!(
+        lab.sessions.current_session(&device_addr),
+        None,
+        "disconnected collector must not hold coverage authority"
+    );
 }

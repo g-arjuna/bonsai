@@ -455,7 +455,10 @@ impl SubscriptionSessionRegistry {
         // A session that (re)enters the device-facing lifecycle
         // supersedes every sibling session for the same target: one
         // collector owns one device-facing session at a time, and old
-        // session identities must not retain authority.
+        // session identities must not retain authority. Only VERIFIED
+        // producers may disturb sibling sessions — an unverified
+        // higher-ranked event must never supersede a legitimate
+        // verified current session (M5.2B review B2).
         let entering_live = matches!(
             event.state.as_str(),
             SUBMITTED | SYNCHRONIZING | SYNCHRONIZED
@@ -463,7 +466,7 @@ impl SubscriptionSessionRegistry {
         // A superseded execution's late live-state events are history
         // only: they must never supersede the current execution's
         // sessions or disturb current authority.
-        if entering_live && exec_relation != ExecRelation::Old {
+        if entering_live && verified && exec_relation != ExecRelation::Old {
             for (other_key, other) in entry.sessions.iter_mut() {
                 if *other_key != key && !is_terminal(&other.state) {
                     other.state = SUPERSEDED.to_string();
@@ -493,6 +496,18 @@ impl SubscriptionSessionRegistry {
             && (is_terminal(&event.state) || !verified)
         {
             entry.current = None;
+        }
+        // Current authority implies fence-head rank (M5.2B review B2):
+        // whenever the high-water mark advanced — including a NEW
+        // execution whose FIRST received event is already terminal —
+        // any current session bound to a lower rank is obsolete and
+        // must be invalidated immediately. It can never remain current
+        // or regain authority.
+        if let (Some(hwm), Some(cur)) = (entry.exec_hwm, entry.current.clone()) {
+            let cur_rank = entry.sessions.get(&cur).and_then(|r| r.exec);
+            if cur_rank != Some(hwm) {
+                entry.current = None;
+            }
         }
         Self::evict_bounded(entry);
         ApplyOutcome::Applied
@@ -955,6 +970,99 @@ mod tests {
         assert_eq!(
             reg.current_session("dut"),
             Some(("plan".to_string(), newest))
+        );
+    }
+
+    /// M5.2B review B2: a newer verified execution that advances the
+    /// high-water mark via a FIRST-SEEN TERMINAL event must invalidate
+    /// the older synchronized current session immediately — current
+    /// authority always implies fence-head rank. The old session can
+    /// never regain authority, and a subsequent newer execution
+    /// establishes current normally.
+    #[test]
+    fn terminal_first_new_execution_invalidates_older_current() {
+        let reg = SubscriptionSessionRegistry::new();
+        // Execution A (exec_gen 1) synchronizes and becomes current.
+        for (st, seq) in [
+            (state::SUBMITTED, 1),
+            (state::SYNCHRONIZING, 2),
+            (state::SYNCHRONIZED, 3),
+        ] {
+            assert_eq!(
+                reg.apply(&evx(st, seq, "exec-a", 1), true),
+                ApplyOutcome::Applied
+            );
+        }
+        assert_eq!(
+            reg.current_session("dut"),
+            Some(("plan".to_string(), "exec-a".to_string()))
+        );
+
+        // Execution B (exec_gen 2): its submitted/synchronizing events
+        // are LOST — the first event the core sees is already terminal.
+        assert_eq!(
+            reg.apply(&evx(state::FAILED, 1, "exec-b", 2), true),
+            ApplyOutcome::Applied
+        );
+        // A must NOT remain current: its rank is below the high-water
+        // mark even though B never held live coverage.
+        assert_eq!(reg.current_session("dut"), None);
+
+        // A cannot regain authority: a late synchronized transition is
+        // recorded as history at most — it never becomes current.
+        let _ = reg.apply(&evx(state::SYNCHRONIZED, 4, "exec-a", 1), true);
+        assert_eq!(reg.current_session("dut"), None);
+
+        // Execution C (exec_gen 3) establishes current authority.
+        for (st, seq) in [(state::SUBMITTED, 1), (state::SYNCHRONIZED, 2)] {
+            assert_eq!(
+                reg.apply(&evx(st, seq, "exec-c", 3), true),
+                ApplyOutcome::Applied
+            );
+        }
+        assert_eq!(
+            reg.current_session("dut"),
+            Some(("plan".to_string(), "exec-c".to_string()))
+        );
+    }
+
+    /// M5.2B review B2: an UNVERIFIED higher-ranked event must never
+    /// supersede a legitimate verified current session — sibling
+    /// supersession and current authority are verified-only.
+    #[test]
+    fn unverified_higher_rank_cannot_supersede_verified_current() {
+        let reg = SubscriptionSessionRegistry::new();
+        for (st, seq) in [(state::SUBMITTED, 1), (state::SYNCHRONIZED, 2)] {
+            assert_eq!(
+                reg.apply(&evx(st, seq, "exec-a", 1), true),
+                ApplyOutcome::Applied
+            );
+        }
+        assert_eq!(
+            reg.current_session("dut"),
+            Some(("plan".to_string(), "exec-a".to_string()))
+        );
+
+        // Unverified NEW execution entering live states: recorded for
+        // diagnostics at most — the verified current session and its
+        // authority are untouched.
+        for (st, seq) in [
+            (state::SUBMITTED, 1),
+            (state::SYNCHRONIZING, 2),
+            (state::SYNCHRONIZED, 3),
+        ] {
+            let _ = reg.apply(&evx(st, seq, "exec-rogue", 9), false);
+        }
+        assert_eq!(
+            reg.current_session("dut"),
+            Some(("plan".to_string(), "exec-a".to_string())),
+            "unverified higher-ranked events must not disturb verified current"
+        );
+        // The verified fence head is unchanged: exec-a is still the
+        // only session allowed to hold authority.
+        assert_eq!(
+            reg.apply(&evx(state::SYNCHRONIZED, 2, "exec-a", 1), true),
+            ApplyOutcome::Duplicate
         );
     }
 }

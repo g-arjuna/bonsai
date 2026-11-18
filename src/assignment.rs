@@ -475,7 +475,16 @@ impl CollectorManager {
         // insert waits on the same lock and observes post-cleanup
         // registry state. Assignments are therefore always computed
         // against the state the new session will actually own.
+        //
+        // M5.2B review B3: the generation bump runs under the session
+        // gate so registration replacement is serialized against
+        // lifecycle admission — an event is validated against either
+        // the pre-bump or post-bump generation, never mid-replacement.
+        // The gate is released before `active_collectors` is touched:
+        // `unregister_collector` holds that lock while acquiring the
+        // gate, so holding both here would deadlock.
         let generation = {
+            let _gate = self.session_gate();
             let mut generations = self.session_generations.lock().unwrap();
             let next = generations.entry(collector_id.clone()).or_insert(0);
             *next += 1;

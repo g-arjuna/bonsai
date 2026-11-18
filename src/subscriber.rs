@@ -972,13 +972,86 @@ pub struct SubscriberEntry {
     pub shutdown_tx: watch::Sender<bool>,
     pub handle: JoinHandle<()>,
     pub assignment_fingerprint: String,
-    /// Shared execution counter carried across subscriber respawns so
-    /// execution generations stay monotonic within one collector
-    /// session even when the effective assignment changes.
+    /// Shared execution counter for this target. The authoritative
+    /// copy lives in `SubscriberHandleMap::exec_seqs` and OUTLIVES the
+    /// entry: stopping/removing a subscriber must never reset it, or a
+    /// recreated subscriber's executions would rank below the core's
+    /// per-target high-water mark and be fenced as stale forever.
     pub execution_seq: Arc<AtomicU64>,
 }
 
-pub type SubscriberHandleMap = HashMap<String, SubscriberEntry>;
+/// Running subscribers plus the per-target execution-counter book.
+///
+/// `exec_seqs` is owned by the same scope as the subscriber map (the
+/// local subscriber manager task, or the collector manager for the
+/// life of the collector process) and is deliberately NOT pruned on
+/// subscriber stop/remove/assignment withdrawal: execution generations
+/// must stay monotonic for the whole authority context, and a counter
+/// is O(1) per distinct target address — the same order as the
+/// assignment/registry state that produced it.
+pub struct SubscriberHandleMap {
+    entries: HashMap<String, SubscriberEntry>,
+    exec_seqs: HashMap<String, Arc<AtomicU64>>,
+}
+
+impl SubscriberHandleMap {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            exec_seqs: HashMap::new(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn keys(&self) -> std::collections::hash_map::Keys<'_, String, SubscriberEntry> {
+        self.entries.keys()
+    }
+
+    pub fn get(&self, address: &str) -> Option<&SubscriberEntry> {
+        self.entries.get(address)
+    }
+
+    pub fn contains_key(&self, address: &str) -> bool {
+        self.entries.contains_key(address)
+    }
+
+    /// The monotonic execution counter for `address`, created on first
+    /// use and retained across every subscriber stop/recreation.
+    pub fn exec_seq(&mut self, address: &str) -> Arc<AtomicU64> {
+        Arc::clone(
+            self.exec_seqs
+                .entry(address.to_string())
+                .or_insert_with(|| Arc::new(AtomicU64::new(0))),
+        )
+    }
+
+    pub fn insert(&mut self, address: String, entry: SubscriberEntry) {
+        // The counter book is the source of truth: a stale entry can
+        // never fork the sequence — the earliest counter wins.
+        self.exec_seqs
+            .entry(address.clone())
+            .or_insert_with(|| Arc::clone(&entry.execution_seq));
+        self.entries.insert(address, entry);
+    }
+
+    /// Stop bookkeeping only — the execution counter is retained.
+    pub fn remove(&mut self, address: &str) -> Option<SubscriberEntry> {
+        self.entries.remove(address)
+    }
+}
+
+impl Default for SubscriberHandleMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub async fn stop_subscriber(address: &str, subscribers: &mut SubscriberHandleMap) {
     if let Some(entry) = subscribers.remove(address) {
@@ -1177,13 +1250,13 @@ pub async fn spawn_subscriber_with_creds(
         info!(address = %address, "assignment unchanged — preserving subscriber");
         return Ok(SpawnOutcome::Unchanged);
     }
-    // Carry the execution counter across the respawn: within one
-    // (authority epoch, authority instance, collector session) the
-    // execution generations must stay monotonic or the new subscriber's
-    // executions would rank below the fence head and be fenced as stale.
-    let carried_exec_seq = subscribers
-        .get(&address)
-        .map(|entry| Arc::clone(&entry.execution_seq));
+    // Fetch the execution counter BEFORE stopping the obsolete
+    // subscriber: it lives in the map's counter book and survives the
+    // stop, so every recreation — disable/enable, remove/re-add,
+    // plan replacement, authority renewal — keeps monotonic execution
+    // generations instead of restarting below the core's high-water
+    // mark (M5.2B review B1).
+    let execution_seq = subscribers.exec_seq(&address);
     if subscribers.contains_key(&address) {
         info!(address = %address, "assignment changed — stopping obsolete subscriber");
         stop_subscriber(&address, subscribers).await;
@@ -1215,7 +1288,6 @@ pub async fn spawn_subscriber_with_creds(
         return Ok(SpawnOutcome::Stopped);
     }
 
-    let execution_seq = carried_exec_seq.unwrap_or_else(|| Arc::new(AtomicU64::new(0)));
     let subscriber = GnmiSubscriber::new(
         target.address.clone(),
         target.username.clone(),
@@ -2137,5 +2209,46 @@ mod tests {
             &caps,
         );
         assert!(matches!(plan, AcquisitionPlan::Rejected { .. }));
+    }
+
+    /// M5.2B review B1: the execution-counter book outlives subscriber
+    /// entries — stop/remove/respawn cycles must return the SAME
+    /// monotonic counter so recreated executions never restart below
+    /// the core's per-target high-water mark.
+    #[tokio::test]
+    async fn exec_seq_survives_entry_removal_and_respawn() {
+        let mut map = SubscriberHandleMap::new();
+        let addr = "10.0.0.1:9339".to_string();
+
+        let seq1 = map.exec_seq(&addr);
+        seq1.fetch_add(1, Ordering::SeqCst); // simulate minted executions
+        seq1.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(seq1.load(Ordering::SeqCst), 2);
+
+        // Stop bookkeeping (entry removed) — counter retained.
+        map.insert(
+            addr.clone(),
+            SubscriberEntry {
+                shutdown_tx: watch::channel(false).0,
+                handle: tokio::spawn(async {}),
+                assignment_fingerprint: "fp1".to_string(),
+                execution_seq: Arc::clone(&seq1),
+            },
+        );
+        let removed = map.remove(&addr).expect("entry present");
+        assert!(map.is_empty());
+        drop(removed);
+
+        // Respawn: same counter, same Arc, value preserved.
+        let seq2 = map.exec_seq(&addr);
+        assert!(Arc::ptr_eq(&seq1, &seq2), "counter must be retained");
+        assert_eq!(seq2.load(Ordering::SeqCst), 2);
+        seq2.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(seq2.load(Ordering::SeqCst), 3);
+
+        // A distinct target gets an independent counter.
+        let other = map.exec_seq("10.0.0.2:9339");
+        assert_eq!(other.load(Ordering::SeqCst), 0);
+        assert!(!Arc::ptr_eq(&seq1, &other));
     }
 }

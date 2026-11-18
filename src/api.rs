@@ -2224,14 +2224,16 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 )
             });
             // The collector session generation is collector-echoed but
-            // bounded by what core actually issued: a larger value is
-            // forged and fenced before it can poison the execution
-            // high-water mark.
-            let session_gen_forged = self.collector_manager.as_ref().is_some_and(|m| {
+            // must equal the registration core actually issued: a
+            // larger value is forged, and an OLDER value belongs to a
+            // superseded registration whose in-flight events must not
+            // establish authority before the new registration's first
+            // execution arrives (M5.2B review B3).
+            let session_gen_stale = self.collector_manager.as_ref().is_some_and(|m| {
                 event.collector_session_generation
-                    > m.latest_session_generation(grant.collector_id())
+                    != m.latest_session_generation(grant.collector_id())
             });
-            if authority_instance.is_none() || session_gen_forged {
+            if authority_instance.is_none() || session_gen_stale {
                 rejected += 1;
                 metrics::counter!(
                     "bonsai_subscription_lifecycle_rejected_total",

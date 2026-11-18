@@ -2440,7 +2440,8 @@ pub async fn run_collector_manager(
         .unwrap_or_else(|| "unknown".to_string());
 
     let startup_instant = Instant::now();
-    let mut subscribers: crate::subscriber::SubscriberHandleMap = HashMap::new();
+    let mut subscribers: crate::subscriber::SubscriberHandleMap =
+        crate::subscriber::SubscriberHandleMap::new();
     // Authoritative subscription-lifecycle channel (M5.2B): bounded,
     // never silently dropped — a full channel applies backpressure to
     // the emitting subscriber rather than losing a terminal transition.

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::time::{Duration, Instant};
 
@@ -1251,7 +1250,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let mut shutdown = shutdown_rx.clone();
         Some(tokio::spawn(async move {
             let mut change_rx = registry.subscribe_changes();
-            let mut subscribers: SubscriberHandleMap = HashMap::new();
+            let mut subscribers: SubscriberHandleMap = SubscriberHandleMap::new();
 
             match registry.list_active() {
                 Ok(targets) => {
@@ -2416,16 +2415,17 @@ pub(super) async fn spawn_subscriber(
         tracing::info!(address = %address, "assignment unchanged — preserving subscriber");
         return Ok(());
     }
-    let carried_exec_seq = subscribers
-        .get(&address)
-        .map(|entry| std::sync::Arc::clone(&entry.execution_seq));
+    // Fetch the execution counter BEFORE stopping the obsolete
+    // subscriber: it lives in the map's counter book and survives the
+    // stop, so every recreation keeps monotonic execution generations
+    // instead of restarting below the core's high-water mark
+    // (M5.2B review B1).
+    let execution_seq = subscribers.exec_seq(&address);
     if subscribers.contains_key(&address) {
         tracing::info!(address = %address, "assignment changed — stopping obsolete subscriber");
         stop_subscriber(&address, subscribers).await;
     }
 
-    let execution_seq = carried_exec_seq
-        .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)));
     let subscriber = subscriber::GnmiSubscriber::new(
         target.address.clone(),
         username,
