@@ -1481,8 +1481,8 @@ async fn unregistered_session_observation_never_covers() {
 /// before release can never turn buffered evidence into coverage.
 #[tokio::test]
 async fn pending_evidence_requires_the_authorized_session_identity() {
-    use bonsai::subscription_status::run_subscription_verifier_with_windows;
     use bonsai::subscription_sessions::state;
+    use bonsai::subscription_status::run_subscription_verifier_with_windows;
 
     let dir = tempfile::tempdir().unwrap();
     let store = bonsai::graph::GraphStore::open(
