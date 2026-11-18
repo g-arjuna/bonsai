@@ -1158,23 +1158,11 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
 
     // 1. Current-session observation -> observed.
     publish_bus.publish(mk("sess-b", false, 1));
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let statuses = query_subscription_statuses(&db).await;
-    assert!(
-        statuses.iter().any(|(_, _, s)| s == "observed"),
-        "expected observed after covering update: {:?}",
-        statuses
-    );
+    wait_for_status(&db, &target, "observed").await;
 
     // 2. Current-session delete -> deleted (coverage invalidated).
     publish_bus.publish(mk("sess-b", true, 2));
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let statuses = query_subscription_statuses(&db).await;
-    assert!(
-        statuses.iter().any(|(_, _, s)| s == "deleted"),
-        "expected deleted after current-session delete: {:?}",
-        statuses
-    );
+    wait_for_status(&db, &target, "deleted").await;
 
     // 3. Stale-session observation and delete are both fenced.
     publish_bus.publish(mk("sess-a", false, 3));
@@ -1189,32 +1177,15 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
 
     // 4. Fresh current-session observation revives coverage.
     publish_bus.publish(mk("sess-b", false, 5));
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let statuses = query_subscription_statuses(&db).await;
-    assert!(
-        statuses.iter().any(|(_, _, s)| s == "observed"),
-        "expected observed after revival: {:?}",
-        statuses
-    );
+    wait_for_status(&db, &target, "observed").await;
 
-    // 5. SAMPLE freshness: quiet past the bound -> stale.
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    let statuses = query_subscription_statuses(&db).await;
-    assert!(
-        statuses.iter().any(|(_, _, s)| s == "stale"),
-        "expected stale after freshness bound: {:?}",
-        statuses
-    );
+    // 5. SAMPLE freshness: quiet past the bound -> stale. Poll: the
+    // stale transition depends on verifier scheduling, not wall time.
+    wait_for_status(&db, &target, "stale").await;
 
     // 6. A new observation clears stale back to observed.
     publish_bus.publish(mk("sess-b", false, 6));
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let statuses = query_subscription_statuses(&db).await;
-    assert!(
-        statuses.iter().any(|(_, _, s)| s == "observed"),
-        "expected observed after post-stale update: {:?}",
-        statuses
-    );
+    wait_for_status(&db, &target, "observed").await;
 
     _stx.send(true).unwrap();
     let _ = verifier.await;
@@ -1307,6 +1278,30 @@ fn gnmi_obs(
         timestamp_ns: 1,
         path: path.to_string(),
         value: serde_json::json!({"leaf": 1}),
+    }
+}
+
+/// Bounded wait until `target` has a persisted row in `want` status.
+/// Fixed sleeps are unsafe here: under parallel gate load the verifier
+/// can lag, and a single-shot query can observe an intermediate state
+/// (e.g. subscribed_but_silent) that a queued update will still
+/// correctly overwrite on the next drain.
+async fn wait_for_status(
+    db: &Arc<lbug::Database>,
+    target: &str,
+    want: &str,
+) -> Vec<(String, String, String)> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let rows = query_subscription_statuses(db).await;
+        if rows.iter().any(|(t, _, s)| t == target && s == want) {
+            return rows;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for status {want}: {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
