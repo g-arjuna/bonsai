@@ -309,18 +309,13 @@ impl<S: BonsaiStore> BonsaiService<S> {
     fn scope_permits_device(&self, scope: &ReadScope, address: &str) -> bool {
         match scope {
             ReadScope::Global => true,
-            ReadScope::CollectorScoped(collector_ids) => {
-                let bare = crate::registry::strip_port(address);
-                collector_ids.iter().any(|cid| {
-                    self.registry
-                        .get_device(&bare)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|t| {
-                            t.enabled && t.collector_id.as_deref() == Some(cid.as_str())
-                        })
-                })
-            }
+            ReadScope::CollectorScoped(collector_ids) => collector_ids.iter().any(|cid| {
+                self.registry
+                    .find_by_canonical_address(address)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|t| t.enabled && t.collector_id.as_deref() == Some(cid.as_str()))
+            }),
         }
     }
 
@@ -361,11 +356,13 @@ impl<S: BonsaiStore> BonsaiService<S> {
         match event.authority() {
             ObservationAuthority::Ignored => Ok(()),
             ObservationAuthority::CanonicalDevice => {
-                let bare = crate::registry::strip_port(&telemetry.target);
-                let target = self.registry.get_device(&bare).map_err(|e| {
-                    tracing::error!(%e, "observation authorization registry lookup failed");
-                    Status::internal("device registry error")
-                })?;
+                let target = self
+                    .registry
+                    .find_by_canonical_address(&telemetry.target)
+                    .map_err(|e| {
+                        tracing::error!(%e, "observation authorization registry lookup failed");
+                        Status::internal("device registry error")
+                    })?;
                 let authorized = target.as_ref().is_some_and(|t| {
                     t.enabled && t.collector_id.as_deref() == Some(grant.collector_id())
                 });
@@ -577,11 +574,13 @@ impl<S: BonsaiStore> BonsaiService<S> {
         if event_ids.len() > crate::collector_auth::MAX_DETECTION_EVENT_REFS {
             return Err(Status::invalid_argument("too many source event references"));
         }
-        let bare = crate::registry::strip_port(device_address).to_string();
-        let target = self.registry.get_device(&bare).map_err(|e| {
-            tracing::error!(%e, "detection authorization registry lookup failed");
-            Status::internal("device registry error")
-        })?;
+        let target = self
+            .registry
+            .find_by_canonical_address(device_address)
+            .map_err(|e| {
+                tracing::error!(%e, "detection authorization registry lookup failed");
+                Status::internal("device registry error")
+            })?;
         let authorized = target
             .as_ref()
             .is_some_and(|t| t.enabled && t.collector_id.as_deref() == Some(grant.collector_id()));
@@ -610,7 +609,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
             ));
         }
         let ids = event_ids.to_vec();
-        let want = bare;
+        let want = crate::registry::strip_port(device_address).to_string();
         let db = self.store.db();
         let verified = tokio::task::spawn_blocking(move || {
             let conn = lbug::Connection::new(&db)
@@ -2151,10 +2150,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             // Device must be currently assigned to THIS collector —
             // lifecycle evidence can never establish authority for an
             // unrelated device.
-            let bare = crate::registry::strip_port(&event.device_address);
             let device_assigned = self
                 .registry
-                .get_device(bare)
+                .find_by_canonical_address(&event.device_address)
                 .map_err(|e| {
                     tracing::error!(%e, "lifecycle authorization registry lookup failed");
                     Status::internal("device registry error")

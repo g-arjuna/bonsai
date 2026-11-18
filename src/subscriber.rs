@@ -678,10 +678,7 @@ impl GnmiSubscriber {
                                     Vec::new();
                                 let mut leaf_groups: HashMap<
                                     String,
-                                    (
-                                        serde_json::Map<String, serde_json::Value>,
-                                        Vec<Path>,
-                                    ),
+                                    (serde_json::Map<String, serde_json::Value>, Vec<Path>),
                                 > = HashMap::new();
 
                                 for update in &notif.update {

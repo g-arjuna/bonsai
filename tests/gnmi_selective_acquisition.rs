@@ -716,14 +716,24 @@ async fn plan_change_supersedes_stale_paths_without_false_active() {
         })
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    let statuses = query_subscription_statuses(&db).await;
-    assert!(
-        statuses.iter().all(|(_, _, s)| s == "superseded"),
-        "disabled plan must supersede all tracked paths: {:?}",
-        statuses
-    );
+    // Bounded deterministic wait: the disabled plan's persisted
+    // supersede is asynchronous relative to the channel send — poll
+    // until every row reports superseded instead of assuming the
+    // 300ms sleep covered it under parallel test load.
+    let mut statuses;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        statuses = query_subscription_statuses(&db).await;
+        if !statuses.is_empty() && statuses.iter().all(|(_, _, s)| s == "superseded") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "disabled plan must supersede all tracked paths: {:?}",
+            statuses
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert!(statuses.iter().any(|(t, _, _)| t == &target));
 
     _stx.send(true).unwrap();
@@ -884,7 +894,9 @@ async fn stale_session_observation_never_projects_coverage() {
     // must never flip subscription status to "observed". Only the
     // current registered (plan_id, session_id) pair grants coverage, and
     // only through exact structured path evidence.
-    use bonsai::subscription_sessions::{SessionLifecycleEvent, SubscriptionSessionRegistry, state};
+    use bonsai::subscription_sessions::{
+        SessionLifecycleEvent, SubscriptionSessionRegistry, state,
+    };
     use bonsai::telemetry::TelemetryUpdate;
 
     let dir = tempfile::tempdir().unwrap();
@@ -978,9 +990,7 @@ async fn stale_session_observation_never_projects_coverage() {
 
     let statuses = query_subscription_statuses(&db).await;
     assert!(
-        statuses
-            .iter()
-            .all(|(_, _, s)| s != "observed"),
+        statuses.iter().all(|(_, _, s)| s != "observed"),
         "superseded session observation must not project coverage: {:?}",
         statuses
     );
@@ -1015,9 +1025,7 @@ async fn stale_session_observation_never_projects_coverage() {
 
     let statuses = query_subscription_statuses(&db).await;
     assert!(
-        statuses
-            .iter()
-            .any(|(_, _, s)| s == "observed"),
+        statuses.iter().any(|(_, _, s)| s == "observed"),
         "current session covering observation must project coverage: {:?}",
         statuses
     );
@@ -1031,7 +1039,9 @@ async fn stale_session_observation_never_projects_coverage() {
 /// its freshness bound while quiet ON_CHANGE stays valid.
 #[tokio::test]
 async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
-    use bonsai::subscription_sessions::{SessionLifecycleEvent, SubscriptionSessionRegistry, state};
+    use bonsai::subscription_sessions::{
+        SessionLifecycleEvent, SubscriptionSessionRegistry, state,
+    };
     use bonsai::subscription_status::run_subscription_verifier_with_windows;
     use bonsai::telemetry::TelemetryUpdate;
 
@@ -1128,6 +1138,24 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
         },
     };
 
+    // Wait until the plan is actually registered (pending row
+    // persisted) — under parallel gate load register_plan can lag the
+    // fixed sleeps, and an update consumed before tracking is dropped.
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let rows = query_subscription_statuses(&db).await;
+            if rows.iter().any(|(t, _, s)| t == &target && s == "pending") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "plan never registered as pending: {rows:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     // 1. Current-session observation -> observed.
     publish_bus.publish(mk("sess-b", false, 1));
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1186,6 +1214,559 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
         statuses.iter().any(|(_, _, s)| s == "observed"),
         "expected observed after post-stale update: {:?}",
         statuses
+    );
+
+    _stx.send(true).unwrap();
+    let _ = verifier.await;
+}
+
+// ── M5.2B ordering/fencing/persistence regressions ──────────────────────────
+
+fn lifecycle_ev(
+    target: &str,
+    plan_id: &str,
+    session_id: &str,
+    st: &str,
+    seq: u64,
+) -> bonsai::subscription_sessions::SessionLifecycleEvent {
+    bonsai::subscription_sessions::SessionLifecycleEvent {
+        collector_id: String::new(),
+        target: target.to_string(),
+        plan_id: plan_id.to_string(),
+        session_id: session_id.to_string(),
+        state: st.to_string(),
+        transition_seq: seq,
+        authority_epoch: 0,
+        assignment_generation: 0,
+        occurred_at_ns: 0,
+        detail: String::new(),
+    }
+}
+
+fn sync_session(
+    sessions: &bonsai::subscription_sessions::SubscriptionSessionRegistry,
+    target: &str,
+    plan_id: &str,
+    session_id: &str,
+) {
+    use bonsai::subscription_sessions::state;
+    sessions.apply(
+        &lifecycle_ev(target, plan_id, session_id, state::SUBMITTED, 1),
+        true,
+    );
+    sessions.apply(
+        &lifecycle_ev(target, plan_id, session_id, state::SYNCHRONIZING, 2),
+        true,
+    );
+    sessions.apply(
+        &lifecycle_ev(target, plan_id, session_id, state::SYNCHRONIZED, 3),
+        true,
+    );
+}
+
+/// Bounded wait until the verifier has registered `target`'s plan as a
+/// pending row — plan_rx processing is asynchronous and can lag fixed
+/// sleeps under parallel gate load.
+async fn wait_pending_row(db: &Arc<lbug::Database>, target: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let rows = query_subscription_statuses(db).await;
+        if rows.iter().any(|(t, _, s)| t == target && s == "pending") {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "plan never registered as pending for {target}: {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn gnmi_obs(
+    target: &str,
+    plan_id: &str,
+    session_id: &str,
+    protocol: &str,
+    path: &str,
+    gnmi: &str,
+    is_delete: bool,
+) -> bonsai::telemetry::TelemetryUpdate {
+    bonsai::telemetry::TelemetryUpdate {
+        plan_id: plan_id.to_string(),
+        session_id: session_id.to_string(),
+        source_protocol: protocol.to_string(),
+        gnmi_path: bonsai::gnmi_path::parse_path("openconfig", gnmi)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        is_delete,
+        target: target.to_string(),
+        vendor: String::new(),
+        hostname: String::new(),
+        role: String::new(),
+        site: String::new(),
+        timestamp_ns: 1,
+        path: path.to_string(),
+        value: serde_json::json!({"leaf": 1}),
+    }
+}
+
+/// E: an observation that arrives BEFORE its session's synchronized
+/// lifecycle transition is buffered (bounded) and released once the
+/// exact (plan_id, session_id) becomes current — initial-sync updates
+/// are never silently dropped into a false subscribed_but_silent.
+#[tokio::test]
+async fn early_sync_observation_is_buffered_until_session_current() {
+    use bonsai::subscription_status::run_subscription_verifier_with_windows;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = bonsai::graph::GraphStore::open(
+        dir.path().join("graph.db").to_str().unwrap(),
+        256 * 1024 * 1024,
+    )
+    .expect("open graph store");
+    let db = store.db();
+    let bus = InProcessBus::new(64);
+    let publish_bus = bus.clone();
+    let (plan_tx, plan_rx) = mpsc::channel(8);
+    let (_stx, srx) = watch::channel(false);
+    let sessions = Arc::new(bonsai::subscription_sessions::SubscriptionSessionRegistry::new());
+    let verifier = tokio::spawn(run_subscription_verifier_with_windows(
+        store,
+        bus,
+        plan_rx,
+        Arc::clone(&sessions),
+        srx,
+        Duration::from_millis(50),
+        Duration::from_millis(10_000),
+    ));
+
+    let target = "dut:57400".to_string();
+    plan_tx
+        .send(SubscriptionPlan {
+            target: target.clone(),
+            paths: vec![SubscriptionPathExpectation {
+                path: "interfaces/interface[name=Ethernet1/1]/state/counters".to_string(),
+                origin: "openconfig".to_string(),
+                mode: "ON_CHANGE".to_string(),
+                sample_interval_ns: 0,
+            }],
+            plan_id: "plan-1".to_string(),
+            session_id: String::new(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            detail: String::new(),
+        })
+        .await
+        .unwrap();
+    wait_pending_row(&db, &target).await;
+
+    // Telemetry arrives BEFORE the synchronized lifecycle registration —
+    // exactly the production initial-sync ordering race.
+    publish_bus.publish(gnmi_obs(
+        &target,
+        "plan-1",
+        "sess-a",
+        "gnmi",
+        "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        false,
+    ));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().all(|(_, _, s)| s != "observed"),
+        "pre-registration observation must not be authoritative yet: {:?}",
+        statuses
+    );
+
+    // Session becomes synchronized; the buffered observation must now
+    // establish coverage on the next sweep.
+    sync_session(&sessions, &target, "plan-1", "sess-a");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut observed = false;
+    while std::time::Instant::now() < deadline {
+        let statuses = query_subscription_statuses(&db).await;
+        if statuses.iter().any(|(_, _, s)| s == "observed") {
+            observed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(observed, "buffered early-sync observation never released");
+
+    _stx.send(true).unwrap();
+    let _ = verifier.await;
+}
+
+/// E negative: observations stamped with a session identity that is
+/// never authoritatively registered can never establish coverage, no
+/// matter how often they arrive or how exact their path evidence is.
+#[tokio::test]
+async fn unregistered_session_observation_never_covers() {
+    use bonsai::subscription_status::run_subscription_verifier_with_windows;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = bonsai::graph::GraphStore::open(
+        dir.path().join("graph.db").to_str().unwrap(),
+        256 * 1024 * 1024,
+    )
+    .expect("open graph store");
+    let db = store.db();
+    let bus = InProcessBus::new(64);
+    let publish_bus = bus.clone();
+    let (plan_tx, plan_rx) = mpsc::channel(8);
+    let (_stx, srx) = watch::channel(false);
+    let sessions = Arc::new(bonsai::subscription_sessions::SubscriptionSessionRegistry::new());
+    let verifier = tokio::spawn(run_subscription_verifier_with_windows(
+        store,
+        bus,
+        plan_rx,
+        Arc::clone(&sessions),
+        srx,
+        Duration::from_millis(50),
+        Duration::from_millis(10_000),
+    ));
+
+    let target = "dut:57400".to_string();
+    plan_tx
+        .send(SubscriptionPlan {
+            target: target.clone(),
+            paths: vec![SubscriptionPathExpectation {
+                path: "interfaces/interface[name=Ethernet1/1]/state/counters".to_string(),
+                origin: "openconfig".to_string(),
+                mode: "ON_CHANGE".to_string(),
+                sample_interval_ns: 0,
+            }],
+            plan_id: "plan-1".to_string(),
+            session_id: String::new(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            detail: String::new(),
+        })
+        .await
+        .unwrap();
+    wait_pending_row(&db, &target).await;
+
+    // A different, legitimately registered session exists — the ghost
+    // session's evidence must still never cover.
+    sync_session(&sessions, &target, "plan-1", "sess-real");
+    for _ in 0..3 {
+        publish_bus.publish(gnmi_obs(
+            &target,
+            "plan-1",
+            "sess-ghost",
+            "gnmi",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+            false,
+        ));
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().all(|(_, _, s)| s != "observed"),
+        "unregistered session evidence must never cover: {:?}",
+        statuses
+    );
+
+    _stx.send(true).unwrap();
+    let _ = verifier.await;
+}
+
+/// D: acquisition coverage is independent of semantic classification.
+/// A gNMI observation whose path matches NO Bonsai classifier still
+/// establishes subscription coverage (gnmi_path evidence only); and a
+/// non-gNMI producer with identical path/session stamps never does.
+#[tokio::test]
+async fn coverage_is_acquisition_not_classification() {
+    use bonsai::subscription_status::run_subscription_verifier_with_windows;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = bonsai::graph::GraphStore::open(
+        dir.path().join("graph.db").to_str().unwrap(),
+        256 * 1024 * 1024,
+    )
+    .expect("open graph store");
+    let db = store.db();
+    let bus = InProcessBus::new(64);
+    let publish_bus = bus.clone();
+    let (plan_tx, plan_rx) = mpsc::channel(8);
+    let (_stx, srx) = watch::channel(false);
+    let sessions = Arc::new(bonsai::subscription_sessions::SubscriptionSessionRegistry::new());
+    let verifier = tokio::spawn(run_subscription_verifier_with_windows(
+        store,
+        bus,
+        plan_rx,
+        Arc::clone(&sessions),
+        srx,
+        Duration::from_millis(50),
+        Duration::from_millis(10_000),
+    ));
+
+    let target = "dut:57400".to_string();
+    // An expectation on a path no classifier recognizes.
+    plan_tx
+        .send(SubscriptionPlan {
+            target: target.clone(),
+            paths: vec![SubscriptionPathExpectation {
+                path: "foo/bar[name=x]/baz".to_string(),
+                origin: "openconfig".to_string(),
+                mode: "ON_CHANGE".to_string(),
+                sample_interval_ns: 0,
+            }],
+            plan_id: "plan-1".to_string(),
+            session_id: String::new(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            detail: String::new(),
+        })
+        .await
+        .unwrap();
+    wait_pending_row(&db, &target).await;
+    sync_session(&sessions, &target, "plan-1", "sess-a");
+
+    // Negative first: identical stamps from a non-gNMI producer.
+    for proto in ["bmp", "syslog", "snmp", "sflow", "otlp", "netflow"] {
+        publish_bus.publish(gnmi_obs(
+            &target,
+            "plan-1",
+            "sess-a",
+            proto,
+            "foo/bar[name=x]/baz/qux",
+            "foo/bar[name=x]/baz/qux",
+            false,
+        ));
+    }
+    // And a legacy/empty-provenance gNMI update.
+    let mut legacy = gnmi_obs(
+        &target,
+        "",
+        "",
+        "gnmi",
+        "foo/bar[name=x]/baz/qux",
+        "foo/bar[name=x]/baz/qux",
+        false,
+    );
+    legacy.source_protocol = "gnmi".to_string();
+    publish_bus.publish(legacy);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().all(|(_, _, s)| s != "observed"),
+        "non-gNMI/legacy evidence must not cover: {:?}",
+        statuses
+    );
+
+    // Positive: the same session's genuine gNMI observation on the
+    // unclassified path establishes coverage.
+    publish_bus.publish(gnmi_obs(
+        &target,
+        "plan-1",
+        "sess-a",
+        "gnmi",
+        "foo/bar[name=x]/baz/qux",
+        "foo/bar[name=x]/baz/qux",
+        false,
+    ));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut observed = false;
+    while std::time::Instant::now() < deadline {
+        let statuses = query_subscription_statuses(&db).await;
+        if statuses.iter().any(|(_, _, s)| s == "observed") {
+            observed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        observed,
+        "unclassified gNMI leaf must still establish coverage"
+    );
+
+    _stx.send(true).unwrap();
+    let _ = verifier.await;
+}
+
+/// G: a failed status persistence must not be claimed in memory — the
+/// transition is retried and eventually lands durably, and no success
+/// event is published for the failed write.
+#[tokio::test]
+async fn failed_status_write_is_retried_not_claimed() {
+    use bonsai::store::BonsaiStore;
+    use bonsai::subscription_status::run_subscription_verifier_with_windows;
+    use std::sync::atomic::AtomicBool;
+
+    /// Delegates to GraphStore but fails the next N subscription-status
+    /// writes — models a transient LadybugDB write failure.
+    struct FlakyStore {
+        inner: Arc<bonsai::graph::GraphStore>,
+        fail_writes: Arc<AtomicBool>,
+    }
+    #[tonic::async_trait]
+    impl BonsaiStore for FlakyStore {
+        fn db(&self) -> Arc<lbug::Database> {
+            BonsaiStore::db(&*self.inner)
+        }
+        fn write_lock(&self) -> Arc<std::sync::Mutex<()>> {
+            BonsaiStore::write_lock(&*self.inner)
+        }
+        fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<bonsai::graph::BonsaiEvent> {
+            BonsaiStore::subscribe_events(&*self.inner)
+        }
+        async fn write(&self, u: bonsai::telemetry::TelemetryUpdate) -> anyhow::Result<()> {
+            BonsaiStore::write(&*self.inner, u).await
+        }
+        async fn write_detection(
+            &self,
+            a: String,
+            b: String,
+            c: String,
+            d: String,
+            e: String,
+            f: i64,
+            g: i64,
+            h: String,
+            i: Vec<String>,
+        ) -> anyhow::Result<String> {
+            BonsaiStore::write_detection(&*self.inner, a, b, c, d, e, f, g, h, i).await
+        }
+        async fn write_remediation(
+            &self,
+            a: String,
+            b: String,
+            c: String,
+            d: String,
+            e: i64,
+            f: i64,
+        ) -> anyhow::Result<String> {
+            BonsaiStore::write_remediation(&*self.inner, a, b, c, d, e, f).await
+        }
+        async fn sync_sites_from_targets(&self, t: Vec<TargetConfig>) -> anyhow::Result<()> {
+            BonsaiStore::sync_sites_from_targets(&*self.inner, t).await
+        }
+        async fn list_sites(&self) -> anyhow::Result<Vec<bonsai::graph::SiteRecord>> {
+            BonsaiStore::list_sites(&*self.inner).await
+        }
+        async fn upsert_site(
+            &self,
+            s: bonsai::graph::SiteRecord,
+        ) -> anyhow::Result<bonsai::graph::SiteRecord> {
+            BonsaiStore::upsert_site(&*self.inner, s).await
+        }
+        async fn write_subscription_status(
+            &self,
+            s: bonsai::graph::SubscriptionStatusWrite,
+        ) -> anyhow::Result<()> {
+            if self.fail_writes.swap(false, Ordering::SeqCst) {
+                anyhow::bail!("injected subscription-status write failure");
+            }
+            BonsaiStore::write_subscription_status(&*self.inner, s).await
+        }
+        async fn supersede_subscription_statuses_outside_plan(
+            &self,
+            d: &str,
+            k: &std::collections::HashSet<(String, String, String, i64)>,
+        ) -> anyhow::Result<()> {
+            BonsaiStore::supersede_subscription_statuses_outside_plan(&*self.inner, d, k).await
+        }
+        fn publish_event(&self, e: bonsai::graph::BonsaiEvent) {
+            BonsaiStore::publish_event(&*self.inner, e)
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let graph = Arc::new(
+        bonsai::graph::GraphStore::open(
+            dir.path().join("graph.db").to_str().unwrap(),
+            256 * 1024 * 1024,
+        )
+        .expect("open graph store"),
+    );
+    let db = graph.db();
+    let bus = InProcessBus::new(64);
+    let publish_bus = bus.clone();
+    let fail_writes = Arc::new(AtomicBool::new(false));
+    let (plan_tx, plan_rx) = mpsc::channel(8);
+    let (_stx, srx) = watch::channel(false);
+    let sessions = Arc::new(bonsai::subscription_sessions::SubscriptionSessionRegistry::new());
+    let verifier = tokio::spawn(run_subscription_verifier_with_windows(
+        FlakyStore {
+            inner: Arc::clone(&graph),
+            fail_writes: Arc::clone(&fail_writes),
+        },
+        bus,
+        plan_rx,
+        Arc::clone(&sessions),
+        srx,
+        Duration::from_millis(50),
+        Duration::from_millis(10_000),
+    ));
+
+    let target = "dut:57400".to_string();
+    plan_tx
+        .send(SubscriptionPlan {
+            target: target.clone(),
+            paths: vec![SubscriptionPathExpectation {
+                path: "interfaces/interface[name=Ethernet1/1]/state/counters".to_string(),
+                origin: "openconfig".to_string(),
+                mode: "ON_CHANGE".to_string(),
+                sample_interval_ns: 0,
+            }],
+            plan_id: "plan-1".to_string(),
+            session_id: String::new(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            detail: String::new(),
+        })
+        .await
+        .unwrap();
+    wait_pending_row(&db, &target).await;
+    sync_session(&sessions, &target, "plan-1", "sess-a");
+
+    // Arm the failure: the FIRST observed write fails. In-memory state
+    // must NOT claim observed, and no row may appear.
+    fail_writes.store(true, Ordering::SeqCst);
+    publish_bus.publish(gnmi_obs(
+        &target,
+        "plan-1",
+        "sess-a",
+        "gnmi",
+        "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        false,
+    ));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let statuses = query_subscription_statuses(&db).await;
+    assert!(
+        statuses.iter().all(|(_, _, s)| s != "observed"),
+        "failed write must not surface as observed: {:?}",
+        statuses
+    );
+
+    // Storage restored: the NEXT covering observation retries the
+    // transition and it lands durably.
+    publish_bus.publish(gnmi_obs(
+        &target,
+        "plan-1",
+        "sess-a",
+        "gnmi",
+        "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        false,
+    ));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut observed = false;
+    while std::time::Instant::now() < deadline {
+        let statuses = query_subscription_statuses(&db).await;
+        if statuses.iter().any(|(_, _, s)| s == "observed") {
+            observed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        observed,
+        "transition was not retried after storage recovery"
     );
 
     _stx.send(true).unwrap();

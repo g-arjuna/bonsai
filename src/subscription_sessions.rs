@@ -38,7 +38,9 @@ pub mod state {
 }
 
 /// States after which a session identity can never transition again.
-fn is_terminal(state: &str) -> bool {
+/// `pub(crate)` so the subscription verifier can expire pending
+/// observation buffers for sessions that can never authorize coverage.
+pub(crate) fn is_terminal(state: &str) -> bool {
     matches!(
         state,
         state::FAILED | state::DISCONNECTED | state::DISABLED | state::SUPERSEDED

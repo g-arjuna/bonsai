@@ -98,10 +98,14 @@ pub fn canonical_path_key(origin: &str, raw_path: &str) -> Option<String> {
 /// `expectation`? Origins must be compatible (a non-empty expectation
 /// origin requires an exact match; empty means unspecified), the
 /// observation path must equal or descend from the expectation path,
-/// and every expectation element must match name-exactly with exact
-/// keys when the expectation specifies them. An expectation element
-/// without keys matches any keyed instance (gNMI list wildcard
-/// semantics). String containment is never used.
+/// and every expectation element must match name-exactly. An
+/// expectation element without keys matches any keyed instance (gNMI
+/// list wildcard semantics); a key whose expectation VALUE is exactly
+/// `*` matches any value for that key (the wildcard convention the
+/// built-in automatic subscriptions already emit, e.g.
+/// `interface[name=*]`). Key sets must otherwise be identical — a
+/// partial-key expectation never proves coverage of a differently-keyed
+/// instance. String containment is never used.
 pub fn observation_covers(expectation: &Path, observation: &Path) -> bool {
     if !expectation.origin.is_empty() && expectation.origin != observation.origin {
         return false;
@@ -113,7 +117,18 @@ pub fn observation_covers(expectation: &Path, observation: &Path) -> bool {
         .elem
         .iter()
         .zip(observation.elem.iter())
-        .all(|(e, o)| e.name == o.name && (e.key.is_empty() || e.key == o.key))
+        .all(|(e, o)| {
+            e.name == o.name
+                && (e.key.is_empty()
+                    || (e.key.len() == o.key.len()
+                        && e.key.iter().all(|(k, v)| {
+                            if v == "*" {
+                                o.key.contains_key(k)
+                            } else {
+                                o.key.get(k) == Some(v)
+                            }
+                        })))
+        })
 }
 
 /// Split on '/' separators outside '[' ... ']' key expressions. An unclosed
@@ -360,14 +375,46 @@ mod tests {
         let any_iface = parse_path("openconfig", "interfaces/interface/state").unwrap();
         assert!(observation_covers(&any_iface, &leaf));
         // But a keyed expectation still pins the instance.
-        let keyed = parse_path(
-            "openconfig",
-            "interfaces/interface[name=Ethernet1/2]/state",
-        )
-        .unwrap();
+        let keyed =
+            parse_path("openconfig", "interfaces/interface[name=Ethernet1/2]/state").unwrap();
         assert!(!observation_covers(&keyed, &leaf));
         // Unrelated subtree never matches.
         let bgp = parse_path("openconfig", "network-instances/protocols").unwrap();
         assert!(!observation_covers(&bgp, &leaf));
+    }
+
+    #[test]
+    fn observation_covers_star_key_is_single_value_wildcard() {
+        // Automatic subscriptions emit `name=*`; a `*` expectation
+        // value matches any instance value for that key — but never a
+        // missing key or a different key SET.
+        let wildcard = parse_path(
+            "openconfig",
+            "interfaces/interface[name=*]/state/counters/in-octets",
+        )
+        .unwrap();
+        let obs = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(observation_covers(&wildcard, &obs));
+        // `*` embedded in a larger value is literal, not a wildcard.
+        let embedded = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet*]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&embedded, &obs));
+        // Multi-key: `*` on one key, exact on the other.
+        let multi = parse_path("", "foo[name=*][slot=1]/bar").unwrap();
+        let obs_multi = parse_path("", "foo[name=a][slot=1]/bar/baz").unwrap();
+        assert!(observation_covers(&multi, &obs_multi));
+        let obs_multi_bad = parse_path("", "foo[name=a][slot=2]/bar/baz").unwrap();
+        assert!(!observation_covers(&multi, &obs_multi_bad));
+        // Key-set cardinality is still enforced: an observation with an
+        // extra key never satisfies a smaller expectation key set.
+        let one_key = parse_path("", "foo[name=*]/bar").unwrap();
+        assert!(!observation_covers(&one_key, &obs_multi));
     }
 }

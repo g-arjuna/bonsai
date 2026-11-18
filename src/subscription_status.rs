@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,6 +11,169 @@ use crate::subscription_sessions::SubscriptionSessionRegistry;
 use crate::telemetry::TelemetryUpdate;
 
 pub const VERIFICATION_WINDOW: Duration = Duration::from_secs(30);
+
+// ── Bounded pending-observation buffer (M5.2B ordering) ──────────────────
+//
+// gNMI delivers initial-sync Updates BEFORE the SyncResponse that makes
+// the subscriber emit `synchronized`, and telemetry/lifecycle travel on
+// independent authenticated RPC streams — so a valid early observation
+// can reach the verifier before its session is current. Dropping it
+// permanently would falsely report `subscribed_but_silent` for
+// ON_CHANGE paths that then stay quiet.
+//
+// The verifier therefore keeps a SMALL bounded buffer of gNMI
+// observations that carry session provenance but are not yet
+// current-session-authorized:
+//
+//   Identity key: (target, plan_id, session_id) — the exact
+//   (plan_id, session_id) pair the authenticated lifecycle stream
+//   later authorizes. Buffered evidence can NEVER become authoritative
+//   on its own: release happens only when the session registry reports
+//   that exact pair as the current synchronized+verified session, and
+//   every replayed update re-passes `update_has_current_session`.
+//
+//   Limits: PENDING_OBSERVATION_PER_SESSION_CAP updates per session,
+//   PENDING_OBSERVATION_SESSION_CAP distinct sessions, and
+//   PENDING_OBSERVATION_GLOBAL_CAP updates total. Overflow drops the
+//   OLDEST buffered evidence first (per-session FIFO, then the
+//   oldest-created session bucket) — recent evidence is preferred.
+//
+//   Expiration/invalidation: a bucket is discarded when its newest
+//   observation is older than PENDING_OBSERVATION_TTL, or when the
+//   session reaches a terminal lifecycle state (failed/disconnected/
+//   disabled/superseded) or is superseded by a newer session for the
+//   target. Plan registration does not clear buffers: stale-session
+//   buckets simply never match `current_session` and expire by TTL.
+//
+//   Non-gNMI updates and updates without (plan_id, session_id)
+//   provenance are never buffered — they can never gain coverage.
+const PENDING_OBSERVATION_PER_SESSION_CAP: usize = 128;
+const PENDING_OBSERVATION_SESSION_CAP: usize = 512;
+const PENDING_OBSERVATION_GLOBAL_CAP: usize = 16_384;
+const PENDING_OBSERVATION_TTL: Duration = Duration::from_secs(90);
+
+/// (target, plan_id, session_id) identity of a pending-observation bucket.
+type PendingKey = (String, String, String);
+
+struct PendingBucket {
+    /// Arrival-ordered observations with their buffer-insertion time.
+    updates: VecDeque<(Instant, std::sync::Arc<TelemetryUpdate>)>,
+    created: Instant,
+    last_seen: Instant,
+}
+
+#[derive(Default)]
+struct PendingObservations {
+    buckets: HashMap<PendingKey, PendingBucket>,
+    total: usize,
+}
+
+impl PendingObservations {
+    /// Buffer one non-current gNMI observation. Non-gNMI producers and
+    /// updates lacking session provenance are ignored — they can never
+    /// become coverage evidence later.
+    fn note(&mut self, update: &std::sync::Arc<TelemetryUpdate>) {
+        if update.source_protocol != "gnmi"
+            || update.plan_id.is_empty()
+            || update.session_id.is_empty()
+        {
+            return;
+        }
+        let key: PendingKey = (
+            update.target.clone(),
+            update.plan_id.clone(),
+            update.session_id.clone(),
+        );
+        let now = Instant::now();
+        if let Some(bucket) = self.buckets.get_mut(&key) {
+            if bucket.updates.len() >= PENDING_OBSERVATION_PER_SESSION_CAP {
+                bucket.updates.pop_front();
+                self.total = self.total.saturating_sub(1);
+            }
+            bucket
+                .updates
+                .push_back((now, std::sync::Arc::clone(update)));
+            bucket.last_seen = now;
+            self.total += 1;
+            return;
+        }
+        if self.buckets.len() >= PENDING_OBSERVATION_SESSION_CAP {
+            self.evict_oldest_bucket();
+        }
+        let mut updates = VecDeque::new();
+        updates.push_back((now, std::sync::Arc::clone(update)));
+        self.buckets.insert(
+            key,
+            PendingBucket {
+                updates,
+                created: now,
+                last_seen: now,
+            },
+        );
+        self.total += 1;
+        while self.total > PENDING_OBSERVATION_GLOBAL_CAP {
+            if !self.evict_oldest_bucket() {
+                break;
+            }
+        }
+    }
+
+    /// Remove the bucket with the oldest first-seen observation.
+    /// Returns false when nothing can be evicted.
+    fn evict_oldest_bucket(&mut self) -> bool {
+        let victim = self
+            .buckets
+            .iter()
+            .min_by_key(|(_, b)| b.created)
+            .map(|(k, _)| k.clone());
+        let Some(key) = victim else { return false };
+        if let Some(bucket) = self.buckets.remove(&key) {
+            self.total = self.total.saturating_sub(bucket.updates.len());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Drop expired buckets and buckets whose session is terminal.
+    /// Returns the keys whose session is CURRENT — the caller drains
+    /// those through the normal fenced observation path.
+    fn sweep(&mut self, sessions: &SubscriptionSessionRegistry) -> Vec<PendingKey> {
+        let now = Instant::now();
+        let mut ready = Vec::new();
+        self.buckets.retain(|key, bucket| {
+            if now.duration_since(bucket.last_seen) > PENDING_OBSERVATION_TTL {
+                return false;
+            }
+            // Terminal sessions can never become current again — their
+            // buffered evidence is historical, not pending.
+            if let Some((state, _, _)) = sessions.session_state(&key.0, &key.2)
+                && crate::subscription_sessions::is_terminal(&state)
+            {
+                return false;
+            }
+            if sessions
+                .current_session(&key.0)
+                .is_some_and(|(plan_id, session_id)| plan_id == key.1 && session_id == key.2)
+            {
+                ready.push(key.clone());
+            }
+            true
+        });
+        // Recompute total after retain (retain does not report removals).
+        self.total = self.buckets.values().map(|b| b.updates.len()).sum();
+        ready
+    }
+
+    /// Take the buffered observations for `key` (arrival order).
+    fn take(&mut self, key: &PendingKey) -> Vec<std::sync::Arc<TelemetryUpdate>> {
+        let Some(bucket) = self.buckets.remove(key) else {
+            return Vec::new();
+        };
+        self.total = self.total.saturating_sub(bucket.updates.len());
+        bucket.updates.into_iter().map(|(_, u)| u).collect()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct SubscriptionPlan {
@@ -101,6 +264,12 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
 
     let mut interval = tokio::time::interval(tick);
     let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
+    // Bounded pending-observation buffer: gNMI initial-sync updates can
+    // legitimately arrive before their session's `synchronized`
+    // lifecycle transition is applied (independent RPC streams). They
+    // are held under (target, plan_id, session_id) and released only
+    // when that exact session becomes current — see PendingObservations.
+    let mut pending = PendingObservations::default();
     // target -> last registered plan identity INCLUDING lifecycle
     // revision (state + detail). plan_id alone is the stable desired/
     // effective identity; a changed failure outcome under the same
@@ -135,17 +304,39 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
             event = telemetry_rx.recv() => {
                 match event {
                     Some(update) => {
-                        observe_update(&store, &mut tracked, &sessions, update).await;
+                        observe_update(&store, &mut tracked, &sessions, &mut pending, update)
+                            .await;
                         // drain backlog without yielding — avoids queue saturation
                         while let Ok(update) = telemetry_rx.try_recv() {
-                            observe_update(&store, &mut tracked, &sessions, update)
-                                .await;
+                            observe_update(
+                                &store,
+                                &mut tracked,
+                                &sessions,
+                                &mut pending,
+                                update,
+                            )
+                            .await;
                         }
                     }
                     None => break,
                 }
             }
             _ = interval.tick() => {
+                // Release buffered early-sync observations whose session
+                // has since become current, expire stale buckets, then
+                // run the silence/freshness sweeps.
+                for key in pending.sweep(&sessions) {
+                    for update in pending.take(&key) {
+                        observe_update(
+                            &store,
+                            &mut tracked,
+                            &sessions,
+                            &mut pending,
+                            update,
+                        )
+                        .await;
+                    }
+                }
                 mark_silent_paths(&store, &mut tracked).await;
             }
         }
@@ -280,17 +471,25 @@ async fn observe_update<S: BonsaiStore>(
     store: &S,
     tracked: &mut HashMap<(String, String), TrackedPath>,
     sessions: &SubscriptionSessionRegistry,
+    pending: &mut PendingObservations,
     update: std::sync::Arc<TelemetryUpdate>,
 ) {
     if !update_has_current_session(sessions, &update) {
+        // Not current-authorized. A gNMI observation carrying session
+        // provenance may be early initial-sync evidence whose
+        // `synchronized` lifecycle transition is still in flight — hold
+        // it in the bounded pending buffer; release is gated on the
+        // exact (plan_id, session_id) becoming current. Everything else
+        // (non-gNMI, missing provenance, stale/superseded sessions past
+        // TTL) is dropped by `note`'s filters or expires unauthenticated.
+        pending.note(&update);
         return;
     }
     let now = update.timestamp_ns.max(now_ns());
     let matching_keys: Vec<(String, String)> = tracked
         .iter()
         .filter(|((target, _), tracked_path)| {
-            target == &update.target
-                && path_matches_update(&tracked_path.expectation, &update)
+            target == &update.target && path_matches_update(&tracked_path.expectation, &update)
         })
         .map(|(key, _)| key.clone())
         .collect();
@@ -304,7 +503,11 @@ async fn observe_update<S: BonsaiStore>(
         // Notification.delete invalidates the path's current coverage
         // until a fresh observation arrives. Stale-session deletes are
         // already fenced by update_has_current_session above.
-        let new_status = if update.is_delete { "deleted" } else { "observed" };
+        let new_status = if update.is_delete {
+            "deleted"
+        } else {
+            "observed"
+        };
         if tracked_path.status == new_status {
             continue;
         }
@@ -490,12 +693,14 @@ fn subscription_status_event(status: &SubscriptionStatusWrite) -> BonsaiEvent {
 /// unkeyed elements acting as instance wildcards). Expectations or
 /// observations that fail to parse, and updates without structured
 /// paths, are explicit non-coverage; string containment is never used.
-fn path_matches_update(expectation: &SubscriptionPathExpectation, update: &TelemetryUpdate) -> bool {
+fn path_matches_update(
+    expectation: &SubscriptionPathExpectation,
+    update: &TelemetryUpdate,
+) -> bool {
     if update.gnmi_path.is_empty() {
         return false;
     }
-    let Ok(expected) = crate::gnmi_path::parse_path(&expectation.origin, &expectation.path)
-    else {
+    let Ok(expected) = crate::gnmi_path::parse_path(&expectation.origin, &expectation.path) else {
         return false;
     };
     update
@@ -582,17 +787,26 @@ mod tests {
         );
         // Container expectation is covered by a descendant leaf.
         assert!(path_matches_update(
-            &expectation("interfaces/interface[name=ethernet-1/1]/state/counters", "SAMPLE"),
+            &expectation(
+                "interfaces/interface[name=ethernet-1/1]/state/counters",
+                "SAMPLE"
+            ),
             &update
         ));
         // A different keyed instance never satisfies.
         assert!(!path_matches_update(
-            &expectation("interfaces/interface[name=ethernet-1/2]/state/counters", "SAMPLE"),
+            &expectation(
+                "interfaces/interface[name=ethernet-1/2]/state/counters",
+                "SAMPLE"
+            ),
             &update
         ));
         // A deeper expectation is not covered by a shallower observation.
         assert!(!path_matches_update(
-            &expectation("interfaces/interface[name=ethernet-1/1]/state/counters/in-octets/extra", "SAMPLE"),
+            &expectation(
+                "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets/extra",
+                "SAMPLE"
+            ),
             &update
         ));
         // Malformed expectations are explicit non-coverage.
@@ -773,7 +987,10 @@ mod tests {
         // interval, floored at VERIFICATION_WINDOW.
         let mut sample = expectation("interfaces", "SAMPLE");
         sample.sample_interval_ns = 5_000_000_000; // 5s
-        assert_eq!(sample_stale_after(&sample, VERIFICATION_WINDOW), Duration::from_secs(30));
+        assert_eq!(
+            sample_stale_after(&sample, VERIFICATION_WINDOW),
+            Duration::from_secs(30)
+        );
         sample.sample_interval_ns = 60_000_000_000; // 60s
         assert_eq!(
             sample_stale_after(&sample, VERIFICATION_WINDOW),
@@ -781,16 +998,26 @@ mod tests {
         );
         // The floor dominates small intervals.
         sample.sample_interval_ns = 0;
-        assert_eq!(sample_stale_after(&sample, Duration::from_millis(100)), Duration::from_millis(100));
+        assert_eq!(
+            sample_stale_after(&sample, Duration::from_millis(100)),
+            Duration::from_millis(100)
+        );
         // Mode matching is case-insensitive.
         let mut lower = expectation("interfaces", "sample");
         lower.sample_interval_ns = 0;
-        assert_eq!(sample_stale_after(&lower, VERIFICATION_WINDOW), VERIFICATION_WINDOW);
+        assert_eq!(
+            sample_stale_after(&lower, VERIFICATION_WINDOW),
+            VERIFICATION_WINDOW
+        );
         // ON_CHANGE never goes stale — quiet is valid.
         for mode in ["ON_CHANGE", "on_change", ""] {
             let mut e = expectation("interfaces", mode);
             e.sample_interval_ns = 1;
-            assert_eq!(sample_stale_after(&e, VERIFICATION_WINDOW), Duration::MAX, "mode {mode}");
+            assert_eq!(
+                sample_stale_after(&e, VERIFICATION_WINDOW),
+                Duration::MAX,
+                "mode {mode}"
+            );
         }
     }
 }

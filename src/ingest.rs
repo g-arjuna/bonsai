@@ -326,8 +326,7 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
 
     let value = rmp_serde::from_slice(&update.value_msgpack)
         .with_context(|| format!("invalid telemetry value_msgpack for path '{}'", update.path))?;
-    let gnmi_path = decode_gnmi_paths(&update.gnmi_path)
-        .context("invalid telemetry gnmi_path")?;
+    let gnmi_path = decode_gnmi_paths(&update.gnmi_path).context("invalid telemetry gnmi_path")?;
 
     Ok(TelemetryUpdate {
         plan_id: update.plan_id,
@@ -373,8 +372,7 @@ fn decode_gnmi_paths(bytes: &[u8]) -> Result<Vec<crate::proto::gnmi::Path>> {
             anyhow::bail!("truncated gnmi_path frame payload");
         }
         paths.push(
-            crate::proto::gnmi::Path::decode(&rest[..len])
-                .context("invalid gnmi_path frame")?,
+            crate::proto::gnmi::Path::decode(&rest[..len]).context("invalid gnmi_path frame")?,
         );
         rest = &rest[len..];
     }
@@ -1388,8 +1386,8 @@ mod tests {
                 plan_id: String::new(),
                 session_id: String::new(),
                 source_protocol: String::new(),
-            gnmi_path: Vec::new(),
-            is_delete: false,
+                gnmi_path: Vec::new(),
+                is_delete: false,
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1435,8 +1433,8 @@ mod tests {
                 plan_id: String::new(),
                 session_id: String::new(),
                 source_protocol: String::new(),
-            gnmi_path: Vec::new(),
-            is_delete: false,
+                gnmi_path: Vec::new(),
+                is_delete: false,
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1568,8 +1566,8 @@ mod tests {
                 plan_id: String::new(),
                 session_id: String::new(),
                 source_protocol: String::new(),
-            gnmi_path: Vec::new(),
-            is_delete: false,
+                gnmi_path: Vec::new(),
+                is_delete: false,
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -2633,7 +2631,8 @@ pub async fn run_collector_manager(
 /// lifecycle delivery across stream reconnects (M5.2B B3).
 const LIFECYCLE_RESEND_INDEX_CAP: usize = 4096;
 
-async fn run_lifecycle_forwarder(
+#[doc(hidden)]
+pub async fn run_lifecycle_forwarder(
     cfg: Arc<RuntimeConfig>,
     collector_id: String,
     mut rx: mpsc::Receiver<SessionLifecycleEvent>,
