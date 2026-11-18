@@ -88,8 +88,43 @@ const MAX_SESSIONS_PER_TARGET: usize = 64;
 /// old session after newer sessions have churned past the record cap.
 /// Reconnects mint fresh session_ids by contract, so legitimate traffic
 /// never needs a retired identity; oldest ids fall out of the FIFO only
-/// after this many newer retirements.
+/// after this many newer retirements — and the Bloom fence below still
+/// covers them.
 const RETIRED_SESSION_ID_CAP: usize = 256;
+
+/// Bounded probabilistic anti-replay fence (M5.2B review C residual):
+/// a per-target Bloom filter over every retired session identity. Unlike
+/// the FIFO it NEVER ages out — retirement only ever adds bits, giving a
+/// monotonic execution-order fence with fixed memory (1024 bytes per
+/// target). False positives are possible in principle but bounded and
+/// fail-closed (a rejected replay can never gain authority); legitimate
+/// reconnects mint fresh UUID session_ids, so a false positive requires
+/// an astronomically unlikely hash collision. No wall-clock input.
+const RETIRED_BLOOM_WORDS: usize = 128; // 8192 bits
+const RETIRED_BLOOM_HASHES: usize = 4;
+
+fn retired_bloom_indices(session_id: &str) -> [usize; RETIRED_BLOOM_HASHES] {
+    use std::hash::{Hash, Hasher};
+    let mut out = [0usize; RETIRED_BLOOM_HASHES];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (session_id, i as u8).hash(&mut h);
+        *slot = (h.finish() as usize) % (RETIRED_BLOOM_WORDS * 64);
+    }
+    out
+}
+
+fn retired_bloom_check(bits: &[u64; RETIRED_BLOOM_WORDS], session_id: &str) -> bool {
+    retired_bloom_indices(session_id)
+        .iter()
+        .all(|&idx| bits[idx / 64] & (1u64 << (idx % 64)) != 0)
+}
+
+fn retired_bloom_set(bits: &mut [u64; RETIRED_BLOOM_WORDS], session_id: &str) {
+    for idx in retired_bloom_indices(session_id) {
+        bits[idx / 64] |= 1u64 << (idx % 64);
+    }
+}
 
 /// One path entry in the actual submitted Subscribe manifest carried
 /// on `submitted` lifecycle events (M5.2B review B3). This is the
@@ -163,7 +198,6 @@ struct SessionRecord {
     updated_at_ns: i64,
 }
 
-#[derive(Default)]
 struct TargetSessions {
     /// session key -> record. Key is the session_id, or `plan:<id>` for
     /// session-less plan-level outcomes (disabled/rejected/failed plan).
@@ -174,6 +208,21 @@ struct TargetSessions {
     /// fence that survives terminal-record eviction (see
     /// [`RETIRED_SESSION_ID_CAP`]).
     retired_session_ids: VecDeque<String>,
+    /// Monotonic probabilistic fence over ALL retired identities —
+    /// covers ids that have aged out of the FIFO (see
+    /// [`RETIRED_BLOOM_WORDS`]).
+    retired_bloom: [u64; RETIRED_BLOOM_WORDS],
+}
+
+impl Default for TargetSessions {
+    fn default() -> Self {
+        Self {
+            sessions: HashMap::new(),
+            current: None,
+            retired_session_ids: VecDeque::new(),
+            retired_bloom: [0u64; RETIRED_BLOOM_WORDS],
+        }
+    }
 }
 
 /// Process-local authoritative session registry. Remote collectors feed
@@ -249,10 +298,11 @@ impl SubscriptionSessionRegistry {
         // mint fresh session_ids.
         if existing.is_none()
             && !event.session_id.is_empty()
-            && entry
+            && (entry
                 .retired_session_ids
                 .iter()
                 .any(|id| id == &event.session_id)
+                || retired_bloom_check(&entry.retired_bloom, &event.session_id))
         {
             metrics::counter!("bonsai_subscription_session_replay_rejected_total").increment(1);
             return ApplyOutcome::Rejected("retired session identity replay");
@@ -395,6 +445,7 @@ impl SubscriptionSessionRegistry {
                 while entry.retired_session_ids.len() > RETIRED_SESSION_ID_CAP {
                     entry.retired_session_ids.pop_front();
                 }
+                retired_bloom_set(&mut entry.retired_bloom, &key);
             }
             metrics::counter!("bonsai_subscription_session_evicted_total").increment(1);
         }
@@ -625,10 +676,11 @@ mod tests {
             Some(("plan".to_string(), "sess-b".to_string()))
         );
 
-        // Churn enough distinct sessions to evict every terminal record
-        // (MAX_SESSIONS_PER_TARGET = 64; sess-a/sess-b terminal records
-        // are evicted oldest-first while the live session is retained).
-        for i in 0..80 {
+        // Churn past BOTH bounds: MAX_SESSIONS_PER_TARGET = 64 records
+        // AND RETIRED_SESSION_ID_CAP = 256 FIFO entries. sess-a's
+        // identity ages out of the FIFO entirely — only the monotonic
+        // Bloom fence can still reject its replay.
+        for i in 0..340 {
             let sid = format!("churn-{i}");
             let ts = 10 + i as i64;
             reg.apply(&ev_at(state::SUBMITTED, 1, &sid, ts), true);
@@ -642,6 +694,18 @@ mod tests {
             reg.current_session("dut"),
             Some(("plan".to_string(), "sess-z".to_string()))
         );
+
+        // Prove the FIFO aged sess-a out — the rejection below can only
+        // come from the monotonic Bloom fence, not tombstone retention.
+        {
+            let targets = reg.inner.lock().unwrap();
+            let entry = targets.get("dut").expect("target entry");
+            assert!(
+                !entry.retired_session_ids.iter().any(|id| id == "sess-a"),
+                "sess-a must have aged out of the bounded FIFO"
+            );
+            assert!(entry.sessions.len() <= MAX_SESSIONS_PER_TARGET);
+        }
 
         // Delayed replay of evicted sess-a's synchronized transition,
         // otherwise historically valid: rejected by the retired-id
