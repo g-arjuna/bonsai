@@ -200,3 +200,6 @@ date,command,scope,wall_seconds,result,notes
 2026-11-18,cargo test --test gnmi_assignment_lifecycle --test gnmi_security_connectivity --test bn021g_collector_trust_foundation --offline (via build-lane),M5.2A/BN-021 regression trio,~230,"pass","compile 3m30s; 13/13 + 11/11 + 32/32"
 2026-11-18,cargo test --offline --lib -- subscription_status gnmi_path subscription_sessions (via build-lane),M5.2B unit modules,~275,"pass","compile 4m32s; 22/22"
 2026-11-18,cargo test --test gnmi_subscription_e2e --offline x6 (via build-lane),M5.2B distributed E2E repeats,~90,"pass","6/6 runs green; ~14-22s each after warm build; exposed+fixed per-subscription sync_response fixture gap"
+2026-11-18,cargo test -p bonsai --lib --offline subscription_status:: (via build-lane),M5.2B pending-buffer unit tests,~150,"pass","12/12; per-obs TTL, global-cap accounting, receipt-time freshness, oversized rejection, session fencing"
+2026-11-18,cargo test --offline --test gnmi_selective_acquisition (via build-lane),M5.2B selective acquisition suite,~295,"pass","18/18 incl. new pending_evidence_requires_the_authorized_session_identity"
+2026-11-18,cargo test --offline --test gnmi_subscription_e2e x20 (prebuilt binary),M5.2B E2E repeat stability,~75,"pass","20/20 runs green; 3.6-6.7s each; pre-sync telemetry + single SyncResponse per SubscriptionList"
