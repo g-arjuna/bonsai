@@ -2212,15 +2212,26 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             // mutation so an assignment withdrawal cannot interleave
             // between the two (M5.2B review B2).
             let _authority_gate = self.collector_manager.as_ref().map(|m| m.session_gate());
-            let authority_ok = self.collector_manager.as_ref().is_some_and(|m| {
-                m.validate_session_authority(
+            // The authority-instance ordinal is core-issued and injected
+            // here — never trusted from the wire. It orders executions
+            // across collectors/reassignments inside one epoch.
+            let authority_instance = self.collector_manager.as_ref().and_then(|m| {
+                m.session_authority_instance(
                     grant.collector_id(),
                     &event.device_address,
                     event.authority_epoch,
                     event.assignment_generation,
                 )
             });
-            if !authority_ok {
+            // The collector session generation is collector-echoed but
+            // bounded by what core actually issued: a larger value is
+            // forged and fenced before it can poison the execution
+            // high-water mark.
+            let session_gen_forged = self.collector_manager.as_ref().is_some_and(|m| {
+                event.collector_session_generation
+                    > m.latest_session_generation(grant.collector_id())
+            });
+            if authority_instance.is_none() || session_gen_forged {
                 rejected += 1;
                 metrics::counter!(
                     "bonsai_subscription_lifecycle_rejected_total",
@@ -2412,6 +2423,9 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 transition_seq: event.transition_seq,
                 authority_epoch: event.authority_epoch,
                 assignment_generation: event.assignment_generation,
+                authority_instance: authority_instance.unwrap_or(0),
+                collector_session_generation: event.collector_session_generation,
+                execution_generation: event.execution_generation,
                 occurred_at_ns: event.occurred_at_ns,
                 detail: event.detail,
                 submitted_paths,

@@ -208,6 +208,7 @@ fn subscriber(
         selected_paths,
         acquisition,
         None,
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     )
 }
 
@@ -956,6 +957,9 @@ async fn stale_session_observation_never_projects_coverage() {
                     transition_seq: seq,
                     authority_epoch: 0,
                     assignment_generation: 0,
+                    authority_instance: 0,
+                    collector_session_generation: 0,
+                    execution_generation: if session_id == "sess-a" { 1 } else { 2 },
                     occurred_at_ns: 0,
                     detail: String::new(),
                     submitted_paths: Vec::new(),
@@ -1110,6 +1114,9 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
                     transition_seq: seq,
                     authority_epoch: 0,
                     assignment_generation: 0,
+                    authority_instance: 0,
+                    collector_session_generation: 0,
+                    execution_generation: if session_id == "sess-a" { 1 } else { 2 },
                     occurred_at_ns: 0,
                     detail: String::new(),
                     submitted_paths: Vec::new(),
@@ -1225,6 +1232,7 @@ fn lifecycle_ev(
     session_id: &str,
     st: &str,
     seq: u64,
+    exec_gen: u64,
 ) -> bonsai::subscription_sessions::SessionLifecycleEvent {
     bonsai::subscription_sessions::SessionLifecycleEvent {
         collector_id: String::new(),
@@ -1235,6 +1243,9 @@ fn lifecycle_ev(
         transition_seq: seq,
         authority_epoch: 0,
         assignment_generation: 0,
+        authority_instance: 0,
+        collector_session_generation: 0,
+        execution_generation: exec_gen,
         occurred_at_ns: 0,
         detail: String::new(),
         submitted_paths: Vec::new(),
@@ -1247,18 +1258,33 @@ fn sync_session(
     target: &str,
     plan_id: &str,
     session_id: &str,
+    exec_gen: u64,
 ) {
     use bonsai::subscription_sessions::state;
     sessions.apply(
-        &lifecycle_ev(target, plan_id, session_id, state::SUBMITTED, 1),
+        &lifecycle_ev(target, plan_id, session_id, state::SUBMITTED, 1, exec_gen),
         true,
     );
     sessions.apply(
-        &lifecycle_ev(target, plan_id, session_id, state::SYNCHRONIZING, 2),
+        &lifecycle_ev(
+            target,
+            plan_id,
+            session_id,
+            state::SYNCHRONIZING,
+            2,
+            exec_gen,
+        ),
         true,
     );
     sessions.apply(
-        &lifecycle_ev(target, plan_id, session_id, state::SYNCHRONIZED, 3),
+        &lifecycle_ev(
+            target,
+            plan_id,
+            session_id,
+            state::SYNCHRONIZED,
+            3,
+            exec_gen,
+        ),
         true,
     );
 }
@@ -1405,7 +1431,7 @@ async fn early_sync_observation_is_buffered_until_session_current() {
 
     // Session becomes synchronized; the buffered observation must now
     // establish coverage on the next sweep.
-    sync_session(&sessions, &target, "plan-1", "sess-a");
+    sync_session(&sessions, &target, "plan-1", "sess-a", 1);
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut observed = false;
     while std::time::Instant::now() < deadline {
@@ -1473,7 +1499,7 @@ async fn unregistered_session_observation_never_covers() {
 
     // A different, legitimately registered session exists — the ghost
     // session's evidence must still never cover.
-    sync_session(&sessions, &target, "plan-1", "sess-real");
+    sync_session(&sessions, &target, "plan-1", "sess-real", 1);
     for _ in 0..3 {
         publish_bus.publish(gnmi_obs(
             &target,
@@ -1565,12 +1591,12 @@ async fn pending_evidence_requires_the_authorized_session_identity() {
     // A foreign collector claims the SAME plan/session identifiers, but
     // unverified lifecycle can never authorize coverage (in production
     // `verified` is only set after authenticated authority validation).
-    let mut foreign = lifecycle_ev(&target, "plan-1", "sess-old", state::SUBMITTED, 1);
+    let mut foreign = lifecycle_ev(&target, "plan-1", "sess-old", state::SUBMITTED, 1, 2);
     foreign.collector_id = "other-collector".to_string();
     sessions.apply(&foreign, false);
 
     // The legitimately authorized session is a DIFFERENT session id.
-    sync_session(&sessions, &target, "plan-1", "sess-new");
+    sync_session(&sessions, &target, "plan-1", "sess-new", 1);
     tokio::time::sleep(Duration::from_millis(400)).await;
     let statuses = query_subscription_statuses(&db).await;
     assert!(
@@ -1582,7 +1608,7 @@ async fn pending_evidence_requires_the_authorized_session_identity() {
     // Withdrawal before release: the authorized session disconnects and
     // the pending bucket's session goes terminal — evidence is dropped.
     sessions.apply(
-        &lifecycle_ev(&target, "plan-1", "sess-new", state::DISCONNECTED, 4),
+        &lifecycle_ev(&target, "plan-1", "sess-new", state::DISCONNECTED, 4, 1),
         true,
     );
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1647,7 +1673,7 @@ async fn coverage_is_acquisition_not_classification() {
         .await
         .unwrap();
     wait_pending_row(&db, &target).await;
-    sync_session(&sessions, &target, "plan-1", "sess-a");
+    sync_session(&sessions, &target, "plan-1", "sess-a", 1);
 
     // Negative first: identical stamps from a non-gNMI producer.
     for proto in ["bmp", "syslog", "snmp", "sflow", "otlp", "netflow"] {
@@ -1848,7 +1874,7 @@ async fn failed_status_write_is_retried_not_claimed() {
         .await
         .unwrap();
     wait_pending_row(&db, &target).await;
-    sync_session(&sessions, &target, "plan-1", "sess-a");
+    sync_session(&sessions, &target, "plan-1", "sess-a", 1);
 
     // Arm the failure: every status write fails while armed. The
     // in-memory desired status commits, but no durable row may claim

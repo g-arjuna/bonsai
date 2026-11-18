@@ -1221,6 +1221,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         tx: local_lifecycle_tx,
         authority_epoch: 0,
         assignment_generation: 0,
+        collector_session_generation: 0,
     };
     {
         let drain_registry = std::sync::Arc::clone(&session_registry);
@@ -2405,6 +2406,8 @@ pub(super) async fn spawn_subscriber(
         &conn_security,
         username.as_deref(),
         password.as_deref(),
+        lifecycle.map_or(0, |h| h.authority_epoch),
+        lifecycle.map_or(0, |h| h.collector_session_generation),
     );
     if subscribers
         .get(&address)
@@ -2413,11 +2416,16 @@ pub(super) async fn spawn_subscriber(
         tracing::info!(address = %address, "assignment unchanged — preserving subscriber");
         return Ok(());
     }
+    let carried_exec_seq = subscribers
+        .get(&address)
+        .map(|entry| std::sync::Arc::clone(&entry.execution_seq));
     if subscribers.contains_key(&address) {
         tracing::info!(address = %address, "assignment changed — stopping obsolete subscriber");
         stop_subscriber(&address, subscribers).await;
     }
 
+    let execution_seq = carried_exec_seq
+        .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)));
     let subscriber = subscriber::GnmiSubscriber::new(
         target.address.clone(),
         username,
@@ -2433,6 +2441,7 @@ pub(super) async fn spawn_subscriber(
         target.selected_paths.clone(),
         target.acquisition,
         lifecycle.cloned(),
+        std::sync::Arc::clone(&execution_seq),
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
@@ -2442,6 +2451,7 @@ pub(super) async fn spawn_subscriber(
             shutdown_tx,
             handle,
             assignment_fingerprint: fingerprint,
+            execution_seq,
         },
     );
     tracing::info!(address = %address, "subscriber started");

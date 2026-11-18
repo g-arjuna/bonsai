@@ -1494,7 +1494,7 @@ mod tests {
 
     fn registered_sessions(entries: &[(&str, &str, &str)]) -> SubscriptionSessionRegistry {
         let reg = SubscriptionSessionRegistry::new();
-        for (target, plan_id, session_id) in entries {
+        for (exec_gen, &(target, plan_id, session_id)) in entries.iter().enumerate() {
             use crate::subscription_sessions::state;
             for (st, seq) in [(state::SUBMITTED, 1), (state::SYNCHRONIZED, 2)] {
                 reg.apply(
@@ -1507,6 +1507,9 @@ mod tests {
                         transition_seq: seq,
                         authority_epoch: 0,
                         assignment_generation: 0,
+                        authority_instance: 0,
+                        collector_session_generation: 0,
+                        execution_generation: exec_gen as u64 + 1,
                         occurred_at_ns: 0,
                         detail: String::new(),
                         submitted_paths: Vec::new(),
@@ -1576,6 +1579,9 @@ mod tests {
                 transition_seq: 1,
                 authority_epoch: 0,
                 assignment_generation: 0,
+                authority_instance: 0,
+                collector_session_generation: 0,
+                execution_generation: 1,
                 occurred_at_ns: 0,
                 detail: String::new(),
                 submitted_paths: Vec::new(),
@@ -1818,7 +1824,7 @@ mod tests {
     #[test]
     fn pending_sweep_fences_foreign_and_discards_terminal_sessions() {
         use crate::subscription_sessions::{SessionLifecycleEvent, state};
-        let ev = |session_id: &str, st: &str, seq: u64, verified_collector: &str| {
+        let ev = |session_id: &str, st: &str, seq: u64, verified_collector: &str, exec_gen: u64| {
             SessionLifecycleEvent {
                 collector_id: verified_collector.to_string(),
                 target: "dut:57400".to_string(),
@@ -1828,6 +1834,9 @@ mod tests {
                 transition_seq: seq,
                 authority_epoch: 0,
                 assignment_generation: 0,
+                authority_instance: 0,
+                collector_session_generation: 0,
+                execution_generation: exec_gen,
                 occurred_at_ns: 0,
                 detail: String::new(),
                 submitted_paths: Vec::new(),
@@ -1844,7 +1853,7 @@ mod tests {
         // A foreign collector claims the SAME plan/session identifiers
         // but its lifecycle is unverified — never current, never ready.
         sessions.apply(
-            &ev("sess-old", state::SUBMITTED, 1, "other-collector"),
+            &ev("sess-old", state::SUBMITTED, 1, "other-collector", 1),
             false,
         );
         assert!(pending.sweep(&sessions).is_empty());
@@ -1859,7 +1868,7 @@ mod tests {
             (state::SYNCHRONIZING, 2),
             (state::SYNCHRONIZED, 3),
         ] {
-            sessions.apply(&ev("sess-new", st, seq, "owner-collector"), true);
+            sessions.apply(&ev("sess-new", st, seq, "owner-collector", 2), true);
         }
         assert!(pending.sweep(&sessions).is_empty());
         assert_eq!(pending.total, 0, "superseded session evidence discarded");

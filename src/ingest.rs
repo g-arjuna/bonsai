@@ -2401,6 +2401,8 @@ fn lifecycle_event_to_proto(
         transition_seq: ev.transition_seq,
         authority_epoch: ev.authority_epoch,
         assignment_generation: ev.assignment_generation,
+        collector_session_generation: ev.collector_session_generation,
+        execution_generation: ev.execution_generation,
         occurred_at_ns: ev.occurred_at_ns,
         detail: ev.detail.clone(),
         protocol_version: crate::api::PROTOCOL_VERSION,
@@ -2717,6 +2719,9 @@ mod lifecycle_resend_tests {
             transition_seq: seq,
             authority_epoch: 1,
             assignment_generation: 1,
+            authority_instance: 0,
+            collector_session_generation: 0,
+            execution_generation: 0,
             occurred_at_ns: 0,
             detail: String::new(),
             submitted_paths: Vec::new(),
@@ -2952,6 +2957,7 @@ pub async fn handle_assignment_update(
             tx: tx.clone(),
             authority_epoch,
             assignment_generation,
+            collector_session_generation: update.collector_session_generation,
         });
     let mut renewed = false;
     if update.authority_epoch == 0 {

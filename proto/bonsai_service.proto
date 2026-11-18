@@ -299,6 +299,20 @@ message SubscriptionLifecycleEvent {
   // ("automatic" | "explicit" | "disabled"); required to recompute
   // deterministic plan identity core-side. Empty on legacy records.
   string acquisition           = 13;
+  // Core-issued collector session generation echoed from the
+  // AssignmentUpdate that established this collector session (0 =
+  // legacy collector / local acquisition). The core additionally binds
+  // each event to the device's current assignment-authority instance;
+  // executions are then totally ordered by
+  // (authority_epoch, authority_instance, collector_session_generation,
+  // execution_generation) — a deterministic fence, no probabilistic
+  // structures.
+  uint64 collector_session_generation = 14;
+  // Per-(collector session, target) monotonic execution counter,
+  // incremented each time the collector mints a device-facing
+  // session_id for a Subscribe attempt. 0 = legacy/invalid for
+  // session-scoped records.
+  uint64 execution_generation = 15;
 }
 
 message SubscriptionLifecycleResponse {
@@ -451,6 +465,12 @@ message AssignmentUpdate {
   // updates, while delayed previous-epoch updates stay fenced.
   // 0 = legacy core without epoch fencing.
   uint64 authority_epoch = 4;
+  // Core-issued collector session generation (M5.2B execution fencing):
+  // incremented on every RegisterCollector for this collector id and
+  // stamped on every update of this session. The collector echoes it
+  // on SubscriptionLifecycleEvent so the core can order device-facing
+  // executions across collector restarts and stream reconnects.
+  uint64 collector_session_generation = 5;
 }
 
 // Per-receiver status snapshot carried in each heartbeat (D3-14 T4 / D3-13).

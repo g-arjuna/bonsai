@@ -20,7 +20,7 @@
 //! `session_id` rather than reviving the old one. Only a `synchronized`
 //! session with verified provenance may authorize current coverage.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// Lifecycle states carried on `SubscriptionLifecycleEvent.state`.
@@ -81,49 +81,31 @@ fn transition_allowed(current: &str, next: &str) -> bool {
 /// coverage session and every non-terminal record are never evicted.
 const MAX_SESSIONS_PER_TARGET: usize = 64;
 
-/// Maximum retired session identities remembered per target for the
-/// anti-replay fence (M5.2B review C). This bound is INDEPENDENT of
-/// terminal-record retention: an evicted session's identity can never
-/// re-register, so a delayed `synchronized` replay cannot resurrect an
-/// old session after newer sessions have churned past the record cap.
-/// Reconnects mint fresh session_ids by contract, so legitimate traffic
-/// never needs a retired identity; oldest ids fall out of the FIFO only
-/// after this many newer retirements — and the Bloom fence below still
-/// covers them.
-const RETIRED_SESSION_ID_CAP: usize = 256;
-
-/// Bounded probabilistic anti-replay fence (M5.2B review C residual):
-/// a per-target Bloom filter over every retired session identity. Unlike
-/// the FIFO it NEVER ages out — retirement only ever adds bits, giving a
-/// monotonic execution-order fence with fixed memory (1024 bytes per
-/// target). False positives are possible in principle but bounded and
-/// fail-closed (a rejected replay can never gain authority); legitimate
-/// reconnects mint fresh UUID session_ids, so a false positive requires
-/// an astronomically unlikely hash collision. No wall-clock input.
-const RETIRED_BLOOM_WORDS: usize = 128; // 8192 bits
-const RETIRED_BLOOM_HASHES: usize = 4;
-
-fn retired_bloom_indices(session_id: &str) -> [usize; RETIRED_BLOOM_HASHES] {
-    use std::hash::{Hash, Hasher};
-    let mut out = [0usize; RETIRED_BLOOM_HASHES];
-    for (i, slot) in out.iter_mut().enumerate() {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        (session_id, i as u8).hash(&mut h);
-        *slot = (h.finish() as usize) % (RETIRED_BLOOM_WORDS * 64);
-    }
-    out
-}
-
-fn retired_bloom_check(bits: &[u64; RETIRED_BLOOM_WORDS], session_id: &str) -> bool {
-    retired_bloom_indices(session_id)
-        .iter()
-        .all(|&idx| bits[idx / 64] & (1u64 << (idx % 64)) != 0)
-}
-
-fn retired_bloom_set(bits: &mut [u64; RETIRED_BLOOM_WORDS], session_id: &str) {
-    for idx in retired_bloom_indices(session_id) {
-        bits[idx / 64] |= 1u64 << (idx % 64);
-    }
+/// Deterministic execution-order fence (M5.2B review): every
+/// device-facing execution is totally ordered by
+/// `(authority_epoch, authority_instance, collector_session_generation,
+/// execution_generation)` — all core-issued or collector-echoed
+/// monotonic counters, never wall-clock and never probabilistic.
+///
+/// - `authority_epoch` / `authority_instance`: the core-assigned
+///   assignment-authority window (injected core-side at the
+///   authenticated RPC boundary; `authority_instance` orders
+///   reassignment across collectors).
+/// - `collector_session_generation`: core-issued per-collector
+///   registration counter, echoed by the collector; orders executions
+///   across collector restarts and assignment-stream reconnects.
+/// - `execution_generation`: per-(collector session, target) counter
+///   minted by the subscriber each time it creates a session_id.
+///
+/// The fence state per target is O(1): the high-water rank, the single
+/// session identity bound to it, and the bounded session history —
+/// independent of reconnect count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ExecRank {
+    epoch: u64,
+    instance: u64,
+    session_gen: u64,
+    exec_gen: u64,
 }
 
 /// One path entry in the actual submitted Subscribe manifest carried
@@ -152,6 +134,16 @@ pub struct SessionLifecycleEvent {
     pub transition_seq: u64,
     pub authority_epoch: u64,
     pub assignment_generation: u64,
+    /// Core-issued authority-instance ordinal for the device's current
+    /// assignment window — injected by the authenticated core boundary,
+    /// never trusted from the wire. 0 for trusted local acquisition.
+    pub authority_instance: u64,
+    /// Core-issued collector session generation echoed by the
+    /// collector (0 for local acquisition / legacy producers).
+    pub collector_session_generation: u64,
+    /// Per-(collector session, target) monotonic execution counter
+    /// minted by the subscriber per session_id (0 = absent).
+    pub execution_generation: u64,
     pub occurred_at_ns: i64,
     pub detail: String,
     /// Actual submitted Subscribe manifest — populated on `submitted`
@@ -161,6 +153,23 @@ pub struct SessionLifecycleEvent {
     /// Acquisition intent the manifest was built under
     /// ("automatic" | "explicit" | "disabled"); empty on legacy records.
     pub acquisition: String,
+}
+
+/// Relation of an event's execution rank to the target high-water mark.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExecRelation {
+    /// Plan-level outcome — no execution identity.
+    PlanLevel,
+    /// Rank above the high-water mark: a NEW execution. Admitted and,
+    /// once applied under verified provenance, becomes the fence head.
+    New,
+    /// Rank equal to the high-water mark with the bound session
+    /// identity: the CURRENT execution — normal ordered transitions.
+    Current,
+    /// Rank below the high-water mark: a superseded execution. Its
+    /// retained session records may still accept diagnostic transitions
+    /// but it can never hold or regain current authority.
+    Old,
 }
 
 /// Outcome of applying one lifecycle event.
@@ -196,6 +205,11 @@ struct SessionRecord {
     /// diagnostics (read by tests and future status APIs).
     #[allow(dead_code)]
     updated_at_ns: i64,
+    /// Execution rank this session was registered under (`None` for
+    /// plan-level records). A session identity can never change
+    /// execution — a later event claiming a different rank under the
+    /// same session_id is an identity mutation.
+    exec: Option<ExecRank>,
 }
 
 struct TargetSessions {
@@ -204,14 +218,17 @@ struct TargetSessions {
     sessions: HashMap<String, SessionRecord>,
     /// Session key currently authorized to satisfy coverage, if any.
     current: Option<String>,
-    /// Bounded FIFO of retired session identities — the execution-order
-    /// fence that survives terminal-record eviction (see
-    /// [`RETIRED_SESSION_ID_CAP`]).
-    retired_session_ids: VecDeque<String>,
-    /// Monotonic probabilistic fence over ALL retired identities —
-    /// covers ids that have aged out of the FIFO (see
-    /// [`RETIRED_BLOOM_WORDS`]).
-    retired_bloom: [u64; RETIRED_BLOOM_WORDS],
+    /// Highest execution rank admitted for this target — the
+    /// deterministic execution-order high-water mark. Only an
+    /// execution at this rank may hold current coverage authority;
+    /// every lower rank is permanently historical regardless of
+    /// session-record retention (O(1) memory, no reconnect growth).
+    exec_hwm: Option<ExecRank>,
+    /// Session identity bound to `exec_hwm`. One execution owns exactly
+    /// one session_id: a different UUID presenting the same rank is an
+    /// identity conflict, and the bound session's terminal state closes
+    /// the execution for authority purposes.
+    exec_session: Option<String>,
 }
 
 impl Default for TargetSessions {
@@ -219,8 +236,8 @@ impl Default for TargetSessions {
         Self {
             sessions: HashMap::new(),
             current: None,
-            retired_session_ids: VecDeque::new(),
-            retired_bloom: [0u64; RETIRED_BLOOM_WORDS],
+            exec_hwm: None,
+            exec_session: None,
         }
     }
 }
@@ -290,22 +307,68 @@ impl SubscriptionSessionRegistry {
         let entry = targets.entry(event.target.clone()).or_default();
 
         let existing = entry.sessions.get(&key).cloned();
-        // Anti-replay fence (M5.2B review C): a session identity that
-        // was registered and later evicted can never re-register. A
-        // delayed replay of an old session's `synchronized` event must
-        // not regain authority after newer sessions have churned past
-        // the bounded terminal retention — legitimate reconnects always
-        // mint fresh session_ids.
-        if existing.is_none()
-            && !event.session_id.is_empty()
-            && (entry
-                .retired_session_ids
-                .iter()
-                .any(|id| id == &event.session_id)
-                || retired_bloom_check(&entry.retired_bloom, &event.session_id))
-        {
-            metrics::counter!("bonsai_subscription_session_replay_rejected_total").increment(1);
-            return ApplyOutcome::Rejected("retired session identity replay");
+
+        // Deterministic execution-order fence (M5.2B): session-scoped
+        // events must carry an execution identity and are ordered
+        // against the per-target high-water mark. This replaces the
+        // retired-identity tombstone/Bloom fence: ordering is exact,
+        // bounded (O(1) per target) and independent of reconnect count.
+        let session_scoped = !event.session_id.is_empty();
+        let mut exec_relation = ExecRelation::PlanLevel;
+        let mut rank = ExecRank {
+            epoch: 0,
+            instance: 0,
+            session_gen: 0,
+            exec_gen: 0,
+        };
+        if session_scoped {
+            if event.execution_generation == 0 {
+                metrics::counter!("bonsai_subscription_session_replay_rejected_total").increment(1);
+                return ApplyOutcome::Rejected("missing execution identity");
+            }
+            rank = ExecRank {
+                epoch: event.authority_epoch,
+                instance: event.authority_instance,
+                session_gen: event.collector_session_generation,
+                exec_gen: event.execution_generation,
+            };
+            exec_relation = match entry.exec_hwm {
+                None => ExecRelation::New,
+                Some(hwm) if rank > hwm => ExecRelation::New,
+                Some(hwm) if rank == hwm => {
+                    // One execution owns exactly one session identity:
+                    // a different UUID under the current generation is
+                    // an identity conflict, never a new execution.
+                    if entry.exec_session.as_deref() != Some(event.session_id.as_str()) {
+                        metrics::counter!("bonsai_subscription_session_replay_rejected_total")
+                            .increment(1);
+                        return ApplyOutcome::Rejected("execution identity conflict");
+                    }
+                    // The bound session reaching a terminal state (or
+                    // collector/target retirement) closes the
+                    // execution: delayed transitions for it are
+                    // replays, not authority.
+                    if !Self::exec_is_open(entry) {
+                        metrics::counter!("bonsai_subscription_session_replay_rejected_total")
+                            .increment(1);
+                        return ApplyOutcome::Rejected("retired execution replay");
+                    }
+                    ExecRelation::Current
+                }
+                Some(_) => ExecRelation::Old,
+            };
+            if exec_relation == ExecRelation::Old && existing.is_none() {
+                // A delayed event for an older execution the core never
+                // registered cannot re-register: bounded memory AND no
+                // path back to authority.
+                metrics::counter!("bonsai_subscription_session_replay_rejected_total").increment(1);
+                return ApplyOutcome::Rejected("superseded execution");
+            }
+            if let Some(record) = &existing
+                && record.exec != Some(rank)
+            {
+                return ApplyOutcome::Rejected("execution identity mutation");
+            }
         }
         if let Some(record) = &existing {
             // Ordered transitions: seq must strictly increase. seq == 0
@@ -386,6 +449,7 @@ impl SubscriptionSessionRegistry {
             verified: verified || existing.as_ref().is_some_and(|r| r.verified),
             detail: event.detail.clone(),
             updated_at_ns: event.occurred_at_ns,
+            exec: session_scoped.then_some(rank),
         };
 
         // A session that (re)enters the device-facing lifecycle
@@ -396,7 +460,10 @@ impl SubscriptionSessionRegistry {
             event.state.as_str(),
             SUBMITTED | SYNCHRONIZING | SYNCHRONIZED
         );
-        if entering_live {
+        // A superseded execution's late live-state events are history
+        // only: they must never supersede the current execution's
+        // sessions or disturb current authority.
+        if entering_live && exec_relation != ExecRelation::Old {
             for (other_key, other) in entry.sessions.iter_mut() {
                 if *other_key != key && !is_terminal(&other.state) {
                     other.state = SUPERSEDED.to_string();
@@ -407,8 +474,19 @@ impl SubscriptionSessionRegistry {
             }
         }
 
-        let became_current = event.state == SYNCHRONIZED && verified;
+        // Only the fence-head execution may hold current coverage
+        // authority; superseded executions are recorded for diagnostics
+        // but can never become current regardless of record retention.
+        let became_current =
+            event.state == SYNCHRONIZED && verified && exec_relation != ExecRelation::Old;
         entry.sessions.insert(key.clone(), record);
+        // Commit the high-water advance only for verified admissions:
+        // an unverified producer can record diagnostics but must never
+        // fence out the legitimate current execution.
+        if exec_relation == ExecRelation::New && verified {
+            entry.exec_hwm = Some(rank);
+            entry.exec_session = Some(event.session_id.clone());
+        }
         if became_current {
             entry.current = Some(key);
         } else if entry.current.as_deref() == Some(key.as_str())
@@ -420,12 +498,26 @@ impl SubscriptionSessionRegistry {
         ApplyOutcome::Applied
     }
 
+    /// Whether the execution bound to the high-water mark is still
+    /// open: its session record exists and has not reached a terminal
+    /// state. Terminal transitions (including collector/target
+    /// retirement, which marks records directly) close the execution
+    /// for authority — later events under the same rank are replays.
+    fn exec_is_open(entry: &TargetSessions) -> bool {
+        entry.exec_session.as_ref().is_some_and(|sid| {
+            entry
+                .sessions
+                .get(sid)
+                .is_some_and(|r| !is_terminal(&r.state))
+        })
+    }
+
     /// Bound per-target session retention. Terminal records are
     /// evicted oldest-first; the current coverage session and every
     /// non-terminal record are never evicted, so eviction can never
-    /// destroy live authority. Anti-replay is preserved: an evicted
-    /// session's late events re-register as new records and can never
-    /// impersonate a retained newer session (identity pinning above).
+    /// destroy live authority. Replay safety no longer depends on
+    /// retention at all: the execution high-water mark fences every
+    /// superseded execution deterministically (O(1) per target).
     fn evict_bounded(entry: &mut TargetSessions) {
         while entry.sessions.len() > MAX_SESSIONS_PER_TARGET {
             let victim = entry
@@ -438,15 +530,6 @@ impl SubscriptionSessionRegistry {
                 .map(|(k, _)| k.clone());
             let Some(key) = victim else { break };
             entry.sessions.remove(&key);
-            // Retire the identity into the bounded replay fence —
-            // `plan:<id>` keys are plan-level outcomes, not sessions.
-            if !key.starts_with("plan:") {
-                entry.retired_session_ids.push_back(key.clone());
-                while entry.retired_session_ids.len() > RETIRED_SESSION_ID_CAP {
-                    entry.retired_session_ids.pop_front();
-                }
-                retired_bloom_set(&mut entry.retired_bloom, &key);
-            }
             metrics::counter!("bonsai_subscription_session_evicted_total").increment(1);
         }
     }
@@ -539,7 +622,7 @@ impl SubscriptionSessionRegistry {
 mod tests {
     use super::*;
 
-    fn ev(state: &str, seq: u64, session: &str) -> SessionLifecycleEvent {
+    fn evx(state: &str, seq: u64, session: &str, exec_gen: u64) -> SessionLifecycleEvent {
         SessionLifecycleEvent {
             collector_id: "c1".to_string(),
             target: "dut".to_string(),
@@ -549,11 +632,18 @@ mod tests {
             transition_seq: seq,
             authority_epoch: 1,
             assignment_generation: 1,
+            authority_instance: 1,
+            collector_session_generation: 1,
+            execution_generation: exec_gen,
             occurred_at_ns: 0,
             detail: String::new(),
             submitted_paths: Vec::new(),
             acquisition: String::new(),
         }
+    }
+
+    fn ev(state: &str, seq: u64, session: &str) -> SessionLifecycleEvent {
+        evx(state, seq, session, 1)
     }
 
     #[test]
@@ -602,10 +692,12 @@ mod tests {
         reg.apply(&ev(state::SYNCHRONIZED, 2, "s1"), true);
         reg.apply(&ev(state::DISCONNECTED, 3, "s1"), true);
         assert_eq!(reg.current_session("dut"), None);
-        // Delayed forward transition on a terminated session: invalid.
+        // Delayed forward transition on a terminated session: the
+        // execution fence rejects it as a retired-execution replay
+        // before the state machine is even consulted.
         assert_eq!(
             reg.apply(&ev(state::SYNCHRONIZED, 4, "s1"), true),
-            ApplyOutcome::InvalidTransition
+            ApplyOutcome::Rejected("retired execution replay")
         );
         assert_eq!(reg.current_session("dut"), None);
     }
@@ -615,9 +707,9 @@ mod tests {
         let reg = SubscriptionSessionRegistry::new();
         reg.apply(&ev(state::SUBMITTED, 1, "s1"), true);
         reg.apply(&ev(state::SYNCHRONIZED, 2, "s1"), true);
-        // Same plan, new session identity.
-        reg.apply(&ev(state::SUBMITTED, 1, "s2"), true);
-        reg.apply(&ev(state::SYNCHRONIZED, 2, "s2"), true);
+        // Same plan, new session identity under a NEW execution.
+        reg.apply(&evx(state::SUBMITTED, 1, "s2", 2), true);
+        reg.apply(&evx(state::SYNCHRONIZED, 2, "s2", 2), true);
         assert_eq!(
             reg.current_session("dut"),
             Some(("plan".to_string(), "s2".to_string()))
@@ -652,83 +744,217 @@ mod tests {
         assert_eq!(reg.current_session("dut"), None);
     }
 
-    /// M5.2B review C: an evicted session identity can never re-register.
-    /// Bounded terminal retention alone is not an anti-replay fence —
-    /// enough churn evicts the record, and a delayed `synchronized`
-    /// replay must still be rejected rather than regain authority.
+    /// M5.2B review C: the deterministic execution-order fence — a
+    /// superseded execution can never regain authority regardless of
+    /// session-record retention, and bounded memory is O(1) per target.
     #[test]
-    fn evicted_session_identity_cannot_replay_into_authority() {
+    fn superseded_execution_cannot_replay_into_authority() {
         // `ev_at` stamps occurred_at so eviction (oldest-terminal-first)
         // is deterministic: sess-a/b carry the oldest timestamps.
-        let ev_at = |state: &str, seq: u64, session: &str, ts: i64| {
-            let mut e = ev(state, seq, session);
+        let ev_at = |state: &str, seq: u64, session: &str, exec: u64, ts: i64| {
+            let mut e = evx(state, seq, session, exec);
             e.occurred_at_ns = ts;
             e
         };
         let reg = SubscriptionSessionRegistry::new();
-        // Session A establishes and is superseded.
-        reg.apply(&ev_at(state::SUBMITTED, 1, "sess-a", 1), true);
-        reg.apply(&ev_at(state::SYNCHRONIZED, 2, "sess-a", 2), true);
-        reg.apply(&ev_at(state::SUBMITTED, 1, "sess-b", 3), true);
-        reg.apply(&ev_at(state::SYNCHRONIZED, 2, "sess-b", 4), true);
+        // Session A establishes and is superseded by execution 2.
+        reg.apply(&ev_at(state::SUBMITTED, 1, "sess-a", 1, 1), true);
+        reg.apply(&ev_at(state::SYNCHRONIZED, 2, "sess-a", 1, 2), true);
+        reg.apply(&ev_at(state::SUBMITTED, 1, "sess-b", 2, 3), true);
+        reg.apply(&ev_at(state::SYNCHRONIZED, 2, "sess-b", 2, 4), true);
         assert_eq!(
             reg.current_session("dut"),
             Some(("plan".to_string(), "sess-b".to_string()))
         );
 
-        // Churn past BOTH bounds: MAX_SESSIONS_PER_TARGET = 64 records
-        // AND RETIRED_SESSION_ID_CAP = 256 FIFO entries. sess-a's
-        // identity ages out of the FIFO entirely — only the monotonic
-        // Bloom fence can still reject its replay.
-        for i in 0..340 {
+        // Churn past BOTH bounds: MAX_SESSIONS_PER_TARGET = 64 records.
+        // sess-a's record is evicted entirely — only the execution
+        // high-water mark can still fence its replay.
+        for i in 0..340u64 {
             let sid = format!("churn-{i}");
             let ts = 10 + i as i64;
-            reg.apply(&ev_at(state::SUBMITTED, 1, &sid, ts), true);
-            reg.apply(&ev_at(state::SYNCHRONIZED, 2, &sid, ts + 1), true);
-            reg.apply(&ev_at(state::DISCONNECTED, 3, &sid, ts + 2), true);
+            let exec = 3 + i;
+            assert_eq!(
+                reg.apply(&ev_at(state::SUBMITTED, 1, &sid, exec, ts), true),
+                ApplyOutcome::Applied
+            );
+            assert_eq!(
+                reg.apply(&ev_at(state::SYNCHRONIZED, 2, &sid, exec, ts + 1), true),
+                ApplyOutcome::Applied
+            );
+            assert_eq!(
+                reg.apply(&ev_at(state::DISCONNECTED, 3, &sid, exec, ts + 2), true),
+                ApplyOutcome::Applied
+            );
         }
-        // Current session Z.
-        reg.apply(&ev_at(state::SUBMITTED, 1, "sess-z", 10_000), true);
-        reg.apply(&ev_at(state::SYNCHRONIZED, 2, "sess-z", 10_001), true);
+        // Current session Z under the newest execution.
+        reg.apply(&ev_at(state::SUBMITTED, 1, "sess-z", 400, 10_000), true);
+        reg.apply(&ev_at(state::SYNCHRONIZED, 2, "sess-z", 400, 10_001), true);
         assert_eq!(
             reg.current_session("dut"),
             Some(("plan".to_string(), "sess-z".to_string()))
         );
 
-        // Prove the FIFO aged sess-a out — the rejection below can only
-        // come from the monotonic Bloom fence, not tombstone retention.
         {
             let targets = reg.inner.lock().unwrap();
             let entry = targets.get("dut").expect("target entry");
-            assert!(
-                !entry.retired_session_ids.iter().any(|id| id == "sess-a"),
-                "sess-a must have aged out of the bounded FIFO"
-            );
             assert!(entry.sessions.len() <= MAX_SESSIONS_PER_TARGET);
+            // sess-a's record is gone; the fence is the exec high-water
+            // mark, not any retained identity.
+            assert!(entry.sessions.get("sess-a").is_none());
+            assert_eq!(
+                entry.exec_hwm,
+                Some(ExecRank {
+                    epoch: 1,
+                    instance: 1,
+                    session_gen: 1,
+                    exec_gen: 400,
+                })
+            );
         }
 
-        // Delayed replay of evicted sess-a's synchronized transition,
-        // otherwise historically valid: rejected by the retired-id
-        // fence — sess-z remains current and sess-a cannot re-register.
-        let replay = ev_at(state::SYNCHRONIZED, 2, "sess-a", 2);
+        // Delayed replay of evicted sess-a's synchronized transition:
+        // its execution rank is below the high-water mark and its
+        // record is gone — rejected, sess-z remains current.
+        let replay = ev_at(state::SYNCHRONIZED, 2, "sess-a", 1, 2);
         assert_eq!(
             reg.apply(&replay, true),
-            ApplyOutcome::Rejected("retired session identity replay")
+            ApplyOutcome::Rejected("superseded execution")
         );
         assert_eq!(
             reg.current_session("dut"),
             Some(("plan".to_string(), "sess-z".to_string()))
         );
-        // Even a fresh-sequence replay under the retired identity is
-        // rejected — the fence keys on identity, not revision.
-        let replay2 = ev_at(state::SUBMITTED, 9, "sess-a", 10_002);
+        // A never-registered execution BELOW the high-water mark is
+        // equally fenced — delayed first-seen evidence cannot
+        // supersede the newer execution.
+        let mut ghost = ev_at(state::SYNCHRONIZED, 2, "ghost-old", 250, 10_002);
+        ghost.transition_seq = 2;
+        assert_eq!(
+            reg.apply(&ghost, true),
+            ApplyOutcome::Rejected("superseded execution")
+        );
+        // A conflicting UUID under the CURRENT execution generation is
+        // an identity conflict, not a new execution.
+        let conflict = ev_at(state::SYNCHRONIZED, 2, "impostor", 400, 10_003);
+        assert_eq!(
+            reg.apply(&conflict, true),
+            ApplyOutcome::Rejected("execution identity conflict")
+        );
+        // The current execution itself remains authoritative and
+        // idempotent.
+        assert_eq!(
+            reg.apply(&ev_at(state::SYNCHRONIZED, 2, "sess-z", 400, 10_004), true),
+            ApplyOutcome::Duplicate
+        );
+        assert_eq!(
+            reg.current_session("dut"),
+            Some(("plan".to_string(), "sess-z".to_string()))
+        );
+    }
+
+    /// Availability proof (M5.2B review B): 20,000 sequential
+    /// legitimate executions under UNCHANGED assignment authority must
+    /// every one be admitted — deterministic fencing has no false
+    /// positives. Memory stays bounded by the session-record cap, not
+    /// by execution count.
+    #[test]
+    fn twenty_thousand_sequential_executions_all_admitted() {
+        let reg = SubscriptionSessionRegistry::new();
+        // Deterministic eviction order: occurred_at tracks the
+        // execution generation so oldest-terminal-first eviction is
+        // exact, not hash-order dependent.
+        let ev = |state: &str, seq: u64, session: &str, exec: u64| {
+            let mut e = evx(state, seq, session, exec);
+            e.occurred_at_ns = exec as i64;
+            e
+        };
+        // Exactly 20,000 executions; generation 19,999 is deliberately
+        // skipped so the replay battery can present a delayed event for
+        // an execution the core NEVER registered below the high-water.
+        for i in 1..=20_001u64 {
+            if i == 19_999 {
+                continue;
+            }
+            let sid = format!("exec-{i}");
+            // SUBMITTED accepted.
+            assert_eq!(
+                reg.apply(&ev(state::SUBMITTED, 1, &sid, i), true),
+                ApplyOutcome::Applied,
+                "execution {i} submitted rejected"
+            );
+            assert_eq!(reg.current_session("dut"), None, "submitted never current");
+            // SYNCHRONIZED accepted and becomes current.
+            assert_eq!(
+                reg.apply(&ev(state::SYNCHRONIZING, 2, &sid, i), true),
+                ApplyOutcome::Applied,
+                "execution {i} synchronizing rejected"
+            );
+            assert_eq!(
+                reg.apply(&ev(state::SYNCHRONIZED, 3, &sid, i), true),
+                ApplyOutcome::Applied,
+                "execution {i} synchronized rejected"
+            );
+            assert_eq!(
+                reg.current_session("dut"),
+                Some(("plan".to_string(), sid.clone())),
+                "execution {i} did not become current"
+            );
+            // Terminal retirement behaves correctly: disconnect ends
+            // authority; the NEXT execution supersedes anyway.
+            if i % 2 == 0 && i != 20_001 {
+                assert_eq!(
+                    reg.apply(&ev(state::DISCONNECTED, 4, &sid, i), true),
+                    ApplyOutcome::Applied,
+                    "execution {i} disconnect rejected"
+                );
+                assert_eq!(reg.current_session("dut"), None);
+            }
+            // Bounded memory: session records capped, fence O(1).
+            let targets = reg.inner.lock().unwrap();
+            let entry = targets.get("dut").expect("target entry");
+            assert!(entry.sessions.len() <= MAX_SESSIONS_PER_TARGET);
+            drop(targets);
+        }
+
+        // Replay battery against the final state (execution 20001,
+        // synchronized at seq 3 — it is current).
+        let newest = "exec-20001".to_string();
+        assert_eq!(
+            reg.current_session("dut"),
+            Some(("plan".to_string(), newest.clone()))
+        );
+        // Oldest execution replay (record long evicted).
         assert!(matches!(
-            reg.apply(&replay2, true),
+            reg.apply(&ev(state::SYNCHRONIZED, 3, "exec-1", 1), true),
             ApplyOutcome::Rejected(_)
         ));
+        // An execution whose history was evicted (exec-500 — far
+        // outside the 64-record retention window).
+        assert!(matches!(
+            reg.apply(&ev(state::SYNCHRONIZED, 3, "exec-500", 500), true),
+            ApplyOutcome::Rejected(_)
+        ));
+        // Delayed older execution NEVER previously registered (the
+        // skipped generation 19,999 — no session record can exist).
+        assert!(matches!(
+            reg.apply(&ev(state::SYNCHRONIZED, 1, "never-seen", 19_999), true),
+            ApplyOutcome::Rejected(_)
+        ));
+        // Current execution duplicate stays idempotent.
+        assert_eq!(
+            reg.apply(&ev(state::SYNCHRONIZED, 3, &newest, 20_001), true),
+            ApplyOutcome::Duplicate
+        );
+        // Conflicting UUID under the already-used current generation.
+        assert_eq!(
+            reg.apply(&ev(state::SYNCHRONIZED, 1, "impostor", 20_001), true),
+            ApplyOutcome::Rejected("execution identity conflict")
+        );
+        // Newest legitimate execution remains authoritative.
         assert_eq!(
             reg.current_session("dut"),
-            Some(("plan".to_string(), "sess-z".to_string()))
+            Some(("plan".to_string(), newest))
         );
     }
 }

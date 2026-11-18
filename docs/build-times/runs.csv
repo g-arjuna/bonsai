@@ -212,3 +212,7 @@ date,command,scope,wall_seconds,result,notes
 2026-11-18,cargo test -p bonsai --test bn005_closeout --offline -- query_deadline_and_request_cancellation (via build-lane),unrelated L2 flake diagnosis,~196,"pass","standalone rerun ok in 12.7s; L2-suite failure was timing/contention flake, not regression"
 2026-11-18,cargo test -p bonsai --lib --offline -- subscription_sessions (via build-lane),retired-session Bloom fence,~201,"pass","7/7 incl. 340-session churn replay exceeding 64+256 bounds"
 2026-11-18,scripts/ci/run-local.sh --trusted --shared-target-dir build-lane --lbug-native l0 l1 l2 l3 (container, sha 3c16910),canonical trusted-local acceptance,M5.2B final candidate,"~65","pass","l0-l3 ALL PASS; snapshot /tmp/bonsai-ci-src.8OaD3U; logs target/ci/local-run-20261118-185754"
+2026-11-18,cargo test -p bonsai --no-run (via build-lane),M5.2B exec-fence full test build,1124,"pass","all test binaries linked; lbug prebuilt"
+2026-11-18,cargo test -p bonsai --lib subscription_sessions (via build-lane),exec-order fence unit tests,~290,"pass","8/8 incl. 20,000-execution regression + strengthened 340-session churn replay"
+2026-11-18,cargo test --test gnmi_subscription_e2e (via build-lane),M5.2B distributed E2E,~200,"pass","4/4 incl. new authority_renewal_recovers_coverage_across_core_restart (129s standalone)"
+2026-11-18,cargo test --test gnmi_assignment_lifecycle --test gnmi_selective_acquisition --test gnmi_security_connectivity (via build-lane),assignment/selective/security regressions,~205,"pass","13+18+11 all pass"

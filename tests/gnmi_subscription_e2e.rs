@@ -14,12 +14,15 @@ use bonsai::api::{BonsaiGraphServer, CoreService, PROTOCOL_VERSION_CURRENT};
 use bonsai::assignment::CollectorManager;
 use bonsai::collector_auth::AuthPolicy;
 use bonsai::config::{
-    AcquisitionMode, RuntimeConfig, RuntimeTlsConfig, SelectedSubscriptionPath, TargetConfig,
+    AcquisitionMode, GnmiSecurityMode, RuntimeConfig, RuntimeTlsConfig, SelectedSubscriptionPath,
+    TargetConfig,
 };
 use bonsai::credentials::CredentialVault;
 use bonsai::event_bus::InProcessBus;
 use bonsai::graph::GraphStore;
-use bonsai::ingest::{run_lifecycle_forwarder, telemetry_to_ingest_update};
+use bonsai::ingest::{
+    handle_assignment_update, run_lifecycle_forwarder, telemetry_to_ingest_update,
+};
 use bonsai::proto::gnmi::g_nmi_server::{GNmi, GNmiServer};
 use bonsai::proto::gnmi::{
     CapabilityRequest, CapabilityResponse, Encoding, ModelData, Path, SubscribeRequest,
@@ -697,7 +700,9 @@ async fn distributed_subscription_evidence_reaches_verified_coverage() {
         .register_collector("e2e-col".to_string(), PROTOCOL_VERSION_CURRENT, true)
         .await
         .unwrap();
-    let assigned_gen = assign_rx.recv().await.expect("initial sync").generation;
+    let initial_sync = assign_rx.recv().await.expect("initial sync");
+    let assigned_gen = initial_sync.generation;
+    let collector_session_gen = initial_sync.collector_session_generation;
     assert!(
         lab.manager
             .validate_session_authority("e2e-col", &device_addr, epoch, assigned_gen)
@@ -752,6 +757,7 @@ async fn distributed_subscription_evidence_reaches_verified_coverage() {
         tx: lc_tx,
         authority_epoch: epoch,
         assignment_generation: assigned_gen,
+        collector_session_generation: collector_session_gen,
     };
     let subscriber = GnmiSubscriber::new(
         device_addr.clone(),
@@ -768,6 +774,7 @@ async fn distributed_subscription_evidence_reaches_verified_coverage() {
         device.selected_paths.clone(),
         AcquisitionMode::Explicit,
         Some(lifecycle),
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     );
     let (ssd, mut ssrx) = watch::channel(false);
     let sub_handle = tokio::spawn(async move { subscriber.subscribe_telemetry(&mut ssrx).await });
@@ -959,7 +966,9 @@ async fn foreign_collector_observations_never_satisfy_coverage() {
         .register_collector("e2e-col-a".to_string(), PROTOCOL_VERSION_CURRENT, true)
         .await
         .unwrap();
-    let assigned_gen = assign_rx.recv().await.expect("initial sync").generation;
+    let initial_sync = assign_rx.recv().await.expect("initial sync");
+    let assigned_gen = initial_sync.generation;
+    let collector_session_gen = initial_sync.collector_session_generation;
     assert!(
         lab.manager
             .validate_session_authority("e2e-col-a", &device_addr, epoch, assigned_gen)
@@ -1072,6 +1081,7 @@ async fn foreign_collector_observations_never_satisfy_coverage() {
         tx: sub_tx,
         authority_epoch: epoch,
         assignment_generation: assigned_gen,
+        collector_session_generation: collector_session_gen,
     };
     let subscriber = GnmiSubscriber::new(
         device_addr.clone(),
@@ -1088,6 +1098,7 @@ async fn foreign_collector_observations_never_satisfy_coverage() {
         device.selected_paths.clone(),
         AcquisitionMode::Explicit,
         Some(lifecycle),
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     );
     let (ssd, mut ssrx) = watch::channel(false);
     let sub_handle = tokio::spawn(async move { subscriber.subscribe_telemetry(&mut ssrx).await });
@@ -1257,6 +1268,9 @@ async fn foreign_collector_observations_never_satisfy_coverage() {
         transition_seq: 90,
         authority_epoch: epoch,
         assignment_generation: assigned_gen,
+        authority_instance: 0,
+        collector_session_generation: collector_session_gen,
+        execution_generation: 1,
         occurred_at_ns: 0,
         detail: String::new(),
         submitted_paths: Vec::new(),
@@ -1337,7 +1351,9 @@ async fn lifecycle_manifest_must_agree_with_assignment() {
         .register_collector("e2e-col-a".to_string(), PROTOCOL_VERSION_CURRENT, true)
         .await
         .unwrap();
-    let assigned_gen = assign_rx.recv().await.expect("initial sync").generation;
+    let initial_sync = assign_rx.recv().await.expect("initial sync");
+    let assigned_gen = initial_sync.generation;
+    let collector_session_gen = initial_sync.collector_session_generation;
 
     // The three authorized explicit selections (device_target).
     let auth_entries: Vec<(String, String, String, u64)> = vec![
@@ -1386,6 +1402,8 @@ async fn lifecycle_manifest_must_agree_with_assignment() {
         transition_seq: seq,
         authority_epoch: epoch,
         assignment_generation: assigned_gen,
+        collector_session_generation: collector_session_gen,
+        execution_generation: 1,
         occurred_at_ns: 1,
         detail: String::new(),
         protocol_version: PROTOCOL_VERSION_CURRENT,
@@ -1488,4 +1506,539 @@ async fn lifecycle_manifest_must_agree_with_assignment() {
     );
 
     let _ = lab;
+}
+
+// ── M5.2B review C: authority renewal across core restart + reconnect ──────
+
+/// A restarted core (new authority epoch, empty session registry) must
+/// recover current coverage from the healthy long-lived device
+/// subscription when the assignment configuration is unchanged — the
+/// collector-side fingerprint must NOT preserve a subscriber whose
+/// lifecycle authority belongs to the dead epoch. A same-authority
+/// confirming resync must NOT restart it, and a collector
+/// assignment-stream reconnect inside the session-generation fence
+/// must re-establish execution identity promptly. Old authority can
+/// never regain coverage on the new core.
+///
+/// Production-wired: real `handle_assignment_update` + subscriber
+/// spawn/fingerprint path, real lifecycle forwarder over authenticated
+/// mTLS, real core RPC authority validation, real session registry.
+/// Two `start_lab` cores stand in for pre/post-restart boots (each has
+/// its own epoch high-water, registry and session registry).
+#[tokio::test]
+async fn authority_renewal_recovers_coverage_across_core_restart() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let pki = make_pki();
+    let collector_leaf = issue_leaf(&pki, "e2e-col", false);
+
+    let (gnmi_addr, streams, _requests, subscribe_calls, gsd, ghandle) = start_mock().await;
+    let device_addr = gnmi_addr
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+
+    // Explicit plaintext is the deliberate isolated-lab opt-in required
+    // for acquisition (same convention as the assignment-lifecycle rig).
+    let mut device = device_target(&device_addr);
+    device.security = Some(GnmiSecurityMode::Plaintext);
+    device.collector_id = Some("e2e-col".to_string());
+
+    // ── Phase 1: first core boot — establish verified coverage ──
+    let lab1 = start_lab(&pki, device.clone()).await;
+    lab1.registry
+        .add_device_with_audit(device.clone(), "test", "test_add")
+        .unwrap();
+    lab1.registry
+        .assign_device_with_audit(
+            &device_addr,
+            Some("e2e-col".to_string()),
+            "test",
+            "test_assign",
+        )
+        .unwrap();
+    bind_collector(&lab1.sqlite, "e2e-col", &collector_leaf.fingerprint);
+
+    let (mut assign_rx1, session_gen1) = lab1
+        .manager
+        .register_collector("e2e-col".to_string(), PROTOCOL_VERSION_CURRENT, true)
+        .await
+        .unwrap();
+    let sync1 = assign_rx1.recv().await.expect("initial sync");
+    let epoch1 = sync1.authority_epoch;
+    let sync1_gen = sync1.generation;
+    let sync1_sg = sync1.collector_session_generation;
+    assert!(epoch1 > 0);
+    assert_eq!(sync1_sg, 1);
+
+    // Collector-side rig shared across all phases: the REAL assignment
+    // update path, subscriber map and per-update lifecycle channel.
+    let bus = InProcessBus::new(64);
+    let mut subscribers = bonsai::subscriber::SubscriberHandleMap::new();
+    let (plan_tx, _plan_rx) = mpsc::channel::<bonsai::subscription_status::SubscriptionPlan>(64);
+    let plans = Some(plan_tx);
+    let mut last_epoch = 0u64;
+    let mut last_gen = 0u64;
+
+    let (lc1_tx, lc1_rx) =
+        mpsc::channel::<bonsai::subscription_sessions::SessionLifecycleEvent>(256);
+    let tls1 = write_tls_files(&pki, &collector_leaf, lab1._dir.path());
+    let fwd1_cfg = Arc::new(RuntimeConfig {
+        collector_id: "e2e-col".to_string(),
+        core_ingest_endpoint: format!("https://{}", lab1.addr),
+        tls: tls1,
+        ..Default::default()
+    });
+    let (fwd1_sd, fwd1_rx) = watch::channel(false);
+    let _fwd1 = tokio::spawn(run_lifecycle_forwarder(
+        fwd1_cfg,
+        "e2e-col".to_string(),
+        lc1_rx,
+        fwd1_rx,
+    ));
+    let _ = fwd1_sd;
+
+    assert!(
+        handle_assignment_update(
+            sync1,
+            &bus,
+            &plans,
+            &mut subscribers,
+            &mut last_epoch,
+            &mut last_gen,
+            &Some(lc1_tx.clone()),
+        )
+        .await
+    );
+
+    // Complete the device-facing Subscribe → synchronized lifecycle.
+    assert!(
+        wait_for(
+            || subscribe_calls.load(Ordering::SeqCst) >= 1,
+            Duration::from_secs(10),
+            "epoch1 subscribe rpc"
+        )
+        .await
+    );
+    assert!(
+        wait_for(
+            || streams.try_lock().map(|g| !g.is_empty()).unwrap_or(false),
+            Duration::from_secs(10),
+            "epoch1 stream"
+        )
+        .await
+    );
+    {
+        let guard = streams.lock().await;
+        let tx = guard.last().expect("subscribe stream").clone();
+        tx.send(Ok(update_notification(&leaf_path("Ethernet1/1"), 7)))
+            .await
+            .unwrap();
+        tx.send(Ok(sync_notification())).await.unwrap();
+    }
+    assert!(
+        wait_for(
+            || lab1.sessions.current_session(&device_addr).is_some(),
+            Duration::from_secs(10),
+            "epoch1 verified coverage"
+        )
+        .await,
+        "first authority never established coverage"
+    );
+    let session1 = lab1
+        .sessions
+        .current_session(&device_addr)
+        .expect("coverage")
+        .1;
+    let calls_phase1 = subscribe_calls.load(Ordering::SeqCst);
+
+    // ── Phase 2: core restart — new epoch, empty registry, SAME
+    // assignment configuration. The subscriber must be re-established
+    // under the new authority, not preserved with the dead epoch. ──
+    let lab2 = start_lab(&pki, device.clone()).await;
+    lab2.registry
+        .add_device_with_audit(device.clone(), "test", "test_add")
+        .unwrap();
+    lab2.registry
+        .assign_device_with_audit(
+            &device_addr,
+            Some("e2e-col".to_string()),
+            "test",
+            "test_assign",
+        )
+        .unwrap();
+    bind_collector(&lab2.sqlite, "e2e-col", &collector_leaf.fingerprint);
+    let epoch2 = lab2.manager.authority_epoch();
+    assert!(
+        epoch2 > epoch1,
+        "restarted core must mint a strictly newer authority epoch"
+    );
+
+    let (mut assign_rx2, session_gen2) = lab2
+        .manager
+        .register_collector("e2e-col".to_string(), PROTOCOL_VERSION_CURRENT, true)
+        .await
+        .unwrap();
+    let sync2 = assign_rx2.recv().await.expect("restart sync");
+    let sync2_gen = sync2.generation;
+    assert_eq!(sync2.authority_epoch, epoch2);
+
+    // New lifecycle channel + forwarder bound to the restarted core.
+    // The old forwarder keeps retrying the dead endpoint harmlessly.
+    let (lc2_tx, lc2_rx) =
+        mpsc::channel::<bonsai::subscription_sessions::SessionLifecycleEvent>(256);
+    let tls2 = write_tls_files(&pki, &collector_leaf, lab2._dir.path());
+    let fwd2_cfg = Arc::new(RuntimeConfig {
+        collector_id: "e2e-col".to_string(),
+        core_ingest_endpoint: format!("https://{}", lab2.addr),
+        tls: tls2,
+        ..Default::default()
+    });
+    let (_fwd2_sd, fwd2_rx) = watch::channel(false);
+    let _fwd2 = tokio::spawn(run_lifecycle_forwarder(
+        fwd2_cfg,
+        "e2e-col".to_string(),
+        lc2_rx,
+        fwd2_rx,
+    ));
+
+    assert!(
+        handle_assignment_update(
+            sync2,
+            &bus,
+            &plans,
+            &mut subscribers,
+            &mut last_epoch,
+            &mut last_gen,
+            &Some(lc2_tx.clone()),
+        )
+        .await
+    );
+
+    // The epoch change must have replaced the subscriber: a NEW
+    // Subscribe RPC — monitoring resumes promptly, it does not wait
+    // for the device connection to fail.
+    let streams_phase1 = streams.lock().await.len();
+    assert!(
+        wait_for(
+            || subscribe_calls.load(Ordering::SeqCst) > calls_phase1,
+            Duration::from_secs(10),
+            "post-restart subscribe rpc"
+        )
+        .await,
+        "authority renewal did not re-establish the device subscription"
+    );
+    assert!(
+        wait_for(
+            || streams
+                .try_lock()
+                .map(|g| g.len() > streams_phase1)
+                .unwrap_or(false),
+            Duration::from_secs(10),
+            "post-restart stream"
+        )
+        .await
+    );
+    {
+        let guard = streams.lock().await;
+        let tx = guard.last().expect("new subscribe stream").clone();
+        tx.send(Ok(update_notification(&leaf_path("Ethernet1/1"), 8)))
+            .await
+            .unwrap();
+        tx.send(Ok(sync_notification())).await.unwrap();
+    }
+    assert!(
+        wait_for(
+            || lab2.sessions.current_session(&device_addr).is_some(),
+            Duration::from_secs(10),
+            "post-restart verified coverage"
+        )
+        .await,
+        "restarted core never recovered coverage"
+    );
+    let session2 = lab2
+        .sessions
+        .current_session(&device_addr)
+        .expect("coverage")
+        .1;
+    assert_ne!(
+        session1, session2,
+        "new authority must mint a fresh execution identity"
+    );
+
+    // Old authority cannot regain coverage on the new core: a delayed
+    // epoch-1-stamped lifecycle event is fenced before the registry.
+    {
+        let (ev_tx, ev_rx) = mpsc::channel::<bonsai::api::pb::SubscriptionLifecycleEvent>(4);
+        let mut stale_client = connect_client(&pki, &collector_leaf, lab2.addr).await;
+        let stale_call = tokio::spawn(async move {
+            stale_client
+                .subscription_lifecycle(Request::new(ReceiverStream::new(ev_rx)))
+                .await
+        });
+        let good_plan = bonsai::subscriber::acquisition_plan_id(
+            AcquisitionMode::Explicit,
+            &device
+                .selected_paths
+                .iter()
+                .map(|p| {
+                    (
+                        p.origin.clone(),
+                        p.path.clone(),
+                        p.mode.clone(),
+                        p.sample_interval_ns,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        ev_tx
+            .send(bonsai::api::pb::SubscriptionLifecycleEvent {
+                collector_id: "e2e-col".to_string(),
+                device_address: device_addr.clone(),
+                plan_id: good_plan,
+                session_id: "stale-epoch-session".to_string(),
+                state: "synchronized".to_string(),
+                transition_seq: 1,
+                authority_epoch: epoch1,
+                assignment_generation: sync1_gen,
+                collector_session_generation: sync1_sg,
+                execution_generation: 1,
+                occurred_at_ns: 1,
+                detail: String::new(),
+                protocol_version: PROTOCOL_VERSION_CURRENT,
+                submitted_paths: vec![],
+                acquisition: "explicit".to_string(),
+            })
+            .await
+            .unwrap();
+        drop(ev_tx);
+        let resp = stale_call
+            .await
+            .expect("stale rpc task")
+            .expect("stale rpc")
+            .into_inner();
+        assert!(
+            resp.rejected >= 1,
+            "stale-epoch lifecycle event must be rejected: {resp:?}"
+        );
+        assert_eq!(
+            lab2.sessions.current_session(&device_addr).map(|(_, s)| s),
+            Some(session2.clone()),
+            "stale authority must not disturb current coverage"
+        );
+    }
+
+    // ── Phase 3: same-authority confirming resync must NOT restart the
+    // healthy subscriber (fingerprint stable across generation bumps). ──
+    lab2.manager.resync_collector("e2e-col").await;
+    let sync3 = assign_rx2.recv().await.expect("resync update");
+    assert_eq!(sync3.authority_epoch, epoch2);
+    assert!(sync3.generation > sync2_gen);
+    let calls_before_resync = subscribe_calls.load(Ordering::SeqCst);
+    assert!(
+        handle_assignment_update(
+            sync3,
+            &bus,
+            &plans,
+            &mut subscribers,
+            &mut last_epoch,
+            &mut last_gen,
+            &Some(lc2_tx.clone()),
+        )
+        .await
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        subscribe_calls.load(Ordering::SeqCst),
+        calls_before_resync,
+        "confirming same-authority resync must preserve the healthy subscriber"
+    );
+    assert_eq!(
+        lab2.sessions.current_session(&device_addr).map(|(_, s)| s),
+        Some(session2.clone()),
+        "resync must not disturb current coverage"
+    );
+
+    // ── Phase 4: collector assignment-stream reconnect inside the
+    // session-generation fence. New session registers first; the stale
+    // stream's close is then fenced out — devices and coverage are
+    // retained, and the new collector session re-establishes execution
+    // identity promptly. ──
+    let (mut assign_rx4, session_gen4) = lab2
+        .manager
+        .register_collector("e2e-col".to_string(), PROTOCOL_VERSION_CURRENT, true)
+        .await
+        .unwrap();
+    assert!(
+        session_gen4 > session_gen2,
+        "reconnect must mint a newer collector session generation"
+    );
+    // The OLD stream's close arrives after the new session exists —
+    // generation fencing makes it a no-op (devices stay assigned).
+    assert!(
+        !lab2.manager.unregister_collector("e2e-col", session_gen2),
+        "stale stream close must be fenced once the new session exists"
+    );
+    let sync4 = assign_rx4.recv().await.expect("reconnect sync");
+    assert_eq!(sync4.authority_epoch, epoch2);
+    assert_eq!(sync4.collector_session_generation, session_gen4);
+    let calls_before_reconnect = subscribe_calls.load(Ordering::SeqCst);
+    let streams_before_reconnect = streams.lock().await.len();
+    assert!(
+        handle_assignment_update(
+            sync4,
+            &bus,
+            &plans,
+            &mut subscribers,
+            &mut last_epoch,
+            &mut last_gen,
+            &Some(lc2_tx.clone()),
+        )
+        .await
+    );
+    // New collector session → new execution identity → subscriber
+    // re-established WITHOUT waiting for the device connection to fail.
+    assert!(
+        wait_for(
+            || subscribe_calls.load(Ordering::SeqCst) > calls_before_reconnect,
+            Duration::from_secs(10),
+            "reconnect subscribe rpc"
+        )
+        .await,
+        "collector reconnect did not re-establish the subscription"
+    );
+    assert!(
+        wait_for(
+            || streams
+                .try_lock()
+                .map(|g| g.len() > streams_before_reconnect)
+                .unwrap_or(false),
+            Duration::from_secs(10),
+            "reconnect stream"
+        )
+        .await
+    );
+    {
+        let guard = streams.lock().await;
+        let tx = guard.last().expect("reconnect stream").clone();
+        tx.send(Ok(update_notification(&leaf_path("Ethernet1/1"), 9)))
+            .await
+            .unwrap();
+        tx.send(Ok(sync_notification())).await.unwrap();
+    }
+    assert!(
+        wait_for(
+            || {
+                lab2.sessions
+                    .current_session(&device_addr)
+                    .is_some_and(|(_, s)| s != session2)
+            },
+            Duration::from_secs(10),
+            "post-reconnect coverage"
+        )
+        .await,
+        "reconnect never restored current coverage"
+    );
+    let session3 = lab2
+        .sessions
+        .current_session(&device_addr)
+        .expect("coverage")
+        .1;
+    assert_ne!(session2, session3, "reconnect must mint a new execution");
+
+    // ── Phase 5: a GENUINE current-generation disconnect retires session
+    // authority immediately — old authority cannot linger. ──
+    assert!(
+        lab2.manager.unregister_collector("e2e-col", session_gen4),
+        "current-generation unregister must run cleanup"
+    );
+    assert!(
+        wait_for(
+            || lab2.sessions.current_session(&device_addr).is_none(),
+            Duration::from_secs(10),
+            "disconnect retirement"
+        )
+        .await,
+        "collector disconnect must retire session authority"
+    );
+
+    // Reassignment + resync restores monitoring promptly: new authority
+    // window → new execution identity → coverage returns without any
+    // device-side failure.
+    lab2.registry
+        .assign_device_with_audit(
+            &device_addr,
+            Some("e2e-col".to_string()),
+            "test",
+            "test_reassign",
+        )
+        .unwrap();
+    let (mut assign_rx5, _session_gen5) = lab2
+        .manager
+        .register_collector("e2e-col".to_string(), PROTOCOL_VERSION_CURRENT, true)
+        .await
+        .unwrap();
+    let sync5 = assign_rx5.recv().await.expect("reassign sync");
+    assert!(
+        handle_assignment_update(
+            sync5,
+            &bus,
+            &plans,
+            &mut subscribers,
+            &mut last_epoch,
+            &mut last_gen,
+            &Some(lc2_tx.clone()),
+        )
+        .await
+    );
+    let streams_before_reassign = streams.lock().await.len();
+    assert!(
+        wait_for(
+            || subscribe_calls.load(Ordering::SeqCst) > calls_before_reconnect + 1,
+            Duration::from_secs(10),
+            "post-reassign subscribe rpc"
+        )
+        .await,
+        "reassignment did not restart acquisition"
+    );
+    assert!(
+        wait_for(
+            || streams
+                .try_lock()
+                .map(|g| g.len() > streams_before_reassign)
+                .unwrap_or(false),
+            Duration::from_secs(10),
+            "post-reassign stream"
+        )
+        .await
+    );
+    {
+        let guard = streams.lock().await;
+        let tx = guard.last().expect("reassign stream").clone();
+        tx.send(Ok(update_notification(&leaf_path("Ethernet1/1"), 10)))
+            .await
+            .unwrap();
+        tx.send(Ok(sync_notification())).await.unwrap();
+    }
+    assert!(
+        wait_for(
+            || lab2.sessions.current_session(&device_addr).is_some(),
+            Duration::from_secs(10),
+            "post-reassign coverage"
+        )
+        .await,
+        "monitoring did not resume after reassignment"
+    );
+
+    // The predecessor core legitimately loses coverage: the collector
+    // renewed authority under the new epoch, so its epoch-1 session was
+    // terminated during the subscriber replacement and can never be
+    // resurrected there either.
+    assert!(
+        lab1.sessions.current_session(&device_addr).is_none(),
+        "predecessor authority must not retain coverage after renewal"
+    );
+
+    let _ = gsd.send(true);
+    let _ = ghandle.await;
+    let _ = session_gen1;
 }

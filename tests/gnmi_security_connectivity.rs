@@ -249,6 +249,7 @@ fn subscriber(lab: &Lab, conn_security: ConnSecurity) -> GnmiSubscriber {
         )],
         AcquisitionMode::Explicit,
         None,
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     )
 }
 

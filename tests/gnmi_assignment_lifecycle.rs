@@ -216,6 +216,7 @@ fn update(generation: u64, assignments: Vec<DeviceAssignment>) -> AssignmentUpda
         is_full_sync: true,
         generation,
         authority_epoch: 0,
+        collector_session_generation: 0,
     }
 }
 
@@ -230,6 +231,7 @@ fn epoch_update(
         is_full_sync: full_sync,
         generation,
         authority_epoch: epoch,
+        collector_session_generation: 0,
     }
 }
 

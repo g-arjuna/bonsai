@@ -78,6 +78,12 @@ pub struct CollectorManager {
     /// previous authority — delayed previous-epoch updates are rejected
     /// and a new epoch is only honoured via a full sync.
     authority_epoch: u64,
+    /// Next authority-instance ordinal (M5.2B execution fencing):
+    /// incremented each time a device authority window opens; orders
+    /// subscription executions across collectors/reassignments within
+    /// one authority epoch. In-memory only — the epoch fences staleness
+    /// across core restarts.
+    next_authority_instance: std::sync::atomic::AtomicU64,
     /// Serializes build→stamp→send of full syncs so a slower, older
     /// snapshot can never receive a NEWER generation than a fresher
     /// concurrent resync and supersede more recent desired state.
@@ -108,6 +114,13 @@ struct DeviceAuthorityMark {
     assigned_gen: u64,
     /// Generation of the first sync that withdrew authority.
     removed_gen: Option<u64>,
+    /// Core-issued authority-instance ordinal for THIS grant window
+    /// (M5.2B execution fencing): monotonically increasing per manager,
+    /// assigned when a new grant window opens and stable across
+    /// confirming resyncs. Orders executions across collectors and
+    /// reassignment — a superseded authority window can never produce
+    /// an execution that outranks the current one.
+    instance: u64,
 }
 
 #[derive(Clone, Default)]
@@ -180,6 +193,7 @@ impl CollectorManager {
             last_sent_assignments: Arc::new(Mutex::new(HashMap::new())),
             device_authority_marks: Arc::new(Mutex::new(HashMap::new())),
             authority_epoch,
+            next_authority_instance: std::sync::atomic::AtomicU64::new(1),
             send_lock: tokio::sync::Mutex::new(()),
             session_gate: Mutex::new(()),
             session_registry: None,
@@ -230,6 +244,19 @@ impl CollectorManager {
         self.session_gate.lock().unwrap()
     }
 
+    /// Latest collector session generation issued to `collector_id`
+    /// (0 = never registered this boot). Stamped on AssignmentUpdate so
+    /// collectors can echo it on lifecycle events; values above this
+    /// bound are forged and fenced (M5.2B execution fencing).
+    pub fn latest_session_generation(&self, collector_id: &str) -> u64 {
+        self.session_generations
+            .lock()
+            .unwrap()
+            .get(collector_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Latest assignment generation issued to `collector_id` (0 = none).
     pub fn latest_assignment_generation(&self, collector_id: &str) -> u64 {
         self.update_generations
@@ -246,28 +273,27 @@ impl CollectorManager {
     /// collector, or the generation falls outside the device's
     /// [assigned, removed) authority window — i.e. the event claims
     /// authority the collector did not hold for this device.
-    pub fn validate_session_authority(
+    /// The device's current authority mark when (epoch, generation)
+    /// validates as current authority — `None` otherwise. Single source
+    /// for both the boolean gate and the authority-instance lookup.
+    fn current_authority_mark(
         &self,
         collector_id: &str,
         device_address: &str,
         authority_epoch: u64,
         assignment_generation: u64,
-    ) -> bool {
+    ) -> Option<DeviceAuthorityMark> {
         if authority_epoch != self.authority_epoch {
-            return false;
+            return None;
         }
         if assignment_generation == 0
             || assignment_generation > self.latest_assignment_generation(collector_id)
         {
-            return false;
+            return None;
         }
         let marks = self.device_authority_marks.lock().unwrap();
-        let Some(device_marks) = marks.get(collector_id) else {
-            return false;
-        };
-        let Some(mark) = device_marks.get(device_address) else {
-            return false;
-        };
+        let device_marks = marks.get(collector_id)?;
+        let mark = device_marks.get(device_address)?;
         // Historical admission vs CURRENT authority (M5.2B review B2):
         // the [assigned_gen, removed_gen) window records that the
         // collector once held authority, but once `removed_gen` is set
@@ -277,9 +303,45 @@ impl CollectorManager {
         // sessions immediately (retire_target); this check fences the
         // delayed-event path.
         if mark.removed_gen.is_some() {
-            return false;
+            return None;
         }
-        assignment_generation >= mark.assigned_gen
+        (assignment_generation >= mark.assigned_gen).then_some(*mark)
+    }
+
+    pub fn validate_session_authority(
+        &self,
+        collector_id: &str,
+        device_address: &str,
+        authority_epoch: u64,
+        assignment_generation: u64,
+    ) -> bool {
+        self.current_authority_mark(
+            collector_id,
+            device_address,
+            authority_epoch,
+            assignment_generation,
+        )
+        .is_some()
+    }
+
+    /// Core-issued authority-instance ordinal for the device's CURRENT
+    /// authority window (M5.2B execution fencing). `None` when the
+    /// (epoch, generation) stamp does not validate — callers must treat
+    /// that as rejection, never as instance 0.
+    pub fn session_authority_instance(
+        &self,
+        collector_id: &str,
+        device_address: &str,
+        authority_epoch: u64,
+        assignment_generation: u64,
+    ) -> Option<u64> {
+        self.current_authority_mark(
+            collector_id,
+            device_address,
+            authority_epoch,
+            assignment_generation,
+        )
+        .map(|mark| mark.instance)
     }
 
     /// Wire the graph event channel so collector connect/disconnect events
@@ -887,6 +949,9 @@ impl CollectorManager {
                             DeviceAuthorityMark {
                                 assigned_gen: generation,
                                 removed_gen: None,
+                                instance: self
+                                    .next_authority_instance
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst),
                             },
                         );
                     }
@@ -907,11 +972,19 @@ impl CollectorManager {
             }
         }
 
+        let collector_session_generation = self
+            .session_generations
+            .lock()
+            .unwrap()
+            .get(collector_id)
+            .copied()
+            .unwrap_or(0);
         tx.send(AssignmentUpdate {
             assignments,
             is_full_sync: true,
             generation,
             authority_epoch: self.authority_epoch,
+            collector_session_generation,
         })
         .await
         .is_ok()

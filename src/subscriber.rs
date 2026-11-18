@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{collections::HashMap, time::Duration};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -46,6 +46,11 @@ pub struct LifecycleHandle {
     pub tx: mpsc::Sender<SessionLifecycleEvent>,
     pub authority_epoch: u64,
     pub assignment_generation: u64,
+    /// Core-issued collector session generation from the
+    /// AssignmentUpdate that established this handle — echoed on every
+    /// lifecycle event so the core can order executions across
+    /// collector restarts (0 for trusted local acquisition).
+    pub collector_session_generation: u64,
 }
 
 /// Per-session lifecycle emitter: monotonic transition revisions,
@@ -58,6 +63,10 @@ pub struct SessionEmitter {
     session_id: String,
     authority_epoch: u64,
     assignment_generation: u64,
+    collector_session_generation: u64,
+    /// Per-(collector session, target) execution counter for the
+    /// session this emitter reports (0 for plan-level emitters).
+    execution_generation: u64,
     seq: u64,
     /// Actual submitted Subscribe manifest + acquisition intent,
     /// attached to `submitted`/`synchronized` transitions so the core
@@ -96,6 +105,8 @@ impl SessionEmitter {
             session_id: session_id.to_string(),
             authority_epoch: lifecycle.map_or(0, |h| h.authority_epoch),
             assignment_generation: lifecycle.map_or(0, |h| h.assignment_generation),
+            collector_session_generation: lifecycle.map_or(0, |h| h.collector_session_generation),
+            execution_generation: 0,
             seq: 0,
             submitted_paths: Vec::new(),
             acquisition: String::new(),
@@ -116,6 +127,14 @@ impl SessionEmitter {
         self
     }
 
+    /// Bind this emitter to its execution generation — the monotonic
+    /// per-(collector session, target) counter value minted with the
+    /// session_id. Required on every session-scoped emitter.
+    pub fn with_execution_generation(mut self, execution_generation: u64) -> Self {
+        self.execution_generation = execution_generation;
+        self
+    }
+
     fn event(&self, state: &str, seq: u64, detail: &str) -> SessionLifecycleEvent {
         SessionLifecycleEvent {
             collector_id: self.collector_id.clone(),
@@ -126,6 +145,9 @@ impl SessionEmitter {
             transition_seq: seq,
             authority_epoch: self.authority_epoch,
             assignment_generation: self.assignment_generation,
+            authority_instance: 0,
+            collector_session_generation: self.collector_session_generation,
+            execution_generation: self.execution_generation,
             occurred_at_ns: now_unix_ns(),
             detail: detail.to_string(),
             submitted_paths: self.submitted_paths.clone(),
@@ -190,6 +212,7 @@ fn now_unix_ns() -> i64 {
 struct ActiveSession {
     session_id: String,
     plan_id: String,
+    execution_generation: u64,
     terminated: Arc<AtomicBool>,
 }
 
@@ -212,6 +235,12 @@ pub struct GnmiSubscriber {
     selected_paths: Vec<SelectedSubscriptionPath>,
     acquisition: AcquisitionMode,
     lifecycle: Option<LifecycleHandle>,
+    /// Per-(collector session, target) execution counter — monotonic
+    /// across device-facing session mints so every execution has a
+    /// distinct deterministic rank. Shared across subscriber
+    /// respawns within the same collector session so a restarted
+    /// subscriber never reuses an execution generation.
+    execution_seq: Arc<AtomicU64>,
     /// Most recently minted device-facing session, used to retire its
     /// authority on shutdown paths that bypass the stream loop.
     active_session: Arc<std::sync::Mutex<Option<ActiveSession>>>,
@@ -234,6 +263,7 @@ impl GnmiSubscriber {
         selected_paths: Vec<SelectedSubscriptionPath>,
         acquisition: AcquisitionMode,
         lifecycle: Option<LifecycleHandle>,
+        execution_seq: Arc<AtomicU64>,
     ) -> Self {
         Self {
             target: target.into(),
@@ -250,6 +280,7 @@ impl GnmiSubscriber {
             selected_paths,
             acquisition,
             lifecycle,
+            execution_seq,
             active_session: Arc::new(std::sync::Mutex::new(None)),
         }
     }
@@ -316,6 +347,9 @@ impl GnmiSubscriber {
             transition_seq: u64::MAX,
             authority_epoch: handle.authority_epoch,
             assignment_generation: handle.assignment_generation,
+            authority_instance: 0,
+            collector_session_generation: handle.collector_session_generation,
+            execution_generation: active.execution_generation,
             occurred_at_ns: now_unix_ns(),
             detail: detail.to_string(),
             submitted_paths: Vec::new(),
@@ -507,9 +541,12 @@ impl GnmiSubscriber {
 
         let plan = build_acquisition_plan(self.acquisition, &self.selected_paths, &caps);
         // M5.2B: every device-facing Subscribe session gets a fresh
-        // session identity. run_forever calls subscribe_telemetry once
-        // per (re)connect, so each reconnect mints a new session_id and
-        // previous-session observations are fenced by the verifier.
+        // session identity AND a fresh execution generation. The pair
+        // (session_id, execution_generation) is the deterministic
+        // execution identity: reconnects mint both anew and previous
+        // executions are fenced by the core's per-target high-water
+        // mark — never by probabilistic structures.
+        let execution_generation = self.execution_seq.fetch_add(1, Ordering::SeqCst) + 1;
         let session_id = format!("{}:{}", target, uuid::Uuid::new_v4());
         let (subscriptions, plan_paths, submitted_plan_id) = match plan {
             AcquisitionPlan::Disabled { plan_id } => {
@@ -624,6 +661,7 @@ impl GnmiSubscriber {
         *self.active_session.lock().unwrap() = Some(ActiveSession {
             session_id: session_id.clone(),
             plan_id: submitted_plan_id.clone(),
+            execution_generation,
             terminated: Arc::clone(&terminated),
         });
         // The submitted manifest is the ACTUAL SubscriptionList path
@@ -647,7 +685,8 @@ impl GnmiSubscriber {
             &session_id,
             Some(terminated),
         )
-        .with_manifest(self.acquisition, manifest);
+        .with_manifest(self.acquisition, manifest)
+        .with_execution_generation(execution_generation);
         emitter.emit("submitted", "").await;
         emitter.emit("synchronizing", "").await;
         // gNMI sync boundary is the SubscriptionList/RPC, NOT each
@@ -933,6 +972,10 @@ pub struct SubscriberEntry {
     pub shutdown_tx: watch::Sender<bool>,
     pub handle: JoinHandle<()>,
     pub assignment_fingerprint: String,
+    /// Shared execution counter carried across subscriber respawns so
+    /// execution generations stay monotonic within one collector
+    /// session even when the effective assignment changes.
+    pub execution_seq: Arc<AtomicU64>,
 }
 
 pub type SubscriberHandleMap = HashMap<String, SubscriberEntry>;
@@ -973,11 +1016,19 @@ pub fn assignment_fingerprint(
     conn_security: &crate::gnmi_security::ConnSecurity,
     username: Option<&str>,
     password: Option<&str>,
+    authority_epoch: u64,
+    collector_session_generation: u64,
 ) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(b"bonsai-assignment-fp-v1");
+    h.update(b"bonsai-assignment-fp-v2");
     h.update(assignment_fingerprint_key());
+    // Authority identity is part of the effective assignment: a new
+    // core epoch or collector session generation must replace the
+    // subscriber so its lifecycle handle is re-stamped — a preserved
+    // subscriber would keep emitting under retired authority (M5.2B).
+    h.update(authority_epoch.to_le_bytes());
+    h.update(collector_session_generation.to_le_bytes());
     h.update(target.address.as_bytes());
     h.update([u8::from(target.enabled), u8::from(target.inventory_only)]);
     h.update(target.acquisition.as_str().as_bytes());
@@ -1108,11 +1159,16 @@ pub async fn spawn_subscriber_with_creds(
     )
     .context("assignment credential metadata invalid")?;
 
+    let (authority_epoch, collector_session_generation) = lifecycle
+        .map(|h| (h.authority_epoch, h.collector_session_generation))
+        .unwrap_or((0, 0));
     let fingerprint = assignment_fingerprint(
         &target,
         &conn_security,
         target.username.as_deref(),
         target.password.as_deref(),
+        authority_epoch,
+        collector_session_generation,
     );
 
     if let Some(entry) = subscribers.get(&address)
@@ -1121,6 +1177,13 @@ pub async fn spawn_subscriber_with_creds(
         info!(address = %address, "assignment unchanged — preserving subscriber");
         return Ok(SpawnOutcome::Unchanged);
     }
+    // Carry the execution counter across the respawn: within one
+    // (authority epoch, authority instance, collector session) the
+    // execution generations must stay monotonic or the new subscriber's
+    // executions would rank below the fence head and be fenced as stale.
+    let carried_exec_seq = subscribers
+        .get(&address)
+        .map(|entry| Arc::clone(&entry.execution_seq));
     if subscribers.contains_key(&address) {
         info!(address = %address, "assignment changed — stopping obsolete subscriber");
         stop_subscriber(&address, subscribers).await;
@@ -1152,6 +1215,7 @@ pub async fn spawn_subscriber_with_creds(
         return Ok(SpawnOutcome::Stopped);
     }
 
+    let execution_seq = carried_exec_seq.unwrap_or_else(|| Arc::new(AtomicU64::new(0)));
     let subscriber = GnmiSubscriber::new(
         target.address.clone(),
         target.username.clone(),
@@ -1167,6 +1231,7 @@ pub async fn spawn_subscriber_with_creds(
         target.selected_paths.clone(),
         target.acquisition,
         lifecycle.cloned(),
+        Arc::clone(&execution_seq),
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
@@ -1176,6 +1241,7 @@ pub async fn spawn_subscriber_with_creds(
             shutdown_tx,
             handle,
             assignment_fingerprint: fingerprint,
+            execution_seq,
         },
     );
     info!(address = %address, "subscriber started");
