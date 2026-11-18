@@ -110,7 +110,24 @@ const TRUST_STATE_FILE: &str = "trust_state.json";
 /// could otherwise complete out of order and resurrect stale state.
 enum TrustWrite {
     Snapshot(String),
-    Flush(std::sync::mpsc::Sender<()>),
+    Flush(std::sync::mpsc::Sender<FlushOutcome>),
+}
+
+/// Result of a `flush_pending_writes` barrier. A flush ack is only
+/// `Persisted` when the newest queued snapshot was actually renamed
+/// into place — failed or timed-out persistence must never be reported
+/// as durable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlushOutcome {
+    /// Every snapshot queued before the flush was durably written
+    /// (the newest complete state is on disk).
+    Persisted,
+    /// At least the newest snapshot write failed; on-disk trust state
+    /// may be stale. In-memory records are unaffected.
+    WriteFailed,
+    /// The writer did not acknowledge within the bounded wait (dead
+    /// thread or full-of-flushes queue overflow).
+    Timeout,
 }
 
 /// Bounded hand-off between persist() callers and the single writer
@@ -127,6 +144,11 @@ struct TrustWriter {
     /// Set when the last TrustStore clone drops so the writer can exit
     /// instead of parking on the condvar forever.
     shutdown: std::sync::atomic::AtomicBool,
+    /// Outcome of the most recent snapshot write, read by Flush
+    /// handlers running on the same writer thread. A failed write
+    /// followed by a successful one reports Persisted — the newest
+    /// complete snapshot is what lands on disk.
+    last_write_failed: std::sync::atomic::AtomicBool,
 }
 
 impl TrustWriter {
@@ -198,6 +220,7 @@ impl TrustStore {
             queue: Mutex::new(std::collections::VecDeque::new()),
             ready: std::sync::Condvar::new(),
             shutdown: std::sync::atomic::AtomicBool::new(false),
+            last_write_failed: std::sync::atomic::AtomicBool::new(false),
         });
         {
             let writer = Arc::clone(&writer);
@@ -225,17 +248,44 @@ impl TrustStore {
                     match msg {
                         TrustWrite::Snapshot(json) => {
                             // Atomic replacement: write to a sibling
-                            // temp file then rename, so readers never
-                            // observe a partial trust_state.json.
+                            // temp file, fsync it, then rename, so
+                            // readers never observe a partial
+                            // trust_state.json and a crash cannot
+                            // resurrect a torn page-cache write. The
+                            // directory itself is not fsynced — a crash
+                            // may lose the newest rename but never
+                            // exposes corrupt content (last fully
+                            // persisted snapshot or the previous file
+                            // remains).
                             let tmp = writer_path.with_extension("json.tmp");
                             let result = std::fs::write(&tmp, &json)
+                                .and_then(|_| std::fs::File::open(&tmp).and_then(|f| f.sync_all()))
                                 .and_then(|_| std::fs::rename(&tmp, &writer_path));
-                            if let Err(e) = result {
-                                tracing::warn!("failed to persist trust_state.json: {e}");
+                            match result {
+                                Ok(()) => writer
+                                    .last_write_failed
+                                    .store(false, std::sync::atomic::Ordering::SeqCst),
+                                Err(e) => {
+                                    writer
+                                        .last_write_failed
+                                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                                    tracing::warn!("failed to persist trust_state.json: {e}");
+                                }
                             }
                         }
                         TrustWrite::Flush(ack) => {
-                            let _ = ack.send(());
+                            // The ack reports the durability of the
+                            // newest snapshot processed before this
+                            // marker — never a blanket success.
+                            let outcome = if writer
+                                .last_write_failed
+                                .load(std::sync::atomic::Ordering::SeqCst)
+                            {
+                                FlushOutcome::WriteFailed
+                            } else {
+                                FlushOutcome::Persisted
+                            };
+                            let _ = ack.send(outcome);
                         }
                     }
                 }
@@ -248,15 +298,20 @@ impl TrustStore {
         }
     }
 
-    /// Block until every spawned persistence write has finished. Persistence
-    /// is asynchronous by design (Q-10); callers that need durability —
-    /// shutdown paths and tests — must flush explicitly instead of racing
-    /// the background thread.
-    pub fn flush_pending_writes(&self) {
+    /// Block until every spawned persistence write has finished and
+    /// report whether the newest snapshot actually reached disk.
+    /// Persistence is asynchronous by design (Q-10); callers that need
+    /// durability — shutdown paths and tests — must flush explicitly
+    /// instead of racing the background thread, and must treat
+    /// `WriteFailed`/`Timeout` as NOT durable.
+    pub fn flush_pending_writes(&self) -> FlushOutcome {
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         self.writer.submit(TrustWrite::Flush(ack_tx));
         // Bounded wait: a dead writer must not hang shutdown/tests.
-        let _ = ack_rx.recv_timeout(Duration::from_secs(30));
+        match ack_rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(outcome) => outcome,
+            Err(_) => FlushOutcome::Timeout,
+        }
     }
 
     fn persist(&self) {
@@ -559,7 +614,7 @@ mod tests {
             store.set_state(&k, TrustState::AutoWithNotification, 200);
             // Persistence is asynchronous; join the writer instead of
             // racing it with a fixed sleep (flaky under load).
-            store.flush_pending_writes();
+            assert_eq!(store.flush_pending_writes(), FlushOutcome::Persisted);
         }
         // Re-load from the same dir
         let store2 = TrustStore::load(dir.path(), RemediationConfig::default());
@@ -581,7 +636,7 @@ mod tests {
             for i in 0..50 {
                 store.record_approval(&k, 100 + i);
             }
-            store.flush_pending_writes();
+            assert_eq!(store.flush_pending_writes(), FlushOutcome::Persisted);
         }
         let store2 = TrustStore::load(dir.path(), RemediationConfig::default());
         let rec = store2.get(&key("ordered-rule")).unwrap();
@@ -603,7 +658,7 @@ mod tests {
             for i in 0..(TRUST_WRITE_QUEUE_CAP * 4) {
                 store.record_approval(&k, 100 + i as i64);
             }
-            store.flush_pending_writes();
+            assert_eq!(store.flush_pending_writes(), FlushOutcome::Persisted);
         }
         let store2 = TrustStore::load(dir.path(), RemediationConfig::default());
         let rec = store2.get(&key("overflow-rule")).unwrap();
@@ -634,8 +689,10 @@ mod tests {
             let k = key("readonly-rule");
             store.record_approval(&k, 1);
             // Bounded: returns via the flush ack even though every
-            // snapshot write fails; must not hang for the timeout.
-            store.flush_pending_writes();
+            // snapshot write fails; must not hang for the timeout —
+            // and the ack must report the failure, never a silent
+            // durable claim.
+            assert_eq!(store.flush_pending_writes(), FlushOutcome::WriteFailed);
             // In-memory state is unaffected by the durable failure.
             assert_eq!(store.get(&k).unwrap().operator_approvals, 1);
             drop(store);
@@ -648,5 +705,69 @@ mod tests {
                 std::fs::set_permissions(dir.path(), perms).unwrap();
             }
         }
+    }
+
+    /// A failed snapshot followed by a successful one converges:
+    /// the flush reports Persisted because the NEWEST complete
+    /// snapshot is what reaches disk — intermediate failures that are
+    /// superseded by a later write do not poison the ack.
+    #[test]
+    fn failed_then_successful_write_reports_persisted() {
+        let dir = tmp_dir();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+            perms.set_mode(0o500);
+            std::fs::set_permissions(dir.path(), perms).unwrap();
+        }
+        let k = key("transient-rule");
+        {
+            let mut store = TrustStore::load(dir.path(), RemediationConfig::default());
+            store.record_approval(&k, 1);
+            assert_eq!(store.flush_pending_writes(), FlushOutcome::WriteFailed);
+            drop(store);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+            perms.set_mode(0o700);
+            std::fs::set_permissions(dir.path(), perms).unwrap();
+        }
+        {
+            let mut store = TrustStore::load(dir.path(), RemediationConfig::default());
+            store.record_approval(&k, 2);
+            assert_eq!(store.flush_pending_writes(), FlushOutcome::Persisted);
+        }
+        let store2 = TrustStore::load(dir.path(), RemediationConfig::default());
+        assert_eq!(store2.get(&k).unwrap().operator_approvals, 1);
+    }
+
+    /// Dropping the last store signals shutdown; queued snapshots are
+    /// drained before the writer exits, so durability does not depend
+    /// on an explicit flush racing the drop.
+    #[test]
+    fn shutdown_drains_queued_snapshots() {
+        let dir = tmp_dir();
+        {
+            let mut store = TrustStore::load(dir.path(), RemediationConfig::default());
+            let k = key("drain-rule");
+            store.record_approval(&k, 42);
+            // No flush: drop must still let the writer land the
+            // queued snapshot before exiting.
+        }
+        // The writer is detached; poll briefly for the drained file.
+        let path = dir.path().join(TRUST_STATE_FILE);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !path.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(path.exists(), "shutdown must drain queued snapshots");
+        let store2 = TrustStore::load(dir.path(), RemediationConfig::default());
+        assert_eq!(
+            store2.get(&key("drain-rule")).unwrap().operator_approvals,
+            1
+        );
     }
 }
