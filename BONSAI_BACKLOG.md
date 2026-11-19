@@ -405,12 +405,15 @@ are not reclassified as absent.
   allowlist and epoch-fenced reconnect. Transport failure means
   monitoring unavailable, not an inferred BGP PeerDown.
 
-- **BN-008 / BN-009 — delivery correctness:** `InProcessBus::publish`
-  returns `()` and drops when its router queue fills, while a broadcast
-  send result is ignored. Define durable acceptance vs best-effort
-  delivery, explicit queue/lag loss metrics, backpressure/spill behavior,
-  commit-before-event and retry/idempotency semantics. Provide fault
-  tests with no *unaccounted* loss; a lossless guarantee is not yet proved.
+- **BN-008 / BN-009 — delivery correctness:** Router overload is now
+  explicit (`PublishOutcome`); collector gRPC retains the batch on overload.
+  Remaining: core accepted = volatile enqueue **or** intentional debounce,
+  not durable commit; broadcast/archive remains best-effort and graph write
+  failure has no durable retry. Require distinct durable-acceptance,
+  suppression, rejection and retry outcomes, per-source gap accounting,
+  independent committed consumer checkpoints and idempotent replay.
+  Provide fault tests with no *unaccounted* loss; a lossless guarantee is
+  not yet proved.
 
 - **BN-007 / BN-013 / BN-014 — projection and agent truthfulness:**
   retire legacy BMP graph writers only after routing projection parity;
@@ -872,6 +875,27 @@ and do not relax any acceptance criteria:
   per-adapter outbound delivery classifications (Splunk/Elastic
   per-item ack, composite cursor, dedup-after-ack; Prometheus
   durability decision) and the inbound evidence-query adapter contract.
+
+- **Global telemetry transport — BN-008/009/019/021/023 (19 November;
+  P1 intake, critical-evidence durability is a production promotion gate):**
+  [source/research review](docs/architecture/GLOBAL_TELEMETRY_TRANSPORT_REVIEW_2026-11-19.md)
+  refines the existing segmented queue and delivery/HA work, not a new epic.
+  Reproduce ack-file/data-generation crash windows (rename before offset reset),
+  append-vs-empty-wait notification race, failed writer supervision and
+  outage-growth cost. Enforce append-time byte quotas and incremental stats,
+  critical-lane reservation, stable source/epoch/observation IDs and durable
+  receipt before retire; isolate durable consumer offsets from graph/ML/
+  archive lag and advance only after committed effects. Gate on kill/replay,
+  ENOSPC, retention overflow, stale authority, graph failure and mixed-rate
+  live-plus-replay throughput with explicit gaps and independent parity.
+  Keep default gRPC + local journal and in-process dispatch. BN-023 may
+  qualify optional regional replicated Kafka-compatible transport only after
+  direct-path correctness and measured need (host-loss RPO, independent
+  replay, recovery capacity or existing customer broker); require local
+  spool, authenticated ingress, partition affinity, retention/lag,
+  broker-outage/rebalance and rollback proof. No mandatory broker, WAN-
+  stretched cluster or multiple authoritative graph writers. Secure Core
+  ordering and existing release gates unchanged.
 
 ## BN-025 — AI factory and AI fabric observability (17 November 2026)
 
