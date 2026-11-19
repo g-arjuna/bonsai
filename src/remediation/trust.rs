@@ -145,6 +145,79 @@ pub enum FlushOutcome {
 /// the newest snapshot always carries the full current state.
 const TRUST_WRITE_QUEUE_CAP: usize = 64;
 
+/// Test-only fault injection for the parent-directory durability
+/// step, keyed by the exact trust_state.json path so parallel unit
+/// tests cannot consume each other's injected failure.
+#[cfg(test)]
+static DIR_SYNC_FAULT_PATH: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
+
+/// Outcome of the parent-directory durability step.
+///
+/// Directory fsync makes the completed rename itself durable. On
+/// platforms that support it the step is REQUIRED: `Failed` means the
+/// snapshot must not count as persisted. `Unsupported` is reported
+/// explicitly where the platform cannot fsync directories, so "not
+/// required here" is never confused with "required but failed".
+enum DirSync {
+    Synced,
+    Unsupported,
+    Failed(std::io::Error),
+}
+
+/// Whether an fsync failure means "this filesystem cannot fsync
+/// directories" rather than a genuine I/O error.
+#[cfg(unix)]
+fn dir_sync_unsupported(e: &std::io::Error) -> bool {
+    matches!(
+        e.raw_os_error(),
+        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP)
+    )
+}
+
+/// fsync the directory containing `path` so a completed rename is
+/// durable. Only invoked after the file itself has been fsynced and
+/// renamed into place.
+fn sync_parent_dir(path: &Path) -> DirSync {
+    let Some(dir) = path.parent() else {
+        return DirSync::Unsupported;
+    };
+    #[cfg(not(unix))]
+    {
+        // Windows cannot open directory handles for fsync; directory
+        // durability is not available on this platform.
+        let _ = dir;
+        DirSync::Unsupported
+    }
+    #[cfg(unix)]
+    {
+        // Test-only fault injection, matched on the exact state-file
+        // path so parallel unit tests stay isolated.
+        #[cfg(test)]
+        {
+            let faulted = DIR_SYNC_FAULT_PATH
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|p| p == path);
+            if faulted {
+                return DirSync::Failed(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "injected parent-directory sync failure",
+                ));
+            }
+        }
+        match std::fs::File::open(dir) {
+            Ok(f) => match f.sync_all() {
+                Ok(()) => DirSync::Synced,
+                Err(e) if dir_sync_unsupported(&e) => DirSync::Unsupported,
+                Err(e) => DirSync::Failed(e),
+            },
+            Err(e) => DirSync::Failed(e),
+        }
+    }
+}
+
 /// Pending flush barriers awaiting their covering snapshot revision.
 /// Bounded: a barrier that cannot be confirmed is dropped and its
 /// caller observes `Timeout` — never a silent durable claim.
@@ -332,16 +405,14 @@ impl TrustStore {
                             let result = std::fs::write(&tmp, &json)
                                 .and_then(|_| std::fs::File::open(&tmp).and_then(|f| f.sync_all()))
                                 .and_then(|_| std::fs::rename(&tmp, &writer_path))
-                                .map(|_| {
-                                    if let Some(dir) = writer_path.parent() {
-                                        if let Ok(d) = std::fs::File::open(dir) {
-                                            // Best-effort:
-                                            // directory fsync is
-                                            // unsupported on some
-                                            // platforms.
-                                            let _ = d.sync_all();
-                                        }
-                                    }
+                                .and_then(|_| match sync_parent_dir(&writer_path) {
+                                    // Synced and explicitly-unsupported
+                                    // platforms both count as durable;
+                                    // a genuine failure means the rename
+                                    // may not survive a crash, so this
+                                    // snapshot is NOT persisted.
+                                    DirSync::Synced | DirSync::Unsupported => Ok(()),
+                                    DirSync::Failed(e) => Err(e),
                                 });
                             match result {
                                 Ok(()) => {
@@ -1011,5 +1082,34 @@ mod tests {
             1 + (TRUST_WRITE_QUEUE_CAP / 2 + 8) as u32 * 2 + 1,
             "final durable snapshot must be the newest complete state"
         );
+    }
+
+    /// Fault-injection regression: a genuine parent-directory sync
+    /// failure must NOT advance durable_rev nor produce `Persisted`.
+    /// The covering snapshot is treated exactly like any other
+    /// persistence failure — the barrier reports `WriteFailed`,
+    /// in-memory state is unaffected, and a later successful snapshot
+    /// still converges to `Persisted`.
+    #[test]
+    #[cfg(unix)]
+    fn failed_parent_dir_sync_cannot_report_persisted() {
+        let dir = tmp_dir();
+        let state_path = dir.path().join(TRUST_STATE_FILE);
+        *DIR_SYNC_FAULT_PATH.lock().unwrap() = Some(state_path);
+        let mut store = TrustStore::load(dir.path(), RemediationConfig::default());
+        let k = key("dirsync-rule");
+        store.record_approval(&k, 1);
+        // The injected directory-sync failure makes the covering
+        // snapshot non-durable; the barrier must report WriteFailed.
+        assert_eq!(store.flush_pending_writes(), FlushOutcome::WriteFailed);
+        // In-memory state is unaffected by the durable failure.
+        assert_eq!(store.get(&k).unwrap().operator_approvals, 1);
+        // Recovery: clear the fault; a newer complete snapshot lands
+        // and the barrier reports Persisted on revision evidence.
+        *DIR_SYNC_FAULT_PATH.lock().unwrap() = None;
+        store.record_approval(&k, 2);
+        assert_eq!(store.flush_pending_writes(), FlushOutcome::Persisted);
+        drop(store);
+        *DIR_SYNC_FAULT_PATH.lock().unwrap() = None;
     }
 }
