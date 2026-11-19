@@ -567,13 +567,22 @@ impl SubscriptionSessionRegistry {
         let entry = targets.get(target)?;
         let key = entry.current.as_ref()?;
         let record = entry.sessions.get(key)?;
-        (record.state == state::SYNCHRONIZED && record.verified).then(|| {
-            (
-                record.plan_id.clone(),
-                record.session_id.clone(),
-                record.collector_id.clone(),
-            )
-        })
+        // Defense in depth: current authority is only ever the
+        // fence-head execution. `apply` maintains this invariant, but
+        // the accessor re-checks it so no record whose execution rank
+        // differs from the authoritative high-water mark can ever be
+        // exposed as current coverage (M5.2B review B3).
+        (record.state == state::SYNCHRONIZED
+            && record.verified
+            && record.exec.is_some()
+            && record.exec == entry.exec_hwm)
+            .then(|| {
+                (
+                    record.plan_id.clone(),
+                    record.session_id.clone(),
+                    record.collector_id.clone(),
+                )
+            })
     }
 
     /// State of a specific session for status reporting.

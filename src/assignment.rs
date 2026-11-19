@@ -257,6 +257,21 @@ impl CollectorManager {
             .unwrap_or(0)
     }
 
+    /// Generation of the collector's CURRENTLY ACTIVE registration, or
+    /// `None` when no session is registered. This is deliberately
+    /// distinct from `latest_session_generation`: unregister retires
+    /// the active registration while the issued generation stays
+    /// recorded as the high-water mark, so lifecycle admission must
+    /// fence on the active session — never on the issued bound alone
+    /// (M5.2B review B3 residual).
+    pub fn active_session_generation(&self, collector_id: &str) -> Option<u64> {
+        self.active_collectors
+            .lock()
+            .unwrap()
+            .get(collector_id)
+            .map(|session| session.generation)
+    }
+
     /// Latest assignment generation issued to `collector_id` (0 = none).
     pub fn latest_assignment_generation(&self, collector_id: &str) -> u64 {
         self.update_generations
@@ -476,23 +491,23 @@ impl CollectorManager {
         // registry state. Assignments are therefore always computed
         // against the state the new session will actually own.
         //
-        // M5.2B review B3: the generation bump runs under the session
-        // gate so registration replacement is serialized against
-        // lifecycle admission — an event is validated against either
-        // the pre-bump or post-bump generation, never mid-replacement.
-        // The gate is released before `active_collectors` is touched:
-        // `unregister_collector` holds that lock while acquiring the
-        // gate, so holding both here would deadlock.
+        // M5.2B review B3: the generation bump AND the active-session
+        // insert run under the session gate so registration replacement
+        // is atomic against lifecycle admission — an event is validated
+        // against either the fully-old or fully-new registration, never
+        // the gap between them. Lock order is session_gate ->
+        // active_collectors everywhere: unregister_collector acquires
+        // them in the same order, and no path holds active_collectors
+        // while acquiring the gate.
         let generation = {
             let _gate = self.session_gate();
-            let mut generations = self.session_generations.lock().unwrap();
-            let next = generations.entry(collector_id.clone()).or_insert(0);
-            *next += 1;
-            *next
-        };
-        {
-            let mut collectors = self.active_collectors.lock().unwrap();
-            collectors.insert(
+            let generation = {
+                let mut generations = self.session_generations.lock().unwrap();
+                let next = generations.entry(collector_id.clone()).or_insert(0);
+                *next += 1;
+                *next
+            };
+            self.active_collectors.lock().unwrap().insert(
                 collector_id.clone(),
                 CollectorSession {
                     generation,
@@ -501,7 +516,8 @@ impl CollectorManager {
                     tx: tx.clone(),
                 },
             );
-        }
+            generation
+        };
         {
             let mut runtime = self.runtime_state.lock().unwrap();
             let entry = runtime.entry(collector_id.clone()).or_default();
@@ -535,6 +551,17 @@ impl CollectorManager {
     /// closing after a reconnect is a no-op and must not disconnect the
     /// newer valid session or orphan its devices.
     pub fn unregister_collector(&self, collector_id: &str, generation: u64) -> bool {
+        // M5.2B review B3: the session gate is held across the ENTIRE
+        // unregister — registration removal, session retirement AND
+        // device-assignment cleanup — so lifecycle admission (which
+        // holds the same gate across validate+apply) observes either a
+        // fully-active registration or a fully-retired one, never the
+        // gap between deactivation and cleanup. The gate is acquired
+        // BEFORE `active_collectors` to keep the lock order
+        // session_gate -> active_collectors consistent with
+        // register_collector and lifecycle admission; no path may hold
+        // `active_collectors` while acquiring the gate.
+        let _gate = self.session_gate();
         // H6: the generation check AND all cleanup run under one
         // `active_collectors` lock. `register_collector` inserts new
         // sessions under the same lock, so a stale cleanup either sees
@@ -568,10 +595,10 @@ impl CollectorManager {
         // M5.2B: collector disconnect retires its subscription-session
         // authority immediately — delayed telemetry from those sessions
         // stays historical and can never satisfy current coverage. The
-        // session gate serializes this against in-flight lifecycle
-        // validation+apply so retirement cannot interleave mid-event.
+        // session gate (held for the whole unregister) serializes this
+        // against in-flight lifecycle validation+apply so retirement
+        // cannot interleave mid-event.
         if let Some(registry) = &self.session_registry {
-            let _gate = self.session_gate();
             registry.retire_collector(collector_id);
         }
 
@@ -1777,6 +1804,50 @@ mod tests {
         assert!(epoch2 > epoch1, "restart must mint a newer epoch");
         // Old-epoch evidence is rejected outright.
         assert!(!manager2.validate_session_authority("c1", "10.0.0.1", epoch1, issued_gen));
+    }
+
+    /// M5.2B review B3 residual: `latest_session_generation` is the
+    /// ISSUED high-water mark and stays recorded after unregister, but
+    /// the ACTIVE registration is gone — lifecycle admission must
+    /// fence on `active_session_generation`, not the issued bound.
+    /// Deterministic boundary check: after unregister the device
+    /// authority window still validates (marks are history, not
+    /// liveness), so ONLY the inactive-registration fence rejects.
+    #[tokio::test]
+    async fn unregister_retires_active_registration_but_keeps_issued_generation() {
+        let (manager, _registry, _dir) = manager_with_device(AcquisitionMode::Automatic).await;
+        let epoch = manager.authority_epoch();
+        let (mut rx, registration_gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let assigned_gen = rx.recv().await.expect("initial sync").generation;
+        assert_eq!(
+            manager.active_session_generation("c1"),
+            Some(registration_gen)
+        );
+
+        assert!(manager.unregister_collector("c1", registration_gen));
+
+        // Registration deactivated; issued generation retained.
+        assert_eq!(manager.active_session_generation("c1"), None);
+        assert_eq!(manager.latest_session_generation("c1"), registration_gen);
+        // The authority window itself is untouched — this is exactly
+        // why admission cannot rely on it (or the issued bound) alone.
+        assert!(manager.validate_session_authority("c1", "10.0.0.1", epoch, assigned_gen));
+
+        // Re-registration supersedes cleanly: the new active session
+        // carries the newer generation.
+        let (_rx2, registration_gen2) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        assert!(registration_gen2 > registration_gen);
+        assert_eq!(
+            manager.active_session_generation("c1"),
+            Some(registration_gen2)
+        );
+        assert_eq!(manager.latest_session_generation("c1"), registration_gen2);
     }
 }
 

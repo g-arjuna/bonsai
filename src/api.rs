@@ -2233,7 +2233,17 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 event.collector_session_generation
                     != m.latest_session_generation(grant.collector_id())
             });
-            if authority_instance.is_none() || session_gen_stale {
+            // The collector registration must still be ACTIVE and be the
+            // registration the event claims: `latest_session_generation`
+            // is the issued high-water mark and stays recorded after
+            // unregister, so it cannot fence the deactivation-to-cleanup
+            // gap. The session gate held across this check serializes it
+            // against register/unregister (M5.2B review B3 residual).
+            let registration_inactive = self.collector_manager.as_ref().is_some_and(|m| {
+                m.active_session_generation(grant.collector_id())
+                    != Some(event.collector_session_generation)
+            });
+            if authority_instance.is_none() || session_gen_stale || registration_inactive {
                 rejected += 1;
                 metrics::counter!(
                     "bonsai_subscription_lifecycle_rejected_total",

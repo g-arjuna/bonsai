@@ -2344,3 +2344,179 @@ async fn stale_collector_session_generation_cannot_establish_authority() {
         "disconnected collector must not hold coverage authority"
     );
 }
+
+/// M5.2B review B3 residual: lifecycle admission must require the
+/// collector registration to be CURRENTLY ACTIVE — not merely that
+/// its session generation equals the issued high-water mark. After
+/// `unregister_collector` retires the registration, a device whose
+/// assignment still names the dead collector (the deactivation-to-
+/// cleanup gap, reproduced deterministically by re-assigning without
+/// re-registering) must NOT be able to establish session authority,
+/// even though the authority window, epoch and issued-generation
+/// fences all still validate.
+#[tokio::test]
+async fn lifecycle_admission_requires_active_registration() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let pki = make_pki();
+    let collector_leaf = issue_leaf(&pki, "e2e-col", false);
+    let (_gnmi_addr, _streams, _requests, _subscribe_calls, _gsd, _ghandle) = start_mock().await;
+
+    let mut device = device_target("127.0.0.1:1");
+    device.security = Some(GnmiSecurityMode::Plaintext);
+    device.collector_id = Some("e2e-col".to_string());
+    let device_addr = device.address.clone();
+
+    let lab = start_lab(&pki, device.clone()).await;
+    lab.registry
+        .add_device_with_audit(device.clone(), "test", "test_add")
+        .unwrap();
+    lab.registry
+        .assign_device_with_audit(
+            &device_addr,
+            Some("e2e-col".to_string()),
+            "test",
+            "test_assign",
+        )
+        .unwrap();
+    bind_collector(&lab.sqlite, "e2e-col", &collector_leaf.fingerprint);
+
+    let entries: Vec<(String, String, String, u64)> = device
+        .selected_paths
+        .iter()
+        .map(|p| {
+            (
+                p.origin.clone(),
+                p.path.clone(),
+                p.mode.clone(),
+                p.sample_interval_ns,
+            )
+        })
+        .collect();
+    let good_plan = bonsai::subscriber::acquisition_plan_id(AcquisitionMode::Explicit, &entries);
+    let manifest: Vec<bonsai::api::pb::SubscriptionPath> = entries
+        .iter()
+        .map(
+            |(origin, path, mode, interval)| bonsai::api::pb::SubscriptionPath {
+                path: path.clone(),
+                origin: origin.clone(),
+                mode: mode.clone(),
+                sample_interval_ns: *interval,
+                ..Default::default()
+            },
+        )
+        .collect();
+
+    let epoch = lab.manager.authority_epoch();
+
+    let (mut assign_rx, registration_gen) = lab
+        .manager
+        .register_collector("e2e-col".to_string(), PROTOCOL_VERSION_CURRENT, true)
+        .await
+        .unwrap();
+    let sync = assign_rx.recv().await.expect("sync");
+    let assigned_gen = sync.generation;
+    let session_gen = sync.collector_session_generation;
+    assert_eq!(session_gen, registration_gen);
+
+    let ev = |session: &str, exec_gen: u64, state: &str, seq: u64| {
+        bonsai::api::pb::SubscriptionLifecycleEvent {
+            collector_id: "e2e-col".to_string(),
+            device_address: device_addr.clone(),
+            plan_id: good_plan.clone(),
+            session_id: session.to_string(),
+            state: state.to_string(),
+            transition_seq: seq,
+            authority_epoch: epoch,
+            assignment_generation: assigned_gen,
+            collector_session_generation: session_gen,
+            execution_generation: exec_gen,
+            occurred_at_ns: 1,
+            detail: String::new(),
+            protocol_version: PROTOCOL_VERSION_CURRENT,
+            submitted_paths: manifest.clone(),
+            acquisition: "explicit".to_string(),
+        }
+    };
+
+    // Baseline: while registered, the execution is admitted.
+    let (ev_tx, ev_rx) = mpsc::channel::<bonsai::api::pb::SubscriptionLifecycleEvent>(8);
+    let mut client = connect_client(&pki, &collector_leaf, lab.addr).await;
+    let call = tokio::spawn(async move {
+        client
+            .subscription_lifecycle(Request::new(ReceiverStream::new(ev_rx)))
+            .await
+    });
+    for (state, seq) in [("submitted", 1), ("synchronized", 2)] {
+        ev_tx.send(ev("sess-active", 1, state, seq)).await.unwrap();
+    }
+    drop(ev_tx);
+    let resp = call.await.expect("rpc").expect("resp").into_inner();
+    assert_eq!(resp.rejected, 0, "baseline must be accepted: {resp:?}");
+    assert!(
+        wait_for(
+            || lab.sessions.current_session(&device_addr).is_some(),
+            Duration::from_secs(10),
+            "baseline coverage"
+        )
+        .await
+    );
+
+    // Deactivate the registration. unregister_collector also runs
+    // device cleanup, so restore the mid-cleanup state deterministically:
+    // the device still names the dead collector while no registration
+    // is active. Every OTHER fence still validates.
+    assert!(
+        lab.manager
+            .unregister_collector("e2e-col", registration_gen)
+    );
+    lab.registry
+        .assign_device_with_audit(
+            &device_addr,
+            Some("e2e-col".to_string()),
+            "test",
+            "test_reassign_dead_collector",
+        )
+        .unwrap();
+
+    // Precondition proof: the authority window, epoch and issued
+    // session-generation bound ALL still pass — only the inactive
+    // registration can reject this event.
+    assert!(
+        lab.manager
+            .validate_session_authority("e2e-col", &device_addr, epoch, assigned_gen),
+        "authority window must still validate for the boundary test"
+    );
+    assert_eq!(lab.manager.active_session_generation("e2e-col"), None);
+    assert_eq!(
+        lab.manager.latest_session_generation("e2e-col"),
+        session_gen,
+        "issued high-water mark is retained after unregister"
+    );
+
+    // A lifecycle event stamped with the still-issued generation must
+    // be rejected: the registration it claims is no longer active.
+    let (ev_tx2, ev_rx2) = mpsc::channel::<bonsai::api::pb::SubscriptionLifecycleEvent>(8);
+    let mut client2 = connect_client(&pki, &collector_leaf, lab.addr).await;
+    let call2 = tokio::spawn(async move {
+        client2
+            .subscription_lifecycle(Request::new(ReceiverStream::new(ev_rx2)))
+            .await
+    });
+    for (state, seq) in [("submitted", 1), ("synchronized", 2)] {
+        ev_tx2
+            .send(ev("sess-post-unregister", 2, state, seq))
+            .await
+            .unwrap();
+    }
+    drop(ev_tx2);
+    let resp2 = call2.await.expect("rpc2").expect("resp2").into_inner();
+    assert!(
+        resp2.rejected >= 2,
+        "inactive-registration events must be rejected: {resp2:?}"
+    );
+    assert_eq!(
+        lab.sessions.current_session(&device_addr),
+        None,
+        "deactivated registration must not establish coverage authority"
+    );
+}
