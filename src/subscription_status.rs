@@ -7,7 +7,9 @@ use tracing::{debug, info, warn};
 use crate::event_bus::InProcessBus;
 use crate::graph::{BonsaiEvent, SubscriptionStatusWrite};
 use crate::store::BonsaiStore;
-use crate::subscription_sessions::SubscriptionSessionRegistry;
+use crate::subscription_sessions::{
+    ApplyOutcome, SessionLifecycleEvent, SubscriptionSessionRegistry,
+};
 use crate::telemetry::TelemetryUpdate;
 
 pub const VERIFICATION_WINDOW: Duration = Duration::from_secs(30);
@@ -381,6 +383,40 @@ pub struct SubscriptionPlan {
     pub detail: String,
 }
 
+impl SubscriptionPlan {
+    /// Build the authoritative submitted-manifest plan for the coverage
+    /// verifier from an APPLIED lifecycle event — the single manifest
+    /// contract shared by the authenticated remote lifecycle RPC
+    /// (`api.rs`) and the trusted local acquisition drain
+    /// (`server_startup.rs`). Returns `None` for plan-level outcomes and
+    /// non-manifest transitions so callers never forward noise.
+    pub fn from_applied_lifecycle(event: &SessionLifecycleEvent) -> Option<Self> {
+        if !matches!(event.state.as_str(), "submitted" | "synchronized")
+            || event.submitted_paths.is_empty()
+        {
+            return None;
+        }
+        Some(Self {
+            target: event.target.clone(),
+            paths: event
+                .submitted_paths
+                .iter()
+                .map(|e| SubscriptionPathExpectation {
+                    path: e.path.clone(),
+                    origin: e.origin.clone(),
+                    mode: e.mode.clone(),
+                    sample_interval_ns: e.sample_interval_ns,
+                })
+                .collect(),
+            plan_id: event.plan_id.clone(),
+            session_id: event.session_id.clone(),
+            state: "submitted".to_string(),
+            acquisition: event.acquisition.clone(),
+            detail: String::new(),
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SubscriptionPathExpectation {
     pub path: String,
@@ -439,7 +475,7 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
     plan_rx: tokio::sync::mpsc::Receiver<SubscriptionPlan>,
     sessions: Arc<SubscriptionSessionRegistry>,
     shutdown: tokio::sync::watch::Receiver<bool>,
-    ready: Option<tokio::sync::oneshot::Sender<()>>,
+    ready: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) {
     run_subscription_verifier_with_windows(
         store,
@@ -467,7 +503,7 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     tick: Duration,
     freshness_floor: Duration,
-    mut ready: Option<tokio::sync::oneshot::Sender<()>>,
+    mut ready: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) {
     let (sub, mut telemetry_rx) = crate::event_bus::MpscSubscriber::new(
         "subscription_verifier",
@@ -494,8 +530,29 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
     // current until new verified evidence arrives, so historical
     // observed/deleted/pending rows are expired to `stale` up front
     // (raw graph state and the northbound read the same rows).
-    if let Err(error) = store.expire_subscription_statuses_on_boot().await {
-        warn!(%error, "failed to expire persisted subscription statuses on boot");
+    // Boot-time expiry is REQUIRED initialization: persisted rows
+    // describe the previous boot's sessions and must never be presented
+    // as current coverage. A failure — or shutdown during init — fails
+    // readiness closed: the verifier exits instead of serving stale
+    // historical status (M5.2B review).
+    let boot_expiry = if *shutdown.borrow() {
+        Err(anyhow::anyhow!(
+            "shutdown during subscription verifier boot"
+        ))
+    } else {
+        tokio::select! {
+            _ = shutdown.changed() => {
+                Err(anyhow::anyhow!("shutdown during subscription verifier boot"))
+            }
+            result = store.expire_subscription_statuses_on_boot() => result,
+        }
+    };
+    if let Err(error) = &boot_expiry {
+        warn!(%error, "subscription verifier boot initialization failed");
+        if let Some(tx) = ready.take() {
+            let _ = tx.send(Err(error.to_string()));
+        }
+        return;
     }
     // target -> last registered plan identity INCLUDING lifecycle
     // revision (state + detail). plan_id alone is the stable desired/
@@ -511,7 +568,7 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
     // dropped sender (verifier shutdown/panic) resolves the receiver
     // immediately — callers can never wait indefinitely.
     if let Some(tx) = ready.take() {
-        let _ = tx.send(());
+        let _ = tx.send(Ok(()));
     }
 
     loop {
@@ -534,7 +591,6 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
                 if registered_plans.get(&plan.target) == Some(&key) {
                     continue;
                 }
-                registered_plans.insert(plan.target.clone(), key);
                 // Execution-head manifest fence: a submitted manifest may
                 // register expectations only for the target's OPEN
                 // fence-head execution. A delayed manifest for a
@@ -556,6 +612,10 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
                     );
                     continue;
                 }
+                // Record dedup state only for ACCEPTED manifests — a
+                // fence-rejected manifest must not poison deduplication
+                // of a later legitimate retry (M5.2B review).
+                registered_plans.insert(plan.target.clone(), key);
                 register_plan(&store, &mut tracked, &mut pending_writes, plan, freshness_floor)
                     .await;
             }
@@ -689,6 +749,51 @@ fn submitted_manifest_is_stale(
                     .session_state(&plan.target, &plan.session_id)
                     .is_some_and(|(state, _, _)| crate::subscription_sessions::is_terminal(&state))
         }
+    }
+}
+
+/// Trusted-local lifecycle drain step (M5.2B review): apply the event
+/// to the authoritative session registry, then — only when the
+/// transition was APPLIED and carries a live submitted manifest —
+/// forward the authoritative plan to the coverage verifier. This is the
+/// SAME manifest-registration contract as the authenticated remote
+/// lifecycle RPC (`api.rs`): the verifier observes the manifest only
+/// after the execution's lifecycle registration is committed, so the
+/// exec-head manifest fence is deterministic and a legitimate new
+/// execution's manifest cannot be lost while its registration is in
+/// flight. `plan_tx` is the verifier's plan channel; `None` disables
+/// forwarding (registry application still occurs).
+pub async fn apply_local_lifecycle_event(
+    registry: &SubscriptionSessionRegistry,
+    plan_tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
+    event: SessionLifecycleEvent,
+) {
+    let outcome = registry.apply(&event, true);
+    if matches!(
+        outcome,
+        ApplyOutcome::InvalidTransition | ApplyOutcome::Rejected(_)
+    ) {
+        warn!(
+            target = %event.target,
+            state = %event.state,
+            "local lifecycle transition rejected"
+        );
+        return;
+    }
+    if !matches!(outcome, ApplyOutcome::Applied) {
+        return;
+    }
+    let Some(plan) = SubscriptionPlan::from_applied_lifecycle(&event) else {
+        return;
+    };
+    if let Some(tx) = plan_tx
+        && tx.send(plan).await.is_err()
+    {
+        metrics::counter!("bonsai_subscription_plan_forward_dropped_total").increment(1);
+        warn!(
+            target = %event.target,
+            "submitted plan manifest dropped: verifier channel closed"
+        );
     }
 }
 
@@ -1969,6 +2074,7 @@ mod tests {
     struct SelectiveFailStore {
         inner: crate::graph::GraphStore,
         fail_path: std::sync::Mutex<Option<String>>,
+        fail_boot_expire: std::sync::atomic::AtomicBool,
     }
 
     #[tonic::async_trait]
@@ -2025,6 +2131,15 @@ mod tests {
         ) -> anyhow::Result<crate::graph::SiteRecord> {
             BonsaiStore::upsert_site(&self.inner, site).await
         }
+        async fn expire_subscription_statuses_on_boot(&self) -> anyhow::Result<()> {
+            if self
+                .fail_boot_expire
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                anyhow::bail!("injected boot-expiry failure");
+            }
+            BonsaiStore::expire_subscription_statuses_on_boot(&self.inner).await
+        }
         async fn write_subscription_status(
             &self,
             status: crate::graph::SubscriptionStatusWrite,
@@ -2056,6 +2171,7 @@ mod tests {
             fail_path: std::sync::Mutex::new(Some(
                 "interfaces/interface[name=ethernet-1/2]/state/counters/in-octets".to_string(),
             )),
+            fail_boot_expire: std::sync::atomic::AtomicBool::new(false),
         };
         let sessions = registered_sessions(&[("dut:57400", "plan-1", "sess-1")]);
         let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
@@ -2358,6 +2474,7 @@ mod tests {
         let store = SelectiveFailStore {
             inner: graph,
             fail_path: std::sync::Mutex::new(None),
+            fail_boot_expire: std::sync::atomic::AtomicBool::new(false),
         };
         let bus = crate::event_bus::InProcessBus::new(64);
         let (plan_tx, plan_rx) = tokio::sync::mpsc::channel::<SubscriptionPlan>(16);
@@ -2377,7 +2494,10 @@ mod tests {
         ));
         // Await the readiness contract, then inject plan + telemetry with
         // NO intervening sleep — bus delivery is already guaranteed.
-        ready_rx.await.expect("verifier readiness");
+        ready_rx
+            .await
+            .expect("verifier exited before readiness")
+            .expect("verifier boot initialization failed");
         plan_tx
             .send(SubscriptionPlan {
                 target: "dut:57400".to_string(),
@@ -2431,5 +2551,100 @@ mod tests {
         }
         let _ = sd.send(true);
         verifier.abort();
+    }
+
+    /// M5.2B review: boot-time status expiry is REQUIRED initialization.
+    /// A failed expiry must fail readiness closed — the verifier exits
+    /// and reports Err through the readiness channel instead of
+    /// signalling success and serving stale historical status.
+    #[tokio::test]
+    async fn boot_expiry_failure_fails_readiness_and_stops_verifier() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph = crate::graph::GraphStore::open(
+            dir.path().join("g.lbug").to_str().unwrap(),
+            256 * 1024 * 1024,
+        )
+        .expect("open graph store");
+        let store = SelectiveFailStore {
+            inner: graph,
+            fail_path: std::sync::Mutex::new(None),
+            fail_boot_expire: std::sync::atomic::AtomicBool::new(true),
+        };
+        let bus = crate::event_bus::InProcessBus::new(64);
+        let (_plan_tx, plan_rx) = tokio::sync::mpsc::channel::<SubscriptionPlan>(16);
+        let sessions =
+            std::sync::Arc::new(registered_sessions(&[("dut:57400", "plan-1", "sess-b")]));
+        let (_sd, srx) = tokio::sync::watch::channel(false);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let verifier = tokio::spawn(run_subscription_verifier_with_windows(
+            store,
+            bus,
+            plan_rx,
+            sessions,
+            srx,
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+            Some(ready_tx),
+        ));
+        let readiness = ready_rx.await.expect("verifier dropped readiness sender");
+        let error = readiness.expect_err("failed boot expiry must fail readiness");
+        assert!(
+            error.contains("injected boot-expiry failure"),
+            "readiness error must carry the init failure: {error}"
+        );
+        // The verifier must exit rather than continue with unexpired
+        // historical status — no indefinite run, no false readiness.
+        tokio::time::timeout(Duration::from_secs(5), verifier)
+            .await
+            .expect("verifier must exit after boot-init failure")
+            .expect("verifier task panicked");
+    }
+
+    /// M5.2B review: shutdown during verifier boot must resolve the
+    /// readiness wait immediately with a failure — never an indefinite
+    /// wait and never a false success.
+    #[tokio::test]
+    async fn shutdown_during_boot_fails_readiness_promptly() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph = crate::graph::GraphStore::open(
+            dir.path().join("g.lbug").to_str().unwrap(),
+            256 * 1024 * 1024,
+        )
+        .expect("open graph store");
+        let store = SelectiveFailStore {
+            inner: graph,
+            fail_path: std::sync::Mutex::new(None),
+            fail_boot_expire: std::sync::atomic::AtomicBool::new(false),
+        };
+        let bus = crate::event_bus::InProcessBus::new(64);
+        let (_plan_tx, plan_rx) = tokio::sync::mpsc::channel::<SubscriptionPlan>(16);
+        let sessions =
+            std::sync::Arc::new(registered_sessions(&[("dut:57400", "plan-1", "sess-b")]));
+        // Shutdown already signalled before the verifier starts init.
+        let (_sd, srx) = tokio::sync::watch::channel(true);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let verifier = tokio::spawn(run_subscription_verifier_with_windows(
+            store,
+            bus,
+            plan_rx,
+            sessions,
+            srx,
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+            Some(ready_tx),
+        ));
+        let readiness = tokio::time::timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .expect("readiness wait must be bounded under shutdown")
+            .expect("verifier dropped readiness sender");
+        let error = readiness.expect_err("shutdown during boot must fail readiness");
+        assert!(
+            error.contains("shutdown"),
+            "readiness error must report shutdown: {error}"
+        );
+        tokio::time::timeout(Duration::from_secs(5), verifier)
+            .await
+            .expect("verifier must exit after boot-init failure")
+            .expect("verifier task panicked");
     }
 }

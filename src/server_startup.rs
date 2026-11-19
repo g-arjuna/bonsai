@@ -1181,10 +1181,28 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         None
     };
     if store.is_some() {
-        if verifier_ready_rx.await.is_err() {
-            tracing::warn!(
+        // Failure-aware readiness: Ok(()) is signalled only after bus
+        // subscriber registration, state init AND successful boot-time
+        // status expiry. Any failure — or shutdown while waiting — is
+        // an explicit startup failure: stale historical statuses must
+        // never be served as current coverage (M5.2B review). The
+        // oneshot sender drops if the verifier exits, so this await is
+        // bounded; shutdown is selected explicitly.
+        let mut startup_shutdown = shutdown_rx.clone();
+        let readiness = tokio::select! {
+            result = verifier_ready_rx => result,
+            _ = startup_shutdown.changed() => {
+                anyhow::bail!("shutdown while awaiting subscription verifier readiness")
+            }
+        };
+        match readiness {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                anyhow::bail!("subscription verifier failed to initialize: {error}")
+            }
+            Err(_) => anyhow::bail!(
                 "subscription verifier exited before signaling readiness — coverage verification unavailable"
-            );
+            ),
         }
     }
 
@@ -1238,18 +1256,20 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     };
     {
         let drain_registry = std::sync::Arc::clone(&session_registry);
+        // Same manifest-registration contract as the authenticated
+        // remote lifecycle RPC: the applied event's submitted manifest
+        // is forwarded to the coverage verifier only AFTER the registry
+        // commits the transition, so the exec-head fence is
+        // deterministic (M5.2B review).
+        let drain_plan_tx = subscription_plan_tx.clone();
         tokio::spawn(async move {
             while let Some(event) = local_lifecycle_rx.recv().await {
-                match drain_registry.apply(&event, true) {
-                    bonsai::subscription_sessions::ApplyOutcome::InvalidTransition { .. } => {
-                        tracing::warn!(
-                            target = %event.target,
-                            state = %event.state,
-                            "local lifecycle transition rejected"
-                        );
-                    }
-                    _ => {}
-                }
+                bonsai::subscription_status::apply_local_lifecycle_event(
+                    &drain_registry,
+                    drain_plan_tx.as_ref(),
+                    event,
+                )
+                .await;
             }
         });
     }

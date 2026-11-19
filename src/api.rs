@@ -2477,30 +2477,10 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             // hold the authority mutex (M5.2B review D).
             drop(_authority_gate);
             if matches!(outcome, crate::subscription_sessions::ApplyOutcome::Applied)
-                && matches!(internal.state.as_str(), "submitted" | "synchronized")
-                && !internal.submitted_paths.is_empty()
+                && let Some(plan) =
+                    crate::subscription_status::SubscriptionPlan::from_applied_lifecycle(&internal)
                 && let Some(tx) = &self.subscription_plan_tx
             {
-                let plan = crate::subscription_status::SubscriptionPlan {
-                    target: internal.target.clone(),
-                    paths: internal
-                        .submitted_paths
-                        .iter()
-                        .map(
-                            |e| crate::subscription_status::SubscriptionPathExpectation {
-                                path: e.path.clone(),
-                                origin: e.origin.clone(),
-                                mode: e.mode.clone(),
-                                sample_interval_ns: e.sample_interval_ns,
-                            },
-                        )
-                        .collect(),
-                    plan_id: internal.plan_id.clone(),
-                    session_id: internal.session_id.clone(),
-                    state: "submitted".to_string(),
-                    acquisition: internal.acquisition.clone(),
-                    detail: String::new(),
-                };
                 // Reliable delivery: a full channel must never
                 // permanently lose the effective plan while the session
                 // becomes current — await capacity instead of dropping.

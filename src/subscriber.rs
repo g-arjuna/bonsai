@@ -639,16 +639,13 @@ impl GnmiSubscriber {
             .context("Subscribe RPC failed")?
             .into_inner();
 
-        self.publish_plan(SubscriptionPlan {
-            target: target.clone(),
-            paths: plan_paths.clone(),
-            plan_id: submitted_plan_id.clone(),
-            session_id: session_id.clone(),
-            state: "submitted".to_string(),
-            acquisition: self.acquisition.as_str().to_string(),
-            detail: String::new(),
-        })
-        .await;
+        // The session-bound submitted manifest is NOT published on the
+        // plan channel here: it reaches the coverage verifier only
+        // through the lifecycle drain AFTER the registry commits the
+        // `submitted` transition — the same post-apply contract as the
+        // authenticated remote lifecycle RPC (M5.2B review). Publishing
+        // it earlier raced the registry apply and could be fenced as
+        // stale while an older execution was still the open head.
 
         // Authoritative lifecycle: a successful Subscribe RPC establishes
         // SUBMISSION only — never synchronization. Initial sync

@@ -11,8 +11,9 @@ use bonsai::config::{AcquisitionMode, SelectedSubscriptionPath, TargetConfig};
 use bonsai::event_bus::InProcessBus;
 use bonsai::proto::gnmi::g_nmi_server::{GNmi, GNmiServer};
 use bonsai::proto::gnmi::{
-    CapabilityRequest, CapabilityResponse, Encoding, ModelData, Path, SubscribeRequest,
-    SubscribeResponse, Subscription, subscribe_request,
+    CapabilityRequest, CapabilityResponse, Encoding, ModelData, Notification, Path, PathElem,
+    SubscribeRequest, SubscribeResponse, Subscription, Update, subscribe_request,
+    subscribe_response, typed_value,
 };
 use bonsai::subscriber::GnmiSubscriber;
 use bonsai::subscription_status::{
@@ -34,6 +35,9 @@ struct MockGnmi {
     /// opens a stream, decremented when the server drops it — which only
     /// happens when the client cancels the RPC.
     active_streams: Arc<AtomicUsize>,
+    /// Response senders for open Subscribe streams — tests inject
+    /// Update/SyncResponse notifications through the newest sender.
+    streams: Arc<Mutex<Vec<mpsc::Sender<Result<SubscribeResponse, Status>>>>>,
 }
 
 #[tonic::async_trait]
@@ -63,9 +67,11 @@ impl GNmi for MockGnmi {
         // Hold the response stream open so the client stays subscribed
         // until the test shuts it down. The drop guard proves real RPC
         // cancellation: tonic drops this stream only when the client
-        // cancels or the RPC ends.
+        // cancels or the RPC ends. A clone of the sender is retained so
+        // tests can inject Update/SyncResponse notifications.
         self.active_streams.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = mpsc::channel::<Result<SubscribeResponse, Status>>(8);
+        self.streams.lock().await.push(tx.clone());
         std::mem::forget(tx);
         Ok(Response::new(GuardedStream {
             inner: ReceiverStream::new(rx),
@@ -119,6 +125,7 @@ struct Lab {
     capability_calls: Arc<AtomicUsize>,
     subscribe_calls: Arc<AtomicUsize>,
     active_streams: Arc<AtomicUsize>,
+    streams: Arc<Mutex<Vec<mpsc::Sender<Result<SubscribeResponse, Status>>>>>,
     _shutdown: watch::Sender<bool>,
     _handle: tokio::task::JoinHandle<()>,
 }
@@ -128,6 +135,7 @@ async fn start_lab(models: Vec<&str>) -> Lab {
     let capability_calls = Arc::new(AtomicUsize::new(0));
     let subscribe_calls = Arc::new(AtomicUsize::new(0));
     let active_streams = Arc::new(AtomicUsize::new(0));
+    let streams = Arc::new(Mutex::new(Vec::new()));
     let svc = MockGnmi {
         caps: CapabilityResponse {
             supported_models: models
@@ -146,6 +154,7 @@ async fn start_lab(models: Vec<&str>) -> Lab {
         capability_calls: Arc::clone(&capability_calls),
         subscribe_calls: Arc::clone(&subscribe_calls),
         active_streams: Arc::clone(&active_streams),
+        streams: Arc::clone(&streams),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -168,6 +177,7 @@ async fn start_lab(models: Vec<&str>) -> Lab {
         capability_calls,
         subscribe_calls,
         active_streams,
+        streams,
         _shutdown: shutdown_tx,
         _handle: handle,
     }
@@ -191,6 +201,32 @@ fn subscriber(
     acquisition: AcquisitionMode,
     plan_tx: mpsc::Sender<bonsai::subscription_status::SubscriptionPlan>,
 ) -> GnmiSubscriber {
+    // Production wiring (server_startup, RuntimeMode::All): the
+    // subscriber's lifecycle events are drained into the authoritative
+    // session registry and the APPLIED manifest is forwarded to the
+    // coverage verifier — the same post-apply contract as the remote
+    // lifecycle RPC. plan_tx also carries plan-level outcomes.
+    let sessions = Arc::new(bonsai::subscription_sessions::SubscriptionSessionRegistry::new());
+    let (lc_tx, mut lc_rx) =
+        mpsc::channel::<bonsai::subscription_sessions::SessionLifecycleEvent>(64);
+    let drain_plan_tx = plan_tx.clone();
+    let drain_sessions = Arc::clone(&sessions);
+    tokio::spawn(async move {
+        while let Some(event) = lc_rx.recv().await {
+            bonsai::subscription_status::apply_local_lifecycle_event(
+                &drain_sessions,
+                Some(&drain_plan_tx),
+                event,
+            )
+            .await;
+        }
+    });
+    let lifecycle = bonsai::subscriber::LifecycleHandle {
+        tx: lc_tx,
+        authority_epoch: 0,
+        assignment_generation: 0,
+        collector_session_generation: 0,
+    };
     GnmiSubscriber::new(
         lab.addr.clone(),
         None,
@@ -207,7 +243,7 @@ fn subscriber(
         Some(plan_tx),
         selected_paths,
         acquisition,
-        None,
+        Some(lifecycle),
         std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     )
 }
@@ -1980,5 +2016,243 @@ async fn failed_status_write_is_retried_not_claimed() {
     );
 
     _stx.send(true).unwrap();
+    let _ = verifier.await;
+}
+
+// ── M5.2B local-acquisition manifest ordering (production path) ─────────────
+
+fn leaf_update_path(interface: &str) -> Path {
+    Path {
+        origin: "openconfig".to_string(),
+        elem: vec![
+            PathElem {
+                name: "interfaces".to_string(),
+                key: Default::default(),
+            },
+            PathElem {
+                name: "interface".to_string(),
+                key: [("name".to_string(), interface.to_string())]
+                    .into_iter()
+                    .collect(),
+            },
+            PathElem {
+                name: "state".to_string(),
+                key: Default::default(),
+            },
+            PathElem {
+                name: "counters".to_string(),
+                key: Default::default(),
+            },
+            PathElem {
+                name: "in-octets".to_string(),
+                key: Default::default(),
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+fn update_notification(path: &Path, val: i64) -> SubscribeResponse {
+    let mut tv = bonsai::proto::gnmi::TypedValue::default();
+    tv.value = Some(typed_value::Value::IntVal(val));
+    SubscribeResponse {
+        response: Some(subscribe_response::Response::Update(Notification {
+            timestamp: 1_000,
+            prefix: None,
+            update: vec![Update {
+                path: Some(path.clone()),
+                val: Some(tv),
+                ..Default::default()
+            }],
+            delete: vec![],
+            atomic: false,
+        })),
+        ..Default::default()
+    }
+}
+
+fn sync_notification() -> SubscribeResponse {
+    SubscribeResponse {
+        response: Some(subscribe_response::Response::SyncResponse(true)),
+        ..Default::default()
+    }
+}
+
+/// Deterministic production-path regression for local (RuntimeMode::All)
+/// acquisition: the subscriber's lifecycle events flow through the same
+/// drain → registry apply → manifest-forward contract as the remote
+/// lifecycle RPC, and the coverage verifier registers expectations only
+/// after the execution's lifecycle commit. A same-plan reconnect must
+/// re-establish observed coverage from its own initial sync evidence.
+#[tokio::test]
+async fn local_all_mode_manifest_orders_coverage_across_reconnect() {
+    use bonsai::subscription_sessions::{SessionLifecycleEvent, SubscriptionSessionRegistry};
+
+    let lab = start_lab(vec!["openconfig-interfaces"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = bonsai::graph::GraphStore::open(
+        dir.path().join("graph.db").to_str().unwrap(),
+        256 * 1024 * 1024,
+    )
+    .expect("open graph store");
+    let db = store.db();
+    let bus = InProcessBus::new(64);
+    let sessions = Arc::new(SubscriptionSessionRegistry::new());
+    let (plan_tx, plan_rx) = mpsc::channel::<bonsai::subscription_status::SubscriptionPlan>(16);
+
+    // Production drain (server_startup): apply lifecycle events to the
+    // authoritative registry and forward APPLIED manifests to the
+    // verifier — identical code path via apply_local_lifecycle_event.
+    let (lc_tx, mut lc_rx) = mpsc::channel::<SessionLifecycleEvent>(64);
+    {
+        let drain_sessions = Arc::clone(&sessions);
+        let drain_plan_tx = plan_tx.clone();
+        tokio::spawn(async move {
+            while let Some(event) = lc_rx.recv().await {
+                bonsai::subscription_status::apply_local_lifecycle_event(
+                    &drain_sessions,
+                    Some(&drain_plan_tx),
+                    event,
+                )
+                .await;
+            }
+        });
+    }
+
+    // Verifier with the shared readiness contract.
+    let (vsd, vsrx) = watch::channel(false);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let verifier = tokio::spawn(run_subscription_verifier(
+        store,
+        bus.clone(),
+        plan_rx,
+        Arc::clone(&sessions),
+        vsrx,
+        Some(ready_tx),
+    ));
+    ready_rx
+        .await
+        .expect("verifier exited before readiness")
+        .expect("verifier boot initialization failed");
+
+    let iface_path = "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets";
+    let selected = vec![SelectedSubscriptionPath {
+        path: iface_path.to_string(),
+        origin: "openconfig".to_string(),
+        provenance: String::new(),
+        mode: "ON_CHANGE".to_string(),
+        sample_interval_ns: 0,
+        rationale: String::new(),
+        optional: false,
+    }];
+    // One execution counter book shared across recreations — mirrors
+    // production SubscriberHandleMap behavior (M5.2B B1).
+    let execution_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    let spawn_subscriber = |lc_tx: &mpsc::Sender<SessionLifecycleEvent>| {
+        let lifecycle = bonsai::subscriber::LifecycleHandle {
+            tx: lc_tx.clone(),
+            authority_epoch: 0,
+            assignment_generation: 0,
+            collector_session_generation: 0,
+        };
+        GnmiSubscriber::new(
+            lab.addr.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            bonsai::gnmi_security::ConnSecurity::plaintext(true),
+            bus.clone(),
+            None,
+            Some(plan_tx.clone()),
+            selected.clone(),
+            AcquisitionMode::Explicit,
+            Some(lifecycle),
+            Arc::clone(&execution_seq),
+        )
+    };
+
+    async fn drive_initial_sync(lab: &Lab, iface: &str, tag: i64) {
+        // Initial-sync ordering: the covering Update legitimately arrives
+        // BEFORE the SyncResponse — it must be buffered and bound to the
+        // exact session once the manifest registers.
+        let update = update_notification(&leaf_update_path(iface), tag);
+        let sync = sync_notification();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let streams = lab.streams.lock().await;
+            if let Some(tx) = streams.last() {
+                if tx.send(Ok(update.clone())).await.is_ok()
+                    && tx.send(Ok(sync.clone())).await.is_ok()
+                {
+                    return;
+                }
+            }
+            drop(streams);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no open subscribe stream for initial sync"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn wait_observed(db: &Arc<lbug::Database>, target: &str, path: &str, what: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let statuses = query_subscription_statuses(db).await;
+            if statuses
+                .iter()
+                .any(|(dev, p, st)| dev == target && p == path && st == "observed")
+            {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: coverage never became observed: {statuses:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    // ── first acquisition ──
+    let sub1 = spawn_subscriber(&lc_tx);
+    let (sd1, mut srx1) = watch::channel(false);
+    let h1 = tokio::spawn(async move { sub1.subscribe_telemetry(&mut srx1).await });
+    assert!(
+        wait_for(
+            || lab.subscribe_calls.load(Ordering::SeqCst) >= 1,
+            Duration::from_secs(10)
+        )
+        .await,
+        "first subscribe rpc"
+    );
+    drive_initial_sync(&lab, "Ethernet1/1", 111).await;
+    wait_observed(&db, &lab.addr, iface_path, "first acquisition").await;
+
+    // ── same-plan reconnect: new session, shared execution counter ──
+    let _ = sd1.send(true);
+    let _ = h1.await;
+    let sub2 = spawn_subscriber(&lc_tx);
+    let (sd2, mut srx2) = watch::channel(false);
+    let _h2 = tokio::spawn(async move { sub2.subscribe_telemetry(&mut srx2).await });
+    assert!(
+        wait_for(
+            || lab.subscribe_calls.load(Ordering::SeqCst) >= 2,
+            Duration::from_secs(10)
+        )
+        .await,
+        "reconnect subscribe rpc"
+    );
+    drive_initial_sync(&lab, "Ethernet1/1", 222).await;
+    wait_observed(&db, &lab.addr, iface_path, "same-plan reconnect").await;
+
+    // The reconnect's own initial-sync evidence — no additional
+    // telemetry — restored observed coverage under the new session.
+    let _ = sd2.send(true);
+    let _ = vsd.send(true);
     let _ = verifier.await;
 }

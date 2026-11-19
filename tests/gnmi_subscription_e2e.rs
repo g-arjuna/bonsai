@@ -448,7 +448,8 @@ async fn start_lab(pki: &Pki, device: TargetConfig) -> Lab {
     ));
     verifier_ready_rx
         .await
-        .expect("subscription verifier exited before signaling readiness");
+        .expect("subscription verifier exited before signaling readiness")
+        .expect("subscription verifier boot initialization failed");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
