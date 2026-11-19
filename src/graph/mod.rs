@@ -465,6 +465,12 @@ impl BonsaiStore for GraphStore {
             .map(|_| ())
     }
 
+    async fn expire_subscription_statuses_on_boot(&self) -> Result<()> {
+        self.expire_subscription_statuses_on_boot()
+            .await
+            .map(|_| ())
+    }
+
     fn publish_event(&self, event: BonsaiEvent) {
         self.publish_event(event)
     }
@@ -4226,6 +4232,83 @@ impl GraphStore {
                 superseded += 1;
             }
             Ok(superseded)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Expire persisted subscription statuses that claimed current
+    /// coverage under the previous boot's sessions (M5.2B review B5).
+    /// Nothing is current until new verified evidence arrives, so
+    /// `observed`/`deleted`/`pending`/`subscribed_but_silent` rows become
+    /// `stale`; `superseded` rows are already non-current.
+    pub async fn expire_subscription_statuses_on_boot(&self) -> Result<usize> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        let now = now_ns();
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("subscription status expire connection")?;
+            let rows = conn
+                .query(
+                    "MATCH (s:SubscriptionStatus) \
+                     WHERE s.status IN ['observed', 'deleted', 'pending', 'subscribed_but_silent'] \
+                     RETURN s.id, s.device_address, s.path, s.origin, s.mode, \
+                            s.sample_interval_ns, s.status, s.first_observed_at, s.last_observed_at",
+                )
+                .context("query subscription statuses for boot expiry")?;
+            let mut expired = 0usize;
+            for row in rows {
+                let id = match &row[0] {
+                    Value::String(s) => s.clone(),
+                    _ => continue,
+                };
+                let addr = match &row[1] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let path = match &row[2] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let origin = match &row[3] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let mode = match &row[4] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let interval = match &row[5] {
+                    Value::Int64(n) => *n,
+                    _ => 0,
+                };
+                let first = {
+                    let t = read_ts_ns(&row[7]);
+                    if t > 0 { t } else { now }
+                };
+                let last = {
+                    let t = read_ts_ns(&row[8]);
+                    if t > 0 { t } else { now }
+                };
+                write_subscription_status_blocking(
+                    &conn,
+                    SubscriptionStatusWrite {
+                        device_address: addr,
+                        path,
+                        origin,
+                        mode,
+                        sample_interval_ns: interval,
+                        status: "stale".to_string(),
+                        first_observed_at_ns: first,
+                        last_observed_at_ns: last,
+                        updated_at_ns: now,
+                    },
+                )?;
+                expired += 1;
+                let _ = id;
+            }
+            Ok(expired)
         })
         .await
         .context("spawn_blocking panicked")?
@@ -10535,6 +10618,12 @@ mod tests {
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: "leaf1".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf1".to_string(),
@@ -10556,6 +10645,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf1".to_string(),
@@ -10631,6 +10726,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf2".to_string(),
@@ -10685,6 +10786,12 @@ mod tests {
         // Seed a BFD session via OpenConfig path: interface id = "ethernet-1/1"
         store
             .write(TelemetryUpdate {
+    plan_id: String::new(),
+    session_id: String::new(),
+    source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
                 target: "leaf3".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf3".to_string(),
@@ -10704,6 +10811,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf3".to_string(),
@@ -10770,6 +10883,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf4".to_string(),
@@ -10826,6 +10945,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+    plan_id: String::new(),
+    session_id: String::new(),
+    source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "cisco_iosxr".to_string(),
                 hostname: "spine1".to_string(),
@@ -10881,6 +11006,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "juniper".to_string(),
                 hostname: "spine2".to_string(),
@@ -12058,6 +12189,12 @@ mod tests {
         ts_ns: i64,
     ) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12082,6 +12219,12 @@ mod tests {
         ts_ns: i64,
     ) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12513,6 +12656,12 @@ mod tests {
 
     fn iface_stats_update(target: &str, if_name: &str, ts_ns: i64) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12534,6 +12683,12 @@ mod tests {
         ts_ns: i64,
     ) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12809,6 +12964,12 @@ mod tests {
         for (ni, state, ts_ns) in [("vrf-a", "established", 10), ("vrf-b", "idle", 11)] {
             store
                 .write(TelemetryUpdate {
+                    plan_id: String::new(),
+                    session_id: String::new(),
+                    source_protocol: String::new(),
+                    gnmi_path: Vec::new(),
+                    is_delete: false,
+                    collector_id: String::new(),
                     target: "10.0.0.1".to_string(),
                     vendor: "nokia_srl".to_string(),
                     hostname: "10.0.0.1".to_string(),
@@ -12859,6 +13020,12 @@ mod tests {
         // Down update omitting peer-as entirely.
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: "10.0.0.1".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "10.0.0.1".to_string(),

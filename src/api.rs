@@ -109,6 +109,18 @@ pub struct BonsaiService<S: BonsaiStore> {
     dev_open_credential_assignments: bool,
     ha_coordinator: Option<Arc<crate::ha_coordinator::HACoordinator>>,
     detection_coordinator: Option<Arc<WriteCoordinator>>,
+    /// Authoritative subscription-session registry (M5.2B). Remote
+    /// collectors feed it through the authenticated
+    /// `SubscriptionLifecycle` RPC; local acquisition feeds it
+    /// in-process; the subscription verifier reads current sessions
+    /// from it.
+    session_registry: Arc<crate::subscription_sessions::SubscriptionSessionRegistry>,
+    /// Channel into the subscription verifier's plan stream (M5.2B
+    /// review B3): authenticated submitted manifests from remote
+    /// collectors are forwarded here so coverage expectations bind to
+    /// the actual Subscribe path set. `None` when no verifier runs.
+    subscription_plan_tx:
+        Option<tokio::sync::mpsc::Sender<crate::subscription_status::SubscriptionPlan>>,
 }
 
 impl<S: BonsaiStore> BonsaiService<S> {
@@ -141,7 +153,31 @@ impl<S: BonsaiStore> BonsaiService<S> {
             dev_open_credential_assignments: false,
             ha_coordinator,
             detection_coordinator,
+            session_registry: Arc::new(
+                crate::subscription_sessions::SubscriptionSessionRegistry::new(),
+            ),
+            subscription_plan_tx: None,
         }
+    }
+
+    /// Wire the subscription verifier's plan channel so authenticated
+    /// submitted manifests reach the coverage verifier (M5.2B B3).
+    pub fn with_subscription_plan_tx(
+        mut self,
+        tx: Option<tokio::sync::mpsc::Sender<crate::subscription_status::SubscriptionPlan>>,
+    ) -> Self {
+        self.subscription_plan_tx = tx;
+        self
+    }
+
+    /// Share the authoritative session registry with the subscription
+    /// verifier and local acquisition path (M5.2B).
+    pub fn with_session_registry(
+        mut self,
+        registry: Arc<crate::subscription_sessions::SubscriptionSessionRegistry>,
+    ) -> Self {
+        self.session_registry = registry;
+        self
     }
 
     /// Set the runtime authentication policy (G5). `server_startup`
@@ -290,18 +326,13 @@ impl<S: BonsaiStore> BonsaiService<S> {
     fn scope_permits_device(&self, scope: &ReadScope, address: &str) -> bool {
         match scope {
             ReadScope::Global => true,
-            ReadScope::CollectorScoped(collector_ids) => {
-                let bare = crate::registry::strip_port(address);
-                collector_ids.iter().any(|cid| {
-                    self.registry
-                        .get_device(&bare)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|t| {
-                            t.enabled && t.collector_id.as_deref() == Some(cid.as_str())
-                        })
-                })
-            }
+            ReadScope::CollectorScoped(collector_ids) => collector_ids.iter().any(|cid| {
+                self.registry
+                    .find_by_canonical_address(address)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|t| t.enabled && t.collector_id.as_deref() == Some(cid.as_str()))
+            }),
         }
     }
 
@@ -342,11 +373,13 @@ impl<S: BonsaiStore> BonsaiService<S> {
         match event.authority() {
             ObservationAuthority::Ignored => Ok(()),
             ObservationAuthority::CanonicalDevice => {
-                let bare = crate::registry::strip_port(&telemetry.target);
-                let target = self.registry.get_device(&bare).map_err(|e| {
-                    tracing::error!(%e, "observation authorization registry lookup failed");
-                    Status::internal("device registry error")
-                })?;
+                let target = self
+                    .registry
+                    .find_by_canonical_address(&telemetry.target)
+                    .map_err(|e| {
+                        tracing::error!(%e, "observation authorization registry lookup failed");
+                        Status::internal("device registry error")
+                    })?;
                 let authorized = target.as_ref().is_some_and(|t| {
                     t.enabled && t.collector_id.as_deref() == Some(grant.collector_id())
                 });
@@ -558,11 +591,13 @@ impl<S: BonsaiStore> BonsaiService<S> {
         if event_ids.len() > crate::collector_auth::MAX_DETECTION_EVENT_REFS {
             return Err(Status::invalid_argument("too many source event references"));
         }
-        let bare = crate::registry::strip_port(device_address).to_string();
-        let target = self.registry.get_device(&bare).map_err(|e| {
-            tracing::error!(%e, "detection authorization registry lookup failed");
-            Status::internal("device registry error")
-        })?;
+        let target = self
+            .registry
+            .find_by_canonical_address(device_address)
+            .map_err(|e| {
+                tracing::error!(%e, "detection authorization registry lookup failed");
+                Status::internal("device registry error")
+            })?;
         let authorized = target
             .as_ref()
             .is_some_and(|t| t.enabled && t.collector_id.as_deref() == Some(grant.collector_id()));
@@ -591,7 +626,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
             ));
         }
         let ids = event_ids.to_vec();
-        let want = bare;
+        let want = crate::registry::strip_port(device_address).to_string();
         let db = self.store.db();
         let verified = tokio::task::spawn_blocking(move || {
             let conn = lbug::Connection::new(&db)
@@ -2004,6 +2039,18 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 return Err(status);
             }
 
+            // M5.2B review B1: stamp the AUTHENTICATED collector identity
+            // onto the observation. Coverage provenance is derived here,
+            // at the trust boundary — never decoded from the telemetry
+            // payload — so a collector can never satisfy another
+            // collector's session by replaying its identifiers. Dev-compat
+            // plaintext keeps an empty stamp and can never match a
+            // verified (non-empty collector) session.
+            telemetry.collector_id = grant
+                .as_ref()
+                .map(|g| g.collector_id().to_string())
+                .unwrap_or_default();
+
             if let Some(ref d) = self.debouncer
                 && d.should_drop(&telemetry)
             {
@@ -2058,6 +2105,400 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
             error: String::new(),
             protocol_version: PROTOCOL_VERSION_CURRENT,
             rejected,
+        }))
+    }
+
+    /// M5.2B authoritative subscription-lifecycle ingress. Every record
+    /// is validated against: the transport-attested collector identity
+    /// (per-message `authorize_collector`), the device→collector
+    /// assignment binding, the current assignment authority epoch, the
+    /// applicable assignment revision window, and the lifecycle
+    /// transition state machine. Unauthenticated development-compat
+    /// sessions are permanently rejected per-record — they may keep
+    /// acquiring telemetry but can never establish verified coverage.
+    async fn subscription_lifecycle(
+        &self,
+        req: Request<Streaming<pb::SubscriptionLifecycleEvent>>,
+    ) -> Result<Response<pb::SubscriptionLifecycleResponse>, Status> {
+        let principal = self.require_principal(&req)?;
+        let mut audited = std::collections::HashSet::new();
+        let mut stream = req.into_inner();
+        let mut accepted = 0_u64;
+        let mut rejected = 0_u64;
+
+        while let Some(event) = stream
+            .message()
+            .await
+            .map_err(|e| Status::unavailable(e.to_string()))?
+        {
+            let collector_id = event.collector_id.clone();
+
+            // Unauthenticated (development-compat) sessions cannot
+            // establish verified subscription evidence.
+            let grant = match &principal {
+                Some(p) => match self.authorize_ingest(Some(p), &collector_id) {
+                    Ok(Some(g)) => {
+                        self.audit_ingest_grant(p, &g, &mut audited);
+                        Some(g)
+                    }
+                    Ok(None) => None,
+                    Err(status) if is_permanent_ingest_rejection(&status) => {
+                        rejected += 1;
+                        continue;
+                    }
+                    Err(status) => return Err(status),
+                },
+                None => {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "unauthenticated"
+                    )
+                    .increment(1);
+                    continue;
+                }
+            };
+            let Some(grant) = grant else {
+                rejected += 1;
+                continue;
+            };
+
+            match check_protocol_compat(event.protocol_version, PROTOCOL_VERSION_CURRENT) {
+                VersionCompat::Compatible | VersionCompat::MinorSkew { .. } => {}
+                VersionCompat::MajorSkew { .. } => {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "protocol_skew"
+                    )
+                    .increment(1);
+                    continue;
+                }
+            }
+
+            // Device must be currently assigned to THIS collector —
+            // lifecycle evidence can never establish authority for an
+            // unrelated device.
+            let assigned_target = self
+                .registry
+                .find_by_canonical_address(&event.device_address)
+                .map_err(|e| {
+                    tracing::error!(%e, "lifecycle authorization registry lookup failed");
+                    Status::internal("device registry error")
+                })?;
+            let device_assigned = assigned_target.as_ref().is_some_and(|t| {
+                t.enabled && t.collector_id.as_deref() == Some(grant.collector_id())
+            });
+            if !device_assigned {
+                rejected += 1;
+                metrics::counter!(
+                    "bonsai_subscription_lifecycle_rejected_total",
+                    "reason" => "unauthorized_device"
+                )
+                .increment(1);
+                tracing::warn!(
+                    collector_id = %grant.collector_id(),
+                    device = %event.device_address,
+                    "lifecycle event denied: device not assigned to collector"
+                );
+                continue;
+            }
+
+            // Applicable assignment authority: current epoch and a
+            // generation inside this device's assigned-authority window.
+            // Marks are keyed by the assigned device address verbatim —
+            // the same string the collector stamps on lifecycle events.
+            // The session gate is held across validation AND registry
+            // mutation so an assignment withdrawal cannot interleave
+            // between the two (M5.2B review B2).
+            let _authority_gate = self.collector_manager.as_ref().map(|m| m.session_gate());
+            // The authority-instance ordinal is core-issued and injected
+            // here — never trusted from the wire. It orders executions
+            // across collectors/reassignments inside one epoch.
+            let authority_instance = self.collector_manager.as_ref().and_then(|m| {
+                m.session_authority_instance(
+                    grant.collector_id(),
+                    &event.device_address,
+                    event.authority_epoch,
+                    event.assignment_generation,
+                )
+            });
+            // The collector session generation is collector-echoed but
+            // must equal the registration core actually issued: a
+            // larger value is forged, and an OLDER value belongs to a
+            // superseded registration whose in-flight events must not
+            // establish authority before the new registration's first
+            // execution arrives (M5.2B review B3).
+            let session_gen_stale = self.collector_manager.as_ref().is_some_and(|m| {
+                event.collector_session_generation
+                    != m.latest_session_generation(grant.collector_id())
+            });
+            // The collector registration must still be ACTIVE and be the
+            // registration the event claims: `latest_session_generation`
+            // is the issued high-water mark and stays recorded after
+            // unregister, so it cannot fence the deactivation-to-cleanup
+            // gap. The session gate held across this check serializes it
+            // against register/unregister (M5.2B review B3 residual).
+            let registration_inactive = self.collector_manager.as_ref().is_some_and(|m| {
+                m.active_session_generation(grant.collector_id())
+                    != Some(event.collector_session_generation)
+            });
+            if authority_instance.is_none() || session_gen_stale || registration_inactive {
+                rejected += 1;
+                metrics::counter!(
+                    "bonsai_subscription_lifecycle_rejected_total",
+                    "reason" => "stale_authority"
+                )
+                .increment(1);
+                tracing::warn!(
+                    collector_id = %grant.collector_id(),
+                    device = %event.device_address,
+                    epoch = event.authority_epoch,
+                    generation = event.assignment_generation,
+                    "lifecycle event denied: assignment authority not current"
+                );
+                continue;
+            }
+
+            // B3: a manifest-carrying event must prove its plan_id is
+            // the deterministic identity of the normalized submitted
+            // manifest under the declared acquisition intent. A mismatch
+            // means the claimed plan does not describe what was actually
+            // submitted — reject fail-closed rather than register
+            // coverage expectations against a false identity.
+            let submitted_paths: Vec<crate::subscription_sessions::LifecyclePathEntry> = event
+                .submitted_paths
+                .iter()
+                .map(|p| crate::subscription_sessions::LifecyclePathEntry {
+                    path: p.path.clone(),
+                    origin: p.origin.clone(),
+                    mode: p.mode.clone(),
+                    sample_interval_ns: p.sample_interval_ns,
+                })
+                .collect();
+            // Live execution states (submitted/synchronizing/synchronized)
+            // must carry the actual submitted manifest: a missing or
+            // malformed manifest can never establish an authoritative
+            // submitted execution (M5.2B review D). Plan-level and
+            // terminal outcomes legitimately carry no manifest.
+            let live_manifest_state = matches!(
+                event.state.as_str(),
+                "submitted" | "synchronizing" | "synchronized"
+            );
+            let mut manifest_acquisition: Option<crate::config::AcquisitionMode> = None;
+            if live_manifest_state {
+                let Some(acquisition) = crate::config::AcquisitionMode::parse(&event.acquisition)
+                else {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "bad_manifest"
+                    )
+                    .increment(1);
+                    continue;
+                };
+                // Acquisition intent must agree with the authoritative
+                // assignment, and a disabled assignment can never carry
+                // a live execution manifest.
+                let assigned_acquisition = assigned_target
+                    .as_ref()
+                    .map(|t| t.acquisition)
+                    .unwrap_or(crate::config::AcquisitionMode::Disabled);
+                if acquisition != assigned_acquisition
+                    || acquisition == crate::config::AcquisitionMode::Disabled
+                {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "acquisition_mismatch"
+                    )
+                    .increment(1);
+                    tracing::warn!(
+                        collector_id = %grant.collector_id(),
+                        device = %event.device_address,
+                        declared = %event.acquisition,
+                        assigned = %assigned_acquisition.as_str(),
+                        "lifecycle event denied: acquisition intent disagrees with assignment"
+                    );
+                    continue;
+                }
+                if submitted_paths.is_empty() {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "missing_manifest"
+                    )
+                    .increment(1);
+                    continue;
+                }
+                manifest_acquisition = Some(acquisition);
+            }
+            if !submitted_paths.is_empty() {
+                // Recompute plan_id over the normalized manifest under
+                // the declared acquisition intent: manifest integrity —
+                // the claimed plan_id must be the deterministic identity
+                // of exactly what was submitted.
+                let acquisition = manifest_acquisition
+                    .or_else(|| crate::config::AcquisitionMode::parse(&event.acquisition));
+                let Some(acquisition) = acquisition else {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "bad_manifest"
+                    )
+                    .increment(1);
+                    continue;
+                };
+                let entries: Vec<(String, String, String, u64)> = submitted_paths
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.origin.clone(),
+                            e.path.clone(),
+                            e.mode.clone(),
+                            e.sample_interval_ns,
+                        )
+                    })
+                    .collect();
+                let expected_plan = crate::subscriber::acquisition_plan_id(acquisition, &entries);
+                if expected_plan != event.plan_id {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "plan_manifest_mismatch"
+                    )
+                    .increment(1);
+                    tracing::warn!(
+                        collector_id = %grant.collector_id(),
+                        device = %event.device_address,
+                        plan_id = %event.plan_id,
+                        expected_plan_id = %expected_plan,
+                        "lifecycle event denied: plan_id does not match submitted manifest"
+                    );
+                    continue;
+                }
+                // Explicit acquisition must not broaden the authorized
+                // selection: every submitted (origin, path, mode,
+                // interval) must come from the assignment's resolved
+                // explicit set. Automatic keeps its documented
+                // capability-derived contract — the manifest itself is
+                // the effective plan.
+                if acquisition == crate::config::AcquisitionMode::Explicit
+                    && let Some(target) = assigned_target.as_ref()
+                {
+                    match crate::subscriber::authorized_explicit_entries(target) {
+                        Ok(authorized) => {
+                            let broadened = entries.iter().any(|e| !authorized.contains(e));
+                            if broadened {
+                                rejected += 1;
+                                metrics::counter!(
+                                    "bonsai_subscription_lifecycle_rejected_total",
+                                    "reason" => "manifest_broadens_assignment"
+                                )
+                                .increment(1);
+                                tracing::warn!(
+                                    collector_id = %grant.collector_id(),
+                                    device = %event.device_address,
+                                    "lifecycle event denied: explicit manifest exceeds authorized selection"
+                                );
+                                continue;
+                            }
+                        }
+                        Err(error) => {
+                            rejected += 1;
+                            metrics::counter!(
+                                "bonsai_subscription_lifecycle_rejected_total",
+                                "reason" => "manifest_broadens_assignment"
+                            )
+                            .increment(1);
+                            tracing::warn!(
+                                collector_id = %grant.collector_id(),
+                                device = %event.device_address,
+                                %error,
+                                "lifecycle event denied: authorized explicit selection is invalid"
+                            );
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            let internal = crate::subscription_sessions::SessionLifecycleEvent {
+                collector_id: grant.collector_id().to_string(),
+                // Session identity keys on the same target string the
+                // subscriber stamps on telemetry (the assigned device
+                // address verbatim), not the port-stripped registry key.
+                target: event.device_address.clone(),
+                plan_id: event.plan_id,
+                session_id: event.session_id,
+                state: event.state,
+                transition_seq: event.transition_seq,
+                authority_epoch: event.authority_epoch,
+                assignment_generation: event.assignment_generation,
+                authority_instance: authority_instance.unwrap_or(0),
+                collector_session_generation: event.collector_session_generation,
+                execution_generation: event.execution_generation,
+                occurred_at_ns: event.occurred_at_ns,
+                detail: event.detail,
+                submitted_paths,
+                acquisition: event.acquisition,
+            };
+            let outcome = self.session_registry.apply(&internal, true);
+            match &outcome {
+                crate::subscription_sessions::ApplyOutcome::Applied
+                | crate::subscription_sessions::ApplyOutcome::Duplicate => {
+                    accepted += 1;
+                }
+                crate::subscription_sessions::ApplyOutcome::Stale => {
+                    // Idempotent-ish: older revision already superseded —
+                    // not an error, but not newly accepted either.
+                    accepted += 1;
+                }
+                crate::subscription_sessions::ApplyOutcome::InvalidTransition
+                | crate::subscription_sessions::ApplyOutcome::Rejected(_) => {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => "invalid_transition"
+                    )
+                    .increment(1);
+                }
+            }
+
+            // B3: the authenticated submitted manifest IS the effective
+            // plan — forward it to the coverage verifier so expectations
+            // bind to what was actually submitted (capability-derived
+            // for automatic plans), never a core-side fallback
+            // prediction. Re-sent on `synchronized` so a healed resend
+            // carrying only the latest state still registers the
+            // manifest before coverage can be authorized. The session
+            // gate is released first: registry mutation (validate +
+            // apply) is complete, and an unbounded await must never
+            // hold the authority mutex (M5.2B review D).
+            drop(_authority_gate);
+            if matches!(outcome, crate::subscription_sessions::ApplyOutcome::Applied)
+                && let Some(plan) =
+                    crate::subscription_status::SubscriptionPlan::from_applied_lifecycle(&internal)
+                && let Some(tx) = &self.subscription_plan_tx
+            {
+                // Reliable delivery: a full channel must never
+                // permanently lose the effective plan while the session
+                // becomes current — await capacity instead of dropping.
+                if tx.send(plan).await.is_err() {
+                    metrics::counter!("bonsai_subscription_plan_forward_dropped_total")
+                        .increment(1);
+                    tracing::warn!(
+                        device = %internal.target,
+                        "submitted plan manifest dropped: verifier channel closed"
+                    );
+                }
+            }
+        }
+
+        Ok(Response::new(pb::SubscriptionLifecycleResponse {
+            accepted,
+            rejected,
+            error: String::new(),
         }))
     }
 

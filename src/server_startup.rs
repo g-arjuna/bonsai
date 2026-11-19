@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::time::{Duration, Instant};
 
@@ -1007,6 +1006,12 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         required_sidecar_kinds,
     ));
 
+    // M5.2B: authoritative subscription-session registry shared by the
+    // collector manager (disconnect retirement), the gRPC lifecycle
+    // ingress, the local acquisition path and the subscription verifier.
+    let session_registry =
+        std::sync::Arc::new(bonsai::subscription_sessions::SubscriptionSessionRegistry::new());
+
     let collector_manager = if run_core {
         Some(std::sync::Arc::new(
             bonsai::assignment::CollectorManager::new(
@@ -1014,7 +1019,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 std::sync::Arc::clone(&credentials),
                 cfg.assignment.rules.clone(),
             )
-            .with_health_emitter(health_emitter_for_disk.clone()),
+            .with_health_emitter(health_emitter_for_disk.clone())
+            .with_session_registry(std::sync::Arc::clone(&session_registry)),
         ))
     } else {
         None
@@ -1146,18 +1152,27 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         });
     }
 
+    // Verifier readiness contract: local acquisition and remote telemetry
+    // ingestion must not start until the coverage verifier has registered
+    // its event-bus subscriber and finished boot-time initialization —
+    // telemetry published earlier would be lost permanently. The sender
+    // is dropped if the verifier exits, so this await can never hang.
+    let (verifier_ready_tx, verifier_ready_rx) = tokio::sync::oneshot::channel();
     let subscription_plan_tx = if let Some(ref store) = store {
         let (subscription_plan_tx, subscription_plan_rx) =
             tokio::sync::mpsc::channel::<SubscriptionPlan>(128);
         let verifier_store = store.clone();
         let verifier_bus = std::sync::Arc::clone(&bus);
         let verifier_shutdown = shutdown_rx.clone();
+        let verifier_sessions = std::sync::Arc::clone(&session_registry);
         tokio::spawn(async move {
             subscription_status::run_subscription_verifier(
                 verifier_store,
                 verifier_bus,
                 subscription_plan_rx,
+                verifier_sessions,
                 verifier_shutdown,
+                Some(verifier_ready_tx),
             )
             .await;
         });
@@ -1165,6 +1180,31 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     } else {
         None
     };
+    if store.is_some() {
+        // Failure-aware readiness: Ok(()) is signalled only after bus
+        // subscriber registration, state init AND successful boot-time
+        // status expiry. Any failure — or shutdown while waiting — is
+        // an explicit startup failure: stale historical statuses must
+        // never be served as current coverage (M5.2B review). The
+        // oneshot sender drops if the verifier exits, so this await is
+        // bounded; shutdown is selected explicitly.
+        let mut startup_shutdown = shutdown_rx.clone();
+        let readiness = tokio::select! {
+            result = verifier_ready_rx => result,
+            _ = startup_shutdown.changed() => {
+                anyhow::bail!("shutdown while awaiting subscription verifier readiness")
+            }
+        };
+        match readiness {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                anyhow::bail!("subscription verifier failed to initialize: {error}")
+            }
+            Err(_) => anyhow::bail!(
+                "subscription verifier exited before signaling readiness — coverage verification unavailable"
+            ),
+        }
+    }
 
     if runtime_mode == bonsai::config::RuntimeMode::Core
         && let Some(subscription_plan_tx) = subscription_plan_tx.clone()
@@ -1201,6 +1241,39 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         });
     }
 
+    // M5.2B: local acquisition lifecycle evidence. The subscriber emits
+    // into this channel; a dedicated task applies transitions to the
+    // authoritative registry (verified — local provenance). The channel
+    // is bounded; a full channel blocks the emitter rather than dropping
+    // lifecycle evidence.
+    let (local_lifecycle_tx, mut local_lifecycle_rx) =
+        tokio::sync::mpsc::channel::<bonsai::subscription_sessions::SessionLifecycleEvent>(1024);
+    let local_lifecycle = subscriber::LifecycleHandle {
+        tx: local_lifecycle_tx,
+        authority_epoch: 0,
+        assignment_generation: 0,
+        collector_session_generation: 0,
+    };
+    {
+        let drain_registry = std::sync::Arc::clone(&session_registry);
+        // Same manifest-registration contract as the authenticated
+        // remote lifecycle RPC: the applied event's submitted manifest
+        // is forwarded to the coverage verifier only AFTER the registry
+        // commits the transition, so the exec-head fence is
+        // deterministic (M5.2B review).
+        let drain_plan_tx = subscription_plan_tx.clone();
+        tokio::spawn(async move {
+            while let Some(event) = local_lifecycle_rx.recv().await {
+                bonsai::subscription_status::apply_local_lifecycle_event(
+                    &drain_registry,
+                    drain_plan_tx.as_ref(),
+                    event,
+                )
+                .await;
+            }
+        });
+    }
+
     let subscriber_manager = if runtime_mode == bonsai::config::RuntimeMode::All {
         info!("starting subscriber manager");
         let registry = std::sync::Arc::clone(&registry);
@@ -1211,7 +1284,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let mut shutdown = shutdown_rx.clone();
         Some(tokio::spawn(async move {
             let mut change_rx = registry.subscribe_changes();
-            let mut subscribers: SubscriberHandleMap = HashMap::new();
+            let mut subscribers: SubscriberHandleMap = SubscriberHandleMap::new();
 
             match registry.list_active() {
                 Ok(targets) => {
@@ -1226,6 +1299,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                             &bus,
                             Some(std::sync::Arc::clone(&debouncer_for_subs)),
                             subscription_plan_tx.as_ref(),
+                            Some(&local_lifecycle),
                             &mut subscribers,
                         )
                         .await
@@ -1251,13 +1325,13 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
                         match change {
                             RegistryChange::Added(target) => {
-                                if let Err(error) = spawn_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), &mut subscribers).await {
+                                if let Err(error) = spawn_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), Some(&local_lifecycle), &mut subscribers).await {
                                     warn!(%error, "failed to start subscriber for added device");
                                 }
                             }
                             RegistryChange::Updated(target) => {
                                 if target.enabled {
-                                    if let Err(error) = restart_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), &mut subscribers).await {
+                                    if let Err(error) = restart_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), Some(&local_lifecycle), &mut subscribers).await {
                                         warn!(%error, "failed to restart subscriber for updated device");
                                     }
                                 } else {
@@ -1267,6 +1341,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                                         &target,
                                         "disabled",
                                         "target disabled".to_string(),
+                                        Some(&local_lifecycle),
                                     )
                                     .await;
                                 }
@@ -1405,6 +1480,9 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         // credential→collector binding authorization. ApiRegistry already
         // opened it (same DB the HTTP identity admin API writes to).
         let sqlite_for_api = registry_for_api.sqlite_store();
+        // M5.2B B3: remote collectors' authenticated submitted manifests
+        // are forwarded into the subscription verifier's plan stream.
+        let subscription_plan_tx_for_api = subscription_plan_tx.clone();
         // BN-021g G5: explicit runtime auth policy — "required" fails
         // closed; "development-compat" is an explicit local-dev opt-in.
         let auth_policy = cfg.runtime.auth_policy()?;
@@ -1447,7 +1525,9 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                             coordinator.clone(),
                         )
                         .with_auth_policy(auth_policy)
-                        .with_dev_open_credential_assignments(dev_open_cred_assignments),
+                        .with_dev_open_credential_assignments(dev_open_cred_assignments)
+                        .with_session_registry(std::sync::Arc::clone(&session_registry))
+                        .with_subscription_plan_tx(subscription_plan_tx_for_api),
                     )
                     .accept_compressed(CompressionEncoding::Zstd);
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
@@ -2256,9 +2336,18 @@ async fn publish_blocked_plan_tx(
     target: &TargetConfig,
     state: &str,
     detail: String,
+    lifecycle: Option<&subscriber::LifecycleHandle>,
 ) {
     let Some(tx) = tx else { return };
-    let plan = subscriber::blocked_subscription_plan(target, state, detail);
+    let plan = subscriber::blocked_subscription_plan(target, state, detail.clone());
+    // M5.2B: the same blocked outcome is published as an authoritative
+    // lifecycle transition so remote-equivalent state stays visible even
+    // when no Subscribe RPC is ever attempted.
+    if let Some(handle) = lifecycle {
+        subscriber::SessionEmitter::for_plan(handle, &target.address, &plan.plan_id)
+            .emit_plan(state, detail.clone())
+            .await;
+    }
     if let Err(error) = tx.try_send(plan) {
         tracing::warn!(address = %target.address, %error, "failed to publish blocked subscription plan");
     }
@@ -2270,6 +2359,7 @@ pub(super) async fn spawn_subscriber(
     bus: &std::sync::Arc<InProcessBus>,
     debouncer: Option<std::sync::Arc<ingest::TelemetryDebouncer>>,
     subscription_plan_tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
+    lifecycle: Option<&subscriber::LifecycleHandle>,
     subscribers: &mut SubscriberHandleMap,
 ) -> Result<()> {
     let address = target.address.clone();
@@ -2281,6 +2371,7 @@ pub(super) async fn spawn_subscriber(
             &target,
             "disabled",
             "target disabled".to_string(),
+            lifecycle,
         )
         .await;
         return Ok(());
@@ -2296,6 +2387,7 @@ pub(super) async fn spawn_subscriber(
             &target,
             "disabled",
             "inventory-only asset has no collection plan".to_string(),
+            lifecycle,
         )
         .await;
         return Ok(());
@@ -2332,6 +2424,7 @@ pub(super) async fn spawn_subscriber(
                 &target,
                 "rejected",
                 format!("{error:#}"),
+                lifecycle,
             )
             .await;
             // Fail closed: an invalid replacement must not preserve an
@@ -2346,6 +2439,8 @@ pub(super) async fn spawn_subscriber(
         &conn_security,
         username.as_deref(),
         password.as_deref(),
+        lifecycle.map_or(0, |h| h.authority_epoch),
+        lifecycle.map_or(0, |h| h.collector_session_generation),
     );
     if subscribers
         .get(&address)
@@ -2354,6 +2449,12 @@ pub(super) async fn spawn_subscriber(
         tracing::info!(address = %address, "assignment unchanged — preserving subscriber");
         return Ok(());
     }
+    // Fetch the execution counter BEFORE stopping the obsolete
+    // subscriber: it lives in the map's counter book and survives the
+    // stop, so every recreation keeps monotonic execution generations
+    // instead of restarting below the core's high-water mark
+    // (M5.2B review B1).
+    let execution_seq = subscribers.exec_seq(&address);
     if subscribers.contains_key(&address) {
         tracing::info!(address = %address, "assignment changed — stopping obsolete subscriber");
         stop_subscriber(&address, subscribers).await;
@@ -2373,6 +2474,8 @@ pub(super) async fn spawn_subscriber(
         subscription_plan_tx.cloned(),
         target.selected_paths.clone(),
         target.acquisition,
+        lifecycle.cloned(),
+        std::sync::Arc::clone(&execution_seq),
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
@@ -2382,6 +2485,7 @@ pub(super) async fn spawn_subscriber(
             shutdown_tx,
             handle,
             assignment_fingerprint: fingerprint,
+            execution_seq,
         },
     );
     tracing::info!(address = %address, "subscriber started");
@@ -2394,6 +2498,7 @@ pub(super) async fn restart_subscriber(
     bus: &std::sync::Arc<InProcessBus>,
     debouncer: Option<std::sync::Arc<ingest::TelemetryDebouncer>>,
     subscription_plan_tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
+    lifecycle: Option<&subscriber::LifecycleHandle>,
     subscribers: &mut SubscriberHandleMap,
 ) -> Result<()> {
     // spawn_subscriber performs effective-assignment reconciliation:
@@ -2405,6 +2510,7 @@ pub(super) async fn restart_subscriber(
         bus,
         debouncer,
         subscription_plan_tx,
+        lifecycle,
         subscribers,
     )
     .await

@@ -1404,6 +1404,12 @@ fn publish_flow(
         .unwrap_or(0);
 
     bus.publish(TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: "netflow".to_string(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: src.source_key.clone(),
         vendor: String::new(),
         hostname: String::new(),

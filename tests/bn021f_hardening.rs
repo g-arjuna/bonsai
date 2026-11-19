@@ -11,10 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bonsai::routing_service::{
-    build_bmp_mtls_acceptor, build_speakers_json, run_bmp_listener, BmpIdentityMode, BmpMtlsConfig,
-    DeploymentSecurityOverrides, RoutingServiceConfig, RoutingServiceState,
+    BmpIdentityMode, BmpMtlsConfig, DeploymentSecurityOverrides, RoutingServiceConfig,
+    RoutingServiceState, build_bmp_mtls_acceptor, build_speakers_json, run_bmp_listener,
 };
-use bonsai::sqlite_store::{SqliteStore, CONFIG_DB_FILE_NAME};
+use bonsai::sqlite_store::{CONFIG_DB_FILE_NAME, SqliteStore};
 use bonsai::telemetry_identity::{
     BindingProvenance, BindingStatus, CanonicalDevice, TrustedBinding,
 };

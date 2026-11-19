@@ -513,6 +513,12 @@ fn syslog_event_update(
         }
     }
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: source_key.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: "edge-rtr".to_string(),
@@ -565,6 +571,12 @@ fn syslog_fact_update(
         }
     }
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: source_key.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: "edge-rtr".to_string(),

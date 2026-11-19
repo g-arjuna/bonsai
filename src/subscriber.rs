@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{collections::HashMap, time::Duration};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -13,6 +14,12 @@ const BACKOFF_INITIAL: Duration = Duration::from_secs(5);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 const BACKOFF_RESET_THRESHOLD: Duration = Duration::from_secs(60);
 const SAMPLE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Bounded deadline for the initial synchronization sequence after a
+/// Subscribe RPC is established. One sync_response=true per
+/// SubscriptionList (i.e. per Subscribe RPC stream) completes it; a
+/// device that never syncs fails the session rather than holding
+/// submitted-but-unverified authority forever.
+const INITIAL_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
 
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
 use crate::proto::gnmi::{
@@ -24,8 +31,190 @@ use crate::config::TargetConfig;
 use crate::config::{AcquisitionMode, SelectedSubscriptionPath};
 use crate::event_bus::InProcessBus;
 use crate::ingest::TelemetryDebouncer;
+use crate::subscription_sessions::{LifecyclePathEntry, SessionLifecycleEvent};
 use crate::subscription_status::{SubscriptionPathExpectation, SubscriptionPlan};
 use crate::telemetry::TelemetryUpdate;
+
+/// Handle a subscriber uses to report authoritative device-facing
+/// session lifecycle transitions. Remote collectors forward these over
+/// the `SubscriptionLifecycle` RPC; local acquisition applies them
+/// in-process. `authority_epoch`/`assignment_generation` carry the
+/// assignment authority the collector applied (0/0 for trusted local
+/// acquisition, which bypasses remote authority checks).
+#[derive(Clone)]
+pub struct LifecycleHandle {
+    pub tx: mpsc::Sender<SessionLifecycleEvent>,
+    pub authority_epoch: u64,
+    pub assignment_generation: u64,
+    /// Core-issued collector session generation from the
+    /// AssignmentUpdate that established this handle — echoed on every
+    /// lifecycle event so the core can order executions across
+    /// collector restarts (0 for trusted local acquisition).
+    pub collector_session_generation: u64,
+}
+
+/// Per-session lifecycle emitter: monotonic transition revisions,
+/// stamped with the applicable assignment authority.
+pub struct SessionEmitter {
+    tx: Option<mpsc::Sender<SessionLifecycleEvent>>,
+    collector_id: String,
+    target: String,
+    plan_id: String,
+    session_id: String,
+    authority_epoch: u64,
+    assignment_generation: u64,
+    collector_session_generation: u64,
+    /// Per-(collector session, target) execution counter for the
+    /// session this emitter reports (0 for plan-level emitters).
+    execution_generation: u64,
+    seq: u64,
+    /// Actual submitted Subscribe manifest + acquisition intent,
+    /// attached to `submitted`/`synchronized` transitions so the core
+    /// can bind coverage expectations to the real effective plan
+    /// (M5.2B review B3). Empty for plan-level emitters.
+    submitted_paths: Vec<LifecyclePathEntry>,
+    acquisition: String,
+    /// Set once this emitter publishes a terminal state, so teardown
+    /// paths can skip a redundant terminal transition.
+    terminated: Option<Arc<AtomicBool>>,
+}
+
+fn lifecycle_state_terminal(state: &str) -> bool {
+    matches!(state, "failed" | "disconnected" | "disabled" | "superseded")
+}
+
+impl SessionEmitter {
+    /// Plan-level emitter for assignment outcomes decided outside a
+    /// subscriber (rejected/failed/disabled assignments).
+    pub fn for_plan(handle: &LifecycleHandle, target: &str, plan_id: &str) -> Self {
+        Self::new(Some(handle), target, plan_id, "", None)
+    }
+
+    fn new(
+        lifecycle: Option<&LifecycleHandle>,
+        target: &str,
+        plan_id: &str,
+        session_id: &str,
+        terminated: Option<Arc<AtomicBool>>,
+    ) -> Self {
+        Self {
+            tx: lifecycle.map(|h| h.tx.clone()),
+            collector_id: String::new(),
+            target: target.to_string(),
+            plan_id: plan_id.to_string(),
+            session_id: session_id.to_string(),
+            authority_epoch: lifecycle.map_or(0, |h| h.authority_epoch),
+            assignment_generation: lifecycle.map_or(0, |h| h.assignment_generation),
+            collector_session_generation: lifecycle.map_or(0, |h| h.collector_session_generation),
+            execution_generation: 0,
+            seq: 0,
+            submitted_paths: Vec::new(),
+            acquisition: String::new(),
+            terminated,
+        }
+    }
+
+    /// Attach the actual submitted manifest + acquisition intent.
+    /// Only `submitted`-family transitions carry it; terminal and
+    /// plan-level outcomes leave it empty.
+    pub fn with_manifest(
+        mut self,
+        acquisition: AcquisitionMode,
+        paths: Vec<LifecyclePathEntry>,
+    ) -> Self {
+        self.acquisition = acquisition.as_str().to_string();
+        self.submitted_paths = paths;
+        self
+    }
+
+    /// Bind this emitter to its execution generation — the monotonic
+    /// per-(collector session, target) counter value minted with the
+    /// session_id. Required on every session-scoped emitter.
+    pub fn with_execution_generation(mut self, execution_generation: u64) -> Self {
+        self.execution_generation = execution_generation;
+        self
+    }
+
+    fn event(&self, state: &str, seq: u64, detail: &str) -> SessionLifecycleEvent {
+        SessionLifecycleEvent {
+            collector_id: self.collector_id.clone(),
+            target: self.target.clone(),
+            plan_id: self.plan_id.clone(),
+            session_id: self.session_id.clone(),
+            state: state.to_string(),
+            transition_seq: seq,
+            authority_epoch: self.authority_epoch,
+            assignment_generation: self.assignment_generation,
+            authority_instance: 0,
+            collector_session_generation: self.collector_session_generation,
+            execution_generation: self.execution_generation,
+            occurred_at_ns: now_unix_ns(),
+            detail: detail.to_string(),
+            submitted_paths: self.submitted_paths.clone(),
+            acquisition: self.acquisition.clone(),
+        }
+    }
+
+    /// Ordered session transition. Blocks on a full lifecycle channel —
+    /// lifecycle evidence is bounded but never silently dropped.
+    async fn emit(&mut self, state: &str, detail: impl Into<String>) {
+        let Some(tx) = &self.tx else { return };
+        self.seq += 1;
+        let ev = self.event(state, self.seq, &detail.into());
+        if let Err(error) = tx.send(ev).await {
+            warn!(target = %self.target, %error, "lifecycle channel closed — transition lost");
+        } else if lifecycle_state_terminal(state) {
+            self.mark_terminated();
+        }
+    }
+
+    fn mark_terminated(&self) {
+        if let Some(flag) = &self.terminated {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Best-effort transition for shutdown/cancellation paths where
+    /// blocking could hang teardown.
+    fn emit_nowait(&mut self, state: &str, detail: impl Into<String>) {
+        let Some(tx) = &self.tx else { return };
+        self.seq += 1;
+        let ev = self.event(state, self.seq, &detail.into());
+        if tx.try_send(ev).is_err() {
+            warn!(target = %self.target, "lifecycle channel full/closed — terminal transition dropped");
+            metrics::counter!("bonsai_subscription_lifecycle_dropped_total").increment(1);
+        } else if lifecycle_state_terminal(state) {
+            self.mark_terminated();
+        }
+    }
+
+    /// Plan-level outcome (disabled/rejected/failed plan, no session).
+    /// Unordered (seq=0): latest-wins at the registry, never resurrects
+    /// a terminated session.
+    pub async fn emit_plan(&self, state: &str, detail: impl Into<String>) {
+        let Some(tx) = &self.tx else { return };
+        let ev = self.event(state, 0, &detail.into());
+        if let Err(error) = tx.send(ev).await {
+            warn!(target = %self.target, %error, "lifecycle channel closed — plan outcome lost");
+        }
+    }
+}
+
+fn now_unix_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
+}
+
+/// Live device-facing session tracked for teardown-time termination.
+#[derive(Clone)]
+struct ActiveSession {
+    session_id: String,
+    plan_id: String,
+    execution_generation: u64,
+    terminated: Arc<AtomicBool>,
+}
 
 pub struct GnmiSubscriber {
     target: String,
@@ -45,6 +234,16 @@ pub struct GnmiSubscriber {
     subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     selected_paths: Vec<SelectedSubscriptionPath>,
     acquisition: AcquisitionMode,
+    lifecycle: Option<LifecycleHandle>,
+    /// Per-(collector session, target) execution counter — monotonic
+    /// across device-facing session mints so every execution has a
+    /// distinct deterministic rank. Shared across subscriber
+    /// respawns within the same collector session so a restarted
+    /// subscriber never reuses an execution generation.
+    execution_seq: Arc<AtomicU64>,
+    /// Most recently minted device-facing session, used to retire its
+    /// authority on shutdown paths that bypass the stream loop.
+    active_session: Arc<std::sync::Mutex<Option<ActiveSession>>>,
 }
 
 impl GnmiSubscriber {
@@ -63,6 +262,8 @@ impl GnmiSubscriber {
         subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
         selected_paths: Vec<SelectedSubscriptionPath>,
         acquisition: AcquisitionMode,
+        lifecycle: Option<LifecycleHandle>,
+        execution_seq: Arc<AtomicU64>,
     ) -> Self {
         Self {
             target: target.into(),
@@ -78,6 +279,9 @@ impl GnmiSubscriber {
             subscription_plan_tx,
             selected_paths,
             acquisition,
+            lifecycle,
+            execution_seq,
+            active_session: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -89,24 +293,77 @@ impl GnmiSubscriber {
         }
     }
 
+    /// Publish a plan-level lifecycle outcome (disabled/rejected/failed)
+    /// for plans that own no device-facing session.
+    async fn emit_plan_outcome(&self, state: &str, plan_id: &str, detail: &str) {
+        if let Some(h) = &self.lifecycle {
+            SessionEmitter::new(Some(h), &self.target, plan_id, "", None)
+                .emit_plan(state, detail)
+                .await;
+        }
+    }
+
     /// Publish a non-submitted plan (rejected/blocked/failed) so the
     /// verifier supersedes any previously tracked plan for this target.
-    /// The plan_id is suffixed with a detail hash so a *changed* failure
-    /// reason is not deduplicated away by the verifier's plan-id check.
+    /// The plan_id is the STABLE desired/effective plan identity —
+    /// failure state and detail live in the plan's state/detail fields
+    /// and the lifecycle stream, never encoded into plan_id (M5.2B).
     async fn publish_blocked_plan(&self, state: &str, detail: String) {
-        let base = acquisition_plan_id(self.acquisition, &[]);
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        use std::hash::{Hash, Hasher};
-        detail.hash(&mut hasher);
+        let plan_id = acquisition_plan_id(self.acquisition, &[]);
         self.publish_plan(SubscriptionPlan {
             target: self.target.clone(),
             paths: Vec::new(),
-            plan_id: format!("{}#{}:{:016x}", base, state, hasher.finish()),
+            plan_id: plan_id.clone(),
+            session_id: String::new(),
             state: state.to_string(),
             acquisition: self.acquisition.as_str().to_string(),
-            detail,
+            detail: detail.clone(),
         })
         .await;
+        self.emit_plan_outcome(state, &plan_id, &detail).await;
+    }
+
+    /// Terminal transition for teardown paths that bypass the stream
+    /// loop (shutdown while connecting or backing off). Uses
+    /// `transition_seq = u64::MAX` so it always supersedes in-flight
+    /// ordered transitions for THIS session key; reconnects mint a
+    /// fresh session_id and are unaffected. Skipped when the stream
+    /// loop already published a terminal state.
+    async fn emit_active_session_terminal(&self, state: &str, detail: &str) {
+        let Some(handle) = &self.lifecycle else {
+            return;
+        };
+        let active = self.active_session.lock().unwrap().clone();
+        let Some(active) = active else { return };
+        if active.terminated.load(Ordering::SeqCst) {
+            return;
+        }
+        let ev = SessionLifecycleEvent {
+            collector_id: String::new(),
+            target: self.target.clone(),
+            plan_id: active.plan_id,
+            session_id: active.session_id,
+            state: state.to_string(),
+            transition_seq: u64::MAX,
+            authority_epoch: handle.authority_epoch,
+            assignment_generation: handle.assignment_generation,
+            authority_instance: 0,
+            collector_session_generation: handle.collector_session_generation,
+            execution_generation: active.execution_generation,
+            occurred_at_ns: now_unix_ns(),
+            detail: detail.to_string(),
+            submitted_paths: Vec::new(),
+            acquisition: String::new(),
+        };
+        match tokio::time::timeout(Duration::from_secs(2), handle.tx.send(ev)).await {
+            Ok(Ok(())) => {
+                active.terminated.store(true, Ordering::SeqCst);
+            }
+            _ => {
+                warn!(target = %self.target, "lifecycle channel saturated/closed — shutdown terminal transition dropped");
+                metrics::counter!("bonsai_subscription_lifecycle_dropped_total").increment(1);
+            }
+        }
     }
 
     pub async fn run_forever(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
@@ -117,6 +374,8 @@ impl GnmiSubscriber {
             tokio::select! {
                 _ = shutdown.changed() => {
                     info!(target = %self.target, "shutdown signal received");
+                    self.emit_active_session_terminal("disconnected", "shutdown")
+                        .await;
                     return;
                 }
                 result = self.subscribe_telemetry(&mut stream_shutdown) => {
@@ -134,6 +393,8 @@ impl GnmiSubscriber {
             tokio::select! {
                 _ = shutdown.changed() => {
                     info!(target = %self.target, "shutdown signal received");
+                    self.emit_active_session_terminal("disconnected", "shutdown")
+                        .await;
                     return;
                 }
                 _ = tokio::time::sleep(backoff) => {}
@@ -159,12 +420,15 @@ impl GnmiSubscriber {
                     self.publish_plan(SubscriptionPlan {
                         target: self.target.clone(),
                         paths: Vec::new(),
-                        plan_id,
+                        plan_id: plan_id.clone(),
+                        session_id: String::new(),
                         state: "disabled".to_string(),
                         acquisition: self.acquisition.as_str().to_string(),
                         detail: "acquisition disabled".to_string(),
                     })
                     .await;
+                    self.emit_plan_outcome("disabled", &plan_id, "acquisition disabled")
+                        .await;
                     idle_until_shutdown(shutdown).await;
                     return Ok(());
                 }
@@ -179,12 +443,14 @@ impl GnmiSubscriber {
                     self.publish_plan(SubscriptionPlan {
                         target: self.target.clone(),
                         paths: Vec::new(),
-                        plan_id,
+                        plan_id: plan_id.clone(),
+                        session_id: String::new(),
                         state: "rejected".to_string(),
                         acquisition: self.acquisition.as_str().to_string(),
                         detail: detail.clone(),
                     })
                     .await;
+                    self.emit_plan_outcome("failed", &plan_id, &detail).await;
                     idle_until_shutdown(shutdown).await;
                     return Ok(());
                 }
@@ -274,6 +540,14 @@ impl GnmiSubscriber {
         });
 
         let plan = build_acquisition_plan(self.acquisition, &self.selected_paths, &caps);
+        // M5.2B: every device-facing Subscribe session gets a fresh
+        // session identity AND a fresh execution generation. The pair
+        // (session_id, execution_generation) is the deterministic
+        // execution identity: reconnects mint both anew and previous
+        // executions are fenced by the core's per-target high-water
+        // mark — never by probabilistic structures.
+        let execution_generation = self.execution_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let session_id = format!("{}:{}", target, uuid::Uuid::new_v4());
         let (subscriptions, plan_paths, submitted_plan_id) = match plan {
             AcquisitionPlan::Disabled { plan_id } => {
                 info!(
@@ -285,12 +559,15 @@ impl GnmiSubscriber {
                 self.publish_plan(SubscriptionPlan {
                     target: target.clone(),
                     paths: Vec::new(),
-                    plan_id,
+                    plan_id: plan_id.clone(),
+                    session_id: String::new(),
                     state: "disabled".to_string(),
                     acquisition: self.acquisition.as_str().to_string(),
                     detail: "acquisition disabled".to_string(),
                 })
                 .await;
+                self.emit_plan_outcome("disabled", &plan_id, "acquisition disabled")
+                    .await;
                 idle_until_shutdown(shutdown).await;
                 return Ok(());
             }
@@ -305,12 +582,14 @@ impl GnmiSubscriber {
                 self.publish_plan(SubscriptionPlan {
                     target: target.clone(),
                     paths: Vec::new(),
-                    plan_id,
+                    plan_id: plan_id.clone(),
+                    session_id: String::new(),
                     state: "rejected".to_string(),
                     acquisition: self.acquisition.as_str().to_string(),
                     detail: detail.clone(),
                 })
                 .await;
+                self.emit_plan_outcome("failed", &plan_id, &detail).await;
                 idle_until_shutdown(shutdown).await;
                 return Ok(());
             }
@@ -360,22 +639,78 @@ impl GnmiSubscriber {
             .context("Subscribe RPC failed")?
             .into_inner();
 
-        self.publish_plan(SubscriptionPlan {
-            target: target.clone(),
-            paths: plan_paths,
+        // The session-bound submitted manifest is NOT published on the
+        // plan channel here: it reaches the coverage verifier only
+        // through the lifecycle drain AFTER the registry commits the
+        // `submitted` transition — the same post-apply contract as the
+        // authenticated remote lifecycle RPC (M5.2B review). Publishing
+        // it earlier raced the registry apply and could be fenced as
+        // stale while an older execution was still the open head.
+
+        // Authoritative lifecycle: a successful Subscribe RPC establishes
+        // SUBMISSION only — never synchronization. Initial sync
+        // completes when the SubscriptionList's sync_response arrives
+        // (bounded by INITIAL_SYNC_TIMEOUT).
+        // Track the live session so teardown paths that bypass the
+        // stream loop (shutdown during connect/backoff) can still retire
+        // its authority with an explicit terminal transition.
+        let terminated = Arc::new(AtomicBool::new(false));
+        *self.active_session.lock().unwrap() = Some(ActiveSession {
+            session_id: session_id.clone(),
             plan_id: submitted_plan_id.clone(),
-            state: "submitted".to_string(),
-            acquisition: self.acquisition.as_str().to_string(),
-            detail: String::new(),
-        })
-        .await;
+            execution_generation,
+            terminated: Arc::clone(&terminated),
+        });
+        // The submitted manifest is the ACTUAL SubscriptionList path
+        // set (capability-derived for automatic plans, the validated
+        // selection for explicit plans) — carried on the authenticated
+        // lifecycle stream so the core binds coverage expectations to
+        // what was really submitted, never a fallback prediction (B3).
+        let manifest = plan_paths
+            .iter()
+            .map(|e| LifecyclePathEntry {
+                path: e.path.clone(),
+                origin: e.origin.clone(),
+                mode: e.mode.clone(),
+                sample_interval_ns: e.sample_interval_ns,
+            })
+            .collect();
+        let mut emitter = SessionEmitter::new(
+            self.lifecycle.as_ref(),
+            &target,
+            &submitted_plan_id,
+            &session_id,
+            Some(terminated),
+        )
+        .with_manifest(self.acquisition, manifest)
+        .with_execution_generation(execution_generation);
+        emitter.emit("submitted", "").await;
+        emitter.emit("synchronizing", "").await;
+        // gNMI sync boundary is the SubscriptionList/RPC, NOT each
+        // Subscription entry (spec 3.5.1.4/3.5.2.3): one Subscribe RPC
+        // carries one SubscriptionList, and the target emits exactly
+        // one SyncResponse(true) after the initial updates for ALL
+        // paths in that list. Requiring one sync per Subscription
+        // would deadlock multi-path subscriptions into
+        // INITIAL_SYNC_TIMEOUT.
+        let mut pending_sync = 1_u32;
+        let sync_sleep =
+            tokio::time::sleep_until(tokio::time::Instant::now() + INITIAL_SYNC_TIMEOUT);
+        tokio::pin!(sync_sleep);
 
         loop {
             let next_message = if enforce_idle_timeout {
                 tokio::select! {
                     _ = shutdown.changed() => {
                         info!(target = %target, "shutdown signal received during telemetry stream");
+                        emitter.emit_nowait("disconnected", "shutdown");
                         return Ok(());
+                    }
+                    _ = &mut sync_sleep, if pending_sync > 0 => {
+                        warn!(target = %target, timeout_secs = INITIAL_SYNC_TIMEOUT.as_secs(),
+                            "initial synchronization deadline expired");
+                        emitter.emit("failed", "initial_sync_timeout").await;
+                        break;
                     }
                     _ = tokio::time::sleep(SAMPLE_STREAM_IDLE_TIMEOUT) => {
                         warn!(
@@ -383,6 +718,7 @@ impl GnmiSubscriber {
                             idle_secs = SAMPLE_STREAM_IDLE_TIMEOUT.as_secs(),
                             "sample-based telemetry stream went idle; forcing reconnect"
                         );
+                        emitter.emit("failed", "sample_stream_idle_timeout").await;
                         break;
                     }
                     message = stream.message() => message,
@@ -391,7 +727,14 @@ impl GnmiSubscriber {
                 tokio::select! {
                     _ = shutdown.changed() => {
                         info!(target = %target, "shutdown signal received during telemetry stream");
+                        emitter.emit_nowait("disconnected", "shutdown");
                         return Ok(());
+                    }
+                    _ = &mut sync_sleep, if pending_sync > 0 => {
+                        warn!(target = %target, timeout_secs = INITIAL_SYNC_TIMEOUT.as_secs(),
+                            "initial synchronization deadline expired");
+                        emitter.emit("failed", "initial_sync_timeout").await;
+                        break;
                     }
                     message = stream.message() => message,
                 }
@@ -414,10 +757,11 @@ impl GnmiSubscriber {
                                 // JSON blob at the container path. Group scalars within one
                                 // notification by their parent path so classifiers see the same
                                 // blob-at-container shape regardless of vendor.
-                                let mut blobs: Vec<(String, serde_json::Value)> = Vec::new();
+                                let mut blobs: Vec<(String, serde_json::Value, Vec<Path>)> =
+                                    Vec::new();
                                 let mut leaf_groups: HashMap<
                                     String,
-                                    serde_json::Map<String, serde_json::Value>,
+                                    (serde_json::Map<String, serde_json::Value>, Vec<Path>),
                                 > = HashMap::new();
 
                                 for update in &notif.update {
@@ -431,6 +775,15 @@ impl GnmiSubscriber {
                                         (false, true) => prefix.clone(),
                                         (false, false) => format!("{prefix}/{update_path}"),
                                     };
+                                    // Structured evidence path: notification
+                                    // prefix elements followed by the update's
+                                    // own elements (gNMI relative-path rule).
+                                    let gnmi_paths = resolve_notification_path(
+                                        notif.prefix.as_ref(),
+                                        update.path.as_ref(),
+                                    )
+                                    .into_iter()
+                                    .collect::<Vec<_>>();
                                     let val = update
                                         .val
                                         .as_ref()
@@ -443,23 +796,30 @@ impl GnmiSubscriber {
                                             | serde_json::Value::Bool(_)
                                     );
                                     if is_scalar && let Some(slash) = path.rfind('/') {
-                                        leaf_groups
+                                        let (group, group_paths) = leaf_groups
                                             .entry(path[..slash].to_string())
-                                            .or_default()
-                                            .insert(path[slash + 1..].to_string(), val);
+                                            .or_default();
+                                        group.insert(path[slash + 1..].to_string(), val);
+                                        group_paths.extend(gnmi_paths);
                                         continue;
                                     }
-                                    blobs.push((path, val));
+                                    blobs.push((path, val, gnmi_paths));
                                 }
 
                                 let all_updates = blobs.into_iter().chain(
-                                    leaf_groups
-                                        .into_iter()
-                                        .map(|(p, obj)| (p, serde_json::Value::Object(obj))),
+                                    leaf_groups.into_iter().map(|(p, (obj, paths))| {
+                                        (p, serde_json::Value::Object(obj), paths)
+                                    }),
                                 );
-                                for (path, val) in all_updates {
+                                for (path, val, gnmi_paths) in all_updates {
                                     debug!(target = %target, path = %path, "update");
                                     let msg = TelemetryUpdate {
+                                        plan_id: submitted_plan_id.clone(),
+                                        session_id: session_id.clone(),
+                                        source_protocol: "gnmi".to_string(),
+                                        gnmi_path: gnmi_paths,
+                                        is_delete: false,
+                                        collector_id: String::new(),
                                         target: target.clone(),
                                         vendor: caps.vendor_label.clone(),
                                         hostname: self.hostname.clone().unwrap_or_default(),
@@ -476,22 +836,89 @@ impl GnmiSubscriber {
                                     }
                                     self.bus.publish(msg);
                                 }
+
+                                // gNMI Notification.delete: tombstone
+                                // evidence for paths removed from the
+                                // device's data tree (M5.2B B3). Delete
+                                // paths resolve against the notification
+                                // prefix exactly like update paths. Each
+                                // delete becomes its own provenance-
+                                // carrying update so the verifier can
+                                // invalidate coverage for the CURRENT
+                                // session only.
+                                for delete in &notif.delete {
+                                    let delete_path = path_to_string(delete);
+                                    let path = match (prefix.is_empty(), delete_path.is_empty()) {
+                                        (true, _) => delete_path,
+                                        (false, true) => prefix.clone(),
+                                        (false, false) => format!("{prefix}/{delete_path}"),
+                                    };
+                                    if path.is_empty() {
+                                        continue;
+                                    }
+                                    let gnmi_paths = resolve_notification_path(
+                                        notif.prefix.as_ref(),
+                                        Some(delete),
+                                    )
+                                    .into_iter()
+                                    .collect::<Vec<_>>();
+                                    let msg = TelemetryUpdate {
+                                        plan_id: submitted_plan_id.clone(),
+                                        session_id: session_id.clone(),
+                                        source_protocol: "gnmi".to_string(),
+                                        gnmi_path: gnmi_paths,
+                                        is_delete: true,
+                                        collector_id: String::new(),
+                                        target: target.clone(),
+                                        vendor: caps.vendor_label.clone(),
+                                        hostname: self.hostname.clone().unwrap_or_default(),
+                                        role: self.role.clone().unwrap_or_default(),
+                                        site: self.site.clone().unwrap_or_default(),
+                                        timestamp_ns: notif.timestamp,
+                                        path,
+                                        value: serde_json::Value::Null,
+                                    };
+                                    if let Some(ref d) = self.debouncer
+                                        && d.should_drop(&msg)
+                                    {
+                                        continue;
+                                    }
+                                    self.bus.publish(msg);
+                                }
                             }
-                            Response::SyncResponse(sync) => {
-                                debug!(target = %target, sync = sync, "sync response");
+                            Response::SyncResponse(sync_response) => {
+                                debug!(target = %target, sync_response, "sync response");
+                                // sync_response=true completes the initial
+                                // synchronization sequence for that
+                                // subscription; false means more updates
+                                // follow — it is NOT completion and NOT an
+                                // error. Per-leaf coverage is proven by
+                                // observations, never by sync alone.
+                                if sync_response && pending_sync > 0 {
+                                    pending_sync -= 1;
+                                    if pending_sync == 0 {
+                                        emitter.emit("synchronized", "").await;
+                                    }
+                                }
                             }
                             Response::Error(e) => {
                                 warn!(target = %target, code = e.code, message = %e.message, "gNMI error");
+                                emitter
+                                    .emit("failed", format!("gnmi_error:{}:{}", e.code, e.message))
+                                    .await;
+                                break;
                             }
                         }
                     }
                 }
                 Ok(None) => {
                     warn!(target = %target, "stream ended");
+                    emitter.emit("disconnected", "stream_ended").await;
                     break;
                 }
                 Err(e) => {
                     warn!(target = %target, error = %e, "stream error");
+                    emitter.emit("failed", format!("{e:#}")).await;
                     break;
                 }
             }
@@ -542,9 +969,86 @@ pub struct SubscriberEntry {
     pub shutdown_tx: watch::Sender<bool>,
     pub handle: JoinHandle<()>,
     pub assignment_fingerprint: String,
+    /// Shared execution counter for this target. The authoritative
+    /// copy lives in `SubscriberHandleMap::exec_seqs` and OUTLIVES the
+    /// entry: stopping/removing a subscriber must never reset it, or a
+    /// recreated subscriber's executions would rank below the core's
+    /// per-target high-water mark and be fenced as stale forever.
+    pub execution_seq: Arc<AtomicU64>,
 }
 
-pub type SubscriberHandleMap = HashMap<String, SubscriberEntry>;
+/// Running subscribers plus the per-target execution-counter book.
+///
+/// `exec_seqs` is owned by the same scope as the subscriber map (the
+/// local subscriber manager task, or the collector manager for the
+/// life of the collector process) and is deliberately NOT pruned on
+/// subscriber stop/remove/assignment withdrawal: execution generations
+/// must stay monotonic for the whole authority context, and a counter
+/// is O(1) per distinct target address — the same order as the
+/// assignment/registry state that produced it.
+pub struct SubscriberHandleMap {
+    entries: HashMap<String, SubscriberEntry>,
+    exec_seqs: HashMap<String, Arc<AtomicU64>>,
+}
+
+impl SubscriberHandleMap {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            exec_seqs: HashMap::new(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn keys(&self) -> std::collections::hash_map::Keys<'_, String, SubscriberEntry> {
+        self.entries.keys()
+    }
+
+    pub fn get(&self, address: &str) -> Option<&SubscriberEntry> {
+        self.entries.get(address)
+    }
+
+    pub fn contains_key(&self, address: &str) -> bool {
+        self.entries.contains_key(address)
+    }
+
+    /// The monotonic execution counter for `address`, created on first
+    /// use and retained across every subscriber stop/recreation.
+    pub fn exec_seq(&mut self, address: &str) -> Arc<AtomicU64> {
+        Arc::clone(
+            self.exec_seqs
+                .entry(address.to_string())
+                .or_insert_with(|| Arc::new(AtomicU64::new(0))),
+        )
+    }
+
+    pub fn insert(&mut self, address: String, entry: SubscriberEntry) {
+        // The counter book is the source of truth: a stale entry can
+        // never fork the sequence — the earliest counter wins.
+        self.exec_seqs
+            .entry(address.clone())
+            .or_insert_with(|| Arc::clone(&entry.execution_seq));
+        self.entries.insert(address, entry);
+    }
+
+    /// Stop bookkeeping only — the execution counter is retained.
+    pub fn remove(&mut self, address: &str) -> Option<SubscriberEntry> {
+        self.entries.remove(address)
+    }
+}
+
+impl Default for SubscriberHandleMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub async fn stop_subscriber(address: &str, subscribers: &mut SubscriberHandleMap) {
     if let Some(entry) = subscribers.remove(address) {
@@ -582,11 +1086,19 @@ pub fn assignment_fingerprint(
     conn_security: &crate::gnmi_security::ConnSecurity,
     username: Option<&str>,
     password: Option<&str>,
+    authority_epoch: u64,
+    collector_session_generation: u64,
 ) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(b"bonsai-assignment-fp-v1");
+    h.update(b"bonsai-assignment-fp-v2");
     h.update(assignment_fingerprint_key());
+    // Authority identity is part of the effective assignment: a new
+    // core epoch or collector session generation must replace the
+    // subscriber so its lifecycle handle is re-stamped — a preserved
+    // subscriber would keep emitting under retired authority (M5.2B).
+    h.update(authority_epoch.to_le_bytes());
+    h.update(collector_session_generation.to_le_bytes());
     h.update(target.address.as_bytes());
     h.update([u8::from(target.enabled), u8::from(target.inventory_only)]);
     h.update(target.acquisition.as_str().as_bytes());
@@ -669,11 +1181,23 @@ pub async fn spawn_subscriber_with_creds(
     debouncer: Option<Arc<TelemetryDebouncer>>,
     subscription_plan_tx: Option<&mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut SubscriberHandleMap,
+    lifecycle: Option<&LifecycleHandle>,
 ) -> Result<SpawnOutcome> {
     let address = target.address.clone();
     if !target.enabled {
         info!(address = %address, "subscriber start skipped because target is disabled");
         stop_subscriber(&address, subscribers).await;
+        if let Some(h) = lifecycle {
+            SessionEmitter::new(
+                Some(h),
+                &address,
+                &acquisition_plan_id(target.acquisition, &[]),
+                "",
+                None,
+            )
+            .emit_plan("disabled", "target disabled")
+            .await;
+        }
         return Ok(SpawnOutcome::Stopped);
     }
     if target.inventory_only {
@@ -682,6 +1206,17 @@ pub async fn spawn_subscriber_with_creds(
             "subscriber start skipped: inventory-only asset has no collection plan"
         );
         stop_subscriber(&address, subscribers).await;
+        if let Some(h) = lifecycle {
+            SessionEmitter::new(
+                Some(h),
+                &address,
+                &acquisition_plan_id(target.acquisition, &[]),
+                "",
+                None,
+            )
+            .emit_plan("disabled", "inventory-only asset has no collection plan")
+            .await;
+        }
         return Ok(SpawnOutcome::Stopped);
     }
 
@@ -694,11 +1229,16 @@ pub async fn spawn_subscriber_with_creds(
     )
     .context("assignment credential metadata invalid")?;
 
+    let (authority_epoch, collector_session_generation) = lifecycle
+        .map(|h| (h.authority_epoch, h.collector_session_generation))
+        .unwrap_or((0, 0));
     let fingerprint = assignment_fingerprint(
         &target,
         &conn_security,
         target.username.as_deref(),
         target.password.as_deref(),
+        authority_epoch,
+        collector_session_generation,
     );
 
     if let Some(entry) = subscribers.get(&address)
@@ -707,6 +1247,13 @@ pub async fn spawn_subscriber_with_creds(
         info!(address = %address, "assignment unchanged — preserving subscriber");
         return Ok(SpawnOutcome::Unchanged);
     }
+    // Fetch the execution counter BEFORE stopping the obsolete
+    // subscriber: it lives in the map's counter book and survives the
+    // stop, so every recreation — disable/enable, remove/re-add,
+    // plan replacement, authority renewal — keeps monotonic execution
+    // generations instead of restarting below the core's high-water
+    // mark (M5.2B review B1).
+    let execution_seq = subscribers.exec_seq(&address);
     if subscribers.contains_key(&address) {
         info!(address = %address, "assignment changed — stopping obsolete subscriber");
         stop_subscriber(&address, subscribers).await;
@@ -720,9 +1267,19 @@ pub async fn spawn_subscriber_with_creds(
     if plan.state == "disabled" || plan.state == "rejected" {
         let state = plan.state.clone();
         if let Some(tx) = subscription_plan_tx {
-            if tx.try_send(plan).is_err() {
+            if tx.try_send(plan.clone()).is_err() {
                 warn!(address = %address, "subscription plan channel full — status dropped");
             }
+        }
+        if let Some(h) = lifecycle {
+            let lc_state = if state == "disabled" {
+                "disabled"
+            } else {
+                "failed"
+            };
+            SessionEmitter::new(Some(h), &address, &plan.plan_id, "", None)
+                .emit_plan(lc_state, &plan.detail)
+                .await;
         }
         info!(address = %address, state = %state, "no acquisition plan — no subscriber");
         return Ok(SpawnOutcome::Stopped);
@@ -742,6 +1299,8 @@ pub async fn spawn_subscriber_with_creds(
         subscription_plan_tx.cloned(),
         target.selected_paths.clone(),
         target.acquisition,
+        lifecycle.cloned(),
+        Arc::clone(&execution_seq),
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
@@ -751,6 +1310,7 @@ pub async fn spawn_subscriber_with_creds(
             shutdown_tx,
             handle,
             assignment_fingerprint: fingerprint,
+            execution_seq,
         },
     );
     info!(address = %address, "subscriber started");
@@ -774,6 +1334,7 @@ pub fn planned_subscription_plan_for_target(
             target: target.address.clone(),
             paths: Vec::new(),
             plan_id,
+            session_id: String::new(),
             state: "disabled".to_string(),
             acquisition: target.acquisition.as_str().to_string(),
             detail: "acquisition disabled".to_string(),
@@ -782,6 +1343,7 @@ pub fn planned_subscription_plan_for_target(
             target: target.address.clone(),
             paths: Vec::new(),
             plan_id,
+            session_id: String::new(),
             state: "rejected".to_string(),
             acquisition: target.acquisition.as_str().to_string(),
             detail: errors.join("; "),
@@ -797,6 +1359,7 @@ pub fn planned_subscription_plan_for_target(
                 .filter_map(subscription_expectation)
                 .collect(),
             plan_id,
+            session_id: String::new(),
             state: "submitted".to_string(),
             acquisition: target.acquisition.as_str().to_string(),
             detail: String::new(),
@@ -805,11 +1368,10 @@ pub fn planned_subscription_plan_for_target(
 }
 
 /// Build a non-submitted SubscriptionPlan for a target whose assignment
-/// could not be honoured (rejected / blocked / failed). The plan_id is
-/// derived from the desired plan plus a detail hash so a *changed*
-/// failure reason is not deduplicated away by the verifier's plan-id
-/// check, and paths are cleared so every previously tracked path for
-/// the target is superseded.
+/// could not be honoured (rejected / blocked / failed). plan_id remains
+/// the STABLE desired/effective plan identity — failure state and detail
+/// are carried in the plan's state/detail fields and the lifecycle
+/// stream, never encoded into plan_id (M5.2B).
 pub fn blocked_subscription_plan(
     target: &TargetConfig,
     state: &str,
@@ -817,12 +1379,8 @@ pub fn blocked_subscription_plan(
 ) -> SubscriptionPlan {
     let mut plan = planned_subscription_plan_for_target(target);
     plan.state = state.to_string();
-    plan.detail = detail.clone();
+    plan.detail = detail;
     plan.paths = Vec::new();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    use std::hash::{Hash, Hasher};
-    detail.hash(&mut hasher);
-    plan.plan_id = format!("{}#{}:{:016x}", plan.plan_id, state, hasher.finish());
     plan
 }
 
@@ -1110,7 +1668,7 @@ enum AcquisitionPlan {
 /// textual path spellings that parse to the same structured path produce
 /// the same identity only when their normalized form matches — dedup of
 /// subscriptions themselves happens on the structured Path, not the string.
-fn acquisition_plan_id(
+pub fn acquisition_plan_id(
     acquisition: AcquisitionMode,
     entries: &[(String, String, String, u64)],
 ) -> String {
@@ -1127,6 +1685,28 @@ fn acquisition_plan_id(
     acquisition.as_str().hash(&mut hasher);
     canonical.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+/// Authorized explicit-manifest entries for `target`: the normalized
+/// `(origin, path, mode, sample_interval_ns)` tuples an explicit
+/// acquisition may legitimately submit — exactly the set
+/// [`build_acquisition_plan`] would resolve from `selected_paths`.
+/// Returns `Err` when the selection itself is invalid (the plan would
+/// be `Rejected`, never submitted) so callers fail closed. An empty
+/// set means explicit-empty → Disabled: no live plan may be submitted.
+/// Used by the authenticated lifecycle boundary to reject manifests
+/// that broaden the authorized path/mode/interval set (M5.2B review D).
+pub(crate) fn authorized_explicit_entries(
+    target: &crate::config::TargetConfig,
+) -> Result<std::collections::HashSet<(String, String, String, u64)>, String> {
+    let mut authorized = std::collections::HashSet::new();
+    for selected in &target.selected_paths {
+        let (sub, _canonical) = subscription_from_selected_path(selected)?;
+        if let Some(e) = subscription_expectation(&sub) {
+            authorized.insert((e.origin, e.path, e.mode, e.sample_interval_ns));
+        }
+    }
+    Ok(authorized)
 }
 
 /// Build the effective acquisition plan.
@@ -1451,6 +2031,33 @@ fn xr_native_stats_path() -> Path {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+/// Resolve the structured evidence path for one gNMI update: the
+/// update path is relative to the notification prefix, so the full
+/// path is the prefix elements followed by the update elements.
+/// Origin prefers the prefix's origin, falling back to the update
+/// path's. `None` when neither side carries a path — such observations
+/// carry no structured evidence and cannot satisfy coverage.
+fn resolve_notification_path(prefix: Option<&Path>, update: Option<&Path>) -> Option<Path> {
+    match (prefix, update) {
+        (None, None) => None,
+        (Some(p), None) => Some(p.clone()),
+        (None, Some(u)) => Some(u.clone()),
+        (Some(p), Some(u)) => {
+            let mut elem = p.elem.clone();
+            elem.extend(u.elem.iter().cloned());
+            Some(Path {
+                origin: if p.origin.is_empty() {
+                    u.origin.clone()
+                } else {
+                    p.origin.clone()
+                },
+                elem,
+                ..Default::default()
+            })
+        }
+    }
+}
+
 fn path_to_string(path: &Path) -> String {
     path.elem
         .iter()
@@ -1599,5 +2206,46 @@ mod tests {
             &caps,
         );
         assert!(matches!(plan, AcquisitionPlan::Rejected { .. }));
+    }
+
+    /// M5.2B review B1: the execution-counter book outlives subscriber
+    /// entries — stop/remove/respawn cycles must return the SAME
+    /// monotonic counter so recreated executions never restart below
+    /// the core's per-target high-water mark.
+    #[tokio::test]
+    async fn exec_seq_survives_entry_removal_and_respawn() {
+        let mut map = SubscriberHandleMap::new();
+        let addr = "10.0.0.1:9339".to_string();
+
+        let seq1 = map.exec_seq(&addr);
+        seq1.fetch_add(1, Ordering::SeqCst); // simulate minted executions
+        seq1.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(seq1.load(Ordering::SeqCst), 2);
+
+        // Stop bookkeeping (entry removed) — counter retained.
+        map.insert(
+            addr.clone(),
+            SubscriberEntry {
+                shutdown_tx: watch::channel(false).0,
+                handle: tokio::spawn(async {}),
+                assignment_fingerprint: "fp1".to_string(),
+                execution_seq: Arc::clone(&seq1),
+            },
+        );
+        let removed = map.remove(&addr).expect("entry present");
+        assert!(map.is_empty());
+        drop(removed);
+
+        // Respawn: same counter, same Arc, value preserved.
+        let seq2 = map.exec_seq(&addr);
+        assert!(Arc::ptr_eq(&seq1, &seq2), "counter must be retained");
+        assert_eq!(seq2.load(Ordering::SeqCst), 2);
+        seq2.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(seq2.load(Ordering::SeqCst), 3);
+
+        // A distinct target gets an independent counter.
+        let other = map.exec_seq("10.0.0.2:9339");
+        assert_eq!(other.load(Ordering::SeqCst), 0);
+        assert!(!Arc::ptr_eq(&seq1, &other));
     }
 }

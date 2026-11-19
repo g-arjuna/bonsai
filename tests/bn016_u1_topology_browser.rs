@@ -15,21 +15,31 @@ use tokio::net::TcpListener;
 
 fn gnmi_bgp(target: &str, peer: &str, ni: &str, state: &str, peer_as: i64) -> TelemetryUpdate {
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: target.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: target.to_string(),
         role: "leaf".to_string(),
         site: "dc-a".to_string(),
         timestamp_ns: 1_000,
-        path: format!(
-            "network-instance[name={ni}]/protocols/bgp/neighbor[peer-address={peer}]"
-        ),
+        path: format!("network-instance[name={ni}]/protocols/bgp/neighbor[peer-address={peer}]"),
         value: serde_json::json!({ "session-state": state, "peer-as": peer_as }),
     }
 }
 
 fn iface_update(target: &str) -> TelemetryUpdate {
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: target.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: target.to_string(),
@@ -149,6 +159,9 @@ async fn topology_browser_renders_only_backend_resolved_sessions() -> Result<()>
         }
     }
     let status = pw.status().await.context("run playwright")?;
-    assert!(status.success(), "playwright topology spec failed: {status}");
+    assert!(
+        status.success(),
+        "playwright topology spec failed: {status}"
+    );
     Ok(())
 }

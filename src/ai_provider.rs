@@ -235,15 +235,17 @@ impl GeminiProvider {
             "input": input,
         });
         if !tools.is_empty() {
-            body["tools"] = serde_json::json!(tools
-                .iter()
-                .map(|t| serde_json::json!({
-                    "type": "function",
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                }))
-                .collect::<Vec<_>>());
+            body["tools"] = serde_json::json!(
+                tools
+                    .iter()
+                    .map(|t| serde_json::json!({
+                        "type": "function",
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }))
+                    .collect::<Vec<_>>()
+            );
         }
 
         let resp = self

@@ -216,6 +216,7 @@ fn update(generation: u64, assignments: Vec<DeviceAssignment>) -> AssignmentUpda
         is_full_sync: true,
         generation,
         authority_epoch: 0,
+        collector_session_generation: 0,
     }
 }
 
@@ -230,6 +231,7 @@ fn epoch_update(
         is_full_sync: full_sync,
         generation,
         authority_epoch: epoch,
+        collector_session_generation: 0,
     }
 }
 
@@ -256,6 +258,17 @@ impl Rig {
     }
 
     async fn apply(&mut self, update: AssignmentUpdate) {
+        self.apply_with_lifecycle(update, &None).await;
+    }
+
+    /// Apply with a lifecycle channel so authority_epoch /
+    /// collector_session_generation reach the subscriber fingerprint —
+    /// the production path for authority-renewal respawns.
+    async fn apply_with_lifecycle(
+        &mut self,
+        update: AssignmentUpdate,
+        lifecycle: &Option<mpsc::Sender<bonsai::subscription_sessions::SessionLifecycleEvent>>,
+    ) {
         let plans = Some(self.plan_tx.clone());
         handle_assignment_update(
             update,
@@ -264,6 +277,7 @@ impl Rig {
             &mut self.subscribers,
             &mut self.last_epoch,
             &mut self.last_generation,
+            lifecycle,
         )
         .await;
     }
@@ -759,4 +773,97 @@ async fn malformed_assignment_stops_obsolete_subscriber() {
     // And no replacement Subscribe RPC was emitted.
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert_eq!(lab.subscribe_calls.load(Ordering::SeqCst), 1);
+}
+
+// ── M5.2B review B1: execution-counter lifetime across recreation ────────────
+
+/// Every legitimate subscriber recreation must keep the SAME monotonic
+/// execution counter: disable→enable, assignment withdrawal→re-add,
+/// effective-plan replacement and authority renewal. A restarted
+/// counter would rank new executions below the core's per-target
+/// high-water mark and be fenced as stale forever.
+#[tokio::test]
+async fn execution_counter_survives_all_recreation_paths() {
+    let lab = start_lab().await;
+    let mut rig = Rig::new();
+    let addr = lab.addr.clone();
+    let target = lab_target(&lab, vec![selected("/system")]);
+
+    let seq_of = |rig: &Rig| {
+        Arc::clone(
+            &rig.subscribers
+                .get(&addr)
+                .expect("subscriber present")
+                .execution_seq,
+        )
+    };
+
+    // 1. Initial spawn.
+    rig.apply(update(1, vec![assignment_for(&target, "u", "p")]))
+        .await;
+    assert!(wait_subscribes(&lab, 1).await);
+    let seq = seq_of(&rig);
+
+    // 2. Disable → re-enable (stop_subscriber drops the entry; the
+    // counter book must retain the sequence).
+    let mut disabled = lab_target(&lab, vec![selected("/system")]);
+    disabled.enabled = false;
+    rig.apply(update(2, vec![assignment_for(&disabled, "u", "p")]))
+        .await;
+    assert!(wait_streams(&lab, 0).await);
+    assert!(rig.subscribers.is_empty());
+    rig.apply(update(3, vec![assignment_for(&target, "u", "p")]))
+        .await;
+    assert!(wait_subscribes(&lab, 2).await);
+    assert!(
+        Arc::ptr_eq(&seq, &seq_of(&rig)),
+        "disable→enable must retain the execution counter"
+    );
+
+    // 3. Assignment withdrawal (full sync without the device) → re-add.
+    rig.apply(update(4, vec![])).await;
+    assert!(wait_streams(&lab, 0).await);
+    rig.apply(update(5, vec![assignment_for(&target, "u", "p")]))
+        .await;
+    assert!(wait_subscribes(&lab, 3).await);
+    assert!(
+        Arc::ptr_eq(&seq, &seq_of(&rig)),
+        "withdrawal→re-add must retain the execution counter"
+    );
+
+    // 4. Effective-plan replacement (fingerprint change → respawn).
+    let narrower = lab_target(&lab, vec![selected("/interfaces")]);
+    rig.apply(update(6, vec![assignment_for(&narrower, "u", "p")]))
+        .await;
+    assert!(wait_subscribes(&lab, 4).await);
+    assert!(
+        Arc::ptr_eq(&seq, &seq_of(&rig)),
+        "plan replacement must retain the execution counter"
+    );
+
+    // 5. Authority renewal: new epoch full sync → respawn under new
+    // authority; the counter continues (the epoch component of the
+    // rank dominates, but monotonicity is still required). A lifecycle
+    // channel is required so the epoch reaches the fingerprint —
+    // exactly as production wires it.
+    let (lc_tx, _lc_rx) =
+        mpsc::channel::<bonsai::subscription_sessions::SessionLifecycleEvent>(256);
+    rig.apply_with_lifecycle(
+        epoch_update(7, 7, true, vec![assignment_for(&narrower, "u", "p")]),
+        &Some(lc_tx),
+    )
+    .await;
+    assert!(wait_subscribes(&lab, 5).await);
+    assert!(
+        Arc::ptr_eq(&seq, &seq_of(&rig)),
+        "authority renewal must retain the execution counter"
+    );
+
+    // The counter itself kept advancing across every recreation —
+    // never restarted at zero.
+    let final_val = seq.load(Ordering::SeqCst);
+    assert!(
+        final_val >= 5,
+        "expected >=5 minted executions across recreations, got {final_val}"
+    );
 }

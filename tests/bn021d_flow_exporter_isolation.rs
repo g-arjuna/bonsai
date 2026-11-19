@@ -1405,14 +1405,18 @@ fn flow_update(
         "bytes_per_sec": 100.0,
         "packets_per_sec": 5.0,
     });
-    if let (serde_json::Value::Object(base), serde_json::Value::Object(ext)) =
-        (&mut value, extra)
-    {
+    if let (serde_json::Value::Object(base), serde_json::Value::Object(ext)) = (&mut value, extra) {
         for (k, v) in ext {
             base.insert(k, v);
         }
     }
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: exporter_key.to_string(),
         vendor: String::new(),
         hostname: String::new(),
@@ -1453,10 +1457,8 @@ async fn graph_provisional_flow_preserves_canonical_state() {
             "CREATE (d:Device {address: '127.0.0.1', hostname: 'canon-rtr', site: 'site-a'})",
         )
         .unwrap();
-        conn.query(
-            "CREATE (a:DeviceAddress {ip: '127.0.0.1', source: 'gnmi'})",
-        )
-        .unwrap();
+        conn.query("CREATE (a:DeviceAddress {ip: '127.0.0.1', source: 'gnmi'})")
+            .unwrap();
         conn.query(
             "CREATE (h:HostEndpoint {id: '10.77.0.5', ip: '10.77.0.5', kind: 'server', site_id: 'site-a'})",
         )
@@ -1517,9 +1519,7 @@ async fn graph_provisional_flow_preserves_canonical_state() {
     let conn = lbug::Connection::new(&db).unwrap();
 
     // AppFlow nodes exist (operational visibility preserved) ...
-    let mut rows = conn
-        .query("MATCH (f:AppFlow) RETURN count(f)")
-        .unwrap();
+    let mut rows = conn.query("MATCH (f:AppFlow) RETURN count(f)").unwrap();
     assert_eq!(rows.next().unwrap()[0].to_string(), "2");
 
     // ... but NO authoritative side effects.

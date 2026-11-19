@@ -12,6 +12,42 @@ pub struct TelemetryUpdate {
     pub timestamp_ns: i64,
     pub path: String,
     pub value: JsonValue,
+    /// Acquisition plan identity that produced this observation (gNMI
+    /// subscriber path only). Empty for non-plan producers and legacy data.
+    pub plan_id: String,
+    /// Device-facing subscription session that produced this observation.
+    /// A new value is minted per Subscribe session; empty for producers
+    /// without session provenance. Late data from a previous session must
+    /// not satisfy current-session coverage.
+    pub session_id: String,
+    /// Producer protocol provenance (M5.2B): "gnmi" for device-facing
+    /// gNMI subscription observations; empty for producers without an
+    /// explicit protocol claim. Only "gnmi" observations carrying a
+    /// registered current session may satisfy gNMI subscription coverage.
+    pub source_protocol: String,
+    /// Resolved structured gNMI path (notification prefix + update path
+    /// elements, origin resolved) for device-facing subscription
+    /// observations. This is the authoritative evidence path — `path`
+    /// remains the flattened classifier/projection representation.
+    /// Empty for non-gNMI producers and legacy data; such observations
+    /// can never satisfy gNMI subscription coverage. Multiple entries
+    /// occur when scalar leaves sharing a parent were grouped into one
+    /// container-shaped update — each entry is one leaf's full path.
+    pub gnmi_path: Vec<crate::proto::gnmi::Path>,
+    /// Delete/tombstone evidence (M5.2B B3): true when this update
+    /// reports that the resolved gNMI path was deleted from the
+    /// device's data tree (gNMI `Notification.delete`). Carries no
+    /// value; `value` is Null. Only updates from the current
+    /// authorized session may invalidate subscription coverage.
+    pub is_delete: bool,
+    /// Authenticated collector identity that DELIVERED this observation,
+    /// stamped by the core ingest boundary from the transport-verified
+    /// collector grant — never decoded from the telemetry payload
+    /// (M5.2B review B1). Empty for trusted in-process producers and
+    /// unauthenticated development-compat ingestion; a non-empty value
+    /// must equal the current session's owning collector for the
+    /// observation to satisfy subscription coverage.
+    pub collector_id: String,
 }
 
 /// Classified form of a TelemetryUpdate after path parsing.

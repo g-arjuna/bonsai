@@ -248,6 +248,8 @@ fn subscriber(lab: &Lab, conn_security: ConnSecurity) -> GnmiSubscriber {
             "interfaces/interface[name=Ethernet1/1]/state/counters",
         )],
         AcquisitionMode::Explicit,
+        None,
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     )
 }
 

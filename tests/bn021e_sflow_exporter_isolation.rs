@@ -210,7 +210,13 @@ async fn counter_samples_stay_source_scoped() {
     send(
         &sock,
         &lab,
-        &sflow_datagram([192, 0, 2, 10], 0, 1, 1000, &[counter_sample(2, 12345, 6789)]),
+        &sflow_datagram(
+            [192, 0, 2, 10],
+            0,
+            1,
+            1000,
+            &[counter_sample(2, 12345, 6789)],
+        ),
     )
     .await;
 
@@ -253,8 +259,18 @@ async fn nat_agents_stay_separate_and_claims_are_evidence() {
     let rec_b = ipv4_flow_record([192, 0, 2, 2], [198, 51, 100, 2], 40001, 443, 6, 1500);
 
     // Agent A claims 192.0.2.10; agent B claims a DIFFERENT address.
-    send(&sock_a, &lab, &flow_datagram([192, 0, 2, 10], 0, 1, &[rec_a])).await;
-    send(&sock_b, &lab, &flow_datagram([192, 0, 2, 20], 0, 1, &[rec_b])).await;
+    send(
+        &sock_a,
+        &lab,
+        &flow_datagram([192, 0, 2, 10], 0, 1, &[rec_a]),
+    )
+    .await;
+    send(
+        &sock_b,
+        &lab,
+        &flow_datagram([192, 0, 2, 20], 0, 1, &[rec_b]),
+    )
+    .await;
 
     let ua = next_update(&mut rx, "streaming/sflow/flow").await;
     let ub = next_update(&mut rx, "streaming/sflow/flow").await;
@@ -296,7 +312,12 @@ async fn agent_claim_cannot_merge_distinct_sources() {
     let rec = ipv4_flow_record([10, 0, 0, 1], [10, 0, 0, 2], 5000, 80, 6, 1000);
 
     // Same agent claim, different sub-agent ids.
-    send(&sock, &lab, &flow_datagram([192, 0, 2, 10], 0, 1, &[rec.clone()])).await;
+    send(
+        &sock,
+        &lab,
+        &flow_datagram([192, 0, 2, 10], 0, 1, &[rec.clone()]),
+    )
+    .await;
     send(&sock, &lab, &flow_datagram([192, 0, 2, 10], 9, 2, &[rec])).await;
 
     let u0 = next_update(&mut rx, "streaming/sflow/flow").await;
@@ -381,13 +402,18 @@ fn flow_update(
         "bytes_per_sec": 150000.0,
         "packets_per_sec": 100.0,
     });
-    if let (serde_json::Value::Object(base), serde_json::Value::Object(ext)) = (&mut value, extra)
-    {
+    if let (serde_json::Value::Object(base), serde_json::Value::Object(ext)) = (&mut value, extra) {
         for (k, v) in ext {
             base.insert(k, v);
         }
     }
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: exporter_key.to_string(),
         vendor: String::new(),
         hostname: String::new(),
@@ -401,6 +427,12 @@ fn flow_update(
 
 fn counters_update(exporter_key: &str, exporter_ip: &str, if_index: i64) -> TelemetryUpdate {
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: exporter_key.to_string(),
         vendor: String::new(),
         hostname: String::new(),
@@ -519,9 +551,7 @@ async fn graph_fails_closed_for_provisional_sflow() {
     let conn = lbug::Connection::new(&db).unwrap();
 
     // AppFlow visibility preserved (2 flows from the flow updates).
-    let mut rows = conn
-        .query("MATCH (f:AppFlow) RETURN count(f)")
-        .unwrap();
+    let mut rows = conn.query("MATCH (f:AppFlow) RETURN count(f)").unwrap();
     assert_eq!(rows.next().unwrap()[0].to_string(), "2");
 
     for (label, q) in [
@@ -661,9 +691,7 @@ async fn same_agent_claim_never_merges_appflows() {
 
     let db = store.db();
     let conn = lbug::Connection::new(&db).unwrap();
-    let mut rows = conn
-        .query("MATCH (f:AppFlow) RETURN count(f)")
-        .unwrap();
+    let mut rows = conn.query("MATCH (f:AppFlow) RETURN count(f)").unwrap();
     assert_eq!(
         rows.next().unwrap()[0].to_string(),
         "2",

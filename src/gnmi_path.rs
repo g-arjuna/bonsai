@@ -94,6 +94,74 @@ pub fn canonical_path_key(origin: &str, raw_path: &str) -> Option<String> {
     parse_path(origin, raw_path).ok().map(|p| canonical_key(&p))
 }
 
+/// Exact structured coverage (M5.2B): does `observation` satisfy
+/// `expectation`? Origins must be compatible (a non-empty expectation
+/// origin requires an exact match; empty means unspecified), the
+/// observation path must equal or descend from the expectation path,
+/// and every expectation element must match name-exactly. An
+/// expectation element without keys matches any keyed instance (gNMI
+/// list wildcard semantics); a key whose expectation VALUE is exactly
+/// `*` matches any value for that key (the wildcard convention the
+/// built-in automatic subscriptions already emit, e.g.
+/// `interface[name=*]`). Key sets must otherwise be identical — a
+/// partial-key expectation never proves coverage of a differently-keyed
+/// instance. String containment is never used.
+pub fn observation_covers(expectation: &Path, observation: &Path) -> bool {
+    if !expectation.origin.is_empty() && expectation.origin != observation.origin {
+        return false;
+    }
+    if observation.elem.len() < expectation.elem.len() {
+        return false;
+    }
+    expectation
+        .elem
+        .iter()
+        .zip(observation.elem.iter())
+        .all(|(e, o)| {
+            e.name == o.name
+                && (e.key.is_empty()
+                    || (e.key.len() == o.key.len()
+                        && e.key.iter().all(|(k, v)| {
+                            if v == "*" {
+                                o.key.contains_key(k)
+                            } else {
+                                o.key.get(k) == Some(v)
+                            }
+                        })))
+        })
+}
+
+/// Conservative structured DELETE coverage (M5.2B review B9): does a
+/// `Notification.delete` for `deletion` invalidate `expectation`?
+///
+/// A delete is evidence of absence, so matching is deliberately
+/// stricter than [`observation_covers`]:
+///
+/// - The deleted path must be the expectation path itself or a proper
+///   ANCESTOR of it — deleting a parent list instance or container
+///   invalidates every descendant expectation.
+/// - Every element of the deleted prefix must match the expectation
+///   element NAME- and KEY-EXACTLY. Expectation wildcards (`name=*`,
+///   unkeyed elements) and partially-keyed expectations are NOT covered
+///   by a single concrete delete: one deleted instance never implies
+///   exhaustive absence across a wildcard/subtree expectation.
+/// - A delete deeper than the expectation (one instance under a broader
+///   expectation) is NOT proof of absence: it must be qualified by the
+///   caller, never treated as a complete subtree delete.
+pub fn delete_covers(expectation: &Path, deletion: &Path) -> bool {
+    if !expectation.origin.is_empty() && expectation.origin != deletion.origin {
+        return false;
+    }
+    if deletion.elem.len() > expectation.elem.len() {
+        return false;
+    }
+    expectation
+        .elem
+        .iter()
+        .zip(deletion.elem.iter())
+        .all(|(e, d)| e.name == d.name && e.key == d.key)
+}
+
 /// Split on '/' separators outside '[' ... ']' key expressions. An unclosed
 /// '[' keeps the remainder inside the current segment so the segment parser
 /// rejects it as malformed. A backslash escapes the next character.
@@ -283,5 +351,173 @@ mod tests {
         let f = parse_path("", r"foo[k=a,b]").unwrap();
         let g = parse_path("", "foo[k=a][x=b]").unwrap();
         assert_ne!(canonical_key(&f), canonical_key(&g));
+    }
+
+    #[test]
+    fn observation_covers_is_exact_and_structured() {
+        let exp = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters",
+        )
+        .unwrap();
+        // Descendant leaf observation covers the container expectation.
+        let leaf = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(observation_covers(&exp, &leaf));
+        // Exact path covers.
+        let exact = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters",
+        )
+        .unwrap();
+        assert!(observation_covers(&exp, &exact));
+        // Different key instance never satisfies.
+        let other = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/2]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&exp, &other));
+        // Case-sensitive keys.
+        let case = parse_path(
+            "openconfig",
+            "interfaces/interface[name=ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&exp, &case));
+        // Different origin never satisfies a specified origin.
+        let ietf = parse_path(
+            "ietf",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&exp, &ietf));
+        // Ancestor observation cannot cover a deeper leaf expectation.
+        let leaf_exp = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&leaf_exp, &exact));
+        // Unkeyed expectation element is a wildcard over instances.
+        let any_iface = parse_path("openconfig", "interfaces/interface/state").unwrap();
+        assert!(observation_covers(&any_iface, &leaf));
+        // But a keyed expectation still pins the instance.
+        let keyed =
+            parse_path("openconfig", "interfaces/interface[name=Ethernet1/2]/state").unwrap();
+        assert!(!observation_covers(&keyed, &leaf));
+        // Unrelated subtree never matches.
+        let bgp = parse_path("openconfig", "network-instances/protocols").unwrap();
+        assert!(!observation_covers(&bgp, &leaf));
+    }
+
+    #[test]
+    fn observation_covers_star_key_is_single_value_wildcard() {
+        // Automatic subscriptions emit `name=*`; a `*` expectation
+        // value matches any instance value for that key — but never a
+        // missing key or a different key SET.
+        let wildcard = parse_path(
+            "openconfig",
+            "interfaces/interface[name=*]/state/counters/in-octets",
+        )
+        .unwrap();
+        let obs = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(observation_covers(&wildcard, &obs));
+        // `*` embedded in a larger value is literal, not a wildcard.
+        let embedded = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet*]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&embedded, &obs));
+        // Multi-key: `*` on one key, exact on the other.
+        let multi = parse_path("", "foo[name=*][slot=1]/bar").unwrap();
+        let obs_multi = parse_path("", "foo[name=a][slot=1]/bar/baz").unwrap();
+        assert!(observation_covers(&multi, &obs_multi));
+        let obs_multi_bad = parse_path("", "foo[name=a][slot=2]/bar/baz").unwrap();
+        assert!(!observation_covers(&multi, &obs_multi_bad));
+        // Key-set cardinality is still enforced: an observation with an
+        // extra key never satisfies a smaller expectation key set.
+        let one_key = parse_path("", "foo[name=*]/bar").unwrap();
+        assert!(!observation_covers(&one_key, &obs_multi));
+    }
+
+    #[test]
+    fn delete_covers_is_conservative_and_structured() {
+        let container = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters",
+        )
+        .unwrap();
+        // Exact delete of the expectation path invalidates it.
+        let exact = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters",
+        )
+        .unwrap();
+        assert!(delete_covers(&container, &exact));
+        // Ancestor delete (parent list instance) invalidates descendants.
+        let iface = parse_path("openconfig", "interfaces/interface[name=Ethernet1/1]").unwrap();
+        assert!(delete_covers(&container, &iface));
+        let interfaces = parse_path("openconfig", "interfaces").unwrap();
+        assert!(delete_covers(&container, &interfaces));
+        // A delete DEEPER than the expectation is never proof of
+        // complete absence — the caller qualifies it separately.
+        let leaf = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!delete_covers(&container, &leaf));
+        // A different keyed instance's delete never invalidates.
+        let other = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/2]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!delete_covers(&container, &other));
+        // Sibling subtree delete never invalidates.
+        let sibling = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/description",
+        )
+        .unwrap();
+        assert!(!delete_covers(&container, &sibling));
+        // Wildcard expectation: ONE concrete instance delete must not
+        // imply absence across the whole wildcard scope.
+        let wildcard = parse_path(
+            "openconfig",
+            "interfaces/interface[name=*]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!delete_covers(&wildcard, &leaf));
+        // Unkeyed (match-any) expectation element is likewise not
+        // invalidated by a single keyed instance delete.
+        let unkeyed = parse_path("openconfig", "interfaces/interface/state/counters").unwrap();
+        let keyed_leaf = parse_path(
+            "openconfig",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!delete_covers(&unkeyed, &keyed_leaf));
+        // Partially-keyed expectation: a delete of one fully-keyed
+        // instance must not imply absence for the partial-key scope.
+        let partial = parse_path("", "foo[name=a]/bar").unwrap();
+        let full = parse_path("", "foo[name=a][role=x]/bar/baz").unwrap();
+        assert!(!delete_covers(&partial, &full));
+        // Origin mismatch never matches.
+        let ietf_leaf = parse_path(
+            "ietf",
+            "interfaces/interface[name=Ethernet1/1]/state/counters/in-octets",
+        )
+        .unwrap();
+        assert!(!delete_covers(&container, &ietf_leaf));
     }
 }

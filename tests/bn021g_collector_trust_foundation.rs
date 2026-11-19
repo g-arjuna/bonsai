@@ -451,6 +451,11 @@ fn telemetry_update(
     value: serde_json::Value,
 ) -> TelemetryIngestUpdate {
     TelemetryIngestUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
         collector_id: collector_id.to_string(),
         target: target_addr.to_string(),
         vendor: String::new(),
@@ -1060,6 +1065,11 @@ async fn provisional_payloads_cannot_gain_canonical_authority() {
     //    H1: the source key must carry the authorized collector's
     //    namespace segment.
     let flow = TelemetryIngestUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
         collector_id: "site-a".to_string(),
         target: "flowsrc/site-a/nf9/198.51.100.9:49152/sid7".to_string(),
         vendor: String::new(),
@@ -2469,6 +2479,11 @@ fn netflow_update(
     value: serde_json::Value,
 ) -> TelemetryIngestUpdate {
     TelemetryIngestUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
         collector_id: collector_id.to_string(),
         target: target_key.to_string(),
         vendor: String::new(),
@@ -2677,6 +2692,11 @@ async fn otlp_provisional_app_id_is_renamespaced() {
     let mut client = mtls_client(&lab, &pki, &cert_a).await;
 
     let update = TelemetryIngestUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
         collector_id: "site-a".to_string(),
         target: "otlpsrc/site-b/http/10.4.0.5:4317".to_string(),
         vendor: String::new(),

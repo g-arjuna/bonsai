@@ -69,5 +69,16 @@ pub trait BonsaiStore: Send + Sync {
         Ok(())
     }
 
+    /// Expire persisted subscription statuses that claim current
+    /// coverage (`observed`, `deleted`, `pending`,
+    /// `subscribed_but_silent`) to `stale` at verifier startup. Rows
+    /// describe the PREVIOUS boot's sessions — nothing is current until
+    /// new verified evidence arrives (M5.2B review B5). `superseded`
+    /// rows are already non-current and are left untouched. Stores
+    /// without persistent status read access may use the default no-op.
+    async fn expire_subscription_statuses_on_boot(&self) -> Result<()> {
+        Ok(())
+    }
+
     fn publish_event(&self, event: BonsaiEvent);
 }

@@ -788,6 +788,12 @@ async fn handle_frame(
     // canonical device address; candidate attributes ride inside `value`
     // as an explicit hypothesis for downstream read-only correlation.
     bus.publish(TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: "syslog".to_string(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: src.source_key.clone(),
         vendor: target.candidate_vendor().to_string(),
         hostname: event.hostname.clone(),
@@ -803,6 +809,12 @@ async fn handle_frame(
 
     for fact in facts {
         bus.publish(TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: "syslog".to_string(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: src.source_key.clone(),
             vendor: target.candidate_vendor().to_string(),
             hostname: fact.hostname.clone(),

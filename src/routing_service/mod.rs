@@ -3368,6 +3368,12 @@ async fn apply_routing_events_to_graph(
                 };
                 let _ = store
                     .write(crate::telemetry::TelemetryUpdate {
+                        plan_id: String::new(),
+                        session_id: String::new(),
+                        source_protocol: "bmp".to_string(),
+                        gnmi_path: Vec::new(),
+                        is_delete: false,
+                        collector_id: String::new(),
                         timestamp_ns: ts_ns,
                         target: spk_str,
                         vendor: "unknown".to_string(),
@@ -3435,6 +3441,12 @@ async fn apply_routing_events_to_graph(
                 };
                 let _ = store
                     .write(crate::telemetry::TelemetryUpdate {
+                        plan_id: String::new(),
+                        session_id: String::new(),
+                        source_protocol: "bmp".to_string(),
+                        gnmi_path: Vec::new(),
+                        is_delete: false,
+                        collector_id: String::new(),
                         timestamp_ns: ts_ns,
                         target: spk_str,
                         vendor: "unknown".to_string(),

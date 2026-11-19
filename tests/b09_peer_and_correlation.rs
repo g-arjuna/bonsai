@@ -49,6 +49,12 @@ async fn b09_bmp_peer_state_transition_emits_state_change_event() {
     let up_event = sample_bmp_event("Established", "peer_up", "10.0.0.2", 0);
     store
         .write(TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             timestamp_ns: 1_700_000_000_000_000_000,
             target: "172.20.0.11:57400".to_string(),
             vendor: "frr".to_string(),
@@ -64,6 +70,12 @@ async fn b09_bmp_peer_state_transition_emits_state_change_event() {
     let down_event = sample_bmp_event("Down", "peer_down", "10.0.0.2", 0);
     store
         .write(TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             timestamp_ns: 1_700_000_005_000_000_000,
             target: "172.20.0.11:57400".to_string(),
             vendor: "frr".to_string(),
@@ -79,6 +91,12 @@ async fn b09_bmp_peer_state_transition_emits_state_change_event() {
     // Repeated identical Down state must NOT emit a duplicate transition.
     store
         .write(TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             timestamp_ns: 1_700_000_006_000_000_000,
             target: "172.20.0.11:57400".to_string(),
             vendor: "frr".to_string(),
@@ -95,6 +113,12 @@ async fn b09_bmp_peer_state_transition_emits_state_change_event() {
     let vrf200_down = sample_bmp_event("Down", "peer_down", "10.0.0.2", 200);
     store
         .write(TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             timestamp_ns: 1_700_000_007_000_000_000,
             target: "172.20.0.11:57400".to_string(),
             vendor: "frr".to_string(),

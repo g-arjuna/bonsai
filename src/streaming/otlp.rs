@@ -29,13 +29,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use axum::{
+    Json, Router,
     extract::{ConnectInfo, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::post,
-    Json, Router,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tracing::info;
@@ -253,19 +253,11 @@ fn otlp_response(outcome: &RequestOutcome, unit: &str) -> Response {
             Value::String(format!("{rejected} {unit} rejected ({reasons})")),
         );
     }
-    (
-        StatusCode::OK,
-        Json(json!({ "partialSuccess": partial })),
-    )
-        .into_response()
+    (StatusCode::OK, Json(json!({ "partialSuccess": partial }))).into_response()
 }
 
 fn bad_request(msg: &str) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({ "error": msg })),
-    )
-        .into_response()
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response()
 }
 
 pub async fn run_otlp_receiver(
@@ -431,6 +423,12 @@ async fn traces_handler(
                 merge_identity(&mut value, &identity);
 
                 state.bus.publish(TelemetryUpdate {
+                    plan_id: String::new(),
+                    session_id: String::new(),
+                    source_protocol: "otlp".to_string(),
+                    gnmi_path: Vec::new(),
+                    is_delete: false,
+                    collector_id: String::new(),
                     target: src.source_key.clone(),
                     vendor: String::new(),
                     hostname: String::new(),
@@ -527,9 +525,9 @@ fn valid_metrics_structure(resource_metrics: &[Value]) -> bool {
                             "metadata" => v.is_null() || v.is_array(),
                             _ => match v {
                                 Value::Null => true,
-                                Value::Object(kind) => kind
-                                    .get("dataPoints")
-                                    .is_none_or(|dp| dp.is_array()),
+                                Value::Object(kind) => {
+                                    kind.get("dataPoints").is_none_or(|dp| dp.is_array())
+                                }
                                 _ => false,
                             },
                         })
@@ -613,7 +611,10 @@ fn histogram_data_point_value(dp: &Value) -> Option<Value> {
     };
     // A present-but-malformed optional field invalidates the point.
     for key in ["sum", "min", "max"] {
-        if dp.get(key).is_some_and(|v| !v.is_null() && parse_otlp_double(v).is_none()) {
+        if dp
+            .get(key)
+            .is_some_and(|v| !v.is_null() && parse_otlp_double(v).is_none())
+        {
             return None;
         }
     }
@@ -781,6 +782,12 @@ async fn metrics_handler(
                     merge_identity(&mut value, &identity);
 
                     state.bus.publish(TelemetryUpdate {
+                        plan_id: String::new(),
+                        session_id: String::new(),
+                        source_protocol: "otlp".to_string(),
+                        gnmi_path: Vec::new(),
+                        is_delete: false,
+                        collector_id: String::new(),
                         target: src.source_key.clone(),
                         vendor: String::new(),
                         hostname: String::new(),

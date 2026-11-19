@@ -15,6 +15,10 @@ use crate::credentials::{CredentialVault, ResolvePurpose};
 use crate::graph::{BonsaiEvent, SiteRecord};
 use crate::registry::ApiRegistry;
 
+/// Settings-table key for the persisted assignment-authority epoch
+/// high-water mark (M5.2B restart/clock-rollback fencing).
+const ASSIGNMENT_EPOCH_HW_KEY: &str = "assignment.authority_epoch_high_water";
+
 /// One live assignment stream session. `generation` fences reconnect
 /// races: an old stream closing must never unregister a newer session
 /// registered under the same collector id (BN-021g G4).
@@ -59,6 +63,14 @@ pub struct CollectorManager {
     /// explicit-empty) is a withdrawal of previous authority. Persists
     /// across sessions so a reconnect full-sync is still tracked.
     last_sent_assignments: Arc<Mutex<HashMap<String, HashMap<String, bool>>>>,
+    /// collector_id -> device_address -> authority window
+    /// [assigned_gen, removed_gen) within which lifecycle evidence for
+    /// that device is valid (M5.2B). `assigned_gen` is the generation of
+    /// the sync that first granted acquisition authority and is sticky
+    /// across confirming resyncs; `removed_gen` is the first sync that
+    /// withdrew it. A lifecycle event is authority-current iff its
+    /// stamped generation falls inside the window.
+    device_authority_marks: Arc<Mutex<HashMap<String, HashMap<String, DeviceAuthorityMark>>>>,
     runtime_state: Arc<Mutex<HashMap<String, CollectorRuntimeState>>>,
     /// This core boot's assignment-authority epoch (M5.2A). Stamped on
     /// every AssignmentUpdate; the collector fences (epoch, generation)
@@ -66,10 +78,26 @@ pub struct CollectorManager {
     /// previous authority — delayed previous-epoch updates are rejected
     /// and a new epoch is only honoured via a full sync.
     authority_epoch: u64,
+    /// Next authority-instance ordinal (M5.2B execution fencing):
+    /// incremented each time a device authority window opens; orders
+    /// subscription executions across collectors/reassignments within
+    /// one authority epoch. In-memory only — the epoch fences staleness
+    /// across core restarts.
+    next_authority_instance: std::sync::atomic::AtomicU64,
     /// Serializes build→stamp→send of full syncs so a slower, older
     /// snapshot can never receive a NEWER generation than a fresher
     /// concurrent resync and supersede more recent desired state.
     send_lock: tokio::sync::Mutex<()>,
+    /// Serializes (authority validation + session-registry mutation)
+    /// against (authority-mark update + session retirement) so an
+    /// assignment withdrawal can never race a concurrently accepted
+    /// lifecycle event (M5.2B review B2). Held only across synchronous
+    /// sections — never across `.await`.
+    session_gate: Mutex<()>,
+    /// Authoritative subscription-session registry (M5.2B): collector
+    /// disconnect retires that collector's session authority so delayed
+    /// telemetry can never outlive its assignment stream.
+    session_registry: Option<Arc<crate::subscription_sessions::SubscriptionSessionRegistry>>,
     /// Routing rules sorted descending by priority (highest first).
     rules: Arc<Mutex<Vec<AssignmentRule>>>,
     /// Cached site records for hierarchy-aware assignment. Updated externally via `set_sites`.
@@ -77,6 +105,22 @@ pub struct CollectorManager {
     /// Optional event sender — wired after construction from GraphStore::event_sender().
     event_tx: Mutex<Option<broadcast::Sender<BonsaiEvent>>>,
     health_emitter: Option<Arc<crate::health_emitter::HealthEmitter>>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct DeviceAuthorityMark {
+    /// Generation of the sync that granted acquisition authority
+    /// (sticky across confirming resyncs; 0 = never authorized).
+    assigned_gen: u64,
+    /// Generation of the first sync that withdrew authority.
+    removed_gen: Option<u64>,
+    /// Core-issued authority-instance ordinal for THIS grant window
+    /// (M5.2B execution fencing): monotonically increasing per manager,
+    /// assigned when a new grant window opens and stable across
+    /// confirming resyncs. Orders executions across collectors and
+    /// reassignment — a superseded authority window can never produce
+    /// an execution that outranks the current one.
+    instance: u64,
 }
 
 #[derive(Clone, Default)]
@@ -119,6 +163,26 @@ impl CollectorManager {
     ) -> Self {
         let mut rules = initial_rules;
         rules.sort_by_key(|rule| Reverse(rule.priority));
+        // Restart/rollback-safe authority epoch (M5.2B): wall-clock
+        // nanoseconds alone violate fencing under clock rollback or a
+        // restored snapshot. The epoch is max(now, persisted
+        // high-water + 1) so every core boot strictly exceeds every
+        // previously issued epoch even when the clock moves backwards.
+        // Residual: two HA cores booting simultaneously can still mint
+        // the same epoch — full fencing needs a durable/consensus
+        // authority and is tracked as a separate milestone.
+        let persisted_hw = registry
+            .sqlite_store()
+            .and_then(|store| store.get_setting(ASSIGNMENT_EPOCH_HW_KEY).ok().flatten())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let authority_epoch = (now_ns().max(1) as u64).max(persisted_hw.saturating_add(1));
+        if let Some(store) = registry.sqlite_store()
+            && let Err(error) =
+                store.set_setting(ASSIGNMENT_EPOCH_HW_KEY, &authority_epoch.to_string())
+        {
+            warn!(%error, "failed to persist assignment authority epoch high-water");
+        }
         let manager = Self {
             registry,
             credentials,
@@ -127,8 +191,12 @@ impl CollectorManager {
             update_generations: Arc::new(Mutex::new(HashMap::new())),
             pending_withdrawals: Arc::new(Mutex::new(HashMap::new())),
             last_sent_assignments: Arc::new(Mutex::new(HashMap::new())),
-            authority_epoch: now_ns().max(1) as u64,
+            device_authority_marks: Arc::new(Mutex::new(HashMap::new())),
+            authority_epoch,
+            next_authority_instance: std::sync::atomic::AtomicU64::new(1),
             send_lock: tokio::sync::Mutex::new(()),
+            session_gate: Mutex::new(()),
+            session_registry: None,
             runtime_state: Arc::new(Mutex::new(HashMap::new())),
             rules: Arc::new(Mutex::new(rules)),
             sites_cache: Arc::new(Mutex::new(Vec::new())),
@@ -146,9 +214,149 @@ impl CollectorManager {
         self
     }
 
+    /// Bind the authoritative subscription-session registry so collector
+    /// unregister retires its session authority (M5.2B).
+    pub fn with_session_registry(
+        mut self,
+        registry: Arc<crate::subscription_sessions::SubscriptionSessionRegistry>,
+    ) -> Self {
+        self.session_registry = Some(registry);
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn authority_epoch_for_test(&self) -> u64 {
         self.authority_epoch
+    }
+
+    /// This core boot's assignment-authority epoch (M5.2B).
+    pub fn authority_epoch(&self) -> u64 {
+        self.authority_epoch
+    }
+
+    /// Guard serializing lifecycle-event authority validation + registry
+    /// mutation against withdrawal-driven mark updates + session
+    /// retirement. The gRPC lifecycle handler holds this across
+    /// `validate_session_authority` + `session_registry.apply`; the
+    /// withdrawal path holds it across the authority-mark update +
+    /// `retire_target`/`retire_collector` calls.
+    pub fn session_gate(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.session_gate.lock().unwrap()
+    }
+
+    /// Latest collector session generation issued to `collector_id`
+    /// (0 = never registered this boot). Stamped on AssignmentUpdate so
+    /// collectors can echo it on lifecycle events; values above this
+    /// bound are forged and fenced (M5.2B execution fencing).
+    pub fn latest_session_generation(&self, collector_id: &str) -> u64 {
+        self.session_generations
+            .lock()
+            .unwrap()
+            .get(collector_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Generation of the collector's CURRENTLY ACTIVE registration, or
+    /// `None` when no session is registered. This is deliberately
+    /// distinct from `latest_session_generation`: unregister retires
+    /// the active registration while the issued generation stays
+    /// recorded as the high-water mark, so lifecycle admission must
+    /// fence on the active session — never on the issued bound alone
+    /// (M5.2B review B3 residual).
+    pub fn active_session_generation(&self, collector_id: &str) -> Option<u64> {
+        self.active_collectors
+            .lock()
+            .unwrap()
+            .get(collector_id)
+            .map(|session| session.generation)
+    }
+
+    /// Latest assignment generation issued to `collector_id` (0 = none).
+    pub fn latest_assignment_generation(&self, collector_id: &str) -> u64 {
+        self.update_generations
+            .lock()
+            .unwrap()
+            .get(collector_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Validate the assignment authority stamped on a subscription
+    /// lifecycle event (M5.2B). Returns false when the epoch is not this
+    /// core's current authority, the generation was never issued to this
+    /// collector, or the generation falls outside the device's
+    /// [assigned, removed) authority window — i.e. the event claims
+    /// authority the collector did not hold for this device.
+    /// The device's current authority mark when (epoch, generation)
+    /// validates as current authority — `None` otherwise. Single source
+    /// for both the boolean gate and the authority-instance lookup.
+    fn current_authority_mark(
+        &self,
+        collector_id: &str,
+        device_address: &str,
+        authority_epoch: u64,
+        assignment_generation: u64,
+    ) -> Option<DeviceAuthorityMark> {
+        if authority_epoch != self.authority_epoch {
+            return None;
+        }
+        if assignment_generation == 0
+            || assignment_generation > self.latest_assignment_generation(collector_id)
+        {
+            return None;
+        }
+        let marks = self.device_authority_marks.lock().unwrap();
+        let device_marks = marks.get(collector_id)?;
+        let mark = device_marks.get(device_address)?;
+        // Historical admission vs CURRENT authority (M5.2B review B2):
+        // the [assigned_gen, removed_gen) window records that the
+        // collector once held authority, but once `removed_gen` is set
+        // the authority is withdrawn — delayed lifecycle events stamped
+        // with previously-valid generations must never re-establish
+        // current session authority. Core-side withdrawal retires live
+        // sessions immediately (retire_target); this check fences the
+        // delayed-event path.
+        if mark.removed_gen.is_some() {
+            return None;
+        }
+        (assignment_generation >= mark.assigned_gen).then_some(*mark)
+    }
+
+    pub fn validate_session_authority(
+        &self,
+        collector_id: &str,
+        device_address: &str,
+        authority_epoch: u64,
+        assignment_generation: u64,
+    ) -> bool {
+        self.current_authority_mark(
+            collector_id,
+            device_address,
+            authority_epoch,
+            assignment_generation,
+        )
+        .is_some()
+    }
+
+    /// Core-issued authority-instance ordinal for the device's CURRENT
+    /// authority window (M5.2B execution fencing). `None` when the
+    /// (epoch, generation) stamp does not validate — callers must treat
+    /// that as rejection, never as instance 0.
+    pub fn session_authority_instance(
+        &self,
+        collector_id: &str,
+        device_address: &str,
+        authority_epoch: u64,
+        assignment_generation: u64,
+    ) -> Option<u64> {
+        self.current_authority_mark(
+            collector_id,
+            device_address,
+            authority_epoch,
+            assignment_generation,
+        )
+        .map(|mark| mark.instance)
     }
 
     /// Wire the graph event channel so collector connect/disconnect events
@@ -282,15 +490,24 @@ impl CollectorManager {
         // insert waits on the same lock and observes post-cleanup
         // registry state. Assignments are therefore always computed
         // against the state the new session will actually own.
+        //
+        // M5.2B review B3: the generation bump AND the active-session
+        // insert run under the session gate so registration replacement
+        // is atomic against lifecycle admission — an event is validated
+        // against either the fully-old or fully-new registration, never
+        // the gap between them. Lock order is session_gate ->
+        // active_collectors everywhere: unregister_collector acquires
+        // them in the same order, and no path holds active_collectors
+        // while acquiring the gate.
         let generation = {
-            let mut generations = self.session_generations.lock().unwrap();
-            let next = generations.entry(collector_id.clone()).or_insert(0);
-            *next += 1;
-            *next
-        };
-        {
-            let mut collectors = self.active_collectors.lock().unwrap();
-            collectors.insert(
+            let _gate = self.session_gate();
+            let generation = {
+                let mut generations = self.session_generations.lock().unwrap();
+                let next = generations.entry(collector_id.clone()).or_insert(0);
+                *next += 1;
+                *next
+            };
+            self.active_collectors.lock().unwrap().insert(
                 collector_id.clone(),
                 CollectorSession {
                     generation,
@@ -299,7 +516,8 @@ impl CollectorManager {
                     tx: tx.clone(),
                 },
             );
-        }
+            generation
+        };
         {
             let mut runtime = self.runtime_state.lock().unwrap();
             let entry = runtime.entry(collector_id.clone()).or_default();
@@ -333,6 +551,17 @@ impl CollectorManager {
     /// closing after a reconnect is a no-op and must not disconnect the
     /// newer valid session or orphan its devices.
     pub fn unregister_collector(&self, collector_id: &str, generation: u64) -> bool {
+        // M5.2B review B3: the session gate is held across the ENTIRE
+        // unregister — registration removal, session retirement AND
+        // device-assignment cleanup — so lifecycle admission (which
+        // holds the same gate across validate+apply) observes either a
+        // fully-active registration or a fully-retired one, never the
+        // gap between deactivation and cleanup. The gate is acquired
+        // BEFORE `active_collectors` to keep the lock order
+        // session_gate -> active_collectors consistent with
+        // register_collector and lifecycle admission; no path may hold
+        // `active_collectors` while acquiring the gate.
+        let _gate = self.session_gate();
         // H6: the generation check AND all cleanup run under one
         // `active_collectors` lock. `register_collector` inserts new
         // sessions under the same lock, so a stale cleanup either sees
@@ -361,6 +590,16 @@ impl CollectorManager {
         // G4: Emit health event for collector disconnection
         if let Some(ref emitter) = self.health_emitter {
             emitter.emit_collector_disconnected(collector_id, "unknown");
+        }
+
+        // M5.2B: collector disconnect retires its subscription-session
+        // authority immediately — delayed telemetry from those sessions
+        // stays historical and can never satisfy current coverage. The
+        // session gate (held for the whole unregister) serializes this
+        // against in-flight lifecycle validation+apply so retirement
+        // cannot interleave mid-event.
+        if let Some(registry) = &self.session_registry {
+            registry.retire_collector(collector_id);
         }
 
         {
@@ -700,6 +939,7 @@ impl CollectorManager {
                     .map(|d| (d.address.clone(), assignment_has_acquisition_authority(a)))
             })
             .collect();
+        let mut withdrawn: Vec<String> = Vec::new();
         {
             let mut last_sent = self.last_sent_assignments.lock().unwrap();
             if let Some(previous) = last_sent.insert(collector_id.to_string(), current.clone()) {
@@ -707,17 +947,80 @@ impl CollectorManager {
                 for (address, had_authority) in previous {
                     let still_authoritative = current.get(&address).copied().unwrap_or(false);
                     if had_authority && !still_authoritative {
-                        pending.insert((collector_id.to_string(), address), generation);
+                        pending.insert((collector_id.to_string(), address.clone()), generation);
+                        withdrawn.push(address);
                     }
                 }
             }
         }
 
+        // Authority windows for lifecycle validation (M5.2B) AND
+        // immediate session retirement run under the session gate so a
+        // lifecycle event can never be validated against pre-withdrawal
+        // marks and then applied after the sessions were retired.
+        //
+        // The first sync granting authority fixes `assigned_gen`; the
+        // first sync withdrawing it fixes `removed_gen` AND retires the
+        // target's live sessions core-side — withdrawal never depends on
+        // terminal messages from the old collector. Confirming resyncs
+        // leave an authorized mark untouched so sessions spawned under
+        // an earlier generation remain inside their authority window.
+        {
+            let _gate = self.session_gate();
+            let mut marks = self.device_authority_marks.lock().unwrap();
+            let device_marks = marks.entry(collector_id.to_string()).or_default();
+            let addresses: std::collections::HashSet<String> = device_marks
+                .keys()
+                .cloned()
+                .chain(current.keys().cloned())
+                .collect();
+            for address in addresses {
+                if current.get(&address).copied().unwrap_or(false) {
+                    let still_authorized = device_marks
+                        .get(&address)
+                        .is_some_and(|m| m.assigned_gen != 0 && m.removed_gen.is_none());
+                    if !still_authorized {
+                        device_marks.insert(
+                            address,
+                            DeviceAuthorityMark {
+                                assigned_gen: generation,
+                                removed_gen: None,
+                                instance: self
+                                    .next_authority_instance
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                            },
+                        );
+                    }
+                } else {
+                    let mark = device_marks
+                        .entry(address.clone())
+                        .or_insert(DeviceAuthorityMark::default());
+                    if mark.removed_gen.is_none() {
+                        mark.removed_gen = Some(generation);
+                    }
+                }
+            }
+            drop(marks);
+            if let Some(registry) = &self.session_registry {
+                for address in &withdrawn {
+                    registry.retire_target(address, "assignment acquisition authority withdrawn");
+                }
+            }
+        }
+
+        let collector_session_generation = self
+            .session_generations
+            .lock()
+            .unwrap()
+            .get(collector_id)
+            .copied()
+            .unwrap_or(0);
         tx.send(AssignmentUpdate {
             assignments,
             is_full_sync: true,
             generation,
             authority_epoch: self.authority_epoch,
+            collector_session_generation,
         })
         .await
         .is_ok()
@@ -1400,6 +1703,151 @@ mod tests {
             .map(|c| c.pending_withdrawal_devices.clone())
             .unwrap_or_default();
         assert_eq!(pending, vec!["10.0.0.1".to_string()]);
+    }
+
+    /// M5.2B: lifecycle authority windows — a lifecycle event is valid
+    /// only inside [assigned_gen, removed_gen) for its (collector,
+    /// device) pair within the current authority epoch.
+    #[tokio::test]
+    async fn session_authority_window_accepts_only_current_assignment() {
+        // Automatic mode grants acquisition authority without requiring
+        // selected_paths (Explicit + empty selection is authority-less).
+        let (manager, _registry, _dir) = manager_with_device(AcquisitionMode::Automatic).await;
+        let epoch = manager.authority_epoch();
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let assigned_gen = rx.recv().await.expect("initial sync").generation;
+        assert!(assigned_gen > 0);
+
+        // The assigning generation itself is inside the window.
+        assert!(manager.validate_session_authority("c1", "10.0.0.1", epoch, assigned_gen));
+        // Never-issued future generations and the zero generation are
+        // not authority this collector holds.
+        assert!(!manager.validate_session_authority("c1", "10.0.0.1", epoch, assigned_gen + 1));
+        assert!(!manager.validate_session_authority("c1", "10.0.0.1", epoch, 0));
+        // A delayed event from a different authority epoch is fenced.
+        assert!(!manager.validate_session_authority("c1", "10.0.0.1", epoch + 1, assigned_gen));
+        // Another collector or an unknown device holds no window.
+        assert!(!manager.validate_session_authority("c2", "10.0.0.1", epoch, assigned_gen));
+        assert!(!manager.validate_session_authority("c1", "10.0.0.2", epoch, assigned_gen));
+    }
+
+    /// Removal closes the window at the withdrawing generation;
+    /// reassignment opens a fresh window and fences every stale
+    /// generation from prior windows.
+    #[tokio::test]
+    async fn session_authority_window_closes_on_removal_and_reassignment() {
+        let (manager, registry, _dir) = manager_with_device(AcquisitionMode::Automatic).await;
+        let epoch = manager.authority_epoch();
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let g1 = rx.recv().await.expect("initial sync").generation;
+
+        // Withdraw the device: the resync generation becomes the
+        // exclusive upper bound of the authority window.
+        registry
+            .assign_device_with_audit("10.0.0.1", None, "test", "unassign")
+            .unwrap();
+        manager.resync_collector("c1").await;
+        let g2 = rx.recv().await.expect("withdrawal sync").generation;
+        assert!(g2 > g1);
+
+        // Withdrawal revokes CURRENT authority immediately (M5.2B
+        // review B2): generations inside the historical [g1, g2) window
+        // once evidenced held authority, but once `removed_gen` is set
+        // delayed lifecycle events stamped with them must never
+        // re-establish current session authority. Core-side retirement
+        // already ran inside the withdrawal sync; this fences the
+        // delayed-event path.
+        assert!(!manager.validate_session_authority("c1", "10.0.0.1", epoch, g1));
+        assert!(!manager.validate_session_authority("c1", "10.0.0.1", epoch, g2));
+        assert!(!manager.validate_session_authority("c1", "10.0.0.1", epoch, g2 + 1));
+
+        // Reassignment opens a NEW window — stale generations from the
+        // previous window stay fenced even though they once authorized.
+        registry
+            .assign_device_with_audit("10.0.0.1", Some("c1".to_string()), "test", "reassign")
+            .unwrap();
+        manager.resync_collector("c1").await;
+        let g3 = rx.recv().await.expect("reassignment sync").generation;
+        assert!(g3 > g2);
+        assert!(manager.validate_session_authority("c1", "10.0.0.1", epoch, g3));
+        assert!(!manager.validate_session_authority("c1", "10.0.0.1", epoch, g1));
+        assert!(!manager.validate_session_authority("c1", "10.0.0.1", epoch, g2));
+    }
+
+    /// A new CollectorManager over the same registry state mints a
+    /// strictly newer authority epoch (persisted high-water), so
+    /// lifecycle evidence stamped under the previous epoch is fenced.
+    #[tokio::test]
+    async fn session_authority_epoch_changes_across_restart() {
+        let (manager, registry, dir) = manager_with_device(AcquisitionMode::Automatic).await;
+        let epoch1 = manager.authority_epoch();
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let issued_gen = rx.recv().await.expect("initial sync").generation;
+
+        // Simulated core restart: a fresh manager on the same registry
+        // must not reuse the previous epoch.
+        let credentials = Arc::new(
+            CredentialVault::open(dir.path().join("vault"), "BONSAI_ASSIGNMENT_TEST_VAULT")
+                .unwrap(),
+        );
+        let manager2 = CollectorManager::new(registry, credentials, vec![]);
+        let epoch2 = manager2.authority_epoch();
+        assert!(epoch2 > epoch1, "restart must mint a newer epoch");
+        // Old-epoch evidence is rejected outright.
+        assert!(!manager2.validate_session_authority("c1", "10.0.0.1", epoch1, issued_gen));
+    }
+
+    /// M5.2B review B3 residual: `latest_session_generation` is the
+    /// ISSUED high-water mark and stays recorded after unregister, but
+    /// the ACTIVE registration is gone — lifecycle admission must
+    /// fence on `active_session_generation`, not the issued bound.
+    /// Deterministic boundary check: after unregister the device
+    /// authority window still validates (marks are history, not
+    /// liveness), so ONLY the inactive-registration fence rejects.
+    #[tokio::test]
+    async fn unregister_retires_active_registration_but_keeps_issued_generation() {
+        let (manager, _registry, _dir) = manager_with_device(AcquisitionMode::Automatic).await;
+        let epoch = manager.authority_epoch();
+        let (mut rx, registration_gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let assigned_gen = rx.recv().await.expect("initial sync").generation;
+        assert_eq!(
+            manager.active_session_generation("c1"),
+            Some(registration_gen)
+        );
+
+        assert!(manager.unregister_collector("c1", registration_gen));
+
+        // Registration deactivated; issued generation retained.
+        assert_eq!(manager.active_session_generation("c1"), None);
+        assert_eq!(manager.latest_session_generation("c1"), registration_gen);
+        // The authority window itself is untouched — this is exactly
+        // why admission cannot rely on it (or the issued bound) alone.
+        assert!(manager.validate_session_authority("c1", "10.0.0.1", epoch, assigned_gen));
+
+        // Re-registration supersedes cleanly: the new active session
+        // carries the newer generation.
+        let (_rx2, registration_gen2) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        assert!(registration_gen2 > registration_gen);
+        assert_eq!(
+            manager.active_session_generation("c1"),
+            Some(registration_gen2)
+        );
+        assert_eq!(manager.latest_session_generation("c1"), registration_gen2);
     }
 }
 

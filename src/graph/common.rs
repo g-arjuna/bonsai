@@ -781,9 +781,7 @@ pub fn resolve_peer_typed(conn: &Connection<'_>, peer_ip: &str) -> PeerResolutio
     // NOT the same as a successful lookup with zero rows: it means the
     // evidence could not be examined, so the resolution is Unavailable
     // rather than Resolved on partial evidence (fail closed).
-    let tier = |label: &str,
-                cypher: &str|
-     -> std::result::Result<Vec<String>, String> {
+    let tier = |label: &str, cypher: &str| -> std::result::Result<Vec<String>, String> {
         let mut stmt = conn
             .prepare(cypher)
             .map_err(|e| format!("{label}: prepare failed: {e}"))?;
@@ -876,7 +874,9 @@ pub fn resolve_peer_typed(conn: &Connection<'_>, peer_ip: &str) -> PeerResolutio
 /// or resolution is not unique. All failures are silent (best-effort) so
 /// callers should treat None as "not yet known".
 pub fn resolve_peer_to_device(conn: &Connection<'_>, peer_ip: &str) -> Option<String> {
-    resolve_peer_typed(conn, peer_ip).device().map(str::to_string)
+    resolve_peer_typed(conn, peer_ip)
+        .device()
+        .map(str::to_string)
 }
 
 /// Identity of ONE BGP session observation as projected onto a
@@ -1018,11 +1018,7 @@ pub(crate) fn reconcile_bgp_session_edges_for_peer(
         let peer = read_str(&row[2]);
         let source = {
             let s = read_str(&row[3]);
-            if s.is_empty() {
-                "gnmi".to_string()
-            } else {
-                s
-            }
+            if s.is_empty() { "gnmi".to_string() } else { s }
         };
         let state = read_str(&row[4]);
         let peer_as = match &row[5] {
