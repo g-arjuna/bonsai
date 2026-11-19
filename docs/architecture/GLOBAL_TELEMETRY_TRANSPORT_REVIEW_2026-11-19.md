@@ -163,3 +163,106 @@ matrix. No automatic production promotion or external dependency until
 benefit, operator burden and rollback are reviewed.
 
 No runtime/load tests or implementation changes in this documentation review.
+
+## Second-pass sustainability review (19 November)
+
+Primary upstream references independently rechecked; these are incremental
+acceptance refinements, not new product epics or dependencies.
+
+- **Telegraf** ([pipeline](https://docs.influxdata.com/telegraf/v1/concepts/data-pipeline/),
+  [tracking](https://docs.influxdata.com/telegraf/v1/concepts/metrics/),
+  [configuration](https://docs.influxdata.com/telegraf/v1/configuration/)):
+  input/processor/aggregator/output stages with per-output buffers and
+  explicit filters, tracking for supported queue inputs, collection and
+  flush jitter. Memory buffers lose oldest data on overflow; disk buffers
+  are not disk-space capped. Reuse BN-024-03/25's extension seam and existing
+  outputs/sidecars rather than a new plugin framework or mandatory Telegraf.
+  Explicit delivery, trust, resource and version contracts per adapter;
+  no generic metric adapter can establish canonical routing authority.
+  Compare supported gNMI/SNMP outputs as differential references, not
+  protocol-completeness or durability oracles.
+- **InfluxDB 3 Core** ([durability](https://docs.influxdata.com/influxdb3/core/reference/internals/durability/),
+  [object storage](https://docs.influxdata.com/influxdb3/core/object-storage/),
+  [last-value cache](https://docs.influxdata.com/influxdb3/core/admin/last-value-cache/)):
+  default acknowledgement follows WAL persistence; recent data is queryable
+  before conversion to Parquet. Last-value cache is cardinality-sensitive
+  and volatile on restart; object catalog requires conditional creates and
+  strong read/list visibility. Core is OSS; Enterprise adds HA/read
+  replicas and historical-query capabilities, not assumed present in Core.
+  Bonsai already archives Arrow/Parquet and uses Ladybug for current
+  semantic state. In src/archive.rs:516–588, files are opened under final
+  names and closed by ArrowWriter; no durable manifest publication shown
+  there. Refine BN-008/009/019/023: immutable finalized segments with
+  checksummed manifest, source/scope, time bounds, schema revision, counts
+  and source checkpoint; publish only after verified file/object durability.
+  Acknowledge archive progress after manifest commit, never delete the
+  sole replay copy before verified recovery coverage. Test partial upload,
+  interrupted close, manifest/segment mismatch, orphan cleanup, concurrent
+  retention and restore. Bound small-file/FD/compaction debt, cache and
+  catalog memory, and measure historical query cost. Object storage is
+  conditional, not a required service; never assume a shared bucket
+  provides transactional graph or writer ownership.
+- **Mimir** ([architecture](https://grafana.com/docs/mimir/latest/get-started/about-grafana-mimir-architecture/),
+  [query scheduler](https://grafana.com/docs/mimir/latest/references/architecture/components/query-scheduler/),
+  [shuffle sharding](https://grafana.com/docs/mimir/latest/configure/configure-shuffle-sharding/)):
+  one binary can deploy multiple roles; separately scaled query scheduling
+  and tenant fault isolation protect shared resources. Keep Bonsai's
+  unified build; split roles only when measured. src/graph/explorer.rs:
+  734–788 already has active diagnostics and engine interruption on
+  deadline/cancellation. That does not establish fair scheduling or
+  ingestion protection across API/MCP/UI/ML. Extend BN-024-20/013/009:
+  bounded per-principal/scope concurrency and work budgets, cancellation
+  until worker actually exits, reserved ingestion resources, separate
+  interactive vs batch workload quotas. Test expensive concurrent
+  investigations/export against live routing/gNMI and measure committed
+  critical p99/lag, query p99, fairness, RSS/IO and recovery. No new
+  scheduler service or distributed graph required.
+- **Akvorado** ([design](https://github.com/akvorado/akvorado/blob/main/console/data/docs/80-design.md),
+  [overview](https://akvorado.net/docs/intro)): raw flow UDP receive is
+  separated from Kafka-backed parsing and SNMP/gNMI/BMP enrichment, then
+  ClickHouse. UDP receive cannot wait for CPU-heavy parsing; broker cannot
+  restore packets lost before it. Bonsai src/streaming/netflow.rs:799–850
+  receives and decodes in one loop with local template state. For BN-016/
+  009/021, benchmark kernel/socket loss separately from application drops,
+  parse cost and downstream lag under burst. Only if bottleneck observed,
+  introduce bounded receive/worker separation with stable exporter/domain
+  affinity (templates/data ordering and restart epochs), original capture
+  time and provenance. No blind load balancing or duplicate route authority.
+  Evaluate packet batching/socket tuning before adding services; no claim of
+  lossless UDP.
+- **gNMIc** ([collector](https://gnmic.openconfig.net/user_guide/collector/collector_intro/),
+  [clustering](https://gnmic.openconfig.net/user_guide/HA/)): dynamic config,
+  distributed locks and target assignment, collect once/fan out. Reuse
+  Bonsai assignment generations and exact subscription lifecycle.
+  src/subscriber.rs:112–141 uses deterministic exponential reconnect sleep;
+  apply bounded jitter, fleet-wide concurrency admission and staged
+  initial sync/replay across sites under BN-003/008/009/023. Do not use
+  a broker as acquisition ownership or indiscriminately duplicate sessions.
+- **VictoriaMetrics** ([vmagent](https://docs.victoriametrics.com/victoriametrics/vmagent/),
+  [stream aggregation](https://docs.victoriametrics.com/victoriametrics/stream-aggregation/))
+  and **Prometheus** ([remote write](https://prometheus.io/docs/practices/remote_write/)):
+  active series and new-series churn are separate costs; event-time windows
+  require late-data policy, and increasing sender shards increases memory
+  and can overload the receiver. Existing BN-025-02 reset/time semantics
+  and BN-009 cardinality budgets cover this; measure active vs new keys per
+  hour/day, and test churn, late histogram buckets, aggregation policy
+  revision, sample coverage and adaptive catch-up within bounded bytes/
+  concurrency. No timestamp rounding of distinct critical events.
+- **Cloudflare** ([2026 pipeline evolution](https://blog.cloudflare.com/rewinding-the-exponential/)):
+  schema decomposition, compression, decentralized sampling and stream
+  aggregation reduce infrastructure growth; evaluate cost per usable
+  observation rather than copying its event-rate benchmark. Existing
+  sizing/retention and telemetry lanes already cover the main direction.
+  Record bytes at acquisition/wire/archive, CPU per decoded record,
+  graph amplification, usable retained coverage and compression ratio;
+  compare fixed representative workloads across releases. Sampling must
+  preserve probability/coverage and not remove critical transitions.
+
+### Closeout
+
+Refine existing backlog rows for archive manifest/restore, fair read-side
+resource isolation, UDP pre-decode loss, and synchronized fleet recovery.
+Other findings reinforce existing BN-024 extension, admission, storage,
+metric and sizing work: no new backlog epic, no required InfluxDB,
+Telegraf, ClickHouse or Kafka runtime. No runtime qualification or
+benchmark results in this documentation-only pass.
