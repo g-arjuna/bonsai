@@ -1152,6 +1152,12 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         });
     }
 
+    // Verifier readiness contract: local acquisition and remote telemetry
+    // ingestion must not start until the coverage verifier has registered
+    // its event-bus subscriber and finished boot-time initialization —
+    // telemetry published earlier would be lost permanently. The sender
+    // is dropped if the verifier exits, so this await can never hang.
+    let (verifier_ready_tx, verifier_ready_rx) = tokio::sync::oneshot::channel();
     let subscription_plan_tx = if let Some(ref store) = store {
         let (subscription_plan_tx, subscription_plan_rx) =
             tokio::sync::mpsc::channel::<SubscriptionPlan>(128);
@@ -1166,6 +1172,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 subscription_plan_rx,
                 verifier_sessions,
                 verifier_shutdown,
+                Some(verifier_ready_tx),
             )
             .await;
         });
@@ -1173,6 +1180,13 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     } else {
         None
     };
+    if store.is_some() {
+        if verifier_ready_rx.await.is_err() {
+            tracing::warn!(
+                "subscription verifier exited before signaling readiness — coverage verification unavailable"
+            );
+        }
+    }
 
     if runtime_mode == bonsai::config::RuntimeMode::Core
         && let Some(subscription_plan_tx) = subscription_plan_tx.clone()

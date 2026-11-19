@@ -432,28 +432,23 @@ async fn start_lab(pki: &Pki, device: TargetConfig) -> Lab {
     let verifier_bus = Arc::clone(&bus);
     let verifier_sessions = Arc::clone(&sessions);
     let (vsd, vsrx) = watch::channel(false);
-    // Readiness barrier: the verifier must have subscribed to the bus
-    // BEFORE any telemetry is injected — a bus event published before
-    // `add_subscriber` completes is lost permanently (no replay), which
-    // would masquerade as a coverage defect. Wait for the subscriber
-    // count to grow past the pre-verifier baseline instead of sleeping.
-    let subs_before_verifier = bus.subscriber_count();
+    // Readiness barrier (same contract as production server_startup):
+    // the verifier signals once its bus subscriber is registered and
+    // boot-time state is initialized — telemetry published before that
+    // would be lost permanently. The sender drops on verifier exit, so
+    // this await cannot hang.
+    let (verifier_ready_tx, verifier_ready_rx) = tokio::sync::oneshot::channel();
     let verifier = tokio::spawn(run_subscription_verifier(
         verifier_store,
         verifier_bus,
         plan_rx,
         verifier_sessions,
         vsrx,
+        Some(verifier_ready_tx),
     ));
-    assert!(
-        wait_for(
-            || bus.subscriber_count() > subs_before_verifier,
-            Duration::from_secs(10),
-            "verifier bus subscription"
-        )
-        .await,
-        "subscription verifier never subscribed to the event bus"
-    );
+    verifier_ready_rx
+        .await
+        .expect("subscription verifier exited before signaling readiness");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

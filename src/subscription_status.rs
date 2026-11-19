@@ -439,6 +439,7 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
     plan_rx: tokio::sync::mpsc::Receiver<SubscriptionPlan>,
     sessions: Arc<SubscriptionSessionRegistry>,
     shutdown: tokio::sync::watch::Receiver<bool>,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) {
     run_subscription_verifier_with_windows(
         store,
@@ -448,6 +449,7 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
         shutdown,
         Duration::from_secs(5),
         VERIFICATION_WINDOW,
+        ready,
     )
     .await;
 }
@@ -465,6 +467,7 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     tick: Duration,
     freshness_floor: Duration,
+    mut ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) {
     let (sub, mut telemetry_rx) = crate::event_bus::MpscSubscriber::new(
         "subscription_verifier",
@@ -501,6 +504,15 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
     // deduplicated. A reconnect under an unchanged plan carries a NEW
     // session_id and is NOT deduplicated.
     let mut registered_plans: HashMap<String, (String, String, String, String)> = HashMap::new();
+
+    // Readiness contract: the verifier is ready to accept telemetry only
+    // after its event-bus subscriber is registered, all bounded state is
+    // initialized and boot-time historical statuses are expired. A
+    // dropped sender (verifier shutdown/panic) resolves the receiver
+    // immediately — callers can never wait indefinitely.
+    if let Some(tx) = ready.take() {
+        let _ = tx.send(());
+    }
 
     loop {
         tokio::select! {
@@ -2328,5 +2340,96 @@ mod tests {
         other.plan_id = "plan-2".to_string();
         assert!(!submitted_manifest_is_stale(&other, &sessions));
         assert!(!submitted_manifest_is_stale(&plan("sess-b"), &sessions));
+    }
+    /// Startup readiness regression: telemetry published IMMEDIATELY
+    /// after the verifier readiness signal — with no scheduling delay —
+    /// must be captured end-to-end. Before the readiness contract this
+    /// raced the verifier's bus subscription and could be lost
+    /// permanently, leaving coverage pending despite accepted ingest.
+    #[tokio::test]
+    async fn verifier_readiness_captures_immediate_initial_telemetry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let graph = crate::graph::GraphStore::open(
+            dir.path().join("g.lbug").to_str().unwrap(),
+            256 * 1024 * 1024,
+        )
+        .expect("open graph store");
+        let db = BonsaiStore::db(&graph);
+        let store = SelectiveFailStore {
+            inner: graph,
+            fail_path: std::sync::Mutex::new(None),
+        };
+        let bus = crate::event_bus::InProcessBus::new(64);
+        let (plan_tx, plan_rx) = tokio::sync::mpsc::channel::<SubscriptionPlan>(16);
+        let sessions =
+            std::sync::Arc::new(registered_sessions(&[("dut:57400", "plan-1", "sess-b")]));
+        let (sd, srx) = tokio::sync::watch::channel(false);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let verifier = tokio::spawn(run_subscription_verifier_with_windows(
+            store,
+            bus.clone(),
+            plan_rx,
+            sessions,
+            srx,
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+            Some(ready_tx),
+        ));
+        // Await the readiness contract, then inject plan + telemetry with
+        // NO intervening sleep — bus delivery is already guaranteed.
+        ready_rx.await.expect("verifier readiness");
+        plan_tx
+            .send(SubscriptionPlan {
+                target: "dut:57400".to_string(),
+                paths: vec![expectation(
+                    "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets",
+                    "ON_CHANGE",
+                )],
+                plan_id: "plan-1".to_string(),
+                state: "submitted".to_string(),
+                acquisition: "explicit".to_string(),
+                session_id: "sess-b".to_string(),
+                detail: String::new(),
+            })
+            .await
+            .unwrap();
+        bus.publish(pending_gnmi_update("dut:57400", "plan-1", "sess-b"));
+
+        // Coverage must converge without any further telemetry.
+        let want_path =
+            "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets".to_string();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let db = db.clone();
+            let want = want_path.clone();
+            let observed = tokio::task::spawn_blocking(move || {
+                use lbug::Connection;
+                let conn = Connection::new(&db).unwrap();
+                conn.query("MATCH (s:SubscriptionStatus) RETURN s.device_address, s.path, s.status")
+                    .unwrap()
+                    .into_iter()
+                    .any(|row| {
+                        let get = |i: usize| -> String {
+                            match &row[i] {
+                                lbug::Value::String(v) => v.clone(),
+                                other => other.to_string(),
+                            }
+                        };
+                        get(1) == want && get(2) == "observed"
+                    })
+            })
+            .await
+            .unwrap();
+            if observed {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "immediate post-readiness telemetry never became observed"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let _ = sd.send(true);
+        verifier.abort();
     }
 }

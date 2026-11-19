@@ -661,6 +661,7 @@ async fn plan_change_supersedes_stale_paths_without_false_active() {
         plan_rx,
         Arc::new(bonsai::subscription_sessions::SubscriptionSessionRegistry::new()),
         srx,
+        None,
     ));
 
     let expectation = |path: &str| SubscriptionPathExpectation {
@@ -919,6 +920,7 @@ async fn stale_session_observation_never_projects_coverage() {
         plan_rx,
         verifier_sessions,
         srx,
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1076,6 +1078,7 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
         srx,
         Duration::from_millis(50),
         Duration::from_millis(200),
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1388,6 +1391,7 @@ async fn early_sync_observation_is_buffered_until_session_current() {
         srx,
         Duration::from_millis(50),
         Duration::from_millis(10_000),
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1475,6 +1479,7 @@ async fn unregistered_session_observation_never_covers() {
         srx,
         Duration::from_millis(50),
         Duration::from_millis(10_000),
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1554,6 +1559,7 @@ async fn pending_evidence_requires_the_authorized_session_identity() {
         srx,
         Duration::from_millis(50),
         Duration::from_millis(10_000),
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1651,6 +1657,7 @@ async fn coverage_is_acquisition_not_classification() {
         srx,
         Duration::from_millis(50),
         Duration::from_millis(10_000),
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1853,6 +1860,7 @@ async fn failed_status_write_is_retried_not_claimed() {
         srx,
         Duration::from_millis(50),
         Duration::from_millis(10_000),
+        None,
     ));
 
     let target = "dut:57400".to_string();
