@@ -432,6 +432,12 @@ async fn start_lab(pki: &Pki, device: TargetConfig) -> Lab {
     let verifier_bus = Arc::clone(&bus);
     let verifier_sessions = Arc::clone(&sessions);
     let (vsd, vsrx) = watch::channel(false);
+    // Readiness barrier: the verifier must have subscribed to the bus
+    // BEFORE any telemetry is injected — a bus event published before
+    // `add_subscriber` completes is lost permanently (no replay), which
+    // would masquerade as a coverage defect. Wait for the subscriber
+    // count to grow past the pre-verifier baseline instead of sleeping.
+    let subs_before_verifier = bus.subscriber_count();
     let verifier = tokio::spawn(run_subscription_verifier(
         verifier_store,
         verifier_bus,
@@ -439,6 +445,15 @@ async fn start_lab(pki: &Pki, device: TargetConfig) -> Lab {
         verifier_sessions,
         vsrx,
     ));
+    assert!(
+        wait_for(
+            || bus.subscriber_count() > subs_before_verifier,
+            Duration::from_secs(10),
+            "verifier bus subscription"
+        )
+        .await,
+        "subscription verifier never subscribed to the event bus"
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1583,22 +1598,44 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
     // alone (M5.2B review B4).
     let telemetry_client: Arc<std::sync::Mutex<Option<BonsaiGraphClient<Channel>>>> =
         Arc::new(std::sync::Mutex::new(None));
+    // Every telemetry_ingest RPC outcome is recorded — a silently
+    // discarded transport/authorization failure must never be
+    // indistinguishable from accepted coverage evidence.
+    let telemetry_rpc_log: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut telemetry_rx = bus.subscribe();
     let telemetry_fwd = {
         let client_slot = Arc::clone(&telemetry_client);
+        let rpc_log = Arc::clone(&telemetry_rpc_log);
         tokio::spawn(async move {
             while let Ok(update) = telemetry_rx.recv().await {
                 let update = Arc::unwrap_or_clone(update);
                 let proto = match telemetry_to_ingest_update("e2e-col", &update) {
                     Ok(p) => p,
-                    Err(_) => continue,
+                    Err(e) => {
+                        rpc_log.lock().unwrap().push(format!("proto-error: {e}"));
+                        continue;
+                    }
                 };
                 let client = client_slot.lock().unwrap().clone();
                 let Some(mut client) = client else { continue };
+                let log = Arc::clone(&rpc_log);
                 tokio::spawn(async move {
-                    let _ = client
+                    match client
                         .telemetry_ingest(Request::new(tokio_stream::iter(vec![proto])))
-                        .await;
+                        .await
+                    {
+                        Ok(resp) => {
+                            let r = resp.into_inner();
+                            log.lock().unwrap().push(format!(
+                                "accepted={} rejected={} error={:?}",
+                                r.accepted, r.rejected, r.error
+                            ));
+                        }
+                        Err(status) => {
+                            log.lock().unwrap().push(format!("rpc-error: {status}"));
+                        }
+                    }
                 });
             }
         })
@@ -1685,7 +1722,14 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
     // B4: exact persisted coverage on the FIRST authority — path A
     // observed via authenticated telemetry; paths B/C remain pending
     // (no matching evidence was ever injected for them).
-    assert_exact_coverage(&lab1.graph, &device_addr).await;
+    assert_exact_coverage(
+        &lab1.graph,
+        &device_addr,
+        "epoch1-initial",
+        &lab1.sessions,
+        &telemetry_rpc_log,
+    )
+    .await;
 
     // ── Phase 2: core restart — new epoch, empty registry, SAME
     // assignment configuration. The subscriber must be re-established
@@ -1806,7 +1850,14 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
     // B4: the renewed authority must reproduce the SAME exact
     // persisted coverage — registry identity alone is not proof that
     // observed path coverage survived the core restart.
-    assert_exact_coverage(&lab2.graph, &device_addr).await;
+    assert_exact_coverage(
+        &lab2.graph,
+        &device_addr,
+        "post-restart-verified",
+        &lab2.sessions,
+        &telemetry_rpc_log,
+    )
+    .await;
 
     // Old authority cannot regain coverage on the new core: a delayed
     // epoch-1-stamped lifecycle event is fenced before the registry.
@@ -1900,6 +1951,14 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
         Some(session2.clone()),
         "resync must not disturb current coverage"
     );
+    assert_exact_coverage(
+        &lab2.graph,
+        &device_addr,
+        "post-resync",
+        &lab2.sessions,
+        &telemetry_rpc_log,
+    )
+    .await;
 
     // ── Phase 4: collector assignment-stream reconnect inside the
     // session-generation fence. New session registers first; the stale
@@ -1987,6 +2046,14 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
         .expect("coverage")
         .1;
     assert_ne!(session2, session3, "reconnect must mint a new execution");
+    assert_exact_coverage(
+        &lab2.graph,
+        &device_addr,
+        "post-reconnect",
+        &lab2.sessions,
+        &telemetry_rpc_log,
+    )
+    .await;
 
     // ── Phase 5: a GENUINE current-generation disconnect retires session
     // authority immediately — old authority cannot linger. ──
@@ -2071,7 +2138,14 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
         .await,
         "monitoring did not resume after reassignment"
     );
-    assert_exact_coverage(&lab2.graph, &device_addr).await;
+    assert_exact_coverage(
+        &lab2.graph,
+        &device_addr,
+        "post-reassign",
+        &lab2.sessions,
+        &telemetry_rpc_log,
+    )
+    .await;
 
     // The predecessor core legitimately loses coverage: the collector
     // renewed authority under the new epoch, so its epoch-1 session was
@@ -2091,8 +2165,16 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
 /// B4 helper: poll the persisted graph until the exact expected
 /// SubscriptionStatus rows are present — path A `observed` with exact
 /// device/path/origin/mode identity, paths B/C `pending` (registered
-/// but never evidenced). Fails rather than timing out silently.
-async fn assert_exact_coverage(graph: &GraphStore, device_addr: &str) {
+/// but never evidenced). `phase`/`ctx` identify WHICH recovery phase
+/// failed and carry the authoritative session/execution identity and
+/// telemetry RPC outcomes observed up to that point.
+async fn assert_exact_coverage(
+    graph: &GraphStore,
+    device_addr: &str,
+    phase: &str,
+    sessions: &bonsai::subscription_sessions::SubscriptionSessionRegistry,
+    telemetry_rpc_log: &std::sync::Mutex<Vec<String>>,
+) {
     let path_a = "interfaces/interface[name=Ethernet1/1]/state/counters";
     let path_b = "interfaces/interface[name=Ethernet1/2]/state/oper-status";
     let path_c = "interfaces/interface[name=Ethernet1/3]/state/oper-status";
@@ -2119,7 +2201,22 @@ async fn assert_exact_coverage(graph: &GraphStore, device_addr: &str) {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    panic!("exact persisted coverage never reached: {last_rows:?}");
+    let provenance = sessions
+        .current_session_provenance(device_addr)
+        .map(|(p, s, c)| format!("plan={p} session={s} collector={c}"))
+        .unwrap_or_else(|| "none".to_string());
+    let rpc_tail: Vec<String> = telemetry_rpc_log
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .take(8)
+        .rev()
+        .cloned()
+        .collect();
+    panic!(
+        "[{phase}] exact persisted coverage never reached\n  authority: {provenance}\n  telemetry rpc tail: {rpc_tail:?}\n  persisted rows: {last_rows:?}"
+    );
 }
 
 // ── M5.2B review B3: collector registration generation fencing ───────────────

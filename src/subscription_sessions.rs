@@ -585,6 +585,25 @@ impl SubscriptionSessionRegistry {
             })
     }
 
+    /// Identity `(session_id, plan_id)` bound to the target's execution
+    /// high-water mark — the newest admitted execution — while that
+    /// execution is still open (its record exists and has not reached a
+    /// terminal state). `None` when no execution has been admitted or
+    /// the head execution has closed. The coverage verifier uses this to
+    /// fence delayed plan manifests and stale desired-plan previews:
+    /// only the open fence-head execution may own registered
+    /// expectations.
+    pub fn exec_head(&self, target: &str) -> Option<(String, String)> {
+        let targets = self.inner.lock().unwrap();
+        let entry = targets.get(target)?;
+        if !Self::exec_is_open(entry) {
+            return None;
+        }
+        let sid = entry.exec_session.clone()?;
+        let plan_id = entry.sessions.get(&sid)?.plan_id.clone();
+        Some((sid, plan_id))
+    }
+
     /// State of a specific session for status reporting.
     pub fn session_state(&self, target: &str, session_id: &str) -> Option<(String, String, bool)> {
         let targets = self.inner.lock().unwrap();

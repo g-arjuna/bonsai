@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::event_bus::InProcessBus;
 use crate::graph::{BonsaiEvent, SubscriptionStatusWrite};
@@ -523,6 +523,27 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
                     continue;
                 }
                 registered_plans.insert(plan.target.clone(), key);
+                // Execution-head manifest fence: a submitted manifest may
+                // register expectations only for the target's OPEN
+                // fence-head execution. A delayed manifest for a
+                // superseded or closed execution must never reset newer
+                // registered expectations back to pending. When no head
+                // is open yet (first execution whose lifecycle apply is
+                // still in flight — e.g. trusted local acquisition),
+                // allow unless the session is already known terminal;
+                // observation-side session binding still prevents
+                // cross-session satisfaction.
+                if submitted_manifest_is_stale(&plan, &sessions) {
+                    metrics::counter!("bonsai_subscription_plan_stale_manifest_total")
+                        .increment(1);
+                    debug!(
+                        target = %plan.target,
+                        plan_id = %plan.plan_id,
+                        session_id = %plan.session_id,
+                        "dropping submitted manifest for non-head execution"
+                    );
+                    continue;
+                }
                 register_plan(&store, &mut tracked, &mut pending_writes, plan, freshness_floor)
                     .await;
             }
@@ -614,6 +635,51 @@ async fn queue_or_persist<S: BonsaiStore>(
     }
 }
 
+/// Execution-head manifest fence (M5.2B review): a submitted manifest may
+/// register coverage expectations only for the target's OPEN fence-head
+/// execution. A delayed manifest for a superseded or closed execution
+/// must never reset newer registered expectations back to pending.
+///
+/// When no head is open yet — the first execution whose lifecycle apply
+/// is still in flight (trusted local acquisition publishes its plan on a
+/// separate channel from its lifecycle drain) — the manifest is allowed
+/// unless its session is already known terminal; observation-side
+/// session binding still prevents cross-session satisfaction.
+/// Session-unbound desired-plan previews (empty session_id) are fenced
+/// once an execution for the SAME plan is the fence head — the
+/// authoritative manifest owns the expectations — but always allowed
+/// before any execution exists.
+fn submitted_manifest_is_stale(
+    plan: &SubscriptionPlan,
+    sessions: &SubscriptionSessionRegistry,
+) -> bool {
+    match sessions.exec_head(&plan.target) {
+        // An open fence-head execution exists. A session-bound manifest
+        // is authoritative only for THAT execution; a session-unbound
+        // desired-plan preview for the same plan is outdated — its
+        // authoritative manifest owns the expectations now.
+        Some((head_session, head_plan)) => {
+            if plan.session_id.is_empty() {
+                head_plan == plan.plan_id
+            } else {
+                head_session != plan.session_id
+            }
+        }
+        // No open head execution: a session-bound manifest is allowed
+        // unless its session is already known terminal (first-execution
+        // lifecycle apply may still be in flight — trusted local
+        // acquisition publishes its plan on a separate channel). A
+        // session-unbound preview is always allowed — it is the desired
+        // state until an execution manifest supersedes it.
+        None => {
+            !plan.session_id.is_empty()
+                && sessions
+                    .session_state(&plan.target, &plan.session_id)
+                    .is_some_and(|(state, _, _)| crate::subscription_sessions::is_terminal(&state))
+        }
+    }
+}
+
 async fn register_plan<S: BonsaiStore>(
     store: &S,
     tracked: &mut HashMap<(String, String), TrackedPath>,
@@ -701,7 +767,6 @@ async fn register_plan<S: BonsaiStore>(
     }
 
     let deadline = Instant::now() + freshness_floor;
-
     for expectation in plan.paths {
         let key = tracked_key(&target, &expectation);
         // Unchanged re-registration (same plan, same session, same
@@ -800,7 +865,18 @@ async fn observe_update<S: BonsaiStore>(
             // Coverage is plan-bound: an observation authorized under
             // one plan can never satisfy expectations registered under
             // a different plan, even on the same target/path (B1/B3).
-            (key.0 == update.target && tracked_path.plan_id == update.plan_id)
+            (key.0 == update.target
+                && tracked_path.plan_id == update.plan_id
+                // Coverage is execution-bound: an observation authorized
+                // under one session can never satisfy expectations
+                // registered under a different session of the same plan —
+                // and a session-UNBOUND desired-plan preview (empty
+                // session_id) is not authoritative submitted-execution
+                // coverage either. Without exact session equality, a new
+                // session's early observation can be consumed by stale or
+                // preview expectations and then stranded when the real
+                // manifest re-registers the paths as pending.
+                && tracked_path.session_id == update.session_id)
                 .then(|| {
                     coverage_match(&tracked_path.expectation, update).map(|m| (key.clone(), m))
                 })
@@ -2035,5 +2111,222 @@ mod tests {
         let b = tracked.get(&key_b).unwrap();
         assert_eq!(b.durable_status, "observed");
         assert_eq!(b.durable_last_observed_at_ns, now);
+    }
+    /// M5.2B review: a new session's initial observation that reaches the
+    /// verifier AFTER the session is current but BEFORE its submitted
+    /// manifest is registered must not be consumed by the OLD session's
+    /// still-tracked expectations — it is retained in the bounded pending
+    /// buffer and released once the new manifest lands. A delayed manifest
+    /// or observation for the older execution can never reset or alter the
+    /// newer session's coverage.
+    #[tokio::test]
+    async fn early_observation_binds_to_owning_session_not_stale_expectations() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::graph::GraphStore::open(
+            dir.path().join("g.lbug").to_str().unwrap(),
+            256 * 1024 * 1024,
+        )
+        .expect("open graph store");
+        let target = "dut:57400";
+        let plan_path = "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets";
+        // Session A registered first (older execution), then session B —
+        // same plan, newer execution generation: B is the fence head and
+        // the current coverage session; A's record is superseded.
+        let sessions =
+            registered_sessions(&[(target, "plan-1", "sess-a"), (target, "plan-1", "sess-b")]);
+        let plan = |session_id: &str| SubscriptionPlan {
+            target: target.to_string(),
+            paths: vec![expectation(plan_path, "ON_CHANGE")],
+            plan_id: "plan-1".to_string(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            session_id: session_id.to_string(),
+            detail: String::new(),
+        };
+        let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
+        let mut pending = PendingObservations::default();
+        let mut pending_writes: VecDeque<crate::graph::SubscriptionStatusWrite> = VecDeque::new();
+        let floor = Duration::from_secs(60);
+
+        // Old execution's manifest registers its expectations.
+        register_plan(
+            &store,
+            &mut tracked,
+            &mut pending_writes,
+            plan("sess-a"),
+            floor,
+        )
+        .await;
+        let key = tracked_key(target, &expectation(plan_path, "ON_CHANGE"));
+        assert_eq!(tracked.get(&key).unwrap().session_id, "sess-a");
+
+        // New session B is already current; its ONLY initial observation
+        // arrives before B's manifest is processed.
+        let t0 = Instant::now();
+        let update_b = pending_gnmi_update(target, "plan-1", "sess-b");
+        observe_update(
+            &store,
+            &mut tracked,
+            &sessions,
+            &mut pending,
+            &mut pending_writes,
+            &update_b,
+            t0,
+        )
+        .await;
+        // Must NOT satisfy A's expectations: still pending, evidence held.
+        assert_eq!(tracked.get(&key).unwrap().status, "pending");
+        assert_eq!(tracked.get(&key).unwrap().session_id, "sess-a");
+        assert_eq!(
+            pending.total, 1,
+            "early evidence retained in pending buffer"
+        );
+
+        // B's manifest lands: expectations re-bind to session B.
+        register_plan(
+            &store,
+            &mut tracked,
+            &mut pending_writes,
+            plan("sess-b"),
+            floor,
+        )
+        .await;
+        assert_eq!(tracked.get(&key).unwrap().session_id, "sess-b");
+        assert_eq!(tracked.get(&key).unwrap().status, "pending");
+
+        // Pending release replays the ORIGINAL receipt instant — no extra
+        // telemetry needed for coverage to converge.
+        let ready = pending.sweep(&sessions);
+        assert_eq!(ready.len(), 1);
+        for (update, received_at) in pending.take(&ready[0]) {
+            observe_update(
+                &store,
+                &mut tracked,
+                &sessions,
+                &mut pending,
+                &mut pending_writes,
+                &update,
+                received_at,
+            )
+            .await;
+        }
+        let tp = tracked.get(&key).unwrap();
+        assert_eq!(tp.status, "observed");
+        assert_eq!(tp.last_evidence_at, Some(t0));
+
+        // A delayed manifest for the OLD execution is fenced: it can
+        // never reset B's registered expectations.
+        assert!(submitted_manifest_is_stale(&plan("sess-a"), &sessions));
+        assert!(!submitted_manifest_is_stale(&plan("sess-b"), &sessions));
+
+        // A late observation stamped with the old session is not current
+        // and can never alter B's coverage; its bucket is discarded as
+        // terminal-session evidence.
+        let update_a = pending_gnmi_update(target, "plan-1", "sess-a");
+        observe_update(
+            &store,
+            &mut tracked,
+            &sessions,
+            &mut pending,
+            &mut pending_writes,
+            &update_a,
+            Instant::now(),
+        )
+        .await;
+        assert!(pending.sweep(&sessions).is_empty());
+        assert_eq!(pending.total, 0, "stale-session evidence discarded");
+        assert_eq!(tracked.get(&key).unwrap().status, "observed");
+    }
+    /// M5.2B review: a session-UNBOUND desired-plan preview is not
+    /// authoritative submitted-execution coverage. A current session's
+    /// observation arriving before its manifest must be retained in the
+    /// pending buffer — never consumed by preview expectations that the
+    /// manifest is about to re-register — and a late preview must not
+    /// overwrite the fence-head execution's registered expectations.
+    #[tokio::test]
+    async fn session_unbound_preview_never_satisfies_execution_coverage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::graph::GraphStore::open(
+            dir.path().join("g.lbug").to_str().unwrap(),
+            256 * 1024 * 1024,
+        )
+        .expect("open graph store");
+        let target = "dut:57400";
+        let plan_path = "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets";
+        let sessions = registered_sessions(&[(target, "plan-1", "sess-b")]);
+        let plan = |session_id: &str| SubscriptionPlan {
+            target: target.to_string(),
+            paths: vec![expectation(plan_path, "ON_CHANGE")],
+            plan_id: "plan-1".to_string(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            session_id: session_id.to_string(),
+            detail: String::new(),
+        };
+        let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
+        let mut pending = PendingObservations::default();
+        let mut pending_writes: VecDeque<crate::graph::SubscriptionStatusWrite> = VecDeque::new();
+        let floor = Duration::from_secs(60);
+
+        // Desired-plan preview registers first (session-unbound).
+        register_plan(&store, &mut tracked, &mut pending_writes, plan(""), floor).await;
+        let key = tracked_key(target, &expectation(plan_path, "ON_CHANGE"));
+        assert_eq!(tracked.get(&key).unwrap().session_id, "");
+
+        // The fence-head session's observation arrives before its
+        // manifest: it must NOT satisfy the preview — it is buffered.
+        let t0 = Instant::now();
+        let update_b = pending_gnmi_update(target, "plan-1", "sess-b");
+        observe_update(
+            &store,
+            &mut tracked,
+            &sessions,
+            &mut pending,
+            &mut pending_writes,
+            &update_b,
+            t0,
+        )
+        .await;
+        assert_eq!(tracked.get(&key).unwrap().status, "pending");
+        assert_eq!(pending.total, 1, "evidence retained for the owning session");
+
+        // The authoritative manifest re-binds expectations to sess-b;
+        // the buffered observation is then released with its ORIGINAL
+        // receipt instant — no additional telemetry required.
+        register_plan(
+            &store,
+            &mut tracked,
+            &mut pending_writes,
+            plan("sess-b"),
+            floor,
+        )
+        .await;
+        assert_eq!(tracked.get(&key).unwrap().session_id, "sess-b");
+        let ready = pending.sweep(&sessions);
+        assert_eq!(ready.len(), 1);
+        for (update, received_at) in pending.take(&ready[0]) {
+            observe_update(
+                &store,
+                &mut tracked,
+                &sessions,
+                &mut pending,
+                &mut pending_writes,
+                &update,
+                received_at,
+            )
+            .await;
+        }
+        let tp = tracked.get(&key).unwrap();
+        assert_eq!(tp.status, "observed");
+        assert_eq!(tp.last_evidence_at, Some(t0));
+
+        // A late session-unbound preview for the SAME plan is fenced:
+        // the open fence-head execution's manifest already owns the
+        // expectations. A preview for a DIFFERENT plan is not stale.
+        assert!(submitted_manifest_is_stale(&plan(""), &sessions));
+        let mut other = plan("");
+        other.plan_id = "plan-2".to_string();
+        assert!(!submitted_manifest_is_stale(&other, &sessions));
+        assert!(!submitted_manifest_is_stale(&plan("sess-b"), &sessions));
     }
 }
