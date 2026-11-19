@@ -64,6 +64,8 @@ pub mod telemetry_identity;
 pub mod tls_util;
 pub mod write_coordinator;
 pub mod yang;
+pub mod yang_schema;
+pub mod yang_source;
 
 pub use async_stream;
 pub use async_trait;

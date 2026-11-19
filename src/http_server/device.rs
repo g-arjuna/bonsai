@@ -896,6 +896,158 @@ pub(super) async fn yang_search_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(YangSearchResponse { result }))
 }
+
+fn open_yang_library(state: &AppState) -> Result<YangLibrary, (StatusCode, String)> {
+    YangLibrary::open(
+        &state.yang_library_root,
+        &state.yang_cache_root,
+        &state.yang_bundle_key_env,
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+#[derive(Serialize)]
+pub(super) struct YangSourcesResponse {
+    manifest_path: String,
+    sources: Vec<crate::yang_source::YangSourceEntry>,
+}
+
+pub(super) async fn yang_sources_handler(
+    State(_state): State<AppState>,
+) -> Result<Json<YangSourcesResponse>, (StatusCode, String)> {
+    let manifest = crate::yang_source::load_default_manifest()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(YangSourcesResponse {
+        manifest_path: crate::yang_source::DEFAULT_MANIFEST_PATH.to_string(),
+        sources: manifest.source,
+    }))
+}
+
+#[derive(Serialize)]
+pub(super) struct YangCompiledResponse {
+    bundles: Vec<crate::yang_schema::CompiledBundleInfo>,
+}
+
+pub(super) async fn yang_compiled_handler(
+    State(state): State<AppState>,
+) -> Result<Json<YangCompiledResponse>, (StatusCode, String)> {
+    let library = open_yang_library(&state)?;
+    let bundles = crate::yang_schema::list_compiled(&library)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(YangCompiledResponse { bundles }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct YangCompileParams {
+    #[serde(default)]
+    all_trust: bool,
+    #[serde(default = "default_true_http")]
+    activate: bool,
+}
+fn default_true_http() -> bool {
+    true
+}
+
+#[derive(Serialize)]
+pub(super) struct YangCompileResponse {
+    schema_id: String,
+    status: String,
+    module_count: usize,
+    path_count: usize,
+    diagnostics: Vec<String>,
+    activated: bool,
+}
+
+pub(super) async fn yang_compile_handler(
+    State(state): State<AppState>,
+    Query(params): Query<YangCompileParams>,
+) -> Result<Json<YangCompileResponse>, (StatusCode, String)> {
+    let library = open_yang_library(&state)?;
+    let catalogue = crate::yang_schema::compile_library(&library, !params.all_trust)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut activated = false;
+    if params.activate {
+        crate::yang_schema::activate_compiled(&library, &catalogue.schema_id)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        activated = true;
+    }
+    Ok(Json(YangCompileResponse {
+        schema_id: catalogue.schema_id,
+        status: catalogue.status,
+        module_count: catalogue.module_count,
+        path_count: catalogue.path_count,
+        diagnostics: catalogue.diagnostics,
+        activated,
+    }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct YangActivateRequest {
+    schema_id: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct YangActivateResponse {
+    active: String,
+}
+
+pub(super) async fn yang_activate_handler(
+    State(state): State<AppState>,
+    Json(req): Json<YangActivateRequest>,
+) -> Result<Json<YangActivateResponse>, (StatusCode, String)> {
+    let library = open_yang_library(&state)?;
+    crate::yang_schema::activate_compiled(&library, &req.schema_id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(YangActivateResponse {
+        active: req.schema_id,
+    }))
+}
+
+#[derive(Deserialize, Default)]
+pub(super) struct YangPathsParams {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    module: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    config: Option<String>,
+    #[serde(default)]
+    feature: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub(super) struct YangPathsResponse {
+    result: crate::yang_schema::SchemaPathSearchResult,
+}
+
+pub(super) async fn yang_paths_handler(
+    State(state): State<AppState>,
+    Query(params): Query<YangPathsParams>,
+) -> Result<Json<YangPathsResponse>, (StatusCode, String)> {
+    let library = open_yang_library(&state)?;
+    let config = match params.config.as_deref() {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    };
+    let result = crate::yang_schema::search_active_paths(
+        &library,
+        &crate::yang_schema::SchemaPathQuery {
+            query: params.q,
+            module: params.module,
+            kind: params.kind,
+            config,
+            required_feature: params.feature,
+            limit: params.limit.unwrap_or(200),
+        },
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(YangPathsResponse { result }))
+}
 pub(super) async fn apply_device_selected_paths_handler(
     State(state): State<AppState>,
     Path(address): Path<String>,

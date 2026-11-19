@@ -16,6 +16,12 @@ type HmacSha256 = Hmac<Sha256>;
 
 const INDEX_FILE: &str = "index.json";
 const MODULES_DIR: &str = "modules";
+/// Maximum size of a single imported .yang file.
+pub const MAX_YANG_FILE_BYTES: u64 = 8 * 1024 * 1024;
+/// Maximum number of .yang files accepted by one import/sync pass.
+pub const MAX_YANG_FILES_PER_IMPORT: usize = 50_000;
+/// Maximum aggregate bytes read during one import/sync pass.
+pub const MAX_YANG_TOTAL_IMPORT_BYTES: u64 = 1024 * 1024 * 1024;
 const BUNDLE_MANIFEST_PATH: &str = "manifest.json";
 const BUNDLE_SIGNATURE_PATH: &str = "signature.txt";
 
@@ -31,6 +37,14 @@ pub struct YangModuleRecord {
     pub trust: String,
     pub relative_path: String,
     pub checksum_sha256: String,
+    /// License/provenance note carried from the source manifest.
+    #[serde(default)]
+    pub license: String,
+    /// Platform/NOS applicability tags from the source manifest.
+    #[serde(default)]
+    pub platforms: Vec<String>,
+    #[serde(default)]
+    pub pinned_ref: String,
     pub imported_at_ns: i64,
 }
 
@@ -56,12 +70,18 @@ pub struct YangImportReport {
     pub imported: usize,
     pub updated: usize,
     pub skipped: usize,
+    /// Non-fatal issues (oversized files, filtered prefixes, conflicts).
+    #[serde(default)]
+    pub warnings: Vec<String>,
     pub modules: Vec<YangModuleRecord>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct YangSyncReport {
     pub sources: Vec<String>,
+    /// Per-source diagnostics (missing subdir, ref resolution, etc).
+    #[serde(default)]
+    pub warnings: Vec<String>,
     pub imported: usize,
     pub updated: usize,
     pub skipped: usize,
@@ -80,6 +100,12 @@ pub struct YangImportOptions {
     pub source_ref: String,
     pub vendor_scope: String,
     pub trust: String,
+    pub license: String,
+    pub platforms: Vec<String>,
+    pub pinned_ref: String,
+    /// When non-empty, only files whose name starts with one of these
+    /// prefixes are imported.
+    pub filename_prefixes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -90,6 +116,10 @@ pub struct YangBundleManifest {
     pub source: String,
     pub created_at_ns: i64,
     pub modules: Vec<YangBundleModule>,
+    /// Content identity: sha256 over sorted "name@revision@checksum" lines.
+    /// Empty only in pre-M6 bundles.
+    #[serde(default)]
+    pub bundle_id: String,
     pub signature_alg: String,
 }
 
@@ -100,47 +130,6 @@ pub struct YangBundleModule {
     pub checksum_sha256: String,
     pub archive_path: String,
 }
-
-#[derive(Clone, Debug)]
-pub struct YangSource {
-    pub vendor: &'static str,
-    pub repo_url: &'static str,
-    pub clone_name: &'static str,
-    pub subdirs: &'static [&'static str],
-}
-
-const DEFAULT_SOURCES: &[YangSource] = &[
-    YangSource {
-        vendor: "openconfig",
-        repo_url: "https://github.com/openconfig/public.git",
-        clone_name: "openconfig-public",
-        subdirs: &["release/models"],
-    },
-    YangSource {
-        vendor: "cisco",
-        repo_url: "https://github.com/CiscoDevNet/yang.git",
-        clone_name: "cisco-devnet-yang",
-        subdirs: &["vendor/cisco/xr"],
-    },
-    YangSource {
-        vendor: "juniper",
-        repo_url: "https://github.com/Juniper/yang.git",
-        clone_name: "juniper-yang",
-        subdirs: &["."],
-    },
-    YangSource {
-        vendor: "arista",
-        repo_url: "https://github.com/aristanetworks/yang.git",
-        clone_name: "arista-yang",
-        subdirs: &["."],
-    },
-    YangSource {
-        vendor: "nokia",
-        repo_url: "https://github.com/nokia/srlinux-yang-models.git",
-        clone_name: "nokia-srlinux-yang-models",
-        subdirs: &["srlinux"],
-    },
-];
 
 pub struct YangLibrary {
     root: PathBuf,
@@ -165,6 +154,11 @@ impl YangLibrary {
             cache_root,
             bundle_key_env: bundle_key_env.into(),
         })
+    }
+
+    /// Filesystem root of the YANG library (index + module blobs).
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn load_state(&self) -> Result<YangLibraryState> {
@@ -225,12 +219,56 @@ impl YangLibrary {
         }
         let mut state = self.load_state()?;
         let mut imported = 0usize;
-        let mut updated = 0usize;
+        let updated = 0usize;
         let mut skipped = 0usize;
         let mut changed_modules = Vec::new();
+        let mut warnings = Vec::new();
         let mut seen_keys = BTreeSet::new();
+        let mut total_bytes = 0u64;
 
-        for file in collect_yang_files(source_dir)? {
+        let files = collect_yang_files(source_dir)?;
+        if files.len() > MAX_YANG_FILES_PER_IMPORT {
+            bail!(
+                "YANG import exceeds {} file limit ({} files)",
+                MAX_YANG_FILES_PER_IMPORT,
+                files.len()
+            );
+        }
+
+        for file in files {
+            let file_name = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if !options.filename_prefixes.is_empty()
+                && !options
+                    .filename_prefixes
+                    .iter()
+                    .any(|p| file_name.starts_with(p.as_str()))
+            {
+                skipped += 1;
+                continue;
+            }
+            let meta = std::fs::metadata(&file)
+                .with_context(|| format!("failed to stat '{}'", file.display()))?;
+            if meta.len() > MAX_YANG_FILE_BYTES {
+                warnings.push(format!(
+                    "skipped oversized YANG file '{}' ({} bytes > {} limit)",
+                    file.display(),
+                    meta.len(),
+                    MAX_YANG_FILE_BYTES
+                ));
+                skipped += 1;
+                continue;
+            }
+            total_bytes += meta.len();
+            if total_bytes > MAX_YANG_TOTAL_IMPORT_BYTES {
+                bail!(
+                    "YANG import exceeds {} total byte limit",
+                    MAX_YANG_TOTAL_IMPORT_BYTES
+                );
+            }
             let raw = std::fs::read_to_string(&file)
                 .with_context(|| format!("failed to read YANG file '{}'", file.display()))?;
             let parsed = parse_yang_metadata(&raw).with_context(|| {
@@ -238,13 +276,20 @@ impl YangLibrary {
             })?;
             let checksum_sha256 = sha256_hex(raw.as_bytes());
             let revision = parsed.revision.unwrap_or_else(|| "unknown".to_string());
-            let file_name = format!(
-                "{}@{}.yang",
-                sanitize(&parsed.module_name),
-                sanitize(&revision)
-            );
-            let relative_path = format!("{MODULES_DIR}/{file_name}");
+
+            // Content-addressed immutable storage: module bytes live under
+            // modules/blobs/<sha256>.yang and are never overwritten.
+            let relative_path = format!("{MODULES_DIR}/blobs/{checksum_sha256}.yang");
             let module_path = self.root.join(&relative_path);
+            if !module_path.exists() {
+                if let Some(parent) = module_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&module_path, raw.as_bytes()).with_context(|| {
+                    format!("failed to store YANG module '{}'", module_path.display())
+                })?;
+            }
+
             let record = YangModuleRecord {
                 module_name: parsed.module_name,
                 revision,
@@ -254,6 +299,9 @@ impl YangLibrary {
                 source_ref: options.source_ref.clone(),
                 vendor_scope: options.vendor_scope.clone(),
                 trust: options.trust.clone(),
+                license: options.license.clone(),
+                platforms: options.platforms.clone(),
+                pinned_ref: options.pinned_ref.clone(),
                 relative_path,
                 checksum_sha256,
                 imported_at_ns: now_ns(),
@@ -265,24 +313,31 @@ impl YangLibrary {
             }
 
             let existing = state.modules.iter().position(|module| {
-                module.module_name == record.module_name && module.revision == record.revision
+                module.module_name == record.module_name
+                    && module.revision == record.revision
+                    && module.checksum_sha256 == record.checksum_sha256
             });
             match existing {
-                Some(index) if state.modules[index].checksum_sha256 == record.checksum_sha256 => {
+                Some(_) => {
                     skipped += 1;
                 }
-                Some(index) => {
-                    std::fs::write(&module_path, raw.as_bytes()).with_context(|| {
-                        format!("failed to update YANG module '{}'", module_path.display())
-                    })?;
-                    state.modules[index] = record.clone();
-                    changed_modules.push(record);
-                    updated += 1;
-                }
                 None => {
-                    std::fs::write(&module_path, raw.as_bytes()).with_context(|| {
-                        format!("failed to import YANG module '{}'", module_path.display())
-                    })?;
+                    // Same name+revision with different content: never
+                    // overwrite or silently replace — append a distinct
+                    // content record; active selection is deterministic
+                    // (trust rank, then newest import, then checksum).
+                    let conflict = state.modules.iter().any(|module| {
+                        module.module_name == record.module_name
+                            && module.revision == record.revision
+                    });
+                    if conflict {
+                        warnings.push(format!(
+                            "conflicting content for {}@{}: stored as distinct record {}",
+                            record.module_name,
+                            record.revision,
+                            &record.checksum_sha256[..12.min(record.checksum_sha256.len())]
+                        ));
+                    }
                     state.modules.push(record.clone());
                     changed_modules.push(record);
                     imported += 1;
@@ -297,23 +352,44 @@ impl YangLibrary {
             imported,
             updated,
             skipped,
+            warnings,
             modules: changed_modules,
         })
     }
 
+    /// Sync modules from the canonical source manifest
+    /// (`config/yang_sources.toml`). Every source is checked out at its
+    /// pinned ref — moving branches are never followed.
     pub fn sync(
         &self,
         vendor_filter: Option<&str>,
         catalogue_dir: &Path,
     ) -> Result<YangSyncReport> {
-        let selected = DEFAULT_SOURCES
+        self.sync_from_manifest(None, vendor_filter, catalogue_dir)
+    }
+
+    /// Sync from an explicit manifest (tests / alternate locations).
+    /// `platform_filter` restricts sources by their `platforms` tags.
+    pub fn sync_from_manifest(
+        &self,
+        manifest_path: Option<&Path>,
+        vendor_filter: Option<&str>,
+        catalogue_dir: &Path,
+    ) -> Result<YangSyncReport> {
+        let manifest = match manifest_path {
+            Some(path) => crate::yang_source::load_manifest(path)?,
+            None => crate::yang_source::load_default_manifest()?,
+        };
+        let selected = manifest
+            .source
             .iter()
-            .filter(|source| vendor_filter.is_none_or(|vendor| source.vendor == vendor))
+            .filter(|s| s.enabled)
+            .filter(|s| vendor_filter.is_none_or(|v| s.vendor == v || s.id == v))
             .collect::<Vec<_>>();
         if selected.is_empty() {
             bail!(
-                "no YANG source matched filter '{}'",
-                vendor_filter.unwrap_or_default()
+                "no enabled YANG source matched filter '{}'",
+                vendor_filter.unwrap_or("<all>")
             );
         }
 
@@ -321,56 +397,81 @@ impl YangLibrary {
         let mut updated = 0usize;
         let mut skipped = 0usize;
         let mut sources = Vec::new();
+        let mut warnings = Vec::new();
         let sources_root = self.cache_root.join("sources");
         std::fs::create_dir_all(&sources_root)?;
 
         for source in selected {
-            let clone_dir = sources_root.join(source.clone_name);
-            if clone_dir.exists() {
-                run_git(Some(&clone_dir), ["pull", "--ff-only", "--quiet"])?;
-            } else {
-                run_git(
-                    None,
-                    [
-                        "clone",
-                        "--depth=1",
-                        "--quiet",
-                        source.repo_url,
-                        &clone_dir.to_string_lossy(),
-                    ],
-                )?;
-            }
-            let revision = git_rev_parse(&clone_dir)?;
-            let source_ref = format!("{}@{}", source.repo_url, revision);
-            sources.push(source_ref.clone());
-
-            for subdir in source.subdirs {
-                let dir = clone_dir.join(subdir);
-                if !dir.exists() {
-                    continue;
+            let clone_dir = sources_root.join(&source.id);
+            match checkout_pinned(&clone_dir, &source.repo, &source.pinned_ref) {
+                Ok(resolved_ref) => {
+                    let source_ref = format!("{}@{}", source.repo, resolved_ref);
+                    sources.push(source_ref.clone());
+                    for subdir in &source.subdirs {
+                        let dir = clone_dir.join(subdir);
+                        if !dir.exists() || !dir.is_dir() {
+                            warnings.push(format!(
+                                "source '{}' subdir '{}' not present at pinned ref",
+                                source.id, subdir
+                            ));
+                            continue;
+                        }
+                        let report = self.import_directory(
+                            &dir,
+                            &YangImportOptions {
+                                source_kind: "sync".to_string(),
+                                source_ref: source_ref.clone(),
+                                vendor_scope: source.vendor.clone(),
+                                trust: "trusted".to_string(),
+                                license: source.license.clone(),
+                                platforms: source.platforms.clone(),
+                                pinned_ref: source.pinned_ref.clone(),
+                                filename_prefixes: source.prefixes.clone(),
+                            },
+                            catalogue_dir,
+                        )?;
+                        imported += report.imported;
+                        // Content-addressed store means "updated" only counts
+                        // genuinely new content records; identical re-syncs
+                        // surface as skipped.
+                        updated += report.updated;
+                        skipped += report.skipped;
+                        warnings.extend(
+                            report
+                                .warnings
+                                .iter()
+                                .map(|w| format!("source '{}': {}", source.id, w)),
+                        );
+                    }
                 }
-                let report = self.import_directory(
-                    &dir,
-                    &YangImportOptions {
-                        source_kind: "sync".to_string(),
-                        source_ref: source_ref.clone(),
-                        vendor_scope: source.vendor.to_string(),
-                        trust: "trusted".to_string(),
-                    },
-                    catalogue_dir,
-                )?;
-                imported += report.imported;
-                updated += report.updated;
-                skipped += report.skipped;
+                Err(e) => {
+                    warnings.push(format!(
+                        "source '{}' ({}) failed: {} — existing library unchanged",
+                        source.id, source.repo, e
+                    ));
+                }
             }
+        }
+
+        if sources.is_empty() && !warnings.is_empty() {
+            bail!("all YANG sources failed: {}", warnings.join("; "));
         }
 
         Ok(YangSyncReport {
             sources,
+            warnings,
             imported,
             updated,
             skipped,
         })
+    }
+
+    /// Deterministic active-module view: for each (name, revision) content
+    /// conflict, select the winner by trust rank, then newest import, then
+    /// checksum. Previously stored content is never removed.
+    pub fn active_modules(&self) -> Result<Vec<YangModuleRecord>> {
+        let state = self.load_state()?;
+        Ok(select_active_records(&state.modules))
     }
 
     pub fn search(&self, query: &str) -> Result<YangSearchResult> {
@@ -437,21 +538,23 @@ impl YangLibrary {
             );
         }
 
+        let bundle_modules: Vec<YangBundleModule> = selected
+            .iter()
+            .map(|module| YangBundleModule {
+                module_name: module.module_name.clone(),
+                revision: module.revision.clone(),
+                checksum_sha256: module.checksum_sha256.clone(),
+                archive_path: module.relative_path.clone(),
+            })
+            .collect();
         let manifest = YangBundleManifest {
             bundle_version: 1,
             vendor: vendor.to_string(),
             version_filter: version_filter.to_string(),
             source: self.root.display().to_string(),
             created_at_ns: now_ns(),
-            modules: selected
-                .iter()
-                .map(|module| YangBundleModule {
-                    module_name: module.module_name.clone(),
-                    revision: module.revision.clone(),
-                    checksum_sha256: module.checksum_sha256.clone(),
-                    archive_path: module.relative_path.clone(),
-                })
-                .collect(),
+            bundle_id: compute_bundle_id(&bundle_modules),
+            modules: bundle_modules,
             signature_alg: "hmac-sha256".to_string(),
         };
         let manifest_json = serde_json::to_vec_pretty(&manifest)
@@ -501,6 +604,12 @@ impl YangLibrary {
         verify_signature(&key, &manifest_json, signature.trim())?;
         let manifest: YangBundleManifest =
             serde_json::from_slice(&manifest_json).context("invalid YANG bundle manifest")?;
+        if !manifest.bundle_id.is_empty() {
+            let expected = compute_bundle_id(&manifest.modules);
+            if expected != manifest.bundle_id {
+                bail!("YANG bundle content identity mismatch");
+            }
+        }
 
         for module in &manifest.modules {
             let module_path = temp_root.join(&module.archive_path);
@@ -522,6 +631,10 @@ impl YangLibrary {
                 source_ref: bundle_path.display().to_string(),
                 vendor_scope: manifest.vendor,
                 trust: "trusted".to_string(),
+                license: String::new(),
+                platforms: Vec::new(),
+                pinned_ref: String::new(),
+                filename_prefixes: Vec::new(),
             },
             catalogue_dir,
         )?;
@@ -705,8 +818,19 @@ fn extract_quoted_or_bare_value(line: &str) -> Option<String> {
     })
 }
 
-fn sanitize(value: &str) -> String {
-    value.replace(['/', '\\', ':', ' '], "_")
+/// Deterministic bundle content identity over the module manifest.
+pub fn compute_bundle_id(modules: &[YangBundleModule]) -> String {
+    let mut lines: Vec<String> = modules
+        .iter()
+        .map(|m| format!("{}@{}@{}", m.module_name, m.revision, m.checksum_sha256))
+        .collect();
+    lines.sort();
+    let mut hasher = Sha256::new();
+    for line in lines {
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("bundle-{}", hex::encode(&hasher.finalize()[..12]))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -759,20 +883,128 @@ where
     }
 }
 
-fn git_rev_parse(repo_dir: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_dir)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .context("git is required for yang-sync")?;
+fn git_output<I, S>(cwd: Option<&Path>, args: I) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let mut cmd = Command::new("git");
+    cmd.args(args);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    let output = cmd.output().context("git is required for yang-sync")?;
     if !output.status.success() {
         bail!(
-            "failed to determine git revision for '{}'",
-            repo_dir.display()
+            "git command failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Check out `repo` at exactly `pinned_ref` in `dir`, returning the resolved
+/// commit SHA. Uses a bounded single-commit fetch of the pinned object so a
+/// moving default branch can never leak in. Re-running always lands on the
+/// pinned ref (idempotent).
+fn checkout_pinned(dir: &Path, repo: &str, pinned_ref: &str) -> Result<String> {
+    if !dir.exists() {
+        std::fs::create_dir_all(dir)?;
+        run_git(Some(dir), ["init", "--quiet"])?;
+        run_git(Some(dir), ["remote", "add", "origin", repo])?;
+    }
+    // Fetch exactly the pinned object (GitHub allows fetching reachable SHAs
+    // and tags). --depth 1 keeps the cache bounded. When the direct fetch
+    // fails (e.g. local mirrors that don't allow unadvertised wants), fall
+    // back to a bounded ref fetch and check the object out by name.
+    if run_git(
+        Some(dir),
+        ["fetch", "--depth=1", "--quiet", "origin", pinned_ref],
+    )
+    .is_err()
+    {
+        run_git(
+            Some(dir),
+            [
+                "fetch",
+                "--depth=100",
+                "--quiet",
+                "origin",
+                "+refs/heads/*:refs/remotes/origin/*",
+                "+refs/tags/*:refs/tags/*",
+            ],
+        )
+        .with_context(|| format!("failed to fetch pinned ref '{}' from {}", pinned_ref, repo))?;
+        // Verify the pinned object exists locally before checkout.
+        let cat = git_output(
+            Some(dir),
+            ["cat-file", "-e", &format!("{}^{{commit}}", pinned_ref)],
+        )
+        .or_else(|_| git_output(Some(dir), ["cat-file", "-e", pinned_ref]));
+        if cat.is_err() {
+            bail!(
+                "pinned ref '{}' not found in {} after bounded fetch",
+                pinned_ref,
+                repo
+            );
+        }
+        run_git(Some(dir), ["checkout", "--quiet", pinned_ref])?;
+    } else {
+        run_git(Some(dir), ["checkout", "--quiet", "FETCH_HEAD"])?;
+    }
+    let head = git_output(Some(dir), ["rev-parse", "HEAD"])?;
+    if pinned_ref.len() == 40
+        && pinned_ref.bytes().all(|b| b.is_ascii_hexdigit())
+        && head != pinned_ref
+    {
+        bail!(
+            "pinned ref '{}' resolved to '{}' — refusing non-matching checkout",
+            pinned_ref,
+            head
+        );
+    }
+    Ok(head)
+}
+
+/// Trust ordering for active-module selection: trusted > experimental >
+/// anything else.
+pub fn trust_rank(trust: &str) -> u8 {
+    match trust {
+        "trusted" => 2,
+        "experimental" => 1,
+        _ => 0,
+    }
+}
+
+/// Deterministic winner selection for same (module_name, revision) content
+/// conflicts: highest trust rank, then newest import, then lowest checksum
+/// for a stable total order. All records remain stored for rollback/audit.
+pub fn select_active_records(records: &[YangModuleRecord]) -> Vec<YangModuleRecord> {
+    let mut groups: std::collections::BTreeMap<(String, String), Vec<&YangModuleRecord>> =
+        std::collections::BTreeMap::new();
+    for record in records {
+        groups
+            .entry((record.module_name.clone(), record.revision.clone()))
+            .or_default()
+            .push(record);
+    }
+    let mut out = Vec::new();
+    for (_key, mut group) in groups {
+        group.sort_by(|a, b| {
+            trust_rank(&b.trust)
+                .cmp(&trust_rank(&a.trust))
+                .then_with(|| b.imported_at_ns.cmp(&a.imported_at_ns))
+                .then_with(|| a.checksum_sha256.cmp(&b.checksum_sha256))
+        });
+        out.push(group[0].clone());
+    }
+    out.sort_by(|a, b| {
+        a.vendor_scope
+            .cmp(&b.vendor_scope)
+            .then_with(|| a.module_name.cmp(&b.module_name))
+            .then_with(|| a.revision.cmp(&b.revision))
+    });
+    out
 }
 
 fn now_ns() -> i64 {
@@ -816,6 +1048,9 @@ mod tests {
                 source_ref: "test".to_string(),
                 vendor_scope: "openconfig".to_string(),
                 trust: "trusted".to_string(),
+                license: String::new(),
+                platforms: Vec::new(),
+                pinned_ref: String::new(),
                 relative_path: "modules/openconfig-interfaces@2024-01-01.yang".to_string(),
                 checksum_sha256: "abc".to_string(),
                 imported_at_ns: 1,
@@ -841,6 +1076,9 @@ mod tests {
                 source_ref: "test".to_string(),
                 vendor_scope: "openconfig".to_string(),
                 trust: "trusted".to_string(),
+                license: String::new(),
+                platforms: Vec::new(),
+                pinned_ref: String::new(),
                 relative_path: "modules/openconfig-bgp@2024-01-01.yang".to_string(),
                 checksum_sha256: "abc".to_string(),
                 imported_at_ns: 1,

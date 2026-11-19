@@ -1,0 +1,119 @@
+# Canonical YANG source manifest for Bonsai.
+#
+# Every entry pins an exact immutable git ref (commit SHA or tag). Moving
+# branches are never promoted automatically: `bonsai yang sync` checks out
+# `pinned_ref` exactly and records it as provenance.
+#
+# Fields:
+#   id          stable source identifier
+#   vendor      vendor_scope recorded on imported modules
+#   repo        git repository URL (https only)
+#   pinned_ref  exact commit SHA or tag to check out
+#   platforms   platform/NOS applicability tags ("*" = all)
+#   subdirs     repository-relative directories scanned for *.yang files
+#   prefixes    optional filename prefixes to restrict scope (empty = all)
+#   license     license/provenance note for imported content
+#   enabled     when false the source is listed but never synced
+schema_version = 1
+
+# --- OpenConfig -------------------------------------------------------------
+[[source]]
+id = "openconfig-public"
+vendor = "openconfig"
+repo = "https://github.com/openconfig/public.git"
+pinned_ref = "160da73440205de252066233b1ee0f3085d51d2d" # release v5.11.0
+platforms = ["*"]
+subdirs = ["release/models"]
+prefixes = ["openconfig-"]
+license = "Apache-2.0"
+enabled = true
+
+# --- IETF / IEEE standards (YangModels mirror, pinned) ----------------------
+[[source]]
+id = "ietf-yang"
+vendor = "ietf"
+repo = "https://github.com/YangModels/yang.git"
+pinned_ref = "e13b05c4ddcbfab9170e60dddbbe9eaf6a831964"
+platforms = ["*"]
+subdirs = ["standard/ietf", "standard/ieee"]
+license = "mixed (per RFC/IEEE; see source)"
+enabled = true
+
+# --- Nokia SR Linux ----------------------------------------------------------
+[[source]]
+id = "nokia-srlinux"
+vendor = "nokia_srl"
+repo = "https://github.com/nokia/srlinux-yang-models.git"
+pinned_ref = "97b373e8b6556d17111a5226e0c1cb0795184cf5"
+platforms = ["nokia_srlinux"]
+subdirs = ["srlinux"]
+license = "proprietary/vendor (see source)"
+enabled = true
+
+# --- Nokia SR OS / 7x50 ------------------------------------------------------
+[[source]]
+id = "nokia-sros-7x50"
+vendor = "nokia_sros"
+repo = "https://github.com/nokia/7x50_YangModels.git"
+pinned_ref = "9d3ce19eeb6af39d3e6bb1008147435eef1bcd52"
+platforms = ["nokia_sros"]
+subdirs = ["YANG/nokia-combined", "YANG"]
+license = "proprietary/vendor (see source)"
+enabled = true
+
+# --- Cisco IOS-XR (YangModels vendor mirror, latest XR release dir) ---------
+[[source]]
+id = "cisco-iosxr"
+vendor = "cisco_xrd"
+repo = "https://github.com/YangModels/yang.git"
+pinned_ref = "e13b05c4ddcbfab9170e60dddbbe9eaf6a831964"
+platforms = ["cisco_iosxr"]
+subdirs = ["vendor/cisco/xr/7921"]
+prefixes = ["Cisco-IOS-XR-"]
+license = "proprietary/vendor (see source)"
+enabled = true
+
+# --- Cisco IOS-XE ------------------------------------------------------------
+[[source]]
+id = "cisco-iosxe"
+vendor = "cisco_xe"
+repo = "https://github.com/YangModels/yang.git"
+pinned_ref = "e13b05c4ddcbfab9170e60dddbbe9eaf6a831964"
+platforms = ["cisco_iosxe", "cisco_ios"]
+subdirs = ["vendor/cisco/xe/1791"]
+license = "proprietary/vendor (see source)"
+enabled = true
+
+# --- Cisco NX-OS --------------------------------------------------------------
+[[source]]
+id = "cisco-nxos"
+vendor = "cisco_nxos"
+repo = "https://github.com/YangModels/yang.git"
+pinned_ref = "e13b05c4ddcbfab9170e60dddbbe9eaf6a831964"
+platforms = ["cisco_nxos"]
+subdirs = ["vendor/cisco/nx/10.4-4"]
+license = "proprietary/vendor (see source)"
+enabled = true
+
+# --- Juniper Junos -------------------------------------------------------------
+[[source]]
+id = "juniper-junos"
+vendor = "juniper_crpd"
+repo = "https://github.com/Juniper/yang.git"
+pinned_ref = "7a619c35c7d59d87fc224d96bd215aaa4e02ed25"
+platforms = ["juniper_junos"]
+subdirs = ["26.2/26.2R1"]
+prefixes = ["junos-", "Juniper-"]
+license = "Apache-2.0"
+enabled = true
+
+# --- Arista EOS -----------------------------------------------------------------
+[[source]]
+id = "arista-eos"
+vendor = "arista_ceos"
+repo = "https://github.com/aristanetworks/yang.git"
+pinned_ref = "f7fc5de3d80aa32de403f067b625dd8db633ca34"
+platforms = ["arista_eos"]
+subdirs = ["EOS-4.37.0F/release/openconfig"]
+license = "Apache-2.0"
+enabled = true

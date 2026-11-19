@@ -85,8 +85,9 @@ use device::{
     device_reparse_handler, device_sensors_handler, device_streaming_readiness_handler,
     enrichment_audit_handler, enrichment_list_handler, enrichment_remove_handler,
     enrichment_run_handler, enrichment_test_handler, enrichment_upsert_handler,
-    netbox_import_handler, profiles_handler, save_custom_profile_handler, yang_modules_handler,
-    yang_search_handler,
+    netbox_import_handler, profiles_handler, save_custom_profile_handler, yang_activate_handler,
+    yang_compile_handler, yang_compiled_handler, yang_modules_handler, yang_paths_handler,
+    yang_search_handler, yang_sources_handler,
 };
 use governance::{
     assign_site_environment_handler, assignment_override_handler, assignment_rules_handler,
@@ -1797,6 +1798,11 @@ fn device_routes() -> Router<AppState> {
     Router::new()
         .route("/api/yang/modules", get(yang_modules_handler))
         .route("/api/yang/search", get(yang_search_handler))
+        .route("/api/yang/sources", get(yang_sources_handler))
+        .route("/api/yang/compiled", get(yang_compiled_handler))
+        .route("/api/yang/compile", post(yang_compile_handler))
+        .route("/api/yang/activate", post(yang_activate_handler))
+        .route("/api/yang/paths", get(yang_paths_handler))
         .route("/api/overrides", get(list_overrides).post(add_override))
         .route("/api/overrides/remove", post(remove_override))
         .route("/api/devices/{address}", get(device_detail_handler))
