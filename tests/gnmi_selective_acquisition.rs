@@ -1413,6 +1413,25 @@ async fn early_sync_observation_is_buffered_until_session_current() {
         .await
         .unwrap();
     wait_pending_row(&db, &target).await;
+    // The authoritative submitted manifest binds the session identity —
+    // production always forwards it (api.rs on submitted/synchronized).
+    plan_tx
+        .send(SubscriptionPlan {
+            target: target.clone(),
+            paths: vec![SubscriptionPathExpectation {
+                path: "interfaces/interface[name=Ethernet1/1]/state/counters".to_string(),
+                origin: "openconfig".to_string(),
+                mode: "ON_CHANGE".to_string(),
+                sample_interval_ns: 0,
+            }],
+            plan_id: "plan-1".to_string(),
+            session_id: "sess-a".to_string(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            detail: String::new(),
+        })
+        .await
+        .unwrap();
 
     // Telemetry arrives BEFORE the synchronized lifecycle registration —
     // exactly the production initial-sync ordering race.
@@ -1680,6 +1699,24 @@ async fn coverage_is_acquisition_not_classification() {
         .await
         .unwrap();
     wait_pending_row(&db, &target).await;
+    // Session-bound manifest — the authoritative execution identity.
+    plan_tx
+        .send(SubscriptionPlan {
+            target: target.clone(),
+            paths: vec![SubscriptionPathExpectation {
+                path: "foo/bar[name=x]/baz".to_string(),
+                origin: "openconfig".to_string(),
+                mode: "ON_CHANGE".to_string(),
+                sample_interval_ns: 0,
+            }],
+            plan_id: "plan-1".to_string(),
+            session_id: "sess-a".to_string(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            detail: String::new(),
+        })
+        .await
+        .unwrap();
     sync_session(&sessions, &target, "plan-1", "sess-a", 1);
 
     // Negative first: identical stamps from a non-gNMI producer.
@@ -1882,6 +1919,24 @@ async fn failed_status_write_is_retried_not_claimed() {
         .await
         .unwrap();
     wait_pending_row(&db, &target).await;
+    // Session-bound manifest — the authoritative execution identity.
+    plan_tx
+        .send(SubscriptionPlan {
+            target: target.clone(),
+            paths: vec![SubscriptionPathExpectation {
+                path: "interfaces/interface[name=Ethernet1/1]/state/counters".to_string(),
+                origin: "openconfig".to_string(),
+                mode: "ON_CHANGE".to_string(),
+                sample_interval_ns: 0,
+            }],
+            plan_id: "plan-1".to_string(),
+            session_id: "sess-a".to_string(),
+            state: "submitted".to_string(),
+            acquisition: "explicit".to_string(),
+            detail: String::new(),
+        })
+        .await
+        .unwrap();
     sync_session(&sessions, &target, "plan-1", "sess-a", 1);
 
     // Arm the failure: every status write fails while armed. The
