@@ -255,3 +255,4 @@ date,command,scope,wall_seconds,result,notes
 2026-11-20,cargo build --offline --features test-fixtures --bin bonsai --bin wp28_fixture_seed (via build-lane),bn022 reconcile 2ce3b2c,393.0,pass,"recovery harness binaries"
 2026-11-20,scripts/recovery/final_candidate_recovery.sh,bn022 reconcile 2ce3b2c,~300.0,pass,"79 PASS / 0 FAIL; workdir /tmp/bonsai-final-recovery.5TUHMx"
 2026-11-20,scripts/ci/run-local.sh --trusted --shared-target-dir --lbug-native l0 l1 l2 l3,bn022 reconcile 2ce3b2c,~2700.0,pass,"L0-L3 ALL PASS; evidence docs/merger/evidence/2026-11-20-bn022-reconcile-gate/"
+2026-11-20,scripts/ci/run-local.sh --trusted --shared-target-dir --lbug-native l0 l1 l2 l3,M6+BN022 integrated merge 64c5381,~1780.0,pass,"L0-L3 ALL PASS; lib 462/462; yang_catalogue 42/42; bn022 closure 49 storage 12 boundary 5 sec19/20 13; evidence docs/merger/evidence/2026-11-20-m6-integrated-gate/; CARGO_BUILD_JOBS=2"

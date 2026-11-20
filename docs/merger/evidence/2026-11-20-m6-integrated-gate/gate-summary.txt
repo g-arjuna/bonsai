@@ -1,0 +1,18 @@
+M6 integrated gate summary — 2026-11-20
+SHA: 64c538177664abb2b408dffbb06333da8540bf78
+Command: CI_BUILD_JOBS=2 scripts/ci/run-local.sh --trusted --shared-target-dir /home/arjuna/Desktop/bonsai/target --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native l0 l1 l2 l3
+
+L0: OK
+L1: OK
+L2: OK
+  bonsai lib: 462 passed, 0 failed
+  bn022_auth_closure: 49 passed, 0 failed
+  bn022_auth_storage: 12 passed, 0 failed
+  bn022_graph_read_boundary: 5 passed, 0 failed
+  bn022_sec19_sec20: 13 passed, 0 failed
+  yang_catalogue: 42 passed, 0 failed
+L3: OK
+  python: 259 passed, 3 skipped, 1 deselected
+ALL REQUESTED GATES PASSED
+
+Full log: /home/arjuna/Desktop/bonsai/target/ci/local-gates-1795158561.log
