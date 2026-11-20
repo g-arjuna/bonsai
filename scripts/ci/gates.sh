@@ -214,6 +214,7 @@ L2_INTEGRATION_TESTS="
   gnmi_security_connectivity
   gnmi_assignment_lifecycle
   wp65a_embedding_lifecycle
+  yang_catalogue
 "
 
 gate_l2() {
