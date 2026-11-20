@@ -170,9 +170,26 @@ Focused suites, all PASS on the pre-merge head:
 
 ## Gate
 
-- Gate-tested production SHA: recorded below after the run.
+- Gate-tested production SHA: `13d0be58426aeda33c6ea6e3f7087c5355655fdd`
+  (branch tip; a subsequent docs/dead-code cleanup commit carries no
+  production-code delta).
 - Gate command: `CARGO_BUILD_JOBS=2 scripts/ci/run-local.sh --trusted
   --shared-target-dir /home/arjuna/.cache/bonsai-ci/build-lane
   --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native l0 l1 l2 l3`
-- Result: PENDING — update this section with per-tier outcomes and wall
-  time when the run completes.
+- Result: PASS — all four tiers on the trusted local lane
+  (~30 min wall, CARGO_BUILD_JOBS=2).
+  - L0 source checks: PASS (2 pre-existing fmt-drift files at base
+    unchanged; all M6C-2 files formatted).
+  - L1 compile/static: PASS (`cargo check` profile, bonsai lib + all
+    test targets).
+  - L2 behavioral: PASS — 479 lib tests (incl. `schema_binding` expiry
+    unit tests, `api::schema_binding_tests` echo/forgery tests,
+    `assignment` v5 contract tests), 32 integration targets incl.
+    `yang_schema_bound_acquisition` 6/6, `yang_device_applicability`
+    12/12, `yang_catalogue` 42/42, `gnmi_subscription_e2e`,
+    `gnmi_assignment_lifecycle`, `bn021g`/`bn022` auth regressions.
+  - L3 cross-component: PASS — 13 integration targets + python suites
+    (259 passed / 3 skipped / 1 deselected; skips are pre-existing
+    environment-gated cases, not M6C-2).
+- Preliminary gate on `737702c` (pre-rustfmt): L0 FAIL on formatting
+  only; superseded by the `13d0be5` run above.
