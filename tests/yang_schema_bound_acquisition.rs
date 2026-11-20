@@ -165,10 +165,7 @@ impl GNmi for MockGnmi {
         }
         let response = responses.remove(0);
         if responses.is_empty() {
-            self.repeat_get
-                .lock()
-                .await
-                .replace(response.clone());
+            self.repeat_get.lock().await.replace(response.clone());
         }
         Ok(Response::new(response))
     }
@@ -508,11 +505,7 @@ struct CoreLab {
     _verifier_shutdown: watch::Sender<bool>,
 }
 
-async fn start_core_lab(
-    pki: &Pki,
-    device: TargetConfig,
-    clock: SchemaBindingClock,
-) -> CoreLab {
+async fn start_core_lab(pki: &Pki, device: TargetConfig, clock: SchemaBindingClock) -> CoreLab {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let dir = tempfile::tempdir().unwrap();
     unsafe { std::env::set_var("BONSAI_E2E_VAULT_PASSPHRASE", "test-passphrase") };
@@ -796,7 +789,11 @@ async fn wait_for<F: FnMut() -> bool>(mut cond: F, timeout: Duration, what: &str
     false
 }
 
-fn update_notification(origin: &str, elems: Vec<(&str, Option<(&str, &str)>)>, val: &str) -> SubscribeResponse {
+fn update_notification(
+    origin: &str,
+    elems: Vec<(&str, Option<(&str, &str)>)>,
+    val: &str,
+) -> SubscribeResponse {
     let path = GnmiPath {
         origin: origin.to_string(),
         elem: elems
@@ -856,10 +853,7 @@ fn oper_status_notification() -> SubscribeResponse {
 
 /// Convert an internal lifecycle event to the wire proto exactly as the
 /// production forwarder does (mirrors `ingest::lifecycle_event_to_proto`).
-fn lifecycle_event_to_proto(
-    collector_id: &str,
-    ev: &SessionLifecycleEvent,
-) -> PbLifecycleEvent {
+fn lifecycle_event_to_proto(collector_id: &str, ev: &SessionLifecycleEvent) -> PbLifecycleEvent {
     let binding = ev.schema_binding.as_ref();
     PbLifecycleEvent {
         collector_id: collector_id.to_string(),
@@ -897,7 +891,9 @@ fn lifecycle_event_to_proto(
             .unwrap_or_default(),
         approval_revision: binding.map(|b| b.approval_revision).unwrap_or(0),
         snapshot_id: binding.map(|b| b.snapshot_id).unwrap_or(0),
-        datastore: binding.and_then(|b| b.datastore.clone()).unwrap_or_default(),
+        datastore: binding
+            .and_then(|b| b.datastore.clone())
+            .unwrap_or_default(),
         approved_by: binding.map(|b| b.approved_by.clone()).unwrap_or_default(),
         schema_binding_plan_id: binding.map(|b| b.plan_id.clone()).unwrap_or_default(),
     }
@@ -988,27 +984,29 @@ async fn setup_bound_fixture() -> BoundFixture {
 
     // 1 (cont). Integrity-verified, complete compiled catalogue.
     let yang_dir = lab._dir.path().join("yanglib");
-    let library =
-        YangLibrary::open(yang_dir.join("lib"), yang_dir.join("cache"), "K").unwrap();
+    let library = YangLibrary::open(yang_dir.join("lib"), yang_dir.join("cache"), "K").unwrap();
     let catalogue = compile_app();
     yang_schema::persist_compiled(&library, &catalogue).unwrap();
     yang_schema::activate_compiled(&library, &catalogue.schema_id).unwrap();
 
     // 3. Establish device applicability through the mock gNMI device and
     // persist the snapshot (real discovery + RFC 8525 probe + resolve).
-    let target = lab.registry.get_device(&device_addr).expect("get").expect("device");
-    let snapshot = yang_applicability::refresh_device_applicability(
-        &yang_applicability::RefreshInput {
+    let target = lab
+        .registry
+        .get_device(&device_addr)
+        .expect("get")
+        .expect("device");
+    let snapshot =
+        yang_applicability::refresh_device_applicability(&yang_applicability::RefreshInput {
             target: &target,
             library: &library,
             discovery_input: &discovery_input(&device_addr),
             identity_ambiguous: false,
             requested_datastore: None,
             store: &lab.sqlite,
-        },
-    )
-    .await
-    .expect("applicability refresh");
+        })
+        .await
+        .expect("applicability refresh");
     assert_eq!(snapshot.overall_status, "applicable");
 
     // 4–6. Explicit selection → real evaluator preview → real activation
@@ -1070,21 +1068,14 @@ async fn setup_bound_fixture() -> BoundFixture {
     let md = initial_sync
         .assignments
         .iter()
-        .find(|a| {
-            a.device
-                .as_ref()
-                .is_some_and(|d| d.address == device_addr)
-        })
+        .find(|a| a.device.as_ref().is_some_and(|d| d.address == device_addr))
         .expect("device assignment present");
     assert!(!md.rejected, "assignment must not be rejected");
     let wire_device = md.device.as_ref().unwrap();
     assert_eq!(wire_device.schema_binding_mode, "schema_bound");
     assert_eq!(wire_device.schema_id, catalogue.schema_id);
     assert_eq!(wire_device.binding_fingerprint, eval.binding_fingerprint);
-    assert_eq!(
-        wire_device.approval_revision,
-        approval_revision as u64
-    );
+    assert_eq!(wire_device.approval_revision, approval_revision as u64);
     assert_eq!(wire_device.snapshot_id, snapshot.snapshot_id as i64);
     assert_eq!(
         wire_device.plan_id, eval.plan_id,
@@ -1305,11 +1296,7 @@ async fn setup_bound_fixture() -> BoundFixture {
 /// Apply the next assignment update the manager delivers (resync,
 /// revocation, reconnect) through the real collector path.
 async fn apply_next_update(fx: &mut BoundFixture) {
-    let update = fx
-        .assign_rx
-        .recv()
-        .await
-        .expect("assignment update");
+    let update = fx.assign_rx.recv().await.expect("assignment update");
     let plans = Some(fx.lab.plan_tx.clone());
     let lifecycle = Some(fx.sub_tx.clone());
     handle_assignment_update(
@@ -1365,21 +1352,28 @@ async fn schema_bound_activation_to_revocation_e2e() {
     let plan_id_for = |paths: &[bonsai::subscription_sessions::LifecyclePathEntry]| {
         let entries: Vec<(String, String, String, u64)> = paths
             .iter()
-            .map(|e| (e.origin.clone(), e.path.clone(), e.mode.clone(), e.sample_interval_ns))
+            .map(|e| {
+                (
+                    e.origin.clone(),
+                    e.path.clone(),
+                    e.mode.clone(),
+                    e.sample_interval_ns,
+                )
+            })
             .collect();
         bonsai::subscriber::acquisition_plan_id(AcquisitionMode::Explicit, &entries)
     };
 
     // Variant 1: an additional path broadens the approved manifest.
     let mut forged_extra = forged_base("forged-session-extra");
-    forged_extra.submitted_paths.push(
-        bonsai::subscription_sessions::LifecyclePathEntry {
+    forged_extra
+        .submitted_paths
+        .push(bonsai::subscription_sessions::LifecyclePathEntry {
             path: "system/domain".to_string(),
             origin: "ta".to_string(),
             mode: "ON_CHANGE".to_string(),
             sample_interval_ns: 0,
-        },
-    );
+        });
     forged_extra.plan_id = plan_id_for(&forged_extra.submitted_paths);
 
     // Variant 2: a changed mode on an approved path — flip the SAMPLE
@@ -1435,11 +1429,7 @@ async fn schema_bound_activation_to_revocation_e2e() {
     );
     assert!(
         wait_for(
-            || fx
-                .lab
-                .sessions
-                .current_session(&fx.device_addr)
-                .is_none(),
+            || fx.lab.sessions.current_session(&fx.device_addr).is_none(),
             Duration::from_secs(10),
             "session authority retired"
         )
@@ -1458,12 +1448,8 @@ async fn schema_bound_activation_to_revocation_e2e() {
     let mut superseded = false;
     for _ in 0..100 {
         let rows = query_subscription_statuses(&fx.lab.graph).await;
-        let a = rows
-            .iter()
-            .find(|r| r.0 == fx.device_addr && r.1 == path_a);
-        let b = rows
-            .iter()
-            .find(|r| r.0 == fx.device_addr && r.1 == path_b);
+        let a = rows.iter().find(|r| r.0 == fx.device_addr && r.1 == path_a);
+        let b = rows.iter().find(|r| r.0 == fx.device_addr && r.1 == path_b);
         if a.is_some_and(|r| r.4 != "observed") && b.is_some_and(|r| r.4 != "observed") {
             superseded = true;
             break;
@@ -1506,12 +1492,8 @@ async fn schema_bound_activation_to_revocation_e2e() {
     // Replay the old authenticated lifecycle event — must be rejected.
     let mut replay = synchronized.clone();
     replay.transition_seq += 100;
-    let (accepted, rejected) = send_lifecycle_events(
-        &mut fx.collector_client,
-        "e2e-col",
-        vec![replay],
-    )
-    .await;
+    let (accepted, rejected) =
+        send_lifecycle_events(&mut fx.collector_client, "e2e-col", vec![replay]).await;
     assert_eq!(accepted, 0, "revoked execution replay must not be accepted");
     assert!(rejected >= 1, "replay must be rejected");
 
@@ -1519,8 +1501,7 @@ async fn schema_bound_activation_to_revocation_e2e() {
     assert_eq!(fx.mock.set_calls.load(Ordering::SeqCst), 0);
 
     // Binding evidence carries no secrets.
-    let binding_json =
-        serde_json::to_string(&fx.activated_device.schema_binding).unwrap();
+    let binding_json = serde_json::to_string(&fx.activated_device.schema_binding).unwrap();
     for forbidden in ["password", "secret", "token", "private_key", "credential"] {
         assert!(
             !binding_json.contains(forbidden),
@@ -1589,12 +1570,8 @@ async fn schema_bound_expiry_withdraws_active_execution() {
     probe.authority_epoch = fx.authority_epoch;
     probe.assignment_generation = fx.last_gen;
     probe.collector_session_generation = fx.collector_session_gen;
-    let (accepted, rejected) = send_lifecycle_events(
-        &mut fx.collector_client,
-        "e2e-col",
-        vec![probe],
-    )
-    .await;
+    let (accepted, rejected) =
+        send_lifecycle_events(&mut fx.collector_client, "e2e-col", vec![probe]).await;
     assert_eq!(accepted, 0, "expired binding must not authorize lifecycle");
     assert!(rejected >= 1);
 
@@ -1605,11 +1582,7 @@ async fn schema_bound_expiry_withdraws_active_execution() {
     let md = update
         .assignments
         .iter()
-        .find(|a| {
-            a.device
-                .as_ref()
-                .is_some_and(|d| d.address == device_addr)
-        })
+        .find(|a| a.device.as_ref().is_some_and(|d| d.address == device_addr))
         .expect("device still assigned");
     assert!(md.rejected, "expired evidence must reject the assignment");
     assert!(
@@ -1650,7 +1623,12 @@ async fn schema_bound_expiry_withdraws_active_execution() {
     .expect("reconcile");
     assert!(report.expired.contains(&device_addr));
     assert!(report.revoked.contains(&device_addr));
-    let device = fx.lab.registry.get_device(&device_addr).expect("get").expect("device");
+    let device = fx
+        .lab
+        .registry
+        .get_device(&device_addr)
+        .expect("get")
+        .expect("device");
     assert!(device.schema_binding.is_none(), "runtime binding cleared");
     assert_eq!(device.acquisition, AcquisitionMode::Disabled);
     let record = fx
@@ -1668,18 +1646,17 @@ async fn schema_bound_expiry_withdraws_active_execution() {
     // Reapproval after refresh: new evidence → new approval → authority
     // restored through the same path.
     let target = fx.lab.registry.get_device(&device_addr).unwrap().unwrap();
-    let snapshot2 = yang_applicability::refresh_device_applicability(
-        &yang_applicability::RefreshInput {
+    let snapshot2 =
+        yang_applicability::refresh_device_applicability(&yang_applicability::RefreshInput {
             target: &target,
             library: &fx.library,
             discovery_input: &discovery_input(&device_addr),
             identity_ambiguous: false,
             requested_datastore: None,
             store: &fx.lab.sqlite,
-        },
-    )
-    .await
-    .expect("refresh");
+        })
+        .await
+        .expect("refresh");
     // The refresh evidence is timestamped at real now — inside the
     // injected clock's window only if the clock is near real time.
     // Rewind the injected clock to real now for the reapproval.
@@ -1694,14 +1671,8 @@ async fn schema_bound_expiry_withdraws_active_execution() {
         binding_fingerprint: None,
     };
     let now = bonsai::graph::common::now_ns();
-    let preview = schema_binding::evaluate_preview(
-        &fx.library,
-        &fx.lab.sqlite,
-        &target,
-        &req,
-        now,
-    )
-    .unwrap();
+    let preview =
+        schema_binding::evaluate_preview(&fx.library, &fx.lab.sqlite, &target, &req, now).unwrap();
     assert!(preview.activation_permitted);
     let eval2 = preview.evaluation.unwrap();
     let act_req = schema_binding::SchemaPlanRequest {
@@ -1709,15 +1680,9 @@ async fn schema_bound_expiry_withdraws_active_execution() {
         binding_fingerprint: Some(eval2.binding_fingerprint.clone()),
         ..req
     };
-    let activation2 = schema_binding::activate(
-        &fx.library,
-        &fx.lab.sqlite,
-        &target,
-        &act_req,
-        "admin",
-        now,
-    )
-    .expect("reapproval");
+    let activation2 =
+        schema_binding::activate(&fx.library, &fx.lab.sqlite, &target, &act_req, "admin", now)
+            .expect("reapproval");
     let rev2 = activation2.record.approval_revision;
     fx.lab
         .registry
@@ -1750,12 +1715,8 @@ async fn schema_bound_expiry_withdraws_active_execution() {
     stale_echo.authority_epoch = fx.authority_epoch;
     stale_echo.assignment_generation = fx.last_gen;
     stale_echo.collector_session_generation = fx.collector_session_gen;
-    let (accepted, rejected) = send_lifecycle_events(
-        &mut fx.collector_client,
-        "e2e-col",
-        vec![stale_echo],
-    )
-    .await;
+    let (accepted, rejected) =
+        send_lifecycle_events(&mut fx.collector_client, "e2e-col", vec![stale_echo]).await;
     assert_eq!(accepted, 0, "superseded approval echo must be rejected");
     assert!(rejected >= 1);
 }
@@ -1793,16 +1754,14 @@ async fn schema_bound_expiry_disconnected_collector() {
     yang_schema::persist_compiled(&library, &catalogue).unwrap();
     yang_schema::activate_compiled(&library, &catalogue.schema_id).unwrap();
     let target = lab.registry.get_device(&device_addr).unwrap().unwrap();
-    yang_applicability::refresh_device_applicability(
-        &yang_applicability::RefreshInput {
-            target: &target,
-            library: &library,
-            discovery_input: &discovery_input(&device_addr),
-            identity_ambiguous: false,
-            requested_datastore: None,
-            store: &lab.sqlite,
-        },
-    )
+    yang_applicability::refresh_device_applicability(&yang_applicability::RefreshInput {
+        target: &target,
+        library: &library,
+        discovery_input: &discovery_input(&device_addr),
+        identity_ambiguous: false,
+        requested_datastore: None,
+        store: &lab.sqlite,
+    })
     .await
     .unwrap();
     let req = schema_binding::SchemaPlanRequest {
@@ -1812,7 +1771,8 @@ async fn schema_bound_expiry_disconnected_collector() {
         binding_fingerprint: None,
     };
     let now = bonsai::graph::common::now_ns();
-    let preview = schema_binding::evaluate_preview(&library, &lab.sqlite, &target, &req, now).unwrap();
+    let preview =
+        schema_binding::evaluate_preview(&library, &lab.sqlite, &target, &req, now).unwrap();
     let eval = preview.evaluation.unwrap();
     let act_req = schema_binding::SchemaPlanRequest {
         plan_id: Some(eval.plan_id.clone()),
@@ -1895,28 +1855,24 @@ async fn schema_bound_expired_evidence_blocks_activation_and_restart() {
     yang_schema::persist_compiled(&library, &catalogue).unwrap();
     yang_schema::activate_compiled(&library, &catalogue.schema_id).unwrap();
     let target = lab.registry.get_device(&device_addr).unwrap().unwrap();
-    let snapshot = yang_applicability::refresh_device_applicability(
-        &yang_applicability::RefreshInput {
+    let snapshot =
+        yang_applicability::refresh_device_applicability(&yang_applicability::RefreshInput {
             target: &target,
             library: &library,
             discovery_input: &discovery_input(&device_addr),
             identity_ambiguous: false,
             requested_datastore: None,
             store: &lab.sqlite,
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
     // Persist an ADDITIONAL snapshot row whose evidence is already older
     // than the validity window — it becomes the latest view, so preview
     // and activation must fail closed before any approval exists.
     let mut stale_snap = snapshot.clone();
-    stale_snap.observed_at_ns = Some(
-        bonsai::graph::common::now_ns()
-            - bonsai::yang_applicability::EVIDENCE_MAX_AGE_NS
-            - 1,
-    );
+    stale_snap.observed_at_ns =
+        Some(bonsai::graph::common::now_ns() - bonsai::yang_applicability::EVIDENCE_MAX_AGE_NS - 1);
     stale_snap.evaluated_at_ns = bonsai::graph::common::now_ns();
     stale_snap.created_at_ns = bonsai::graph::common::now_ns();
     let row = yang_applicability::snapshot_to_row(&stale_snap, 0).unwrap();
@@ -1929,7 +1885,8 @@ async fn schema_bound_expired_evidence_blocks_activation_and_restart() {
         binding_fingerprint: None,
     };
     let now = bonsai::graph::common::now_ns();
-    let preview = schema_binding::evaluate_preview(&library, &lab.sqlite, &target, &req, now).unwrap();
+    let preview =
+        schema_binding::evaluate_preview(&library, &lab.sqlite, &target, &req, now).unwrap();
     assert!(
         !preview.activation_permitted,
         "expired evidence must block activation"
@@ -1946,20 +1903,23 @@ async fn schema_bound_expired_evidence_blocks_activation_and_restart() {
     // earlier fresh snapshot — remove the stale latest by writing an even
     // newer fresh row is complex; instead activate against the fresh
     // snapshot id directly is not supported, so: refresh again).
-    let snapshot_fresh = yang_applicability::refresh_device_applicability(
-        &yang_applicability::RefreshInput {
+    let snapshot_fresh =
+        yang_applicability::refresh_device_applicability(&yang_applicability::RefreshInput {
             target: &target,
             library: &library,
             discovery_input: &discovery_input(&device_addr),
             identity_ambiguous: false,
             requested_datastore: None,
             store: &lab.sqlite,
-        },
-    )
-    .await
-    .unwrap();
-    let preview2 = schema_binding::evaluate_preview(&library, &lab.sqlite, &target, &req, now).unwrap();
-    assert!(preview2.activation_permitted, "fresh evidence permits activation");
+        })
+        .await
+        .unwrap();
+    let preview2 =
+        schema_binding::evaluate_preview(&library, &lab.sqlite, &target, &req, now).unwrap();
+    assert!(
+        preview2.activation_permitted,
+        "fresh evidence permits activation"
+    );
     let eval = preview2.evaluation.unwrap();
     let act_req = schema_binding::SchemaPlanRequest {
         plan_id: Some(eval.plan_id.clone()),
@@ -2005,11 +1965,7 @@ async fn schema_bound_expired_evidence_blocks_activation_and_restart() {
     let md = sync2
         .assignments
         .iter()
-        .find(|a| {
-            a.device
-                .as_ref()
-                .is_some_and(|d| d.address == device_addr)
-        })
+        .find(|a| a.device.as_ref().is_some_and(|d| d.address == device_addr))
         .expect("device present");
     assert!(md.rejected, "post-restart sync must reject expired binding");
     assert!(md.reject_reason.contains("schema_binding_evidence_expired"));
@@ -2072,11 +2028,7 @@ async fn schema_bound_expiry_failed_delivery_then_recovery() {
     let md = sync3
         .assignments
         .iter()
-        .find(|a| {
-            a.device
-                .as_ref()
-                .is_some_and(|d| d.address == device_addr)
-        });
+        .find(|a| a.device.as_ref().is_some_and(|d| d.address == device_addr));
     // Either absent or present-but-disabled; never schema-bound.
     if let Some(md) = md {
         assert!(

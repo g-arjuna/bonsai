@@ -469,13 +469,7 @@ impl ApiRegistry {
         action: &str,
         expected_fingerprint: &str,
     ) -> Result<Option<TargetConfig>> {
-        self.revoke_schema_binding_impl(
-            address,
-            actor,
-            reason,
-            action,
-            Some(expected_fingerprint),
-        )
+        self.revoke_schema_binding_impl(address, actor, reason, action, Some(expected_fingerprint))
     }
 
     fn revoke_schema_binding_impl(

@@ -319,9 +319,7 @@ impl SchemaBindingClock {
     /// value into the atomic. Deterministic expiry tests use this.
     pub fn shared(cell: std::sync::Arc<std::sync::atomic::AtomicI64>) -> Self {
         Self {
-            now: std::sync::Arc::new(move || {
-                cell.load(std::sync::atomic::Ordering::SeqCst)
-            }),
+            now: std::sync::Arc::new(move || cell.load(std::sync::atomic::Ordering::SeqCst)),
         }
     }
 
@@ -366,8 +364,7 @@ pub fn binding_evidence_state(
     }
     match row.observed_at_ns {
         Some(observed) if observed > 0 => {
-            if observed
-                > now_ns.saturating_add(yang_applicability::FUTURE_EVIDENCE_TOLERANCE_NS)
+            if observed > now_ns.saturating_add(yang_applicability::FUTURE_EVIDENCE_TOLERANCE_NS)
                 || now_ns.saturating_sub(observed) > yang_applicability::EVIDENCE_MAX_AGE_NS
             {
                 BindingEvidenceState::Expired
@@ -446,8 +443,7 @@ pub async fn reconcile_schema_binding_expiry(
         )?;
         if let Some(updated) = revoked {
             report.revoked.push(updated.address.clone());
-            if let (Some(cid), Some(manager)) =
-                (updated.collector_id.as_deref(), collector_manager)
+            if let (Some(cid), Some(manager)) = (updated.collector_id.as_deref(), collector_manager)
             {
                 manager.resync_collector(cid).await;
             }
@@ -591,9 +587,12 @@ mod tests {
         address: &str,
         snapshot_row_seed: &YangApplicabilitySnapshotRow,
     ) -> (Arc<ApiRegistry>, Arc<SqliteStore>, TargetConfig, i64) {
-        let registry = Arc::new(ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap());
+        let registry =
+            Arc::new(ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap());
         let store = registry.sqlite_store().unwrap();
-        let snapshot_id = store.save_yang_applicability_snapshot(snapshot_row_seed).unwrap();
+        let snapshot_id = store
+            .save_yang_applicability_snapshot(snapshot_row_seed)
+            .unwrap();
         let mut target = bound_target(address);
         target.schema_binding.as_mut().unwrap().snapshot_id = snapshot_id;
         let device_key = crate::registry::device_identity_key(&target);
@@ -698,8 +697,7 @@ mod tests {
             "ev-fp",
             Some(NOW - yang_applicability::EVIDENCE_MAX_AGE_NS - 1),
         );
-        let (registry, store, _target, _id) =
-            bound_device(&dir, address, &stale_row).await;
+        let (registry, store, _target, _id) = bound_device(&dir, address, &stale_row).await;
 
         // Fingerprint guard: a mismatched expectation must not revoke.
         assert!(
@@ -714,7 +712,14 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(registry.get_device(address).unwrap().unwrap().schema_binding.is_some());
+        assert!(
+            registry
+                .get_device(address)
+                .unwrap()
+                .unwrap()
+                .schema_binding
+                .is_some()
+        );
 
         let report = reconcile_schema_binding_expiry(&registry, None, NOW)
             .await
@@ -755,7 +760,14 @@ mod tests {
             .unwrap();
         assert_eq!(report.evaluated, 1);
         assert!(report.revoked.is_empty());
-        assert!(registry.get_device(address).unwrap().unwrap().schema_binding.is_some());
+        assert!(
+            registry
+                .get_device(address)
+                .unwrap()
+                .unwrap()
+                .schema_binding
+                .is_some()
+        );
     }
 
     #[tokio::test]
