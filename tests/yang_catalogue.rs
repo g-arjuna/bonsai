@@ -2103,3 +2103,103 @@ fn forged_bundle_metadata_cannot_evict_verified_bundles() {
         .collect();
     assert_eq!(remaining.len(), 32);
 }
+
+#[test]
+fn unreadable_bundle_beyond_retention_cutoff_is_preserved() {
+    // Retention must classify EVERY eviction candidate, including files
+    // sorted beyond the cutoff: verified and proven-invalid bundles may be
+    // evicted, but a bundle whose integrity cannot be established (here a
+    // directory where a bundle file is expected — stat succeeds, read
+    // fails) must be preserved even though that temporarily exceeds
+    // MAX_COMPILED_BUNDLES.
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let cdir = dir.path().join("lib").join("compiled");
+
+    // MAX_COMPILED_BUNDLES legitimate bundles fill every retention slot.
+    for i in 0..bonsai::yang_schema::MAX_COMPILED_BUNDLES {
+        let cat = compile_parsed(
+            vec![inline_input(
+                &format!("keep{i}"),
+                &tiny_yang(&format!("urn:keep{i}")),
+            )],
+            &CompileOptions::default(),
+        );
+        persist_compiled(&library, &cat).unwrap();
+    }
+
+    // An unreadable "bundle": a directory named like a compiled bundle.
+    // verify_bundle cannot establish integrity -> VerifyFailure::Unreadable.
+    let unreadable_id = format!("ysc-{}", "d".repeat(32));
+    std::fs::create_dir(cdir.join(format!("{unreadable_id}.json"))).unwrap();
+
+    // A proven-invalid bundle sorting alongside it (unparseable header ->
+    // epoch 0, beyond the cutoff) must still be evicted.
+    let invalid_id = format!("ysc-{}", "e".repeat(32));
+    std::fs::write(cdir.join(format!("{invalid_id}.json")), b"not json").unwrap();
+
+    // Trigger the retention pass.
+    list_compiled(&library).unwrap();
+
+    assert!(
+        cdir.join(format!("{unreadable_id}.json")).exists(),
+        "unreadable bundle beyond the retention cutoff must be preserved"
+    );
+    assert!(
+        !cdir.join(format!("{invalid_id}.json")).exists(),
+        "proven-invalid bundle beyond the cutoff must be evicted"
+    );
+    // 32 verified bundles + 1 preserved unreadable file: the bound is
+    // temporarily exceeded, explicitly and only for unverifiable data.
+    let remaining: Vec<_> = std::fs::read_dir(&cdir)
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.path().extension().and_then(|x| x.to_str()) == Some("json")
+                && e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n != "index.json" && n != "active.json" && !n.starts_with('.'))
+        })
+        .collect();
+    assert_eq!(
+        remaining.len(),
+        bonsai::yang_schema::MAX_COMPILED_BUNDLES + 1
+    );
+}
+
+#[test]
+fn corrupt_active_pointer_fails_closed() {
+    // An unreadable or malformed active.json must surface as an error, not
+    // be swallowed into `None` — destructive retention cannot prove which
+    // bundle is active without it.
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let cat = compile_parsed(
+        vec![inline_input("ptr", &tiny_yang("urn:ptr"))],
+        &CompileOptions::default(),
+    );
+    persist_compiled(&library, &cat).unwrap();
+    let cdir = dir.path().join("lib").join("compiled");
+    let bundle_file = cdir.join(format!("{}.json", cat.schema_id));
+
+    // Case 1: unparseable pointer JSON.
+    std::fs::write(cdir.join("active.json"), b"{not json").unwrap();
+    assert!(
+        list_compiled(&library).is_err(),
+        "malformed active pointer must fail closed"
+    );
+    assert!(bundle_file.exists(), "no bundle may be deleted");
+
+    // Case 2: parseable pointer naming a non-bundle id — would silently
+    // unprotect every real bundle if treated as authoritative.
+    std::fs::write(
+        cdir.join("active.json"),
+        br#"{"schema_id":"not-a-schema-id"}"#,
+    )
+    .unwrap();
+    assert!(
+        list_compiled(&library).is_err(),
+        "active pointer with invalid schema id must fail closed"
+    );
+    assert!(bundle_file.exists(), "no bundle may be deleted");
+}

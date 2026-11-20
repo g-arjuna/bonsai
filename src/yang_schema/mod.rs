@@ -402,7 +402,10 @@ pub fn persist_compiled(library: &YangLibrary, catalogue: &CompiledCatalogue) ->
 
 fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
     let dir = compiled_dir(library);
-    let active = load_active(library).ok().flatten();
+    // Fail closed: an unreadable or malformed active pointer must never be
+    // treated as proof that no active bundle exists — destructive retention
+    // below relies on this identity to protect the live catalogue.
+    let active = load_active(library)?;
     let mut infos = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
@@ -475,18 +478,28 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
     let active_id = active.clone();
     if infos.len() > MAX_COMPILED_BUNDLES {
         let mut kept = 0usize;
+        let mut preserved_unreadable = 0usize;
         for info in &infos {
             let is_active = Some(info.schema_id.as_str()) == active_id.as_deref();
             if is_active {
                 kept += 1;
                 continue;
             }
-            if kept >= MAX_COMPILED_BUNDLES {
-                let _ = std::fs::remove_file(bundle_path(library, &info.schema_id));
-                continue;
-            }
+            // Every eviction candidate is verified before deletion —
+            // including files beyond the retention cutoff. Ordering alone
+            // is untrusted metadata, and a file that cannot be read has
+            // unknown integrity: failure to verify is not permission to
+            // delete. Verified bundles past the bound and proven-invalid
+            // bundles are evicted; unreadable bundles are preserved and
+            // reported so the bound can be temporarily exceeded.
             match verify_bundle(library, &info.schema_id) {
-                Ok(_) => kept += 1,
+                Ok(_) => {
+                    if kept >= MAX_COMPILED_BUNDLES {
+                        let _ = std::fs::remove_file(bundle_path(library, &info.schema_id));
+                    } else {
+                        kept += 1;
+                    }
+                }
                 // Proven-invalid bundles are evicted immediately: every
                 // read path rejects them, so they must not occupy a
                 // retention slot or outrank legitimate bundles.
@@ -496,8 +509,23 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
                 // Integrity cannot be established (transient IO): fail
                 // closed — preserve the file but grant it no trusted
                 // retention slot.
-                Err(VerifyFailure::Unreadable(_)) => {}
+                Err(VerifyFailure::Unreadable(e)) => {
+                    preserved_unreadable += 1;
+                    tracing::warn!(
+                        schema_id = %info.schema_id,
+                        error = %e,
+                        "compiled bundle unreadable; preserved without a retention slot"
+                    );
+                }
             }
+        }
+        if preserved_unreadable > 0 {
+            tracing::warn!(
+                preserved = preserved_unreadable,
+                bound = MAX_COMPILED_BUNDLES,
+                "compiled bundle retention preserved unreadable bundles; \
+                 on-disk bundle count may temporarily exceed the bound"
+            );
         }
     }
     // Rebuild infos after eviction.
@@ -573,6 +601,14 @@ fn load_active(library: &YangLibrary) -> Result<Option<String>> {
     }
     let raw = std::fs::read_to_string(&path)?;
     let pointer: ActivePointer = serde_json::from_str(&raw).context("invalid active pointer")?;
+    // A syntactically valid pointer naming a non-bundle id would silently
+    // unprotect every real bundle during retention — reject it as malformed.
+    if !valid_schema_id(&pointer.schema_id) {
+        bail!(
+            "active pointer references invalid schema id '{}'",
+            pointer.schema_id
+        );
+    }
     Ok(Some(pointer.schema_id))
 }
 
