@@ -201,18 +201,35 @@ impl YangLibrary {
         trust: &str,
     ) -> Result<YangModuleRecord> {
         let mut state = self.load_state()?;
-        let module = state
+        let matches: Vec<usize> = state
             .modules
-            .iter_mut()
-            .find(|module| {
-                module.module_name == module_name
+            .iter()
+            .enumerate()
+            .filter_map(|(i, module)| {
+                (module.module_name == module_name
                     && revision
                         .map(|expected| module.revision == expected)
-                        .unwrap_or(true)
+                        .unwrap_or(true))
+                .then_some(i)
             })
+            .collect();
+        // Fail closed on ambiguity: with same name+revision content
+        // conflicts, updating an arbitrary record's trust could silently
+        // promote a non-selected variant. Require an exact record.
+        if matches.len() > 1 {
+            bail!(
+                "module '{}'@{} matches {} conflicting records — trust update is ambiguous; use approve_module with an exact checksum instead",
+                module_name,
+                revision.unwrap_or("*"),
+                matches.len()
+            );
+        }
+        let idx = matches
+            .first()
+            .copied()
             .ok_or_else(|| anyhow!("module '{}' not found", module_name))?;
-        module.trust = trust.to_string();
-        let updated = module.clone();
+        state.modules[idx].trust = trust.to_string();
+        let updated = state.modules[idx].clone();
         self.save_state(&state)?;
         Ok(updated)
     }
@@ -483,8 +500,8 @@ impl YangLibrary {
 
     /// Deterministic active-module view: for each (name, revision) content
     /// conflict, select the winner by approval, then trust rank, then
-    /// lowest checksum (stable — new imports never silently displace).
-    /// Previously stored content is never removed.
+    /// earliest import (incumbent stability — new imports never silently
+    /// displace). Previously stored content is never removed.
     pub fn active_modules(&self) -> Result<Vec<YangModuleRecord>> {
         let state = self.load_state()?;
         Ok(select_active_records(&state.modules))
@@ -1124,10 +1141,11 @@ pub fn trust_rank(trust: &str) -> u8 {
 ///
 /// 1. Operator-approved records win (set via `approve_module`).
 /// 2. Highest trust rank.
-/// 3. Lowest checksum — content-addressed and STABLE: a newly imported
-///    equal-trust conflicting module can never silently displace the
-///    incumbent; changing the winner requires either higher trust or an
-///    explicit approval.
+/// 3. Earliest import — the INCUMBENT is stable: a newly imported
+///    equal-trust conflicting module can never silently displace
+///    previously selected content, regardless of checksum ordering.
+///    Promotion between equal-trust variants requires explicit approval.
+/// 4. Lowest checksum — deterministic tiebreak for identical timestamps.
 ///
 /// All records remain stored for rollback/audit.
 pub fn select_active_records(records: &[YangModuleRecord]) -> Vec<YangModuleRecord> {
@@ -1145,6 +1163,7 @@ pub fn select_active_records(records: &[YangModuleRecord]) -> Vec<YangModuleReco
             b.approved
                 .cmp(&a.approved)
                 .then_with(|| trust_rank(&b.trust).cmp(&trust_rank(&a.trust)))
+                .then_with(|| a.imported_at_ns.cmp(&b.imported_at_ns))
                 .then_with(|| a.checksum_sha256.cmp(&b.checksum_sha256))
         });
         out.push(group[0].clone());

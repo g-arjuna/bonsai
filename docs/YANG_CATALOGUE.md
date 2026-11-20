@@ -11,8 +11,12 @@
    name+revision+content identity; same-name/revision conflicts are kept
    as distinct records, never overwritten. Effective selection is an
    explicit, auditable policy: operator approval (`approve_module`)
-   first, then trust rank, then lowest checksum — a newly imported
-   equal-trust conflict can never silently displace the incumbent.
+   first, then trust rank, then earliest import (incumbent stability),
+   then lowest checksum as a deterministic tiebreak — a newly imported
+   equal-trust conflict can never silently displace the incumbent;
+   promotion between equal-trust variants requires explicit checksum-
+   specific approval. `set_module_trust` fails closed when a name/
+   revision matches multiple conflicting records.
 3. **Parser** (`src/yang_schema/parser.rs`): RFC 7950/7951 lexer +
    recursive-descent parser producing a typed AST. Bounded input size,
    nesting depth (enforced on every recursive path: node bodies, uses
@@ -25,7 +29,7 @@
    deviations, refines, features and typedef chains into a deterministic
    compiled catalogue plus canonical schema-path index.
 5. **Compiled bundles** (`<library>/compiled/`): content-addressed
-   (`ysc-<64 hex>`) JSON with an atomic `active.json` pointer. Bundle
+   (`ysc-<32 hex>`) JSON with an atomic `active.json` pointer. Bundle
    files are immutable: activation and load verify the embedded
    `schema_id` AND recompute the semantic identity from content — a
    corrupt, truncated, tampered or identity-mismatched bundle fails

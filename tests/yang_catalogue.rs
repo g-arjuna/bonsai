@@ -236,18 +236,54 @@ fn active_selection_is_deterministic() {
             checksum_sha256: sum.into(),
             imported_at_ns: ts,
         };
+    // Incumbent stability: the earliest-imported equal-trust record wins
+    // even when a LATER import has the lower checksum — checksum order
+    // must never silently displace previously selected content.
     let records = vec![
         mk("m", "1", "experimental", 200, "bbb"),
-        mk("m", "1", "trusted", 100, "aaa"),
-        mk("m", "1", "trusted", 300, "ccc"),
+        mk("m", "1", "trusted", 100, "zzz"), // incumbent, HIGHER checksum
+        mk("m", "1", "trusted", 300, "aaa"), // later import, LOWER checksum
         mk("other", "1", "trusted", 1, "ddd"),
     ];
     let active = select_active_records(&records);
     assert_eq!(active.len(), 2);
     let m = active.iter().find(|r| r.module_name == "m").unwrap();
-    // Same trust → lowest checksum wins: stable and content-addressed, so a
-    // newly imported equal-trust conflict can never silently displace.
-    assert_eq!(m.checksum_sha256, "aaa");
+    assert_eq!(m.checksum_sha256, "zzz");
+    assert_eq!(m.imported_at_ns, 100);
+}
+
+#[test]
+fn incumbent_survives_lower_checksum_challenger() {
+    // Exact review scenario: incumbent checksum sorts HIGHER than the
+    // newly imported conflicting checksum. Incumbent must remain selected
+    // until an explicit checksum-specific approval promotes the challenger.
+    let mk =
+        |name: &str, rev: &str, trust: &str, ts: i64, sum: &str| bonsai::yang::YangModuleRecord {
+            module_name: name.into(),
+            revision: rev.into(),
+            namespace: String::new(),
+            organization: String::new(),
+            source_kind: "t".into(),
+            source_ref: "t".into(),
+            vendor_scope: "v".into(),
+            trust: trust.into(),
+            license: String::new(),
+            platforms: vec![],
+            pinned_ref: String::new(),
+            source_id: String::new(),
+            approved: false,
+            relative_path: format!("modules/blobs/{}.yang", sum),
+            checksum_sha256: sum.into(),
+            imported_at_ns: ts,
+        };
+    let records = vec![
+        mk("m", "1", "trusted", 100, "zzz"), // incumbent, higher checksum
+        mk("m", "1", "trusted", 200, "aaa"), // challenger, lower checksum
+    ];
+    let active = select_active_records(&records);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].checksum_sha256, "zzz");
+    assert_eq!(active[0].imported_at_ns, 100);
 }
 
 #[test]
@@ -1670,6 +1706,10 @@ fn conflict_promotion_requires_explicit_approval() {
     library
         .import_directory(&src1, &opts("one"), Path::new("config/path_profiles"))
         .unwrap();
+    // Ensure distinct import timestamps so incumbent ordering is
+    // unambiguous (nanosecond clock makes ties vanishingly rare, but the
+    // selection policy must not depend on clock resolution).
+    std::thread::sleep(std::time::Duration::from_millis(1));
     library
         .import_directory(&src2, &opts("two"), Path::new("config/path_profiles"))
         .unwrap();
@@ -1680,14 +1720,13 @@ fn conflict_promotion_requires_explicit_approval() {
         .filter(|m| m.module_name == "dup")
         .collect();
     assert_eq!(dups.len(), 2);
-    // Winner is deterministic: lowest checksum among equal trust.
+    // Winner is deterministic: the INCUMBENT (earliest import) is stable.
+    // A later equal-trust import can never silently displace it,
+    // regardless of which checksum sorts lower.
+    let incumbent = dups.iter().min_by_key(|m| m.imported_at_ns).unwrap();
     let active = library.active_modules().unwrap();
     let winner = active.iter().find(|m| m.module_name == "dup").unwrap();
-    let expected = dups
-        .iter()
-        .min_by(|a, b| a.checksum_sha256.cmp(&b.checksum_sha256))
-        .unwrap();
-    assert_eq!(winner.checksum_sha256, expected.checksum_sha256);
+    assert_eq!(winner.checksum_sha256, incumbent.checksum_sha256);
     // Explicit approval promotes the OTHER record.
     let other = dups
         .iter()
@@ -1822,4 +1861,168 @@ fn concurrent_persist_and_activate_are_safe() {
     // The published bundle must still verify.
     let bundles = list_compiled(&library).unwrap();
     assert!(bundles.iter().any(|b| b.schema_id == cat.schema_id));
+}
+
+fn tiny_yang(ns: &str) -> String {
+    format!(
+        "module m {{ yang-version \"1\"; namespace \"{ns}\"; prefix m; revision \"2024-01-01\"; container c {{ leaf l {{ type string; }} }} }}\n"
+    )
+}
+
+#[test]
+fn first_publication_race_is_atomic_no_replace() {
+    // Two catalogues with IDENTICAL schema_id but different bytes
+    // (compiled_at_ns is excluded from the identity hash). Concurrent
+    // first-publication attempts on an ABSENT destination must be
+    // first-writer-wins: the loser verifies the winner and never
+    // overwrites already-published bytes.
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let cat_a = compile_parsed(
+        vec![inline_input("race", &tiny_yang("urn:race"))],
+        &CompileOptions::default(),
+    );
+    let mut cat_b = cat_a.clone();
+    cat_b.compiled_at_ns += 1;
+    assert_eq!(cat_a.schema_id, cat_b.schema_id);
+    let bytes_a = serde_json::to_vec(&cat_a).unwrap();
+    let bytes_b = serde_json::to_vec(&cat_b).unwrap();
+    assert_ne!(bytes_a, bytes_b, "test requires distinct published bytes");
+
+    // Competing first-publication attempts from many threads on an absent
+    // destination — exercises the no-replace link path, not the
+    // already-persisted fast path.
+    std::thread::scope(|s| {
+        for i in 0..8 {
+            let cat = if i % 2 == 0 { &cat_a } else { &cat_b };
+            s.spawn(|| persist_compiled(&library, cat).unwrap());
+        }
+    });
+
+    let cdir = dir.path().join("lib").join("compiled");
+    let bundle = cdir.join(format!("{}.json", cat_a.schema_id));
+    let published = std::fs::read(&bundle).unwrap();
+    assert!(
+        published == bytes_a || published == bytes_b,
+        "published bytes must be one intact contender, never a torn mix"
+    );
+    // No stray tmp files left behind by losing writers.
+    let tmps: Vec<_> = std::fs::read_dir(&cdir)
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with('.') && n.ends_with(".tmp"))
+        })
+        .collect();
+    assert!(tmps.is_empty(), "losing writers must clean up tmp files");
+
+    // Re-persisting the LOSER is an idempotent verified no-op: first
+    // writer wins and published bytes never change.
+    let loser = if published == bytes_a { &cat_b } else { &cat_a };
+    persist_compiled(&library, loser).unwrap();
+    assert_eq!(std::fs::read(&bundle).unwrap(), published);
+    // And the bundle still verifies through the normal read path.
+    let bundles = list_compiled(&library).unwrap();
+    assert!(bundles.iter().any(|b| b.schema_id == cat_a.schema_id));
+}
+
+#[test]
+fn trust_update_fails_closed_on_conflicting_records() {
+    // set_module_trust must not silently pick one of several same
+    // name+revision records — an ambiguous trust bump could otherwise
+    // promote a non-selected variant around the approval invariant.
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let opts = |refname: &str| YangImportOptions {
+        source_kind: "test".into(),
+        source_ref: refname.into(),
+        vendor_scope: "v".into(),
+        trust: "trusted".into(),
+        license: String::new(),
+        platforms: vec![],
+        pinned_ref: String::new(),
+        source_id: String::new(),
+        filename_prefixes: vec![],
+    };
+    for (name, body) in [
+        ("s1", "container a { leaf x { type string; } }"),
+        ("s2", "container b { leaf y { type uint32; } }"),
+    ] {
+        let src = dir.path().join(name);
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("dup.yang"),
+            format!(
+                "module dup {{ yang-version \"1\"; namespace \"urn:{}\"; prefix d; revision \"2024-01-01\"; {} }}\n",
+                name, body
+            ),
+        )
+        .unwrap();
+        library
+            .import_directory(&src, &opts(name), Path::new("config/path_profiles"))
+            .unwrap();
+    }
+    let err = library
+        .set_module_trust("dup", Some("2024-01-01"), "experimental")
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("ambiguous"),
+        "expected ambiguity error, got: {err}"
+    );
+    // Trust state is unchanged — neither conflicting record was mutated.
+    let state = library.load_state().unwrap();
+    assert!(
+        state
+            .modules
+            .iter()
+            .filter(|m| m.module_name == "dup")
+            .all(|m| m.trust == "trusted")
+    );
+}
+
+#[test]
+fn unverified_bundle_metadata_cannot_shape_index() {
+    // A foreign/content-swapped bundle (embedded schema_id != filename)
+    // must not contribute retention/index metadata — its claimed
+    // timestamp must never let it outrank or evict verified bundles.
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let cat_a = compile_parsed(
+        vec![inline_input("idxa", &tiny_yang("urn:idxa"))],
+        &CompileOptions::default(),
+    );
+    persist_compiled(&library, &cat_a).unwrap();
+
+    let cdir = dir.path().join("lib").join("compiled");
+    let forged_name = format!("ysc-{}", "0".repeat(32));
+    let forged_embedded = format!("ysc-{}", "f".repeat(32));
+    std::fs::write(
+        cdir.join(format!("{forged_name}.json")),
+        format!(
+            "{{\"schema_id\":\"{forged_embedded}\",\"compiled_at_ns\":{},\"module_count\":999,\"path_count\":999,\"diagnostics\":[]}}",
+            i64::MAX
+        ),
+    )
+    .unwrap();
+
+    // A second persist triggers index refresh + retention pass.
+    let cat_b = compile_parsed(
+        vec![inline_input("idxb", &tiny_yang("urn:idxb"))],
+        &CompileOptions::default(),
+    );
+    persist_compiled(&library, &cat_b).unwrap();
+
+    let idx_raw = std::fs::read_to_string(cdir.join("index.json")).unwrap();
+    let idx: Vec<serde_json::Value> = serde_json::from_str(&idx_raw).unwrap();
+    assert!(
+        idx.iter().all(|e| e["schema_id"] != forged_name),
+        "unverified bundle must not appear in the compiled index"
+    );
+    assert!(idx.iter().any(|e| e["schema_id"] == cat_a.schema_id));
+    assert!(idx.iter().any(|e| e["schema_id"] == cat_b.schema_id));
+    // Forged file remains on disk (no silent deletion) but is invisible
+    // to index-driven consumers and sorts as epoch-0 for retention.
+    assert!(cdir.join(format!("{forged_name}.json")).exists());
 }

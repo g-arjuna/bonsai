@@ -160,11 +160,18 @@ fn compiled_dir(library: &YangLibrary) -> PathBuf {
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Write `bytes` to `dir/name` atomically: a unique tmp file (pid +
-/// process-wide counter — pid alone is NOT unique across threads), fsync,
-/// then rename over the target. Concurrent writers can never share a tmp
-/// path, so a torn write can never be published.
-pub(crate) fn write_file_atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+/// Outcome of an atomic no-replace publication attempt.
+pub(crate) enum PublishOutcome {
+    /// This call created the destination.
+    Published,
+    /// The destination already existed; the existing bytes are untouched.
+    Exists,
+}
+
+/// Write `bytes` to a unique tmp file in `dir` (pid + process-wide
+/// counter), fsync it, and return the tmp path. The caller decides how to
+/// publish; tmp cleanup is the caller's responsibility on every path.
+fn write_tmp_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
     use std::io::Write;
     let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp = dir.join(format!(".{}.{}.{}.tmp", name, std::process::id(), seq));
@@ -179,8 +186,51 @@ pub(crate) fn write_file_atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    std::fs::rename(&tmp, dir.join(name))
-        .with_context(|| format!("failed to atomically replace '{}/{}'", dir.display(), name))
+    Ok(tmp)
+}
+
+/// Write `bytes` to `dir/name` atomically: a unique tmp file (pid +
+/// process-wide counter — pid alone is NOT unique across threads), fsync,
+/// then rename over the target. Concurrent writers can never share a tmp
+/// path, so a torn write can never be published.
+pub(crate) fn write_file_atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    let tmp = write_tmp_file(dir, name, bytes)?;
+    if let Err(e) = std::fs::rename(&tmp, dir.join(name)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e)
+            .with_context(|| format!("failed to atomically replace '{}/{}'", dir.display(), name));
+    }
+    Ok(())
+}
+
+/// Write `bytes` to `dir/name` only if `name` does not already exist —
+/// atomic no-replace publication. A check-then-rename sequence is NOT
+/// first-writer-wins across processes: two writers can both observe an
+/// absent destination and rename over each other. `hard_link` on the
+/// same-directory tmp→target is atomic and fails `AlreadyExists`, which
+/// enforces first-writer-wins; the loser then verifies the winner's
+/// content. Returns `Exists` without touching the destination.
+pub(crate) fn write_file_atomic_noreplace(
+    dir: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> Result<PublishOutcome> {
+    let tmp = write_tmp_file(dir, name, bytes)?;
+    let target = dir.join(name);
+    match std::fs::hard_link(&tmp, &target) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&tmp);
+            Ok(PublishOutcome::Published)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&tmp);
+            Ok(PublishOutcome::Exists)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e).with_context(|| format!("failed to publish '{}/{}'", dir.display(), name))
+        }
+    }
 }
 
 fn bundle_path(library: &YangLibrary, schema_id: &str) -> PathBuf {
@@ -271,8 +321,10 @@ pub fn persist_compiled(library: &YangLibrary, catalogue: &CompiledCatalogue) ->
     // this identity must verify (embedded id + recomputed hash). A second
     // compile of identical input yields the same schema_id but a different
     // `compiled_at_ns`, so byte-equality is NOT the invariant — verified
-    // semantic identity is. First writer wins; later identical identities
-    // are idempotent no-ops.
+    // semantic identity is. Publication is first-writer-wins via atomic
+    // no-replace link: a check-then-rename would let two concurrent
+    // processes both observe an absent destination and rename over each
+    // other, silently replacing already-published bytes.
     if target.exists() {
         match read_verified_bundle(library, &catalogue.schema_id) {
             Ok(_) => {
@@ -286,9 +338,21 @@ pub fn persist_compiled(library: &YangLibrary, catalogue: &CompiledCatalogue) ->
             ),
         }
     }
-    // Unique tmp name per call: concurrent persists of the same identity
-    // must not interleave writes into one temp file.
-    write_file_atomic(&dir, &format!("{}.json", catalogue.schema_id), &raw)?;
+    match write_file_atomic_noreplace(&dir, &format!("{}.json", catalogue.schema_id), &raw)? {
+        PublishOutcome::Published => {}
+        // Lost a cross-process publication race: the winner's bytes are
+        // already durable. Verify them — identical schema_id implies
+        // identical semantics, so a verified winner is an idempotent
+        // success; a corrupt winner fails closed.
+        PublishOutcome::Exists => match read_verified_bundle(library, &catalogue.schema_id) {
+            Ok(_) => {}
+            Err(e) => bail!(
+                "compiled bundle '{}' was concurrently published but fails integrity verification ({}); refusing to overwrite",
+                catalogue.schema_id,
+                e
+            ),
+        },
+    }
     refresh_compiled_index(library)?;
     Ok(())
 }
@@ -324,6 +388,8 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
                 .ok()
                 .and_then(|f| serde_json::from_reader::<_, BundleHeader>(BufReader::new(f)).ok());
             let (module_count, path_count, diagnostics, compiled_at_ns) = header
+                .as_ref()
+                .filter(|h| h.schema_id == schema_id)
                 .map(|h| {
                     (
                         h.module_count,
@@ -383,6 +449,11 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
                 .to_string();
             if let Ok(f) = std::fs::File::open(&path)
                 && let Ok(h) = serde_json::from_reader::<_, BundleHeader>(BufReader::new(f))
+                // Retention ordering must not trust unverified metadata:
+                // a foreign or content-swapped bundle whose embedded
+                // schema_id does not match its filename sorts as epoch 0
+                // and is evicted before any verified bundle.
+                && h.schema_id == schema_id
             {
                 final_infos.push(CompiledBundleInfo {
                     schema_id: schema_id.clone(),
@@ -404,6 +475,10 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
 /// fields are skipped by serde without materializing the full document.
 #[derive(Deserialize)]
 struct BundleHeader {
+    /// Embedded identity — must equal the bundle's filename stem for the
+    /// header to be trusted for retention/index metadata.
+    #[serde(default)]
+    schema_id: String,
     #[serde(default)]
     module_count: usize,
     #[serde(default)]
