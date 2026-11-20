@@ -1,6 +1,6 @@
 # Bonsai current state
 
-20 November update — **M6C-2 schema-bound acquisition merged.**
+20 November update — **M6C-2 schema-bound acquisition implemented** (branch `feat/bn015-m6c2-schema-bound-acquisition`, pending merge).
 Bonsai now enforces an approved, schema-bound acquisition manifest
 end to end: deterministic evaluator over the verified compiled
 catalogue plus freshest persisted M6C-1 applicability evidence;
@@ -21,6 +21,8 @@ boundaries. Evidence:
 Remaining on this line: M6D UI schema browser + collection-plan
 preview; authenticated remote-collector discovery is a separate
 dependency.
+
+**20 November research intake (no implementation):** [Enterprise knowledge, dark-site assurance and diagnostic-runner design](architecture/ENTERPRISE_KNOWLEDGE_OUTAGE_AND_DIAGNOSTIC_RUNNERS_2026-11-20.md) is recorded as [BN-028](../BONSAI_BACKLOG.md#bn-028--enterprise-knowledge-and-dark-site-assurance-20-november-2026). The proposed enterprise-document facts, circuit/power/OOB map, site outage engine and optional read-only diagnostic runner are **not shipped**. This does not change the M6C-1/M6C-2 verified status or production gate claims.
 
 20 November update — **M6C-1 device-effective YANG applicability merged.**
 Bonsai now answers, per device, which compiled YANG catalogue paths are
