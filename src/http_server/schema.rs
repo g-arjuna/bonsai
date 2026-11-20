@@ -554,6 +554,62 @@ pub(super) fn openapi_schema() -> serde_json::Value {
                     }}}}
                 }
             },
+            "/api/yang/sources": {
+                "get": {
+                    "tags": ["YANG & Path Profiles"],
+                    "summary": "List canonical YANG sources",
+                    "description": "Returns the pinned source manifest (config/yang_sources.toml): repository, exact pinned ref, platform applicability, license and enabled state for every approved YANG model source.",
+                    "responses": { "200": { "description": "YANG source manifest entries" }}
+                }
+            },
+            "/api/yang/compiled": {
+                "get": {
+                    "tags": ["YANG & Path Profiles"],
+                    "summary": "List compiled schema bundles",
+                    "description": "Returns retained effective-schema compilation bundles with schema_id, module/path counts, diagnostic counts and which bundle is active.",
+                    "responses": { "200": { "description": "Compiled bundle list" }}
+                }
+            },
+            "/api/yang/compile": {
+                "post": {
+                    "tags": ["YANG & Path Profiles"],
+                    "summary": "Compile effective YANG schema",
+                    "description": "Compiles the imported module set into a deterministic, content-addressed effective schema (imports, includes, augments, deviations, features, typedefs resolved). Query params: all_trust=true includes non-trusted modules; activate=false retains the bundle without activating it.",
+                    "parameters": [
+                        { "name": "all_trust", "in": "query", "schema": { "type": "boolean", "default": false }},
+                        { "name": "activate", "in": "query", "schema": { "type": "boolean", "default": true }}
+                    ],
+                    "responses": { "200": { "description": "Compiled catalogue summary with schema_id and diagnostics" }}
+                }
+            },
+            "/api/yang/activate": {
+                "post": {
+                    "tags": ["YANG & Path Profiles"],
+                    "summary": "Activate or roll back a compiled schema",
+                    "description": "Atomically points the active schema pointer at a retained compiled bundle. Pass an older schema_id to roll back.",
+                    "requestBody": {
+                        "required": true,
+                        "content": { "application/json": { "schema": { "type": "object", "properties": { "schema_id": { "type": "string" }}, "required": ["schema_id"] }}}
+                    },
+                    "responses": { "200": { "description": "Activation result" }, "400": { "description": "Unknown schema_id" }}
+                }
+            },
+            "/api/yang/paths": {
+                "get": {
+                    "tags": ["YANG & Path Profiles"],
+                    "summary": "Search compiled schema paths",
+                    "description": "Searches the active compiled schema-path index — distinct from curated path profiles. Returns canonical schema paths with module/revision/namespace provenance, kind, effective config flag, resolved type, units, keys, required features and deviation status. A schema-defined path is NOT proof a device implements it.",
+                    "parameters": [
+                        { "name": "q", "in": "query", "schema": { "type": "string" }, "description": "Substring match on path/module/namespace/type/description" },
+                        { "name": "module", "in": "query", "schema": { "type": "string" }},
+                        { "name": "kind", "in": "query", "schema": { "type": "string", "enum": ["container", "list", "leaf", "leaf-list", "anyxml", "anydata"] }},
+                        { "name": "config", "in": "query", "schema": { "type": "string", "enum": ["true", "false"] }, "description": "Filter on effective config flag" },
+                        { "name": "feature", "in": "query", "schema": { "type": "string" }, "description": "Only paths requiring this feature" },
+                        { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 200 }}
+                    ],
+                    "responses": { "200": { "description": "Schema path search results" }}
+                }
+            },
             "/api/profiles": {
                 "get": {
                     "tags": ["YANG & Path Profiles"],

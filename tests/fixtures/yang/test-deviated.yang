@@ -1,0 +1,13 @@
+module test-deviated {
+  yang-version "1.1";
+  namespace "urn:example:deviated";
+  prefix "td";
+  import test-base {
+    prefix tb;
+  }
+  revision "2024-03-01";
+  deviation "/tb:system/ntp/server" {
+    description "server leaf deviated out";
+    status obsolete;
+  }
+}

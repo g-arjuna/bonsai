@@ -97,6 +97,27 @@ pub(super) enum YangCliCommand {
     Install {
         bundle: String,
     },
+    /// Compile the imported module set into an effective-schema catalogue.
+    Compile {
+        all_trust: bool,
+        activate: bool,
+    },
+    /// List retained compiled schema bundles.
+    Compiled,
+    /// Activate (or roll back to) a compiled schema bundle by id.
+    Activate {
+        schema_id: String,
+    },
+    /// Search the active compiled schema-path index.
+    Paths {
+        query: Option<String>,
+        module: Option<String>,
+        kind: Option<String>,
+        state_only: bool,
+        limit: usize,
+    },
+    /// List canonical YANG source manifest entries.
+    Sources,
 }
 
 pub(super) struct DeviceCliAdd {
@@ -348,6 +369,64 @@ impl YangCliCommand {
                     .ok_or_else(|| anyhow::anyhow!("yang install requires a bundle path"))?;
                 Ok(Some(Self::Install { bundle }))
             }
+            "compile" => {
+                let mut all_trust = false;
+                let mut activate = true;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--all-trust" => all_trust = true,
+                        "--no-activate" => activate = false,
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other => anyhow::bail!("unknown yang compile argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::Compile {
+                    all_trust,
+                    activate,
+                }))
+            }
+            "compiled" => Ok(Some(Self::Compiled)),
+            "activate" => {
+                let schema_id = args
+                    .into_iter()
+                    .find(|arg| !arg.starts_with("--"))
+                    .ok_or_else(|| anyhow::anyhow!("yang activate requires a schema id"))?;
+                Ok(Some(Self::Activate { schema_id }))
+            }
+            "paths" => {
+                let mut query = None;
+                let mut module = None;
+                let mut kind = None;
+                let mut state_only = false;
+                let mut limit = 200usize;
+                let mut iter = args.into_iter();
+                while let Some(arg) = iter.next() {
+                    match arg.as_str() {
+                        "--module" => module = Some(require_flag_value("--module", iter.next())?),
+                        "--kind" => kind = Some(require_flag_value("--kind", iter.next())?),
+                        "--state-only" => state_only = true,
+                        "--limit" => {
+                            limit = require_flag_value("--limit", iter.next())?
+                                .parse()
+                                .map_err(|_| anyhow::anyhow!("--limit must be an integer"))?
+                        }
+                        "--help" | "-h" => return Ok(Some(Self::Help)),
+                        other if query.is_none() && !other.starts_with("--") => {
+                            query = Some(other.to_string());
+                        }
+                        other => anyhow::bail!("unknown yang paths argument '{other}'"),
+                    }
+                }
+                Ok(Some(Self::Paths {
+                    query,
+                    module,
+                    kind,
+                    state_only,
+                    limit,
+                }))
+            }
+            "sources" => Ok(Some(Self::Sources)),
             "help" | "--help" | "-h" => Ok(Some(Self::Help)),
             other => anyhow::bail!("unknown yang command '{other}'"),
         }
@@ -981,6 +1060,11 @@ pub(super) async fn run_yang_cli(command: YangCliCommand) -> Result<()> {
                     source_ref: directory.clone(),
                     vendor_scope: vendor.unwrap_or_else(|| "manual".to_string()),
                     trust,
+                    license: String::new(),
+                    platforms: Vec::new(),
+                    pinned_ref: String::new(),
+                    source_id: String::new(),
+                    filename_prefixes: Vec::new(),
                 },
                 catalogue_dir,
             )?;
@@ -1029,6 +1113,130 @@ pub(super) async fn run_yang_cli(command: YangCliCommand) -> Result<()> {
                 bundle, report.imported, report.updated, report.skipped
             );
         }
+        YangCliCommand::Compile {
+            all_trust,
+            activate,
+        } => {
+            let catalogue = bonsai::yang_schema::compile_library(&library, !all_trust)?;
+            println!(
+                "compiled schema {}: modules={}, paths={}, diagnostics={}",
+                catalogue.schema_id,
+                catalogue.module_count,
+                catalogue.path_count,
+                catalogue.diagnostics.len()
+            );
+            for d in catalogue.diagnostics.iter().take(20) {
+                println!("  diagnostic: {d}");
+            }
+            // Only a `complete` catalogue may be activated implicitly;
+            // partial catalogues stay available for inspection but are
+            // never promoted to active state without an explicit
+            // `bonsai yang activate <id>` decision.
+            if activate && catalogue.status == "complete" {
+                bonsai::yang_schema::activate_compiled(&library, &catalogue.schema_id)?;
+                println!("activated {}", catalogue.schema_id);
+            } else if activate {
+                println!(
+                    "not activated: catalogue status is '{}' (partial catalogues require explicit `bonsai yang activate`)",
+                    catalogue.status
+                );
+            } else {
+                println!(
+                    "bundle retained (not activated); use `bonsai yang activate {}`",
+                    catalogue.schema_id
+                );
+            }
+        }
+        YangCliCommand::Compiled => {
+            let bundles = bonsai::yang_schema::list_compiled(&library)?;
+            if bundles.is_empty() {
+                println!("No compiled schema bundles.");
+            } else {
+                println!(
+                    "{:<24} {:<22} {:<8} {:<8} {:<10} {}",
+                    "schema_id", "compiled_at_ns", "modules", "paths", "diagnos", "active"
+                );
+                for b in bundles {
+                    println!(
+                        "{:<24} {:<22} {:<8} {:<8} {:<10} {}",
+                        b.schema_id,
+                        b.compiled_at_ns,
+                        b.module_count,
+                        b.path_count,
+                        b.diagnostics,
+                        if b.active { "yes" } else { "" }
+                    );
+                }
+            }
+        }
+        YangCliCommand::Activate { schema_id } => {
+            bonsai::yang_schema::activate_compiled(&library, &schema_id)?;
+            println!("activated {schema_id}");
+        }
+        YangCliCommand::Paths {
+            query,
+            module,
+            kind,
+            state_only,
+            limit,
+        } => {
+            let result = bonsai::yang_schema::search_active_paths(
+                &library,
+                &bonsai::yang_schema::SchemaPathQuery {
+                    query: query.unwrap_or_default(),
+                    module,
+                    kind,
+                    config: if state_only { Some(false) } else { None },
+                    required_feature: None,
+                    limit,
+                },
+            )?;
+            match result.schema_id {
+                None => println!("No active compiled schema. Run `bonsai yang compile` first."),
+                Some(id) => {
+                    println!(
+                        "active schema: {id} ({} matching of {})",
+                        result.paths.len(),
+                        result.total
+                    );
+                    for p in &result.paths {
+                        println!(
+                            "  {:<10} {:<50} {}:{}",
+                            p.kind,
+                            p.path,
+                            p.module,
+                            p.resolved_type.as_deref().unwrap_or("-")
+                        );
+                    }
+                }
+            }
+        }
+        YangCliCommand::Sources => {
+            let manifest = bonsai::yang_source::load_default_manifest()?;
+            if manifest.source.is_empty() {
+                println!("No YANG sources configured (config/yang_sources.toml missing or empty).");
+            } else {
+                println!(
+                    "{:<22} {:<14} {:<10} {:<8} pinned_ref / platforms",
+                    "id", "vendor", "enabled", "license"
+                );
+                for s in &manifest.source {
+                    println!(
+                        "{:<22} {:<14} {:<10} {:<8} {} [{}]",
+                        s.id,
+                        s.vendor,
+                        if s.enabled { "yes" } else { "no" },
+                        if s.license.is_empty() {
+                            "-"
+                        } else {
+                            &s.license
+                        },
+                        s.pinned_ref,
+                        s.platforms.join(",")
+                    );
+                }
+            }
+        }
     }
 
     Ok(())
@@ -1061,6 +1269,11 @@ fn print_yang_cli_usage() {
          \x20 bonsai yang trust <module-name> [--revision <rev>] --trust <trusted|experimental>\n\
          \x20 bonsai yang bundle <vendor> [--version <filter>] [--output <bundle.tar>]\n\
          \x20 bonsai yang install <bundle.tar>\n\
+         \x20 bonsai yang compile [--all-trust] [--no-activate]\n\
+         \x20 bonsai yang compiled\n\
+         \x20 bonsai yang activate <schema-id>\n\
+         \x20 bonsai yang paths [query] [--module M] [--kind K] [--state-only] [--limit N]\n\
+         \x20 bonsai yang sources\n\
          \n\
          The local library lives under runtime/yang_catalogue by default.\n\
          Signed bundle create/install commands require the env var configured by [yang].bundle_key_env."

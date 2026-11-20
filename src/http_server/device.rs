@@ -643,9 +643,10 @@ pub(super) async fn device_cmdb_handler(
                  RETURN l.id, l.name, l.full_address, p.name",
             )
             .map_err(|e| e.to_string())?;
-        for row in conn
+        if let Some(row) = conn
             .execute(&mut loc_stmt, vec![("addr", Value::String(addr_clone))])
             .map_err(|e| e.to_string())?
+            .next()
         {
             location = Some(CmdbLocationJson {
                 location_id: read_str(&row[0]),
@@ -653,7 +654,6 @@ pub(super) async fn device_cmdb_handler(
                 full_address: read_str(&row[2]),
                 parent_name: read_str(&row[3]),
             });
-            break; // take first
         }
 
         Ok::<_, String>(DeviceCmdbResponse {
@@ -895,6 +895,205 @@ pub(super) async fn yang_search_handler(
         .search(&params.q)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(YangSearchResponse { result }))
+}
+
+#[derive(Serialize)]
+pub(super) struct YangSourcesResponse {
+    manifest_path: String,
+    sources: Vec<crate::yang_source::YangSourceEntry>,
+}
+
+pub(super) async fn yang_sources_handler(
+    State(_state): State<AppState>,
+) -> Result<Json<YangSourcesResponse>, (StatusCode, String)> {
+    let manifest = crate::yang_source::load_default_manifest()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(YangSourcesResponse {
+        manifest_path: crate::yang_source::DEFAULT_MANIFEST_PATH.to_string(),
+        sources: manifest.source,
+    }))
+}
+
+#[derive(Serialize)]
+pub(super) struct YangCompiledResponse {
+    bundles: Vec<crate::yang_schema::CompiledBundleInfo>,
+}
+
+fn yang_roots(state: &AppState) -> (String, String, String) {
+    (
+        state.yang_library_root.clone(),
+        state.yang_cache_root.clone(),
+        state.yang_bundle_key_env.clone(),
+    )
+}
+
+pub(super) async fn yang_compiled_handler(
+    State(state): State<AppState>,
+) -> Result<Json<YangCompiledResponse>, (StatusCode, String)> {
+    let (lib, cache, key) = yang_roots(&state);
+    let bundles = tokio::task::spawn_blocking(move || {
+        let library = YangLibrary::open(
+            std::path::Path::new(&lib),
+            std::path::Path::new(&cache),
+            &key,
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        crate::yang_schema::list_compiled(&library)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(YangCompiledResponse { bundles }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct YangCompileParams {
+    #[serde(default)]
+    all_trust: bool,
+    #[serde(default = "default_true_http")]
+    activate: bool,
+}
+fn default_true_http() -> bool {
+    true
+}
+
+#[derive(Serialize)]
+pub(super) struct YangCompileResponse {
+    schema_id: String,
+    status: String,
+    module_count: usize,
+    path_count: usize,
+    diagnostics: Vec<String>,
+    activated: bool,
+}
+
+pub(super) async fn yang_compile_handler(
+    State(state): State<AppState>,
+    Query(params): Query<YangCompileParams>,
+) -> Result<Json<YangCompileResponse>, (StatusCode, String)> {
+    let (lib, cache, key) = yang_roots(&state);
+    let all_trust = params.all_trust;
+    let activate = params.activate;
+    // Compilation is CPU/IO-bound filesystem work — keep it off the async
+    // executor so admin compiles cannot stall live collection/control plane.
+    let (catalogue, activated) = tokio::task::spawn_blocking(move || {
+        let library = YangLibrary::open(
+            std::path::Path::new(&lib),
+            std::path::Path::new(&cache),
+            &key,
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let catalogue = crate::yang_schema::compile_library(&library, !all_trust)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        // Activation policy: only a `complete` catalogue may be activated
+        // implicitly. Partial/failed catalogues remain browsable as
+        // diagnostics but are never promoted to active authoritative state
+        // without an explicit separate activation call.
+        let mut activated = false;
+        if activate && catalogue.status == "complete" {
+            crate::yang_schema::activate_compiled(&library, &catalogue.schema_id)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            activated = true;
+        }
+        Ok::<_, (StatusCode, String)>((catalogue, activated))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(YangCompileResponse {
+        schema_id: catalogue.schema_id,
+        status: catalogue.status,
+        module_count: catalogue.module_count,
+        path_count: catalogue.path_count,
+        diagnostics: catalogue.diagnostics,
+        activated,
+    }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct YangActivateRequest {
+    schema_id: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct YangActivateResponse {
+    active: String,
+}
+
+pub(super) async fn yang_activate_handler(
+    State(state): State<AppState>,
+    Json(req): Json<YangActivateRequest>,
+) -> Result<Json<YangActivateResponse>, (StatusCode, String)> {
+    let (lib, cache, key) = yang_roots(&state);
+    let schema_id = req.schema_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let library = YangLibrary::open(
+            std::path::Path::new(&lib),
+            std::path::Path::new(&cache),
+            &key,
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        crate::yang_schema::activate_compiled(&library, &schema_id)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(YangActivateResponse {
+        active: req.schema_id,
+    }))
+}
+
+#[derive(Deserialize, Default)]
+pub(super) struct YangPathsParams {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    module: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    config: Option<String>,
+    #[serde(default)]
+    feature: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub(super) struct YangPathsResponse {
+    result: crate::yang_schema::SchemaPathSearchResult,
+}
+
+pub(super) async fn yang_paths_handler(
+    State(state): State<AppState>,
+    Query(params): Query<YangPathsParams>,
+) -> Result<Json<YangPathsResponse>, (StatusCode, String)> {
+    let (lib, cache, key) = yang_roots(&state);
+    let config = match params.config.as_deref() {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    };
+    let query = crate::yang_schema::SchemaPathQuery {
+        query: params.q,
+        module: params.module,
+        kind: params.kind,
+        config,
+        required_feature: params.feature,
+        limit: params.limit.unwrap_or(200),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let library = YangLibrary::open(
+            std::path::Path::new(&lib),
+            std::path::Path::new(&cache),
+            &key,
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        crate::yang_schema::search_active_paths(&library, &query)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(YangPathsResponse { result }))
 }
 pub(super) async fn apply_device_selected_paths_handler(
     State(state): State<AppState>,

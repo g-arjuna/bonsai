@@ -1,0 +1,106 @@
+module test-base {
+  yang-version "1.1";
+  namespace "urn:example:test-base";
+  prefix "tb";
+  organization "Example Org";
+  contact "test@example.com";
+  description "Base fixture module.";
+  revision "2024-01-01" {
+    description "initial revision";
+  }
+  revision "2023-06-01" {
+    description "older revision";
+  }
+
+  typedef my-enum {
+    type enumeration {
+      enum "up" { value "up"; }
+      enum "down" { value "down"; }
+      enum "unknown" { value "unknown"; }
+    }
+    description "operational state enum";
+  }
+
+  typedef percent {
+    type uint8 {
+      range "0..100";
+    }
+    units "%";
+  }
+
+  feature fast-mode {
+    description "enable fast mode nodes";
+  }
+
+  identity base-state {
+    description "base identity";
+  }
+
+  grouping iface-common {
+    leaf mtu {
+      type uint32;
+      units "octets";
+      config false;
+      description "interface MTU";
+    }
+    leaf admin-enabled {
+      type boolean;
+      default "true";
+    }
+  }
+
+  container system {
+    config false;
+    container ntp {
+      leaf server {
+        type string;
+        units "host";
+      }
+    }
+  }
+
+  list users {
+    key "name";
+    key "domain";
+    leaf name {
+      type string;
+    }
+    leaf domain {
+      type string;
+    }
+    leaf uid {
+      type uint32;
+      mandatory true;
+      units "id";
+    }
+    leaf state {
+      type my-enum;
+      config false;
+    }
+  }
+
+  container ports {
+    choice speed {
+      case fast {
+        leaf fast-mbps {
+          type uint32;
+          units "megabits-per-second";
+          if-feature tb:fast-mode;
+        }
+      }
+      case slow {
+        leaf slow-mbps {
+          type uint32;
+        }
+      }
+    }
+  }
+
+  container policed {
+    uses iface-common;
+    leaf utilization {
+      type percent;
+      config false;
+    }
+  }
+}

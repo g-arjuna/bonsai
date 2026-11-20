@@ -1,0 +1,1515 @@
+{
+  "command": "/tmp/pyang-venv/bin/pyang -p tests/fixtures/yang/ietf -p tests/fixtures/yang/oc -f tree tests/fixtures/yang/ietf/ietf-inet-types.yang tests/fixtures/yang/ietf/ietf-interfaces.yang tests/fixtures/yang/ietf/ietf-yang-types.yang tests/fixtures/yang/oc/openconfig-extensions.yang tests/fixtures/yang/oc/openconfig-interfaces.yang tests/fixtures/yang/oc/openconfig-platform-types.yang tests/fixtures/yang/oc/openconfig-transport-types.yang tests/fixtures/yang/oc/openconfig-types.yang tests/fixtures/yang/oc/openconfig-yang-types.yang",
+  "fixture_sha256": {
+    "tests/fixtures/yang/ietf/ietf-inet-types.yang": "2fb39c45cd28d95f60838e5f74ac509d780d18f3c5bf78db251049a4d022e266",
+    "tests/fixtures/yang/ietf/ietf-interfaces.yang": "f6faea9938f0341ed48fda93dba9a69aa32ee7142c463342efec3d38f4eb3621",
+    "tests/fixtures/yang/ietf/ietf-yang-types.yang": "5e4ff4c837f303050fa46369987f11eb909c24dae2d4ec338342a7aa596f7b2b",
+    "tests/fixtures/yang/oc/openconfig-extensions.yang": "17a79f242a429122b4d59f6bf6dea4cbb3f8e6ede78f0908cbf70e15a47756ae",
+    "tests/fixtures/yang/oc/openconfig-interfaces.yang": "b4e92e39467ae69b7a9d63281b1464f529b727d10dfd218d1efe2ecfd896d19c",
+    "tests/fixtures/yang/oc/openconfig-platform-types.yang": "40990ce24c21ce5caef7cedaf75be68b1b00546db87ea1f5e862e42f835eb61c",
+    "tests/fixtures/yang/oc/openconfig-transport-types.yang": "2ef00f9b4bd91231c2d3c9991779b23d1eab8e3c593922f25b57c8e8b57c7796",
+    "tests/fixtures/yang/oc/openconfig-types.yang": "85341594d67fee625f5835204646befcaebe216756f0bf31ad9565dbbc821390",
+    "tests/fixtures/yang/oc/openconfig-yang-types.yang": "08fa3cdc4715e845e2de91e24f89466c8b169dedd37d8bc694f7f42800f452b8"
+  },
+  "modules": {
+    "ietf-interfaces": [
+      {
+        "config": true,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces-state",
+        "status": "deprecated",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [
+          "name"
+        ],
+        "kind": "list",
+        "mandatory": null,
+        "path": "/interfaces-state/interface",
+        "status": "deprecated",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces-state/interface/admin-status",
+        "status": "deprecated",
+        "type": "enumeration {if-mib}?"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf-list",
+        "mandatory": null,
+        "path": "/interfaces-state/interface/higher-layer-if",
+        "status": "deprecated",
+        "type": "interface-state-ref"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces-state/interface/if-index",
+        "status": "deprecated",
+        "type": "int32 {if-mib}?"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/last-change",
+        "status": "deprecated",
+        "type": "yang:date-and-time"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf-list",
+        "mandatory": null,
+        "path": "/interfaces-state/interface/lower-layer-if",
+        "status": "deprecated",
+        "type": "interface-state-ref"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces-state/interface/name",
+        "status": "deprecated",
+        "type": "string"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces-state/interface/oper-status",
+        "status": "deprecated",
+        "type": "enumeration"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/phys-address",
+        "status": "deprecated",
+        "type": "yang:phys-address"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/speed",
+        "status": "deprecated",
+        "type": "yang:gauge64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces-state/interface/statistics",
+        "status": "deprecated",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces-state/interface/statistics/discontinuity-time",
+        "status": "deprecated",
+        "type": "yang:date-and-time"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/in-broadcast-pkts",
+        "status": "deprecated",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/in-discards",
+        "status": "deprecated",
+        "type": "yang:counter32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/in-errors",
+        "status": "deprecated",
+        "type": "yang:counter32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/in-multicast-pkts",
+        "status": "deprecated",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/in-octets",
+        "status": "deprecated",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/in-unicast-pkts",
+        "status": "deprecated",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/in-unknown-protos",
+        "status": "deprecated",
+        "type": "yang:counter32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/out-broadcast-pkts",
+        "status": "deprecated",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/out-discards",
+        "status": "deprecated",
+        "type": "yang:counter32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/out-errors",
+        "status": "deprecated",
+        "type": "yang:counter32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/out-multicast-pkts",
+        "status": "deprecated",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/out-octets",
+        "status": "deprecated",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces-state/interface/statistics/out-unicast-pkts",
+        "status": "deprecated",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces-state/interface/type",
+        "status": "deprecated",
+        "type": "identityref"
+      },
+      {
+        "config": true,
+        "keys": [
+          "name"
+        ],
+        "kind": "list",
+        "mandatory": null,
+        "path": "/interfaces/interface",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/admin-status",
+        "status": "current",
+        "type": "enumeration {if-mib}?"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/description",
+        "status": "current",
+        "type": "string"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/enabled",
+        "status": "current",
+        "type": "boolean"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf-list",
+        "mandatory": null,
+        "path": "/interfaces/interface/higher-layer-if",
+        "status": "current",
+        "type": "interface-ref"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/if-index",
+        "status": "current",
+        "type": "int32 {if-mib}?"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/last-change",
+        "status": "current",
+        "type": "yang:date-and-time"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/link-up-down-trap-enable",
+        "status": "current",
+        "type": "enumeration {if-mib}?"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf-list",
+        "mandatory": null,
+        "path": "/interfaces/interface/lower-layer-if",
+        "status": "current",
+        "type": "interface-ref"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/name",
+        "status": "current",
+        "type": "string"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/oper-status",
+        "status": "current",
+        "type": "enumeration"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/phys-address",
+        "status": "current",
+        "type": "yang:phys-address"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/speed",
+        "status": "current",
+        "type": "yang:gauge64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/statistics",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/statistics/discontinuity-time",
+        "status": "current",
+        "type": "yang:date-and-time"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/in-broadcast-pkts",
+        "status": "current",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/in-discards",
+        "status": "current",
+        "type": "yang:counter32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/in-errors",
+        "status": "current",
+        "type": "yang:counter32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/in-multicast-pkts",
+        "status": "current",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/in-octets",
+        "status": "current",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/in-unicast-pkts",
+        "status": "current",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/in-unknown-protos",
+        "status": "current",
+        "type": "yang:counter32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/out-broadcast-pkts",
+        "status": "current",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/out-discards",
+        "status": "current",
+        "type": "yang:counter32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/out-errors",
+        "status": "current",
+        "type": "yang:counter32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/out-multicast-pkts",
+        "status": "current",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/out-octets",
+        "status": "current",
+        "type": "yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/statistics/out-unicast-pkts",
+        "status": "current",
+        "type": "yang:counter64"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/type",
+        "status": "current",
+        "type": "identityref"
+      }
+    ],
+    "openconfig-interfaces": [
+      {
+        "config": true,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": true,
+        "keys": [
+          "name"
+        ],
+        "kind": "list",
+        "mandatory": null,
+        "path": "/interfaces/interface",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/config",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/config/description",
+        "status": "current",
+        "type": "string"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/config/enabled",
+        "status": "current",
+        "type": "boolean"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/config/loopback-mode",
+        "status": "current",
+        "type": "oc-opt-types:loopback-mode-type"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/config/mtu",
+        "status": "current",
+        "type": "uint16"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/config/name",
+        "status": "current",
+        "type": "string"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/config/type",
+        "status": "current",
+        "type": "identityref"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/hold-time",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/hold-time/config",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/hold-time/config/down",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/hold-time/config/up",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/hold-time/state",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/hold-time/state/down",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/hold-time/state/up",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/name",
+        "status": "current",
+        "type": "-> ../config/name"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/penalty-based-aied",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/penalty-based-aied/config",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/penalty-based-aied/config/decay-half-life",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/penalty-based-aied/config/flap-penalty",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/penalty-based-aied/config/max-suppress-time",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/penalty-based-aied/config/reuse-threshold",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/penalty-based-aied/config/suppress-threshold",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/penalty-based-aied/state",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/penalty-based-aied/state/decay-half-life",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/penalty-based-aied/state/flap-penalty",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/penalty-based-aied/state/max-suppress-time",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/penalty-based-aied/state/reuse-threshold",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/penalty-based-aied/state/suppress-threshold",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/state",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/state/admin-status",
+        "status": "current",
+        "type": "enumeration"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/state/counters",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/carrier-transitions",
+        "status": "deprecated",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/in-broadcast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/in-discards",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/in-errors",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/in-fcs-errors",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/in-link-down-discards",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/in-low-ttl-discards",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/in-multicast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/in-octets",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/in-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/in-unicast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/in-unknown-protos",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/interface-transitions",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/last-clear",
+        "status": "current",
+        "type": "oc-types:timeticks64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/link-transitions",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/out-broadcast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/out-discards",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/out-errors",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/out-multicast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/out-octets",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/out-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/out-unicast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/counters/resets",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/cpu",
+        "status": "current",
+        "type": "boolean"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/description",
+        "status": "current",
+        "type": "string"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/enabled",
+        "status": "current",
+        "type": "boolean"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/ifindex",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/last-change",
+        "status": "current",
+        "type": "oc-types:timeticks64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/logical",
+        "status": "current",
+        "type": "boolean"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/loopback-mode",
+        "status": "current",
+        "type": "oc-opt-types:loopback-mode-type"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/management",
+        "status": "current",
+        "type": "boolean"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/mtu",
+        "status": "current",
+        "type": "uint16"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/state/name",
+        "status": "current",
+        "type": "string"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/state/oper-status",
+        "status": "current",
+        "type": "enumeration"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/state/type",
+        "status": "current",
+        "type": "identityref"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/subinterfaces",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": true,
+        "keys": [
+          "index"
+        ],
+        "kind": "list",
+        "mandatory": null,
+        "path": "/interfaces/interface/subinterfaces/subinterface",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/subinterfaces/subinterface/config",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/config/description",
+        "status": "current",
+        "type": "string"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/config/enabled",
+        "status": "current",
+        "type": "boolean"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/config/index",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": true,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/subinterfaces/subinterface/index",
+        "status": "current",
+        "type": "-> ../config/index"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/admin-status",
+        "status": "current",
+        "type": "enumeration"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "container",
+        "mandatory": null,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters",
+        "status": "current",
+        "type": ""
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/carrier-transitions",
+        "status": "deprecated",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/in-broadcast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/in-discards",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/in-errors",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/in-fcs-errors",
+        "status": "deprecated",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/in-link-down-discards",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/in-low-ttl-discards",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/in-multicast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/in-octets",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/in-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/in-unicast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/in-unknown-protos",
+        "status": "deprecated",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/last-clear",
+        "status": "current",
+        "type": "oc-types:timeticks64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/out-broadcast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/out-discards",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/out-errors",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/out-multicast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/out-octets",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/out-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/counters/out-unicast-pkts",
+        "status": "current",
+        "type": "oc-yang:counter64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/cpu",
+        "status": "current",
+        "type": "boolean"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/description",
+        "status": "current",
+        "type": "string"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/enabled",
+        "status": "current",
+        "type": "boolean"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/ifindex",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/index",
+        "status": "current",
+        "type": "uint32"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/last-change",
+        "status": "current",
+        "type": "oc-types:timeticks64"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/logical",
+        "status": "current",
+        "type": "boolean"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/management",
+        "status": "current",
+        "type": "boolean"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": false,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/name",
+        "status": "current",
+        "type": "string"
+      },
+      {
+        "config": false,
+        "keys": [],
+        "kind": "leaf",
+        "mandatory": true,
+        "path": "/interfaces/interface/subinterfaces/subinterface/state/oper-status",
+        "status": "current",
+        "type": "enumeration"
+      }
+    ]
+  },
+  "oracle": "pyang",
+  "pyang_version": "pyang 2.7.1"
+}

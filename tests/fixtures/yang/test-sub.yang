@@ -1,0 +1,17 @@
+submodule test-base-sub {
+  belong-to test-base;
+  namespace "urn:example:test-base";
+  prefix "tb";
+  revision "2024-01-01";
+
+  typedef sub-typedef {
+    type uint16;
+  }
+
+  container sub-only {
+    leaf marker {
+      type sub-typedef;
+      config false;
+    }
+  }
+}

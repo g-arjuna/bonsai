@@ -1,0 +1,33 @@
+module test-aug {
+  yang-version "1.1";
+  namespace "urn:example:test-aug";
+  prefix "ta";
+  import test-base {
+    prefix tb;
+  }
+  revision "2024-02-01";
+
+  augment "/tb:system" {
+    leaf timezone {
+      type string;
+      units "tz";
+    }
+    container extra {
+      leaf flag {
+        type boolean;
+        default "false";
+      }
+    }
+  }
+
+  augment "tb:ports" {
+    leaf admin-note {
+      type string;
+      description "augmented leaf under ports";
+    }
+  }
+
+  deviation "/tb:ports/speed" {
+    description "speed choice deviated for fixture";
+  }
+}
