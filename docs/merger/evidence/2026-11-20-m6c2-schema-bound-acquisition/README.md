@@ -170,26 +170,37 @@ Focused suites, all PASS on the pre-merge head:
 
 ## Gate
 
-- Gate-tested production SHA: `13d0be58426aeda33c6ea6e3f7087c5355655fdd`
-  (branch tip; a subsequent docs/dead-code cleanup commit carries no
-  production-code delta).
+- Gate-tested production SHA: `4043f75683d15fd479b7d7fbb91a572ed0503ead`
+  (branch tip; subsequent commits are docs/evidence only).
 - Gate command: `CARGO_BUILD_JOBS=2 scripts/ci/run-local.sh --trusted
   --shared-target-dir /home/arjuna/.cache/bonsai-ci/build-lane
   --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native l0 l1 l2 l3`
 - Result: PASS — all four tiers on the trusted local lane
-  (~30 min wall, CARGO_BUILD_JOBS=2).
+  (~30 min wall, CARGO_BUILD_JOBS=2), run
+  `target/ci/local-run-20261121-021426`.
   - L0 source checks: PASS (2 pre-existing fmt-drift files at base
     unchanged; all M6C-2 files formatted).
-  - L1 compile/static: PASS (`cargo check` profile, bonsai lib + all
+  - L1 compile/static: PASS (`ci` profile check, bonsai lib + all
     test targets).
   - L2 behavioral: PASS — 479 lib tests (incl. `schema_binding` expiry
     unit tests, `api::schema_binding_tests` echo/forgery tests,
-    `assignment` v5 contract tests), 32 integration targets incl.
-    `yang_schema_bound_acquisition` 6/6, `yang_device_applicability`
-    12/12, `yang_catalogue` 42/42, `gnmi_subscription_e2e`,
-    `gnmi_assignment_lifecycle`, `bn021g`/`bn022` auth regressions.
+    `assignment` v5 contract tests, `subscriber` schema-bound guard
+    tests) + 33 integration targets. `yang_schema_bound_acquisition`
+    is a required L2 target as of this change and passed 6/6 in-gate;
+    `yang_device_applicability` 12/12, `yang_catalogue` 42/42,
+    `gnmi_assignment_lifecycle` 14/14, `gnmi_selective_acquisition`
+    19/19, `gnmi_security_connectivity` 11/11, `bn021g`/`bn022`
+    auth regressions all green.
   - L3 cross-component: PASS — 13 integration targets + python suites
     (259 passed / 3 skipped / 1 deselected; skips are pre-existing
     environment-gated cases, not M6C-2).
-- Preliminary gate on `737702c` (pre-rustfmt): L0 FAIL on formatting
-  only; superseded by the `13d0be5` run above.
+- Prior gate runs on this branch:
+  - `737702c`: L0 FAIL on rustfmt of changed files only (fixed by
+    `13d0be5`); L1–L3 not executed.
+  - `13d0be5`: L0–L3 ALL PASS, but `yang_schema_bound_acquisition`
+    was not yet in the L2 manifest.
+  - `4043f75` first attempt: L2 FAIL on
+    `m3_syslog_tcp_availability::idle_deadline_closes_quiet_connection_after_first_frame`
+    — a 2 s listener-readiness flake unrelated to M6C-2 (target
+    passes 9/9 standalone and passed in both neighboring gate runs);
+    rerun below is the recorded result.
