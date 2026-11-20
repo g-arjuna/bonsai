@@ -477,6 +477,25 @@ pub(super) struct ManagedDeviceJson {
     role: String,
     site: String,
     selected_paths: Vec<SelectedSubscriptionPath>,
+    /// The override-resolved effective selection actually assigned to the
+    /// collector — distinct from the raw desired `selected_paths`.
+    resolved_selected_paths: Vec<SelectedSubscriptionPath>,
+    /// Acquisition intent: "automatic" | "explicit" | "disabled".
+    acquisition: String,
+    /// Explicit transport security intent: "tls_verify" | "mtls" |
+    /// "plaintext"; "legacy" when inferred from ca_cert presence.
+    security: String,
+    /// mTLS client certificate/key references (paths or vault: aliases);
+    /// empty unless security="mtls".
+    client_cert: String,
+    client_key: String,
+    /// Validated effective plan state for this device:
+    /// "submitted" | "disabled" | "rejected" (with detail), plus the
+    /// deterministic plan identity. A saved configuration is NOT evidence
+    /// the device accepted the plan — see subscription_statuses.
+    acquisition_plan_state: String,
+    acquisition_plan_id: String,
+    acquisition_plan_detail: String,
     subscription_statuses: Vec<SubscriptionStatusJson>,
     resolution_audit: Vec<String>,
     /// Stable external identity (e.g. "netbox:device:123") for imported
@@ -525,6 +544,14 @@ pub(super) struct OnboardingDiscoveryRequest {
     role_hint: String,
     #[serde(default)]
     environment_archetype: String,
+    /// Transport security for the probe: "tls_verify" | "mtls" |
+    /// "plaintext"; absent = legacy inference.
+    #[serde(default)]
+    security: String,
+    #[serde(default)]
+    client_cert_path: String,
+    #[serde(default)]
+    client_key_path: String,
 }
 
 #[derive(Deserialize)]
@@ -555,6 +582,25 @@ pub(super) struct ManagedDeviceRequest {
     site: Option<String>,
     #[serde(default)]
     selected_paths: Vec<SelectedSubscriptionPath>,
+    /// Acquisition intent: "automatic" | "explicit" | "disabled".
+    /// `None` (absent) = legacy behaviour — preserve the stored intent and
+    /// inherit selected_paths when the request omits them. An explicit
+    /// value is authoritative: `explicit` + empty selected_paths means
+    /// acquisition disabled, never automatic fallback.
+    #[serde(default)]
+    acquisition: Option<String>,
+    /// Transport security intent: "tls_verify" | "mtls" | "plaintext".
+    /// `None` (absent) = legacy inference AND inherit the stored intent on
+    /// update — an explicit value is authoritative and validated
+    /// atomically with the rest of the security fields.
+    #[serde(default)]
+    security: Option<String>,
+    /// mTLS client certificate/key references (path or `vault:` alias).
+    /// Only valid with security="mtls"; empty inherits on update.
+    #[serde(default)]
+    client_cert: String,
+    #[serde(default)]
+    client_key: String,
 }
 
 #[derive(Deserialize)]
@@ -707,6 +753,12 @@ pub(super) struct TestCredentialRequest {
     ca_cert_path: String,
     #[serde(default)]
     role_hint: String,
+    #[serde(default)]
+    security: String,
+    #[serde(default)]
+    client_cert_path: String,
+    #[serde(default)]
+    client_key_path: String,
 }
 
 #[derive(Serialize)]

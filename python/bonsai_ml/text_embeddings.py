@@ -35,6 +35,7 @@ DEFAULT_MAX_TEXT_LENGTH = 256
 class EmbeddingConfig:
     """Configuration for the text embedding backend."""
     model_name: str = DEFAULT_MODEL
+    model_revision: str = ""
     dim: int = DEFAULT_DIM
     batch_size: int = DEFAULT_BATCH_SIZE
     max_text_length: int = DEFAULT_MAX_TEXT_LENGTH
@@ -48,6 +49,7 @@ def load_from_config(config: dict[str, Any]) -> "TextEmbedder":
     """Construct a TextEmbedder from a config dict (from bonsai.toml or DB)."""
     emb_cfg = EmbeddingConfig(
         model_name=config.get("model_name", DEFAULT_MODEL),
+        model_revision=config.get("model_revision", ""),
         dim=config.get("dim", DEFAULT_DIM),
         batch_size=config.get("batch_size", DEFAULT_BATCH_SIZE),
         max_text_length=config.get("max_text_length", DEFAULT_MAX_TEXT_LENGTH),
@@ -77,6 +79,10 @@ class TextEmbedder:
     @property
     def model_name(self) -> str:
         return self.config.model_name
+
+    @property
+    def model_revision(self) -> str:
+        return self.config.model_revision
 
     def embed_batch(self, texts: list[str]) -> np.ndarray:
         """Embed a batch of text strings.

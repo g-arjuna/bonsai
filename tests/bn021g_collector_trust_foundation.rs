@@ -400,6 +400,7 @@ fn target(
     vendor: &str,
 ) -> TargetConfig {
     TargetConfig {
+        acquisition: Default::default(),
         extra_ips: Vec::new(),
         optional: false,
         paths: Vec::new(),
@@ -423,6 +424,9 @@ fn target(
         inventory_platform: None,
         inventory_status: None,
         inventory_tenant: None,
+        security: None,
+        client_cert: None,
+        client_key: None,
         created_at_ns: 0,
         updated_at_ns: 0,
         created_by: String::new(),
@@ -447,6 +451,11 @@ fn telemetry_update(
     value: serde_json::Value,
 ) -> TelemetryIngestUpdate {
     TelemetryIngestUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
         collector_id: collector_id.to_string(),
         target: target_addr.to_string(),
         vendor: String::new(),
@@ -1056,6 +1065,11 @@ async fn provisional_payloads_cannot_gain_canonical_authority() {
     //    H1: the source key must carry the authorized collector's
     //    namespace segment.
     let flow = TelemetryIngestUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
         collector_id: "site-a".to_string(),
         target: "flowsrc/site-a/nf9/198.51.100.9:49152/sid7".to_string(),
         vendor: String::new(),
@@ -2465,6 +2479,11 @@ fn netflow_update(
     value: serde_json::Value,
 ) -> TelemetryIngestUpdate {
     TelemetryIngestUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
         collector_id: collector_id.to_string(),
         target: target_key.to_string(),
         vendor: String::new(),
@@ -2673,6 +2692,11 @@ async fn otlp_provisional_app_id_is_renamespaced() {
     let mut client = mtls_client(&lab, &pki, &cert_a).await;
 
     let update = TelemetryIngestUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
         collector_id: "site-a".to_string(),
         target: "otlpsrc/site-b/http/10.4.0.5:4317".to_string(),
         vendor: String::new(),
@@ -2709,8 +2733,7 @@ async fn otlp_provisional_app_id_is_renamespaced() {
     let detail: serde_json::Value =
         serde_json::from_str(&row[0]).expect("event detail must be JSON");
     assert_eq!(
-        detail["provisional_app_id"],
-        "otlpapp/otlpsrc/site-a/http/10.4.0.5:4317/payments-svc",
+        detail["provisional_app_id"], "otlpapp/otlpsrc/site-a/http/10.4.0.5:4317/payments-svc",
         "app id must be re-derived under the authenticated namespace: {}",
         row[0]
     );
@@ -3088,4 +3111,64 @@ fn credential_binding_lookups_use_sqlite_indexes() {
             .any(|l| l.contains("idx_exporter_bindings_collector_identity")),
         "collector identity lookup must use the partial unique index: {plan:?}"
     );
+}
+
+/// M5.2A credential confidentiality: a plaintext dev-compat session —
+/// even one presenting a shared PSK token — must NOT receive
+/// credential-bearing device assignments. Production credentials require
+/// a certificate-bound collector principal over verified encrypted
+/// transport; PSK/plaintext delivery exists only as an explicit
+/// isolated-lab opt-in (dev_open_credential_assignments), which this
+/// service does not enable.
+#[tokio::test]
+async fn plaintext_psk_only_cannot_receive_device_credentials() {
+    let lab = start_lab_mode(None, false, AuthPolicy::DevelopmentCompat).await;
+
+    // Credential-bearing device assigned to the registering collector.
+    let target = TargetConfig {
+        address: "10.9.9.9".to_string(),
+        enabled: true,
+        username: Some("lab".to_string()),
+        password: Some("lab-pass".to_string()),
+        collector_id: Some("dev-col".to_string()),
+        ..Default::default()
+    };
+    lab.registry
+        .add_device_with_audit(target, "test", "add")
+        .unwrap();
+    lab.registry
+        .assign_device_with_audit("10.9.9.9", Some("dev-col".to_string()), "test", "assign")
+        .unwrap();
+
+    let mut client = plain_client(&lab).await;
+    let mut stream = client
+        .register_collector(Request::new(CollectorIdentity {
+            collector_id: "dev-col".to_string(),
+            hostname: "collector-psk".to_string(),
+            protocol_version: PROTOCOL_VERSION,
+            // A shared PSK is authentication evidence only — it is not
+            // encryption and not collector-specific authorization.
+            auth_token: "shared-psk-value".to_string(),
+        }))
+        .await
+        .expect("dev-compat registration")
+        .into_inner();
+
+    let update = stream
+        .message()
+        .await
+        .expect("assignment stream")
+        .expect("full sync update");
+    assert!(update.is_full_sync);
+    assert_eq!(update.assignments.len(), 1);
+    let assignment = &update.assignments[0];
+    assert!(
+        assignment.rejected,
+        "credential-bearing assignment must be rejected without a certified principal"
+    );
+    assert_eq!(
+        assignment.reject_reason,
+        "credentials_require_authenticated_collector"
+    );
+    assert!(assignment.username.is_empty() && assignment.password.is_empty());
 }

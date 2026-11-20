@@ -80,6 +80,9 @@ pub(super) async fn discover_handler(
         password_env: None,
         ca_cert_path: option_string(req.ca_cert_path),
         tls_domain: option_string(req.tls_domain),
+        security: security_mode_from_str(&req.security)?,
+        client_cert_path: option_string(req.client_cert_path),
+        client_key_path: option_string(req.client_key_path),
         role_hint: option_string(req.role_hint),
         environment_archetype: option_string(req.environment_archetype),
         vault: Some(std::sync::Arc::clone(&state.credentials)),
@@ -227,6 +230,9 @@ pub(super) async fn test_credential_handler(
         password_env: None,
         ca_cert_path: option_string(req.ca_cert_path),
         tls_domain: option_string(req.tls_domain),
+        security: security_mode_from_str(&req.security)?,
+        client_cert_path: option_string(req.client_cert_path),
+        client_key_path: option_string(req.client_key_path),
         role_hint: option_string(req.role_hint),
         environment_archetype: None,
         vault: Some(std::sync::Arc::clone(&state.credentials)),
@@ -259,6 +265,8 @@ pub(super) async fn save_managed_device(
     state: AppState,
     req: ManagedDeviceRequest,
 ) -> Result<Json<MutationResponse>, (StatusCode, String)> {
+    let acquisition_specified = req.acquisition.is_some();
+    let security_specified = req.security.is_some();
     let mut target = target_from_request(req)?;
     if let Ok(Some(existing)) = state.registry.get_device(&target.address) {
         if target.credential_alias.is_none() {
@@ -276,8 +284,16 @@ pub(super) async fn save_managed_device(
         if target.password.is_none() {
             target.password = existing.password;
         }
-        if target.selected_paths.is_empty() {
-            target.selected_paths = existing.selected_paths;
+        // Legacy clients that omit `acquisition` keep the stored intent and
+        // the historical selected_paths inheritance. A request that
+        // specifies acquisition is authoritative: explicit+empty persists
+        // as a disabled plan and can never silently reactivate automatic
+        // collection.
+        if !acquisition_specified {
+            target.acquisition = existing.acquisition;
+            if target.selected_paths.is_empty() {
+                target.selected_paths = existing.selected_paths;
+            }
         }
         // Preserve TLS and identity fields — critical to avoid bootstrap re-registration
         // clobbering the ca_cert/tls_domain configured via bonsai.toml or manual onboarding.
@@ -286,6 +302,18 @@ pub(super) async fn save_managed_device(
         }
         if target.tls_domain.is_none() {
             target.tls_domain = existing.tls_domain;
+        }
+        // Security intent inherits like acquisition: an omitted `security`
+        // keeps the stored mode; client cert/key material inherits while
+        // unset so a mode-only update does not silently drop the identity.
+        if !security_specified {
+            target.security = existing.security;
+        }
+        if target.client_cert.is_none() {
+            target.client_cert = existing.client_cert;
+        }
+        if target.client_key.is_none() {
+            target.client_key = existing.client_key;
         }
         if target.hostname.is_none() {
             target.hostname = existing.hostname;
@@ -310,6 +338,16 @@ pub(super) async fn save_managed_device(
             target.external_id = existing.external_id.clone();
         }
     }
+    // Validate the FINAL effective configuration — after credential/TLS/
+    // acquisition/selected_paths inheritance — so no caller can persist an
+    // invalid explicit plan through inheritance that request-level
+    // validation never saw.
+    validate_explicit_paths(&target.acquisition, &target.selected_paths)?;
+    // Same post-inheritance rule for transport security: the FINAL merged
+    // configuration must be valid — no ambiguous TLS/plaintext/mTLS mix
+    // can be persisted through field inheritance.
+    crate::gnmi_security::validate_target_security(&target)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let address = target.address.clone();
     let result = match state
         .registry
@@ -345,6 +383,14 @@ pub(super) async fn save_managed_device(
                 }));
             }
             let statuses = read_subscription_statuses(state.store.db()).await?;
+            // Propagate acquisition/selection changes to a live collector
+            // promptly: a full resync withdraws obsolete broader
+            // subscriptions instead of waiting for reconnect.
+            if let Some(cid) = device.collector_id.as_deref()
+                && let Some(manager) = state.collector_manager.as_ref()
+            {
+                manager.resync_collector(cid).await;
+            }
             Ok(Json(MutationResponse {
                 success: true,
                 error: String::new(),
@@ -1171,7 +1217,14 @@ pub(super) fn managed_device_json(
     statuses: &HashMap<String, Vec<SubscriptionStatusJson>>,
     overrides: &[crate::registry::PathOverride],
 ) -> ManagedDeviceJson {
-    let (_, audit) = crate::discovery::resolve_subscription_paths(&target, overrides);
+    let (resolved_paths, audit) = crate::discovery::resolve_subscription_paths(&target, overrides);
+    // The displayed plan must be the EFFECTIVE plan — the same override-
+    // resolved selection that assignment delivers to the collector — not
+    // the raw desired selection. Plan identity therefore matches what is
+    // actually submitted to the device.
+    let mut plan_target = target.clone();
+    plan_target.selected_paths = resolved_paths;
+    let plan = crate::subscriber::planned_subscription_plan_for_target(&plan_target);
     let address = target.address;
     ManagedDeviceJson {
         enabled: target.enabled,
@@ -1186,6 +1239,17 @@ pub(super) fn managed_device_json(
         role: target.role.unwrap_or_default(),
         site: target.site.unwrap_or_default(),
         selected_paths: target.selected_paths.clone(),
+        resolved_selected_paths: plan_target.selected_paths.clone(),
+        acquisition: target.acquisition.as_str().to_string(),
+        security: target
+            .security
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_else(|| "legacy".to_string()),
+        client_cert: target.client_cert.clone().unwrap_or_default(),
+        client_key: target.client_key.clone().unwrap_or_default(),
+        acquisition_plan_state: plan.state,
+        acquisition_plan_id: plan.plan_id,
+        acquisition_plan_detail: plan.detail,
         subscription_statuses: statuses.get(&address).cloned().unwrap_or_default(),
         address,
         resolution_audit: audit,
@@ -1217,6 +1281,17 @@ pub(super) fn target_from_request(
             format!("password env var '{}' is not set", req.password_env.trim()),
         ));
     }
+    let acquisition = acquisition_mode_from_request(&req)?;
+    validate_explicit_paths(&acquisition, &req.selected_paths)?;
+    let security = security_mode_from_option(req.security.as_deref())?;
+    crate::gnmi_security::validate_security_fields(
+        security,
+        option_string(req.ca_cert.clone()).as_deref(),
+        option_string(req.tls_domain.clone()).as_deref(),
+        option_string(req.client_cert.clone()).as_deref(),
+        option_string(req.client_key.clone()).as_deref(),
+    )
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     Ok(TargetConfig {
         address: req.address.trim().to_string(),
@@ -1240,6 +1315,10 @@ pub(super) fn target_from_request(
             .into_iter()
             .filter(|path| !path.path.trim().is_empty())
             .collect(),
+        acquisition,
+        security,
+        client_cert: option_string(req.client_cert),
+        client_key: option_string(req.client_key),
         extra_ips: Vec::new(),
         created_at_ns: 0,
         updated_at_ns: 0,
@@ -1255,6 +1334,100 @@ pub(super) fn target_from_request(
         optional: false,
     })
 }
+/// Parse the optional security intent for managed-device requests.
+/// `None` (absent) = legacy inference and, on update, inherit the stored
+/// intent. Unknown values are rejected — never silently weakened.
+fn security_mode_from_option(
+    value: Option<&str>,
+) -> Result<Option<crate::config::GnmiSecurityMode>, (StatusCode, String)> {
+    match value {
+        None => Ok(None),
+        Some(raw) => {
+            let v = raw.trim();
+            if v.is_empty() {
+                return Ok(None);
+            }
+            crate::config::GnmiSecurityMode::parse(v)
+                .map(Some)
+                .ok_or_else(|| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "unsupported security mode '{v}'; expected tls_verify, mtls or plaintext"
+                        ),
+                    )
+                })
+        }
+    }
+}
+
+/// Same parse for discovery/test requests where the field is a plain
+/// string (empty = legacy inference).
+fn security_mode_from_str(
+    value: &str,
+) -> Result<Option<crate::config::GnmiSecurityMode>, (StatusCode, String)> {
+    security_mode_from_option(Some(value))
+}
+
+/// Parse the optional acquisition intent. Absent → Automatic (legacy).
+/// Unknown values are rejected — never silently mapped.
+fn acquisition_mode_from_request(
+    req: &ManagedDeviceRequest,
+) -> Result<crate::config::AcquisitionMode, (StatusCode, String)> {
+    match &req.acquisition {
+        None => Ok(crate::config::AcquisitionMode::Automatic),
+        Some(value) => crate::config::AcquisitionMode::parse(value).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "unsupported acquisition mode '{}'; expected automatic, explicit or disabled",
+                    value
+                ),
+            )
+        }),
+    }
+}
+
+/// Atomic validation for explicit acquisition plans: every selected path
+/// must be a well-formed structured gNMI path with a supported mode.
+/// Invalid plans are rejected wholesale — no partial acceptance, no silent
+/// drops, no automatic fallback.
+pub(super) fn validate_explicit_paths(
+    acquisition: &crate::config::AcquisitionMode,
+    paths: &[crate::config::SelectedSubscriptionPath],
+) -> Result<(), (StatusCode, String)> {
+    if *acquisition != crate::config::AcquisitionMode::Explicit {
+        return Ok(());
+    }
+    let mut errors = Vec::new();
+    for p in paths {
+        match crate::gnmi_path::parse_path(&p.origin, &p.path) {
+            Ok(_) => {}
+            Err(e) => errors.push(format!("'{}': {}", p.path, e)),
+        }
+        match p.mode.trim().to_ascii_uppercase().as_str() {
+            "SAMPLE" => {
+                if p.sample_interval_ns == 0 {
+                    errors.push(format!(
+                        "'{}': SAMPLE mode requires a positive sample_interval_ns",
+                        p.path
+                    ));
+                }
+            }
+            "ON_CHANGE" => {}
+            other => errors.push(format!("'{}': unsupported mode '{}'", p.path, other)),
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            format!("invalid explicit acquisition plan: {}", errors.join("; ")),
+        ))
+    }
+}
+
 pub(super) fn site_json(site: SiteRecord) -> SiteJson {
     SiteJson {
         id: site.id,
@@ -2682,13 +2855,7 @@ mod tests {
         };
         let status_of = |req: Request<Body>| {
             let router = router.clone();
-            async move {
-                router
-                    .oneshot(req)
-                    .await
-                    .expect("oneshot")
-                    .status()
-            }
+            async move { router.oneshot(req).await.expect("oneshot").status() }
         };
 
         // Unauthenticated → 401; viewer → 403 (import is an Operator write).
@@ -2711,10 +2878,7 @@ mod tests {
         let viewer = crate::http_server::mint_jwt("inv-viewer", "viewer", &store)
             .await
             .expect("viewer jwt");
-        assert_eq!(
-            status_of(post(Some(&viewer))).await,
-            StatusCode::FORBIDDEN
-        );
+        assert_eq!(status_of(post(Some(&viewer))).await, StatusCode::FORBIDDEN);
 
         // Operator → 200 and the row lands inventory-only.
         let operator = crate::http_server::mint_jwt("inv-operator", "operator", &store)
@@ -2738,12 +2902,16 @@ mod tests {
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {viewer}"))
             .body(Body::from(
-                serde_json::json!({"url": "http://127.0.0.1:1", "token": "sekrit"})
-                    .to_string(),
+                serde_json::json!({"url": "http://127.0.0.1:1", "token": "sekrit"}).to_string(),
             ))
             .expect("request");
         assert_eq!(
-            router.clone().oneshot(preview_req).await.expect("oneshot").status(),
+            router
+                .clone()
+                .oneshot(preview_req)
+                .await
+                .expect("oneshot")
+                .status(),
             StatusCode::FORBIDDEN
         );
     }
@@ -2989,8 +3157,7 @@ mod tests {
             post_inventory(&router, payload.clone()),
             post_inventory(&router, payload),
         );
-        let outcomes: Vec<&str> = a
-            .1["results"]
+        let outcomes: Vec<&str> = a.1["results"]
             .as_array()
             .unwrap()
             .iter()
@@ -3000,7 +3167,9 @@ mod tests {
         // Exactly one import wins; the other sees already_imported or
         // fails closed — never a second device for the same identity.
         assert!(
-            outcomes.iter().all(|o| matches!(*o, "imported" | "already_imported" | "failed")),
+            outcomes
+                .iter()
+                .all(|o| matches!(*o, "imported" | "already_imported" | "failed")),
             "unexpected outcomes: {outcomes:?}"
         );
         assert_eq!(
@@ -3082,11 +3251,10 @@ mod tests {
         // Seed the config DB with two devices sharing one external id —
         // simulating ambiguity that predates uniqueness enforcement.
         {
-            let store = crate::sqlite_store::SqliteStore::open(dir.path())
-                .expect("open store");
+            let store = crate::sqlite_store::SqliteStore::open(dir.path()).expect("open store");
             drop(store);
-            let conn = rusqlite::Connection::open(dir.path().join("bonsai_config.db"))
-                .expect("raw conn");
+            let conn =
+                rusqlite::Connection::open(dir.path().join("bonsai_config.db")).expect("raw conn");
             conn.execute_batch("DROP INDEX IF EXISTS idx_devices_external_id")
                 .expect("drop unique index");
             for addr in ["10.30.3.1", "10.30.3.2"] {
@@ -3136,11 +3304,10 @@ mod tests {
         // Pre-create the config DB and install triggers that reject all
         // device writes — simulates a failing persistence layer.
         {
-            let store = crate::sqlite_store::SqliteStore::open(dir.path())
-                .expect("open store");
+            let store = crate::sqlite_store::SqliteStore::open(dir.path()).expect("open store");
             drop(store);
-            let conn = rusqlite::Connection::open(dir.path().join("bonsai_config.db"))
-                .expect("raw conn");
+            let conn =
+                rusqlite::Connection::open(dir.path().join("bonsai_config.db")).expect("raw conn");
             conn.execute_batch(
                 "CREATE TRIGGER fail_device_write BEFORE INSERT ON devices \
                  WHEN NEW.address LIKE '10.30.%' \
@@ -3178,9 +3345,8 @@ mod tests {
         }
         let devices = state.registry.list_all_targets().expect("list");
         assert!(
-            devices
-                .iter()
-                .all(|t| t.external_id.is_none() || !t.external_id.as_deref().unwrap().contains("device:")),
+            devices.iter().all(|t| t.external_id.is_none()
+                || !t.external_id.as_deref().unwrap().contains("device:")),
             "unpersisted imports must not appear in the registry"
         );
     }
@@ -3224,9 +3390,11 @@ mod tests {
         // the row outcome is truthful about persistence, and the
         // response distinguishes it from graph synchronization.
         let devices = state.registry.list_all_targets().expect("list");
-        assert!(devices
-            .iter()
-            .any(|t| t.external_id.as_deref() == Some("netbox:https:nb:443:device:8")));
+        assert!(
+            devices
+                .iter()
+                .any(|t| t.external_id.as_deref() == Some("netbox:https:nb:443:device:8"))
+        );
     }
 
     #[tokio::test]
@@ -3317,7 +3485,10 @@ mod tests {
         )
         .await;
         assert_eq!(body["success"], false, "{body}");
-        assert!(body["error"].as_str().unwrap().contains("collection plan"), "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("collection plan"),
+            "{body}"
+        );
 
         // Metadata-only update (enabled omitted→default true is rejected;
         // explicit enabled=false preserves inventory state).
@@ -3360,10 +3531,13 @@ mod tests {
         assert_eq!(body["device"]["inventory_only"], false, "{body}");
         assert_eq!(body["device"]["enabled"], true, "{body}");
         // External identity preserved through activation.
-        assert!(body["device"]["external_id"]
-            .as_str()
-            .unwrap()
-            .contains("device:11"), "{body}");
+        assert!(
+            body["device"]["external_id"]
+                .as_str()
+                .unwrap()
+                .contains("device:11"),
+            "{body}"
+        );
 
         // Bulk "start" on an inventory-only device must not bypass the
         // plan requirement. Re-import a fresh inventory asset for this.
@@ -3388,7 +3562,10 @@ mod tests {
             .expect("body");
         let bulk: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
         assert_eq!(bulk["success"], false, "{bulk}");
-        assert!(bulk["error"].as_str().unwrap().contains("collection plan"), "{bulk}");
+        assert!(
+            bulk["error"].as_str().unwrap().contains("collection plan"),
+            "{bulk}"
+        );
     }
 
     #[tokio::test]

@@ -345,6 +345,7 @@ mod tests {
     #[test]
     fn streaming_readiness_prefers_gnmi_then_bmp_for_bgp_roles() {
         let target = TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),
@@ -373,6 +374,9 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            security: None,
+            client_cert: None,
+            client_key: None,
         };
         let gnmi = GnmiReadinessReport {
             service_status: "reachable".to_string(),

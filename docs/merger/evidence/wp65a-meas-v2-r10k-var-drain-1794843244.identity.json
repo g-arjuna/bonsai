@@ -1,0 +1,1 @@
+{"run_id":"r10k-var-drain-1794843244","tag":"r10k-var-drain","deployment":"native-host","network_ns":"host","sender_dest":"127.0.0.1:55757","tcp_dest":"127.0.0.1:55757","http":"127.0.0.1:44655","metrics":"127.0.0.1:50336","core_pid_file":"/tmp/wp65a-m2-r10k-var-drain-1794843244/core.pid","workdir":"/tmp/wp65a-m2-r10k-var-drain-1794843244"}

@@ -537,6 +537,20 @@ pub struct SyslogConfig {
     /// Maximum accepted syslog frame size. Default: 8192 bytes.
     #[serde(default = "default_syslog_max_frame_bytes")]
     pub max_frame_bytes: usize,
+    /// TCP deadline for the first complete frame on a connection.
+    /// Connections that send nothing (or never finish a first frame)
+    /// within this window are closed and their slot released.
+    /// Default: 10 seconds.
+    #[serde(default = "default_syslog_tcp_initial_timeout_secs")]
+    pub tcp_initial_timeout_secs: u64,
+    /// TCP deadline for each read while no partial frame is buffered
+    /// (i.e. maximum idle gap between frames). Default: 120 seconds.
+    #[serde(default = "default_syslog_tcp_idle_timeout_secs")]
+    pub tcp_idle_timeout_secs: u64,
+    /// TCP deadline for completing a partially received frame once any
+    /// bytes are buffered. Default: 30 seconds.
+    #[serde(default = "default_syslog_tcp_frame_timeout_secs")]
+    pub tcp_frame_timeout_secs: u64,
     /// Collector/ingress namespace included in provisional syslog source
     /// keys (BN-021e). Distinguishes observations received by different
     /// collectors or trusted relays. Defaults to "default".
@@ -552,6 +566,9 @@ impl Default for SyslogConfig {
             tcp_addr: default_syslog_tcp_addr(),
             archive_path: default_syslog_archive_path(),
             max_frame_bytes: default_syslog_max_frame_bytes(),
+            tcp_initial_timeout_secs: default_syslog_tcp_initial_timeout_secs(),
+            tcp_idle_timeout_secs: default_syslog_tcp_idle_timeout_secs(),
+            tcp_frame_timeout_secs: default_syslog_tcp_frame_timeout_secs(),
             collector_id: default_flow_collector_id(),
         }
     }
@@ -562,6 +579,15 @@ fn default_syslog_udp_addr() -> String {
 }
 fn default_syslog_tcp_addr() -> String {
     "0.0.0.0:6514".to_string()
+}
+fn default_syslog_tcp_initial_timeout_secs() -> u64 {
+    10
+}
+fn default_syslog_tcp_idle_timeout_secs() -> u64 {
+    120
+}
+fn default_syslog_tcp_frame_timeout_secs() -> u64 {
+    30
 }
 fn default_syslog_archive_path() -> String {
     "runtime/signals/syslog.jsonl".to_string()
@@ -1347,6 +1373,13 @@ pub struct RuntimeConfig {
     ///   the legacy pass-through behavior. Never inferred automatically.
     #[serde(default = "default_runtime_auth_mode")]
     pub auth_mode: String,
+    /// Explicit isolated-lab opt-in (M5.2A): permit credential-bearing
+    /// device assignments to reach unauthenticated development-compat
+    /// collector sessions. Only meaningful with
+    /// `auth_mode = "development-compat"`; ignored otherwise. Production
+    /// collectors must authenticate via mTLS principal or collector PSK.
+    #[serde(default)]
+    pub dev_open_credential_assignments: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -1358,6 +1391,7 @@ impl Default for RuntimeConfig {
             core_ingest_endpoint: default_core_ingest_endpoint(),
             tls: RuntimeTlsConfig::default(),
             auth_mode: default_runtime_auth_mode(),
+            dev_open_credential_assignments: false,
         }
     }
 }
@@ -1927,10 +1961,23 @@ pub struct TargetConfig {
     /// Whether the runtime subscriber should be running for this target.
     #[serde(default = "default_target_enabled")]
     pub enabled: bool,
-    /// TLS server name (SNI). Required when ca_cert is set.
+    /// TLS server name (SNI). Required for TLS security modes.
     pub tls_domain: Option<String>,
     /// Path to PEM CA cert. Enables TLS for this target.
     pub ca_cert: Option<String>,
+    /// Explicit gNMI transport-security intent (M5.1). `None` = legacy
+    /// inference: `ca_cert` present → TLS verify, absent → plaintext.
+    /// Explicit modes never downgrade: a TLS mode with missing/invalid
+    /// material fails closed, and `plaintext` is an explicit lab-only
+    /// opt-in — never an implicit fallback.
+    #[serde(default)]
+    pub security: Option<GnmiSecurityMode>,
+    /// PEM client certificate (filesystem path or `vault:` reference) for
+    /// mTLS. Only valid with `security = "mtls"`.
+    pub client_cert: Option<String>,
+    /// PEM client private key (filesystem path or `vault:` reference)
+    /// paired with `client_cert`. Only valid with `security = "mtls"`.
+    pub client_key: Option<String>,
     /// Override vendor detection. If absent, Capabilities RPC auto-detects.
     pub vendor: Option<String>,
     /// Alias into the local encrypted credential vault.
@@ -1955,6 +2002,16 @@ pub struct TargetConfig {
     /// Operator-selected subscription paths from onboarding discovery.
     #[serde(default)]
     pub selected_paths: Vec<SelectedSubscriptionPath>,
+    /// Explicit acquisition-selection contract (M4 selective gNMI).
+    /// `automatic` (default/legacy): capability/profile-derived plan; selected
+    /// paths are honoured when present, with the historical capability
+    /// fallback when they produce no valid subscriptions.
+    /// `explicit`: the resolved selected_paths set IS the complete desired
+    /// plan — no automatic defaults are appended and an empty effective set
+    /// means no telemetry is requested.
+    /// `disabled`: acquisition is off; no Subscribe RPC is emitted.
+    #[serde(default)]
+    pub acquisition: AcquisitionMode,
     /// Flat list of gNMI paths for this device (used by SQLite store and replication).
     #[serde(default)]
     pub paths: Vec<String>,
@@ -2001,11 +2058,89 @@ pub struct TargetConfig {
     pub inventory_tenant: Option<String>,
 }
 
+/// Operator acquisition intent for gNMI telemetry collection.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AcquisitionMode {
+    /// Legacy/default: derive the plan from capabilities/profile; honour
+    /// selected_paths when present with historical fallback semantics.
+    #[default]
+    Automatic,
+    /// The resolved selected_paths set is the complete desired plan.
+    Explicit,
+    /// Acquisition disabled — no Subscribe RPC is emitted. Also the
+    /// representation of an explicit empty selection.
+    Disabled,
+}
+
+impl AcquisitionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Explicit => "explicit",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    /// Strict parse for API/proto boundaries — unknown values are rejected,
+    /// never silently mapped to automatic.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "automatic" | "auto" => Some(Self::Automatic),
+            "explicit" => Some(Self::Explicit),
+            "disabled" | "none" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
+/// Explicit operator intent for the gNMI transport security of a target.
+/// `None`/absent preserves legacy inference (see `TargetConfig::security`).
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GnmiSecurityMode {
+    /// TLS with CA verification and SNI/hostname checking.
+    TlsVerify,
+    /// TLS verify plus a client certificate/key (mutual TLS).
+    Mtls,
+    /// Cleartext gRPC — explicit laboratory exception only. Requires an
+    /// audit-visible opt-in; never selected implicitly.
+    Plaintext,
+}
+
+impl GnmiSecurityMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TlsVerify => "tls_verify",
+            Self::Mtls => "mtls",
+            Self::Plaintext => "plaintext",
+        }
+    }
+
+    /// Strict parse for API/proto/TOML boundaries — unknown values are
+    /// rejected, never silently mapped to a weaker mode.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "tls_verify" | "tls" => Some(Self::TlsVerify),
+            "mtls" | "mutual_tls" => Some(Self::Mtls),
+            "plaintext" | "plain" | "insecure" => Some(Self::Plaintext),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 pub struct SelectedSubscriptionPath {
     pub path: String,
+    /// gNMI Path.origin — the YANG model origin (e.g. "openconfig").
+    /// Empty means the device resolves the origin.
     #[serde(default)]
     pub origin: String,
+    /// Provenance/audit label (e.g. "override: site-override(...)",
+    /// "profile: ios-xe"). NOT a gNMI model origin — kept distinct so
+    /// descriptive labels never leak into SubscribeRequest Path.origin.
+    #[serde(default)]
+    pub provenance: String,
     pub mode: String,
     #[serde(default)]
     pub sample_interval_ns: u64,

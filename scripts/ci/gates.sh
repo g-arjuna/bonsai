@@ -212,6 +212,11 @@ L2_INTEGRATION_TESTS="
   bn022_auth_storage
   bn022_auth_closure
   bn022_sec19_sec20
+  m3_syslog_tcp_availability
+  gnmi_selective_acquisition
+  gnmi_security_connectivity
+  gnmi_assignment_lifecycle
+  wp65a_embedding_lifecycle
 "
 
 gate_l2() {

@@ -643,6 +643,12 @@ pub async fn run_snmp_receiver(
                             provisional_identity_json(&src, &resolved, &resolution, &event);
                         let value = publish_value(&event, &identity_json);
                         bus.publish(TelemetryUpdate {
+                            plan_id: String::new(),
+                            session_id: String::new(),
+                            source_protocol: "snmp".to_string(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
                             target: src.source_key.clone(),
                             vendor: resolved.candidate_vendor().to_string(),
                             hostname: event.agent_address.clone(),
@@ -663,6 +669,12 @@ pub async fn run_snmp_receiver(
                                 &identity_json,
                             );
                             bus.publish(TelemetryUpdate {
+                                plan_id: String::new(),
+                                session_id: String::new(),
+                                source_protocol: "snmp".to_string(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
                                 target: src.source_key.clone(),
                                 vendor: resolved.candidate_vendor().to_string(),
                                 hostname: event.agent_address.clone(),
@@ -1531,6 +1543,7 @@ mod tests {
     #[test]
     fn resolves_target_by_source_ip() {
         let targets = vec![TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),
@@ -1559,6 +1572,9 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            security: None,
+            client_cert: None,
+            client_key: None,
         }];
         let map = SnmpTargetMap::new(&targets);
         let resolved = map.resolve(
@@ -1598,6 +1614,7 @@ mod tests {
     #[test]
     fn duplicate_target_ips_are_ambiguous_not_arbitrary() {
         let mk = |address: &str, site: &str| TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),
@@ -1626,6 +1643,9 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            security: None,
+            client_cert: None,
+            client_key: None,
         };
         // Two tenants reuse the same private IP.
         let map = SnmpTargetMap::new(&[

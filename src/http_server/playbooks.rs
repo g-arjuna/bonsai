@@ -208,7 +208,10 @@ pub async fn create_playbook_handler(
             vec![
                 ("id", Value::String(id.clone())),
                 ("name", Value::String(req.name)),
-                ("description", Value::String(req.description.unwrap_or_default())),
+                (
+                    "description",
+                    Value::String(req.description.unwrap_or_default()),
+                ),
                 ("rij", Value::String(rule_ids_json)),
                 ("vendor", Value::String(req.vendor.unwrap_or_default())),
                 ("steps", Value::String(req.steps_json)),
@@ -655,7 +658,10 @@ pub fn migrate_playbooks_from_yaml(conn: &Connection) -> anyhow::Result<usize> {
                 vec![
                     ("id", Value::String(id)),
                     ("name", Value::String(name)),
-                    ("description", Value::String(format!("Migrated from {stem}.yaml"))),
+                    (
+                        "description",
+                        Value::String(format!("Migrated from {stem}.yaml")),
+                    ),
                     ("steps", Value::String(content)),
                     ("now", Value::Int64(now)),
                 ],

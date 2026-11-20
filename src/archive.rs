@@ -879,6 +879,12 @@ mod tests {
 
     fn sample_update(target: &str, timestamp_ns: i64, value: i64) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "leaf1".to_string(),

@@ -39,6 +39,18 @@ message ManagedDevice {
   repeated SubscriptionPath selected_paths = 11;
   optional bool enabled = 12;
   string collector_id = 13;
+  // Acquisition intent: "automatic" | "explicit" | "disabled".
+  // Empty = legacy automatic. A collector that cannot express explicit
+  // selection must fail closed rather than treating it as automatic.
+  string acquisition = 14;
+  // Transport security intent: "tls_verify" | "mtls" | "plaintext".
+  // Empty = legacy inference (ca_cert present → TLS verify, else
+  // plaintext). mTLS additionally requires client_cert/client_key;
+  // collectors below SECURITY_CONTRACT_VERSION must never receive
+  // security=mtls assignments (fail closed, not silent downgrade).
+  string security       = 15;
+  string client_cert    = 16; // path or vault: reference
+  string client_key     = 17; // path or vault: reference
 }
 
 message AddDeviceRequest        { ManagedDevice device = 1; }
@@ -105,6 +117,12 @@ message DiscoverRequest {
   string tls_domain   = 5;
   string role_hint    = 6;
   string credential_alias = 7;
+  // Transport security for the probe: "tls_verify" | "mtls" | "plaintext".
+  // Empty = legacy inference. client_cert_path/client_key_path are only
+  // meaningful with security="mtls".
+  string security         = 8;
+  string client_cert_path = 9;
+  string client_key_path  = 10;
 }
 
 message SubscriptionPath {
@@ -114,6 +132,9 @@ message SubscriptionPath {
   uint64 sample_interval_ns = 4;
   string rationale          = 5;
   bool optional             = 6;
+  // Audit provenance label (e.g. "override: site-override(...)").
+  // Distinct from `origin`, which is the gNMI model origin.
+  string provenance         = 7;
 }
 
 message PathProfileMatch {
@@ -203,6 +224,106 @@ message TelemetryIngestUpdate {
   InterfaceSummary interface_summary = 9;
   string role         = 10;
   string site         = 11;
+  // gNMI acquisition provenance (M5.2B): plan identity and device-facing
+  // subscription session that produced this observation. Empty for
+  // producers without session provenance; verifiers must not grant
+  // current-session coverage to empty/legacy provenance.
+  string plan_id      = 12;
+  string session_id   = 13;
+  // Producer protocol provenance (M5.2B): "gnmi" for device-facing gNMI
+  // subscription observations; empty/other for non-gNMI producers. Only
+  // "gnmi" observations carrying a registered current session may satisfy
+  // gNMI subscription coverage — protocol provenance is never inferred
+  // from path shape or target identity.
+  string source_protocol = 14;
+  // Resolved structured gNMI path (prost-encoded gnmi.Path: notification
+  // prefix + update path elements with origin resolved). prost bytes
+  // avoid a cross-package proto import; empty for non-gNMI producers.
+  // This is the authoritative evidence path for coverage matching —
+  // the flattened `path` string remains classifier/projection input.
+  bytes gnmi_path = 15;
+  // Delete/tombstone evidence (M5.2B): true when this record reports a
+  // gNMI Notification.delete for the resolved path. Carries no value;
+  // value_msgpack is a Null encoding. Only current-session records may
+  // invalidate subscription coverage.
+  bool is_delete = 16;
+}
+
+// Authoritative subscription-lifecycle evidence (M5.2B). Collectors report
+// device-facing session transitions over a dedicated stream so coverage
+// authority never depends on best-effort telemetry delivery. The core
+// validates the authenticated collector identity, the device assignment,
+// the applicable assignment authority (epoch + generation) and the
+// lifecycle transition ordering before registering session state.
+message SubscriptionLifecycleEvent {
+  string collector_id          = 1;
+  // Claimed device address; validated against the authenticated
+  // collector's assignment set — never trusted as authority by itself.
+  string device_address        = 2;
+  // Effective acquisition plan identity (stable across reconnects).
+  string plan_id               = 3;
+  // Device-facing subscription session; empty for plan-level outcomes
+  // (disabled/rejected) that own no session.
+  string session_id            = 4;
+  // Lifecycle state: desired | validated | connecting | submitted |
+  // synchronizing | synchronized | failed | disconnected | disabled |
+  // superseded. Terminal states: failed, disconnected, disabled,
+  // superseded — a terminated session is never resurrected; reconnect
+  // mints a new session_id.
+  string state                 = 5;
+  // Per-session monotonic transition revision. Duplicate (seq, state)
+  // is idempotent; lower seq is stale; higher seq must be a valid
+  // forward transition. 0 = unordered plan-level event.
+  uint64 transition_seq        = 6;
+  // Assignment authority the collector applied when this transition
+  // occurred: the (authority_epoch, generation) of the AssignmentUpdate
+  // that established the device assignment. Core rejects stale epochs
+  // and generations outside the device's assigned-authority window.
+  uint64 authority_epoch       = 7;
+  uint64 assignment_generation = 8;
+  int64  occurred_at_ns        = 9;
+  // Operator-visible detail (failure reason, sync timeout, ...).
+  // Never contains secrets.
+  string detail                = 10;
+  uint32 protocol_version      = 11;
+  // Actual submitted Subscribe manifest: the exact (path, origin,
+  // mode, sample_interval) set carried by the SubscriptionList that
+  // produced this transition. Populated on `submitted` and reaffirmed
+  // on `synchronized`; empty for plan-level outcomes and for collectors
+  // predating the manifest contract. The core validates the
+  // deterministic plan_id against this normalized manifest and binds
+  // coverage expectations to it — payload claims alone never define
+  // the expected path set (M5.2B review B3).
+  repeated SubscriptionPath submitted_paths = 12;
+  // Acquisition intent the manifest was built under
+  // ("automatic" | "explicit" | "disabled"); required to recompute
+  // deterministic plan identity core-side. Empty on legacy records.
+  string acquisition           = 13;
+  // Core-issued collector session generation echoed from the
+  // AssignmentUpdate that established this collector session (0 =
+  // legacy collector / local acquisition). The core additionally binds
+  // each event to the device's current assignment-authority instance;
+  // executions are then totally ordered by
+  // (authority_epoch, authority_instance, collector_session_generation,
+  // execution_generation) — a deterministic fence, no probabilistic
+  // structures.
+  uint64 collector_session_generation = 14;
+  // Per-(collector session, target) monotonic execution counter,
+  // incremented each time the collector mints a device-facing
+  // session_id for a Subscribe attempt. 0 = legacy/invalid for
+  // session-scoped records.
+  uint64 execution_generation = 15;
+}
+
+message SubscriptionLifecycleResponse {
+  // Records permanently rejected (unauthenticated/unauthorized
+  // collector, unassigned device, stale authority, invalid transition,
+  // protocol skew). Every submitted record is either accepted or
+  // rejected; retryable failures abort the stream without a response
+  // so events are replayed (at-least-once).
+  uint64 accepted = 1;
+  uint64 rejected = 2;
+  string error    = 3;
 }
 
 message InterfaceCounterSummary {
@@ -312,11 +433,44 @@ message DeviceAssignment {
   ManagedDevice device   = 1;
   string        username = 2; // Resolved on core
   string        password = 3; // Resolved on core
+  // Explicit rejected/unavailable outcome (M5.2A): the assignment could
+  // not be honoured (credential resolution failed, the collector is not
+  // authorized to receive device credentials, or the collector predates
+  // the assignment-lifecycle contract). A rejected assignment must never
+  // be treated as a usable anonymous assignment: the collector stops any
+  // running subscriber for the device and surfaces `reject_reason`.
+  // Collectors below ASSIGNMENT_LIFECYCLE_CONTRACT_VERSION never receive
+  // rejected assignments (they would ignore the flag).
+  bool   rejected      = 4;
+  string reject_reason = 5; // operator-visible, never contains secrets
 }
 
 message AssignmentUpdate {
   repeated DeviceAssignment assignments = 1;
   bool                      is_full_sync = 2; // If true, collector should drop other devices
+  // Per-collector monotonically increasing update generation assigned by
+  // core (never resets across sessions). 0 = legacy core without
+  // generation fencing. The collector applies only updates with a
+  // generation newer than the last applied one; duplicate or stale
+  // generations are ignored. The collector reports the last applied
+  // generation in heartbeats so core can confirm remote withdrawals.
+  uint64 generation = 3;
+  // Core authority epoch (M5.2A hardening): a per-boot identifier stamped
+  // on every update. The collector fences (authority_epoch, generation)
+  // lexicographically — a newer epoch is accepted only via a full sync,
+  // an older epoch is always rejected, and within an epoch only strictly
+  // newer generations apply. This makes assignment authority restart-safe
+  // without durable coordination: a core restart produces a new epoch, so
+  // in-memory generation counters may restart without rejecting valid
+  // updates, while delayed previous-epoch updates stay fenced.
+  // 0 = legacy core without epoch fencing.
+  uint64 authority_epoch = 4;
+  // Core-issued collector session generation (M5.2B execution fencing):
+  // incremented on every RegisterCollector for this collector id and
+  // stamped on every update of this session. The collector echoes it
+  // on SubscriptionLifecycleEvent so the core can order device-facing
+  // executions across collector restarts and stream reconnects.
+  uint64 collector_session_generation = 5;
 }
 
 // Per-receiver status snapshot carried in each heartbeat (D3-14 T4 / D3-13).
@@ -345,6 +499,17 @@ message CollectorStats {
   uint32 recent_error_count   = 11;
   // D3-14 T4: per-receiver status; empty on old collectors.
   repeated CollectorReceiverStatus receiver_statuses = 12;
+  // M5.2A: last AssignmentUpdate.generation this collector has applied.
+  // Core uses it to confirm remote withdrawals: a device removed from a
+  // collector's assignment set is "withdrawal pending" until a heartbeat
+  // reports an applied generation at or beyond the removing update.
+  // 0 = legacy collector without generation reporting.
+  uint64 applied_assignment_generation = 13;
+  // M5.2A: authority_epoch of the last applied AssignmentUpdate (0 =
+  // legacy collector). Core only confirms withdrawals against acks that
+  // match the CURRENT authority epoch — an ack from a stale epoch or an
+  // arbitrary future generation cannot clear pending withdrawals.
+  uint64 authority_epoch = 14;
 }
 
 message HeartbeatAck {
@@ -433,6 +598,12 @@ service BonsaiGraph {
 
   // Client-streaming: collectors push decoded telemetry updates into a core.
   rpc TelemetryIngest(stream TelemetryIngestUpdate) returns (TelemetryIngestResponse);
+
+  // Client-streaming: collectors report authoritative subscription
+  // lifecycle transitions (M5.2B). Core registers the current session per
+  // device only from authenticated, assignment-bound, authority-current
+  // lifecycle evidence — telemetry alone can never self-register.
+  rpc SubscriptionLifecycle(stream SubscriptionLifecycleEvent) returns (SubscriptionLifecycleResponse);
 
   // Client-streaming: collectors push locally-evaluated detections to core.
   rpc DetectionIngest(stream DetectionEventIngest) returns (DetectionIngestResponse);

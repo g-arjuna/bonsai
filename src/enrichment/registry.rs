@@ -139,6 +139,7 @@ mod tests {
 
     fn target(vendor: &str, tls: bool) -> TargetConfig {
         TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),
@@ -167,6 +168,9 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            security: None,
+            client_cert: None,
+            client_key: None,
         }
     }
 

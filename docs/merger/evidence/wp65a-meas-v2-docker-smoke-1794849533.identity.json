@@ -1,0 +1,33 @@
+{
+ "run_id": "docker-smoke-1794849533",
+ "tag": "docker-smoke",
+ "deployment": "docker-image",
+ "image": "bonsai:wp65a-smoke",
+ "image_sha": "b272e3e7449e9e902c9ee840e05684f0f08b2313b5248fd1fe5dbb28f20ed05b",
+ "source_sha": "264fe0b6800e06efac4a342c3e4163d458e04b6a",
+ "container": "wp65a-smoke",
+ "memory_limit": "8g",
+ "memory_swap": "8g",
+ "cpus": 4,
+ "cpuset": "",
+ "ports": {
+  "http": "32775",
+  "metrics": "32776",
+  "syslog_udp": "32770",
+  "syslog_tcp": "32774",
+  "note": "ephemeral host ports at run time; container restarted -> 32778/32779/32771/32777"
+ },
+ "profile": "medium",
+ "memory_budget_mb": 1024,
+ "workload": {
+  "scale": 3000,
+  "corpus": "repetitive",
+  "mode": "drain",
+  "rate": 1000,
+  "transport": "udp",
+  "transport_note": "harness maps transport=both to UDP sender (scripts/wp65a_measurements_v2.py:351); run exercised UDP only. Label corrected post-hoc; explicit TCP smoke recorded separately."
+ },
+ "persistence": "verified: docker stop/start, syslog_embedded=3000 persisted, wal checkpointed",
+ "workdir": "/tmp/wp65a-docker-wd",
+ "volume": "/tmp/wp65a-docker-smoke:/data"
+}

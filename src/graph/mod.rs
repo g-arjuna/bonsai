@@ -567,6 +567,22 @@ impl BonsaiStore for GraphStore {
         self.write_subscription_status(status).await
     }
 
+    async fn supersede_subscription_statuses_outside_plan(
+        &self,
+        device_address: &str,
+        keep: &std::collections::HashSet<(String, String, String, i64)>,
+    ) -> Result<()> {
+        self.supersede_subscription_statuses_outside_plan(device_address, keep)
+            .await
+            .map(|_| ())
+    }
+
+    async fn expire_subscription_statuses_on_boot(&self) -> Result<()> {
+        self.expire_subscription_statuses_on_boot()
+            .await
+            .map(|_| ())
+    }
+
     fn publish_event(&self, event: BonsaiEvent) {
         self.publish_event(event)
     }
@@ -2506,6 +2522,8 @@ impl GraphStore {
                 event_id        STRING,\
                 event_type      STRING,\
                 model_name      STRING,\
+                model_revision  STRING,\
+                normalization_version STRING,\
                 dim             INT64,\
                 vector_json     STRING,\
                 computed_at_ns  INT64,\
@@ -2541,10 +2559,159 @@ impl GraphStore {
         )
         .context("create CONFIG_EMBEDDED_AS rel")?;
 
-        // StateChangeEvent: needs_embedding flag for syslog embedding worker
-        let _ = conn.query("ALTER TABLE StateChangeEvent ADD needs_embedding INT64 DEFAULT 1");
-        let _ =
-            conn.query("ALTER TABLE StateChangeEvent ADD incident_cluster_id STRING DEFAULT ''");
+        // StateChangeEvent: needs_embedding flag for syslog embedding worker.
+        // WP6.5A: the historical DEFAULT 1 marked EVERY event type pending;
+        // clear the flag on non-syslog rows so pending statistics describe
+        // actual eligible events (new writes set it explicitly).
+        // WP65-23: checked, idempotent lifecycle migration — the
+        // enrichment-lifecycle columns are validated against the live
+        // schema (name AND declared type) and every ALTER is error-
+        // checked. A failed migration aborts GraphStore::open, so a
+        // readable database can never be classified enrichment-ready
+        // while its lifecycle schema is incomplete.
+        {
+            let required: [(&str, &str, &str); 8] = [
+                ("needs_embedding", "INT64", "1"),
+                ("embedding_retry_after_ns", "INT64", "0"),
+                ("embedding_attempts", "INT64", "0"),
+                ("embedding_invalid", "INT64", "0"),
+                ("embedding_invalid_reason", "STRING", "''"),
+                ("embedding_claim_token", "STRING", "''"),
+                // NULL default distinguishes NEVER-CLAIMED events
+                // (expires IS NULL) from claimed-then-released ones
+                // (expires = 0) — required for explicit legacy gating.
+                ("embedding_claim_expires_ns", "INT64", ""),
+                ("incident_cluster_id", "STRING", "''"),
+            ];
+            let mut cols = std::collections::HashMap::new();
+            let info = conn.query("CALL table_info('StateChangeEvent') RETURN name, type")?;
+            for row in info {
+                let name = match &row[0] {
+                    Value::String(s) => s.clone(),
+                    _ => continue,
+                };
+                let ty = match row.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                cols.insert(name, ty);
+            }
+            for (col, ty, default) in required {
+                match cols.get(col) {
+                    Some(t) if t.eq_ignore_ascii_case(ty) => {}
+                    Some(t) => {
+                        return Err(anyhow::anyhow!(
+                            "StateChangeEvent.{col} has incompatible type '{t}', expected '{ty}'"
+                        ));
+                    }
+                    None => {
+                        let ddl = if default.is_empty() {
+                            format!("ALTER TABLE StateChangeEvent ADD {col} {ty}")
+                        } else {
+                            format!("ALTER TABLE StateChangeEvent ADD {col} {ty} DEFAULT {default}")
+                        };
+                        conn.query(&ddl).with_context(|| {
+                            format!("StateChangeEvent {col} lifecycle migration")
+                        })?;
+                    }
+                }
+            }
+            // Post-migration validation: every required column must now
+            // be present with the expected declared type.
+            let mut cols2 = std::collections::HashMap::new();
+            let info2 = conn.query("CALL table_info('StateChangeEvent') RETURN name, type")?;
+            for row in info2 {
+                let name = match &row[0] {
+                    Value::String(s) => s.clone(),
+                    _ => continue,
+                };
+                let ty = match row.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                cols2.insert(name, ty);
+            }
+            for (col, ty, _default) in required {
+                match cols2.get(col) {
+                    Some(t) if t.eq_ignore_ascii_case(ty) => {}
+                    other => {
+                        return Err(anyhow::anyhow!(
+                            "StateChangeEvent.{col} lifecycle migration did not produce \
+                             expected type '{ty}' (found {other:?})"
+                        ));
+                    }
+                }
+            }
+        }
+        conn.query(
+            "MATCH (e:StateChangeEvent) WHERE e.needs_embedding = 1 \
+             AND (e.event_type IS NULL OR NOT e.event_type STARTS WITH 'syslog') \
+             SET e.needs_embedding = 0",
+        )
+        .context("StateChangeEvent needs_embedding eligibility backfill")?;
+        // WP65-01: EventEmbedding.model_revision — added after the table
+        // shipped, so existing graphs need an explicit column migration.
+        // Check the live schema first (a blind ALTER errors on databases
+        // that already have the column); a failed migration is fatal —
+        // embedding provenance must never be silently dropped.
+        {
+            let mut cols = std::collections::HashSet::new();
+            let info = conn.query("CALL table_info('EventEmbedding') RETURN name")?;
+            for row in info {
+                if let Value::String(n) = &row[0] {
+                    cols.insert(n.clone());
+                }
+            }
+            if !cols.contains("model_revision") {
+                conn.query("ALTER TABLE EventEmbedding ADD model_revision STRING")
+                    .context("EventEmbedding model_revision migration")?;
+            }
+        }
+        // WP65-12: normalization_version is part of the semantic embedding
+        // identity — without a persisted column, embeddings produced under
+        // different normalization contracts would be indistinguishable in
+        // similarity search. Same table_info-checked migration pattern.
+        {
+            let mut cols = std::collections::HashSet::new();
+            let info = conn.query("CALL table_info('EventEmbedding') RETURN name")?;
+            for row in info {
+                if let Value::String(n) = &row[0] {
+                    cols.insert(n.clone());
+                }
+            }
+            if !cols.contains("normalization_version") {
+                conn.query("ALTER TABLE EventEmbedding ADD normalization_version STRING")
+                    .context("EventEmbedding normalization_version migration")?;
+            }
+        }
+        // WP65-12: historical rows may carry NULL/empty provenance. Normalize
+        // missing model_revision / normalization_version / schema_hash to the
+        // explicit "unknown" sentinel so similarity candidate matching
+        // (equality on the full model-space tuple) treats unspecified
+        // provenance consistently instead of silently splitting or merging
+        // embedding spaces. New writes always persist an explicit value.
+        conn.query(
+            "MATCH (emb:EventEmbedding) WHERE emb.model_revision IS NULL \
+             OR emb.model_revision = '' SET emb.model_revision = 'unknown'",
+        )
+        .context("EventEmbedding model_revision provenance normalization")?;
+        conn.query(
+            "MATCH (emb:EventEmbedding) WHERE emb.normalization_version IS NULL \
+             OR emb.normalization_version = '' SET emb.normalization_version = 'unknown'",
+        )
+        .context("EventEmbedding normalization_version provenance normalization")?;
+        conn.query(
+            "MATCH (emb:EventEmbedding) WHERE emb.schema_hash IS NULL \
+             OR emb.schema_hash = '' SET emb.schema_hash = 'unknown'",
+        )
+        .context("EventEmbedding schema_hash provenance normalization")?;
+        // WP65-14: bounded enrichment lifecycle on StateChangeEvent.
+        // needs_embedding=1 remains the pending flag; embedding_retry_after_ns
+        // schedules the next eligible fetch (0/NULL = eligible now),
+        // embedding_attempts bounds deferred retries, and
+        // embedding_invalid(+reason) marks permanently ineligible events.
+        // WP65-23: these columns are created/validated by the checked
+        // idempotent migration above — no ALTER is issued here.
         // Device: needs_config_embedding flag
         let _ = conn.query("ALTER TABLE Device ADD needs_config_embedding INT64 DEFAULT 0");
 
@@ -4099,6 +4266,161 @@ impl GraphStore {
             let _guard = write_lock.lock().expect("write lock poisoned");
             let conn = Connection::new(&db).context("subscription status write connection")?;
             write_subscription_status_blocking(&conn, status)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Supersede persisted SubscriptionStatus rows for `device_address`
+    /// whose (path, origin, mode, interval) is not in `keep`. Used by the
+    /// subscription verifier on plan registration so statuses persisted by
+    /// an obsolete plan — including rows surviving a restart, where the
+    /// verifier's in-memory `tracked` map is empty — are not left
+    /// displayed as current.
+    pub async fn supersede_subscription_statuses_outside_plan(
+        &self,
+        device_address: &str,
+        keep: &std::collections::HashSet<(String, String, String, i64)>,
+    ) -> Result<usize> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        let addr = device_address.to_string();
+        let keep = keep.clone();
+        let now = now_ns();
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("subscription status supersede connection")?;
+            let rows = conn
+                .query(&format!(
+                    "MATCH (s:SubscriptionStatus {{device_address: '{}'}}) \
+                     RETURN s.path, s.origin, s.mode, s.sample_interval_ns, s.status, \
+                            s.first_observed_at, s.last_observed_at",
+                    addr.replace('\'', "\\'")
+                ))
+                .context("query subscription statuses")?;
+            let mut superseded = 0usize;
+            for row in rows {
+                let path = match &row[0] {
+                    Value::String(s) => s.clone(),
+                    _ => continue,
+                };
+                let origin = match &row[1] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let mode = match &row[2] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let interval = match &row[3] {
+                    Value::Int64(n) => *n,
+                    _ => 0,
+                };
+                if keep.contains(&(path.clone(), origin.clone(), mode.clone(), interval)) {
+                    continue;
+                }
+                let first = {
+                    let t = read_ts_ns(&row[5]);
+                    if t > 0 { t } else { now }
+                };
+                let last = {
+                    let t = read_ts_ns(&row[6]);
+                    if t > 0 { t } else { now }
+                };
+                write_subscription_status_blocking(
+                    &conn,
+                    SubscriptionStatusWrite {
+                        device_address: addr.clone(),
+                        path,
+                        origin,
+                        mode,
+                        sample_interval_ns: interval,
+                        status: "superseded".to_string(),
+                        first_observed_at_ns: first,
+                        last_observed_at_ns: last,
+                        updated_at_ns: now,
+                    },
+                )?;
+                superseded += 1;
+            }
+            Ok(superseded)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
+    /// Expire persisted subscription statuses that claimed current
+    /// coverage under the previous boot's sessions (M5.2B review B5).
+    /// Nothing is current until new verified evidence arrives, so
+    /// `observed`/`deleted`/`pending`/`subscribed_but_silent` rows become
+    /// `stale`; `superseded` rows are already non-current.
+    pub async fn expire_subscription_statuses_on_boot(&self) -> Result<usize> {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        let now = now_ns();
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("subscription status expire connection")?;
+            let rows = conn
+                .query(
+                    "MATCH (s:SubscriptionStatus) \
+                     WHERE s.status IN ['observed', 'deleted', 'pending', 'subscribed_but_silent'] \
+                     RETURN s.id, s.device_address, s.path, s.origin, s.mode, \
+                            s.sample_interval_ns, s.status, s.first_observed_at, s.last_observed_at",
+                )
+                .context("query subscription statuses for boot expiry")?;
+            let mut expired = 0usize;
+            for row in rows {
+                let id = match &row[0] {
+                    Value::String(s) => s.clone(),
+                    _ => continue,
+                };
+                let addr = match &row[1] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let path = match &row[2] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let origin = match &row[3] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let mode = match &row[4] {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let interval = match &row[5] {
+                    Value::Int64(n) => *n,
+                    _ => 0,
+                };
+                let first = {
+                    let t = read_ts_ns(&row[7]);
+                    if t > 0 { t } else { now }
+                };
+                let last = {
+                    let t = read_ts_ns(&row[8]);
+                    if t > 0 { t } else { now }
+                };
+                write_subscription_status_blocking(
+                    &conn,
+                    SubscriptionStatusWrite {
+                        device_address: addr,
+                        path,
+                        origin,
+                        mode,
+                        sample_interval_ns: interval,
+                        status: "stale".to_string(),
+                        first_observed_at_ns: first,
+                        last_observed_at_ns: last,
+                        updated_at_ns: now,
+                    },
+                )?;
+                expired += 1;
+                let _ = id;
+            }
+            Ok(expired)
         })
         .await
         .context("spawn_blocking panicked")?
@@ -7516,11 +7838,17 @@ fn write_provisional_state_change_event(
     metrics::counter!("bonsai_graph_state_change_write_total", "event_type" => event_type.to_string(), "source" => source_type.to_string()).increment(1);
 
     let id = Uuid::new_v4().to_string();
+    // WP6.5A: explicit enrichment eligibility — only syslog events are
+    // pending for the text-embedding worker; every other event type is
+    // born with needs_embedding = 0 so pending statistics describe
+    // actual eligible events.
+    let needs_embedding = i64::from(event_type.starts_with("syslog"));
     let mut stmt = conn
         .prepare(
             "CREATE (e:StateChangeEvent {\
                 id: $id, device_address: $addr, event_type: $etype, \
-                detail: $detail, source_type: $src, occurred_at: $ts})",
+                detail: $detail, source_type: $src, occurred_at: $ts, \
+                needs_embedding: $ne})",
         )
         .context("prepare provisional StateChangeEvent insert")?;
     conn.execute(
@@ -7532,6 +7860,7 @@ fn write_provisional_state_change_event(
             ("detail", Value::String(detail.to_string())),
             ("src", Value::String(source_type.to_string())),
             ("ts", now),
+            ("ne", Value::Int64(needs_embedding)),
         ],
     )
     .context("execute provisional StateChangeEvent insert")?;
@@ -7571,12 +7900,16 @@ fn write_state_change_event(
     metrics::counter!("bonsai_graph_state_change_write_total", "event_type" => event_type.to_string(), "source" => source_type.to_string()).increment(1);
 
     let id = Uuid::new_v4().to_string();
+    // WP6.5A: explicit enrichment eligibility — only syslog events are
+    // pending for the text-embedding worker.
+    let needs_embedding = i64::from(event_type.starts_with("syslog"));
 
     let mut stmt = conn
         .prepare(
             "CREATE (e:StateChangeEvent {\
                 id: $id, device_address: $addr, event_type: $etype, \
-                detail: $detail, source_type: $src, occurred_at: $ts})",
+                detail: $detail, source_type: $src, occurred_at: $ts, \
+                needs_embedding: $ne})",
         )
         .context("prepare StateChangeEvent insert")?;
 
@@ -7589,6 +7922,7 @@ fn write_state_change_event(
             ("detail", Value::String(detail.to_string())),
             ("src", Value::String(source_type.to_string())),
             ("ts", now.clone()),
+            ("ne", Value::Int64(needs_embedding)),
         ],
     )
     .context("execute StateChangeEvent insert")?;
@@ -10468,6 +10802,12 @@ mod tests {
         let store = GraphStore::open(&path, 256 * 1024 * 1024).expect("open graph store");
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: "leaf1".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf1".to_string(),
@@ -10489,6 +10829,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf1".to_string(),
@@ -10564,6 +10910,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf2".to_string(),
@@ -10618,6 +10970,12 @@ mod tests {
         // Seed a BFD session via OpenConfig path: interface id = "ethernet-1/1"
         store
             .write(TelemetryUpdate {
+    plan_id: String::new(),
+    session_id: String::new(),
+    source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
                 target: "leaf3".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf3".to_string(),
@@ -10637,6 +10995,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf3".to_string(),
@@ -10703,6 +11067,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "leaf4".to_string(),
@@ -10759,6 +11129,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+    plan_id: String::new(),
+    session_id: String::new(),
+    source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "cisco_iosxr".to_string(),
                 hostname: "spine1".to_string(),
@@ -10814,6 +11190,12 @@ mod tests {
         let mut rx = store.subscribe_events();
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: SYSLOG_SRC_KEY.to_string(),
                 vendor: "juniper".to_string(),
                 hostname: "spine2".to_string(),
@@ -11020,6 +11402,7 @@ mod tests {
 
         store
             .sync_sites_from_targets(vec![TargetConfig {
+                acquisition: Default::default(),
                 extra_ips: Vec::new(),
                 optional: false,
                 paths: Vec::new(),
@@ -11048,6 +11431,9 @@ mod tests {
                 inventory_platform: None,
                 inventory_status: None,
                 inventory_tenant: None,
+                security: None,
+                client_cert: None,
+                client_key: None,
             }])
             .await
             .expect("sync sites");
@@ -11151,6 +11537,7 @@ mod tests {
 
     fn sync_target(address: &str, site: Option<&str>) -> TargetConfig {
         TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),
@@ -11179,6 +11566,9 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            security: None,
+            client_cert: None,
+            client_key: None,
         }
     }
 
@@ -11983,6 +12373,12 @@ mod tests {
         ts_ns: i64,
     ) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12007,6 +12403,12 @@ mod tests {
         ts_ns: i64,
     ) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12438,6 +12840,12 @@ mod tests {
 
     fn iface_stats_update(target: &str, if_name: &str, ts_ns: i64) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12459,6 +12867,12 @@ mod tests {
         ts_ns: i64,
     ) -> TelemetryUpdate {
         TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: target.to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: target.to_string(),
@@ -12734,6 +13148,12 @@ mod tests {
         for (ni, state, ts_ns) in [("vrf-a", "established", 10), ("vrf-b", "idle", 11)] {
             store
                 .write(TelemetryUpdate {
+                    plan_id: String::new(),
+                    session_id: String::new(),
+                    source_protocol: String::new(),
+                    gnmi_path: Vec::new(),
+                    is_delete: false,
+                    collector_id: String::new(),
                     target: "10.0.0.1".to_string(),
                     vendor: "nokia_srl".to_string(),
                     hostname: "10.0.0.1".to_string(),
@@ -12784,6 +13204,12 @@ mod tests {
         // Down update omitting peer-as entirely.
         store
             .write(TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: "10.0.0.1".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "10.0.0.1".to_string(),

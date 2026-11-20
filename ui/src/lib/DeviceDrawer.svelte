@@ -447,6 +447,30 @@
         {/if}
 
       {:else if activeTab === 'paths'}
+        {#if device.acquisition}
+          <div class="section">
+            <h4 class="section-head">Acquisition Plan</h4>
+            <div class="audit-grid">
+              <span class="muted">Intent</span>
+              <span><span class="badge {device.acquisition === 'explicit' ? 'healthy' : device.acquisition === 'disabled' ? 'warn' : ''}">{device.acquisition}</span></span>
+              <span class="muted">Plan state</span>
+              <span><span class="badge {device.acquisition_plan_state === 'submitted' ? 'healthy' : device.acquisition_plan_state === 'rejected' ? 'critical' : 'warn'}">{device.acquisition_plan_state || 'unknown'}</span></span>
+              {#if device.acquisition_plan_id}
+                <span class="muted">Plan ID</span>
+                <span><code style="font-size:11px;">{device.acquisition_plan_id}</code></span>
+              {/if}
+              {#if device.acquisition_plan_detail}
+                <span class="muted">Detail</span>
+                <span style="font-size:12px;">{device.acquisition_plan_detail}</span>
+              {/if}
+            </div>
+            <p class="muted" style="font-size:11px; margin-top:6px;">
+              {#if device.acquisition === 'automatic'}Capability/profile-derived collection — selected paths are honoured when present.
+              {:else if device.acquisition === 'explicit'}Explicit selection is the complete desired set; no automatic defaults are added.
+              {:else}Acquisition disabled — no Subscribe request is sent to this device.{/if}
+            </p>
+          </div>
+        {/if}
         {#if device.resolution_audit && device.resolution_audit.length > 0}
           <div class="section">
             <h4 class="section-head">Subscription Resolution Audit</h4>

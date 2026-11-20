@@ -713,6 +713,9 @@ pub(super) async fn device_gnmi_readiness_handler(
             password_env: None,
             ca_cert_path: target.ca_cert.clone(),
             tls_domain: target.tls_domain.clone(),
+            security: target.security,
+            client_cert_path: target.client_cert.clone(),
+            client_key_path: target.client_key.clone(),
             role_hint: target.role.clone(),
             environment_archetype: None,
             vault: Some(std::sync::Arc::clone(&state.credentials)),
@@ -753,6 +756,9 @@ pub(super) async fn device_streaming_readiness_handler(
                     password_env: None,
                     ca_cert_path: target.ca_cert.clone(),
                     tls_domain: target.tls_domain.clone(),
+                    security: target.security,
+                    client_cert_path: target.client_cert.clone(),
+                    client_key_path: target.client_key.clone(),
                     role_hint: target.role.clone(),
                     environment_archetype: None,
                     vault: Some(std::sync::Arc::clone(&state.credentials)),
@@ -806,6 +812,9 @@ pub(super) async fn device_recommendations_handler(
         password_env: None,
         ca_cert_path: target.ca_cert.clone(),
         tls_domain: target.tls_domain.clone(),
+        security: target.security,
+        client_cert_path: target.client_cert.clone(),
+        client_key_path: target.client_key.clone(),
         role_hint: target.role.clone(),
         environment_archetype: None,
         vault: Some(std::sync::Arc::clone(&state.credentials)),
@@ -903,16 +912,35 @@ pub(super) async fn apply_device_selected_paths_handler(
             )
         })?;
 
-    target.selected_paths = req
+    // This endpoint applies an explicit operator path selection, so it
+    // participates in the same acquisition contract as the managed-device
+    // API: every path must be a well-formed structured gNMI path and the
+    // resulting intent is Explicit — an empty list is an explicit empty
+    // selection (no collection), never a silent return to automatic.
+    let paths: Vec<crate::config::SelectedSubscriptionPath> = req
         .selected_paths
         .into_iter()
         .filter(|path| !path.path.trim().is_empty())
         .collect();
+    super::managed_devices::validate_explicit_paths(
+        &crate::config::AcquisitionMode::Explicit,
+        &paths,
+    )?;
+    target.selected_paths = paths;
+    target.acquisition = crate::config::AcquisitionMode::Explicit;
 
     let updated = state
         .registry
         .update_device_with_audit(target, "api", "api_apply_recommendation_paths")
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Push a fresh full sync so a running collector drops any obsolete
+    // broader subscription promptly rather than on next reconnect.
+    if let Some(cid) = updated.collector_id.as_deref()
+        && let Some(manager) = state.collector_manager.as_ref()
+    {
+        manager.resync_collector(cid).await;
+    }
 
     Ok(Json(ApplySelectedPathsResponse {
         success: true,

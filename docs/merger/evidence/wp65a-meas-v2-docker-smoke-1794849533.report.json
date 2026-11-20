@@ -1,0 +1,77 @@
+{
+  "scale": 3000,
+  "unique_frac": 0.05,
+  "corpus": "repetitive",
+  "mode": "drain",
+  "rate": 1000.0,
+  "transport": "both",
+  "pipeline": {
+    "bonsai_syslog_events_total": 3000.0,
+    "bonsai_syslog_archive_errors_total": 0.0,
+    "bonsai_syslog_noise_suppressed_total": 0.0,
+    "bonsai_syslog_shed_total": 0.0,
+    "bonsai_syslog_shunned_total": 0.0,
+    "bonsai_syslog_tcp_rejected_total": 0.0,
+    "bonsai_syslog_fact_join_total": 0.0,
+    "bonsai_archive_drops_total": 0.0,
+    "bonsai_broadcast_drops_total": 3000.0,
+    "bonsai_graph_write_errors_total": 0.0,
+    "bonsai_graph_state_change_write_total": 3000.0,
+    "bonsai_event_bus_router_drops_total": 0.0,
+    "bonsai_event_bus_subscriber_drops_total": 0.0,
+    "bonsai_queue_saturation_total": 0.0,
+    "bonsai_write_coordinator_queue_depth": 0.0,
+    "bonsai_rule_firings_total": 0.0,
+    "bonsai_graph_write_latency_seconds_mean": null,
+    "bonsai_graph_batch_write_latency_seconds_mean": 0.208429
+  },
+  "embedding_stats": {
+    "before": {
+      "config_embedded": 0,
+      "config_pending": 0,
+      "syslog_embedded": 0,
+      "syslog_pending": 0
+    },
+    "after": {
+      "config_embedded": 0,
+      "config_pending": 0,
+      "syslog_embedded": 3000,
+      "syslog_pending": 0
+    }
+  },
+  "ingest": {
+    "messages_offered": 3000,
+    "messages_sent_ok": 3000,
+    "send_errors": 0,
+    "bytes_sent": 256800,
+    "offered_rate_msg_s": 929.5,
+    "send_jitter_ms_max": 0,
+    "wall_s": 3.23,
+    "peak_core_rss_mb": 809.4,
+    "peak_worker_rss_mb": 47.5,
+    "peak_combined_rss_mb": 856.9,
+    "rss_mb_start": 511.9
+  },
+  "enrichment": {
+    "cycles": 15,
+    "embedded_records": 3000,
+    "cycle_statuses": {
+      "success": 15
+    },
+    "cycle_latency_ms": {
+      "p50": 3755.3,
+      "p95": 3869.1,
+      "p99": 3869.1
+    },
+    "wall_s": 62.35,
+    "provider_calls": 1,
+    "provider_texts_embedded": 5,
+    "template_cardinality": 5,
+    "template_occurrences": 3000
+  },
+  "bytes": {
+    "graph": 18309120,
+    "archive": 1122600,
+    "registry": 4096
+  }
+}

@@ -1,0 +1,1 @@
+{"run_id":"r10k-rep-conc-1794843019","tag":"r10k-rep-conc","deployment":"native-host","network_ns":"host","sender_dest":"127.0.0.1:57445","tcp_dest":"127.0.0.1:57445","http":"127.0.0.1:45044","metrics":"127.0.0.1:48505","core_pid_file":"/tmp/wp65a-m2-r10k-rep-conc-1794843019/core.pid","workdir":"/tmp/wp65a-m2-r10k-rep-conc-1794843019"}

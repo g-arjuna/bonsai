@@ -44,6 +44,7 @@ fn free_port() -> u16 {
 
 fn target(hostname: &str, address: &str, vendor: &str, site: &str) -> TargetConfig {
     TargetConfig {
+        acquisition: Default::default(),
         extra_ips: Vec::new(),
         optional: false,
         paths: Vec::new(),
@@ -67,6 +68,9 @@ fn target(hostname: &str, address: &str, vendor: &str, site: &str) -> TargetConf
         inventory_platform: None,
         inventory_status: None,
         inventory_tenant: None,
+        security: None,
+        client_cert: None,
+        client_key: None,
         created_at_ns: 0,
         updated_at_ns: 0,
         created_by: String::new(),
@@ -101,6 +105,7 @@ async fn start_lab(udp: bool, tcp: bool, collector_id: &str, targets: Vec<Target
         archive_path: archive_path.clone(),
         max_frame_bytes: 8192,
         collector_id: collector_id.to_string(),
+        ..SyslogConfig::default()
     };
     let bus = InProcessBus::new(1024);
     let rx = bus.subscribe();
@@ -116,7 +121,23 @@ async fn start_lab(udp: bool, tcp: bool, collector_id: &str, targets: Vec<Target
         None,
         None,
     ));
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    // Readiness: TCP labs probe-connect until the listener accepts
+    // (fixed sleeps race under parallel gate load); UDP keeps a short
+    // settle delay since datagrams cannot handshake.
+    if tcp {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match TcpStream::connect(&format!("127.0.0.1:{tcp_port}")).await {
+                Ok(_) => break,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(e) => panic!("syslog TCP listener not ready: {e}"),
+            }
+        }
+    } else {
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
     Lab {
         rx,
         udp_addr: format!("127.0.0.1:{udp_port}"),
@@ -492,6 +513,12 @@ fn syslog_event_update(
         }
     }
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: source_key.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: "edge-rtr".to_string(),
@@ -544,6 +571,12 @@ fn syslog_fact_update(
         }
     }
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: source_key.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: "edge-rtr".to_string(),

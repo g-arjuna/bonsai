@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -144,6 +144,7 @@ pub async fn run_syslog_receiver(
             Arc::clone(&target_map),
             collector_id,
             cfg.max_frame_bytes,
+            TcpDeadlines::from_config(&cfg),
             shutdown.clone(),
             governor.clone(),
             shun_engine.clone(),
@@ -304,6 +305,78 @@ async fn run_udp(
 // D4-1 T9: Maximum concurrent TCP connections to prevent resource exhaustion.
 const MAX_TCP_CONNECTIONS: usize = 128;
 
+/// M3 availability bounds for TCP connections: how long the receiver
+/// waits for the first complete frame, for idle gaps between frames,
+/// and for completion of a partially buffered frame.
+#[derive(Clone, Copy)]
+struct TcpDeadlines {
+    initial: Duration,
+    idle: Duration,
+    frame: Duration,
+}
+
+impl TcpDeadlines {
+    fn from_config(cfg: &crate::config::SyslogConfig) -> Self {
+        Self {
+            initial: Duration::from_secs(cfg.tcp_initial_timeout_secs),
+            idle: Duration::from_secs(cfg.tcp_idle_timeout_secs),
+            frame: Duration::from_secs(cfg.tcp_frame_timeout_secs),
+        }
+    }
+}
+
+/// Deadline for the next socket read on a TCP connection.
+/// `first_frame` bounds the whole first frame cumulatively; `partial`
+/// selects the frame-completion deadline once any bytes are buffered.
+fn tcp_read_deadline(
+    first_frame: bool,
+    partial: bool,
+    started: Instant,
+    deadlines: &TcpDeadlines,
+) -> Duration {
+    if first_frame {
+        deadlines.initial.saturating_sub(started.elapsed())
+    } else if partial {
+        deadlines.frame
+    } else {
+        deadlines.idle
+    }
+}
+
+fn note_tcp_timeout(phase: &'static str, src: &SyslogSource) {
+    metrics::counter!("bonsai_syslog_tcp_timeouts_total", "phase" => phase).increment(1);
+    warn!(peer = %src.peer_endpoint, phase, "syslog TCP read deadline exceeded");
+}
+
+/// Await one `fill_buf` under the connection deadline and shutdown
+/// signal. Returns `None` when the caller should close the connection
+/// (timeout, EOF-error path handled by caller via empty check).
+enum TcpBuf<'a> {
+    Data(&'a [u8]),
+    Eof,
+    Timeout,
+    Shutdown,
+}
+
+async fn tcp_fill_buf<'a, R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &'a mut R,
+    deadline: Duration,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<TcpBuf<'a>, std::io::Error> {
+    if deadline.is_zero() {
+        return Ok(TcpBuf::Timeout);
+    }
+    tokio::select! {
+        _ = shutdown.changed() => Ok(TcpBuf::Shutdown),
+        res = tokio::time::timeout(deadline, reader.fill_buf()) => match res {
+            Ok(Ok(buf)) if buf.is_empty() => Ok(TcpBuf::Eof),
+            Ok(Ok(buf)) => Ok(TcpBuf::Data(buf)),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Ok(TcpBuf::Timeout),
+        },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_tcp(
     listener: TcpListener,
@@ -313,6 +386,7 @@ async fn run_tcp(
     target_map: Arc<SyslogTargetMap>,
     collector_id: String,
     max_frame_bytes: usize,
+    deadlines: TcpDeadlines,
     mut shutdown: watch::Receiver<bool>,
     governor: Option<Arc<GovernorHandle>>,
     shun_engine: Option<Arc<ShunEngine>>,
@@ -349,6 +423,7 @@ async fn run_tcp(
                         let shun_engine = shun_engine.clone();
                         let conn_count = Arc::clone(&conn_count);
                         let conn_seq = Arc::clone(&conn_seq);
+                        let conn_shutdown_rx = shutdown.clone();
                         let collector_id = collector_id.clone();
                         tokio::spawn(async move {
                             // D4-1 T9: RFC 6587 dual-mode TCP framing.
@@ -358,25 +433,46 @@ async fn run_tcp(
                             let peer_str = peer.to_string();
                             let connection_id = conn_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             let src = SyslogSource::tcp(&peer_str, &collector_id, connection_id);
+                            let started = Instant::now();
+                            let mut conn_shutdown = conn_shutdown_rx;
 
-                            // Peek first byte to detect framing mode.
-                            let octet_counting = match reader.fill_buf().await {
-                                Ok(buf) if !buf.is_empty() => buf[0].is_ascii_digit(),
-                                _ => false,
+                            // Peek first byte to detect framing mode, bounded by
+                            // the initial-frame deadline.
+                            let octet_counting = match tcp_fill_buf(
+                                &mut reader,
+                                deadlines.initial,
+                                &mut conn_shutdown,
+                            )
+                            .await
+                            {
+                                Ok(TcpBuf::Data(buf)) => Some(buf[0].is_ascii_digit()),
+                                Ok(TcpBuf::Eof) | Ok(TcpBuf::Shutdown) => None,
+                                Ok(TcpBuf::Timeout) => {
+                                    note_tcp_timeout("initial", &src);
+                                    None
+                                }
+                                Err(error) => {
+                                    warn!(%error, peer = %peer_str, "syslog TCP peek failed");
+                                    None
+                                }
                             };
 
-                            if octet_counting {
-                                run_tcp_octet_counting(
-                                    &mut reader, max_frame_bytes, &src,
-                                    &bus, &archive, &fact_extractor, &target_map,
-                                    governor.as_deref(), shun_engine.as_deref(),
-                                ).await;
-                            } else {
-                                run_tcp_newline(
-                                    &mut reader, max_frame_bytes, &src,
-                                    &bus, &archive, &fact_extractor, &target_map,
-                                    governor.as_deref(), shun_engine.as_deref(),
-                                ).await;
+                            if let Some(octet_counting) = octet_counting {
+                                if octet_counting {
+                                    run_tcp_octet_counting(
+                                        &mut reader, max_frame_bytes, &src,
+                                        &bus, &archive, &fact_extractor, &target_map,
+                                        governor.as_deref(), shun_engine.as_deref(),
+                                        &deadlines, &mut conn_shutdown, started,
+                                    ).await;
+                                } else {
+                                    run_tcp_newline(
+                                        &mut reader, max_frame_bytes, &src,
+                                        &bus, &archive, &fact_extractor, &target_map,
+                                        governor.as_deref(), shun_engine.as_deref(),
+                                        &deadlines, &mut conn_shutdown, started,
+                                    ).await;
+                                }
                             }
 
                             let prev = conn_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -391,6 +487,9 @@ async fn run_tcp(
 }
 
 // D4-1 T9: Newline-delimited TCP framing (legacy BSD syslog).
+// M3: bounded — frames never exceed max_frame_bytes, every read is
+// deadline-bounded (initial / idle / frame-completion), and shutdown
+// cancels in-flight reads so connection slots are always released.
 #[allow(clippy::too_many_arguments)]
 async fn run_tcp_newline<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
@@ -402,34 +501,81 @@ async fn run_tcp_newline<R: tokio::io::AsyncBufRead + Unpin>(
     target_map: &SyslogTargetMap,
     governor: Option<&GovernorHandle>,
     shun_engine: Option<&ShunEngine>,
+    deadlines: &TcpDeadlines,
+    shutdown: &mut watch::Receiver<bool>,
+    started: Instant,
 ) {
-    let mut line = String::new();
+    let mut first_frame = true;
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
     loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => break,
-            Ok(n) if n > max_frame_bytes => {
-                warn!(peer = %src.peer_endpoint, bytes = n, "syslog TCP frame exceeded limit");
-                break;
+        buf.clear();
+        // Assemble one newline-terminated frame without ever buffering
+        // more than max_frame_bytes of unterminated payload.
+        loop {
+            let partial = !buf.is_empty();
+            let deadline = tcp_read_deadline(first_frame, partial, started, deadlines);
+            let phase = if first_frame {
+                "initial"
+            } else if partial {
+                "frame"
+            } else {
+                "idle"
+            };
+            enum Step {
+                Line(usize),
+                More(usize),
+                Eof,
+                Oversize,
             }
-            Ok(_) => {
-                handle_frame(
-                    line.trim_end().to_string(),
-                    src,
-                    bus,
-                    archive,
-                    fact_extractor,
-                    target_map,
-                    governor,
-                    shun_engine,
-                )
-                .await;
-            }
-            Err(error) => {
-                warn!(%error, peer = %src.peer_endpoint, "syslog TCP read failed");
-                break;
+            let step = match tcp_fill_buf(reader, deadline, shutdown).await {
+                Ok(TcpBuf::Data(avail)) => {
+                    if let Some(pos) = avail.iter().position(|&b| b == b'\n') {
+                        buf.extend_from_slice(&avail[..=pos]);
+                        Step::Line(pos + 1)
+                    } else if buf.len() + avail.len() > max_frame_bytes {
+                        Step::Oversize
+                    } else {
+                        buf.extend_from_slice(avail);
+                        Step::More(avail.len())
+                    }
+                }
+                Ok(TcpBuf::Eof) => Step::Eof,
+                Ok(TcpBuf::Timeout) => {
+                    note_tcp_timeout(phase, src);
+                    return;
+                }
+                Ok(TcpBuf::Shutdown) => return,
+                Err(error) => {
+                    warn!(%error, peer = %src.peer_endpoint, "syslog TCP read failed");
+                    return;
+                }
+            };
+            match step {
+                Step::Line(consumed) => {
+                    reader.consume(consumed);
+                    break;
+                }
+                Step::More(consumed) => reader.consume(consumed),
+                Step::Eof => return,
+                Step::Oversize => {
+                    warn!(peer = %src.peer_endpoint, limit = max_frame_bytes, "syslog TCP newline frame exceeded limit");
+                    metrics::counter!("bonsai_syslog_tcp_oversize_total").increment(1);
+                    return;
+                }
             }
         }
+        handle_frame(
+            String::from_utf8_lossy(&buf).trim_end().to_string(),
+            src,
+            bus,
+            archive,
+            fact_extractor,
+            target_map,
+            governor,
+            shun_engine,
+        )
+        .await;
+        first_frame = false;
     }
 }
 
@@ -447,16 +593,28 @@ async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
     target_map: &SyslogTargetMap,
     governor: Option<&GovernorHandle>,
     shun_engine: Option<&ShunEngine>,
+    deadlines: &TcpDeadlines,
+    shutdown: &mut watch::Receiver<bool>,
+    started: Instant,
 ) {
+    let mut first_frame = true;
     let mut len_buf = String::with_capacity(8);
     loop {
-        // Read the length prefix: digits followed by a space.
+        // Read the length prefix: digits followed by a space. Each read
+        // is bounded by the idle deadline (or the cumulative initial
+        // deadline for the first frame).
         len_buf.clear();
         let mut found_space = false;
         loop {
-            let available = match reader.fill_buf().await {
-                Ok(buf) if buf.is_empty() => return, // EOF
-                Ok(buf) => buf,
+            let deadline = tcp_read_deadline(first_frame, false, started, deadlines);
+            let phase = if first_frame { "initial" } else { "idle" };
+            let available = match tcp_fill_buf(reader, deadline, shutdown).await {
+                Ok(TcpBuf::Data(buf)) => buf,
+                Ok(TcpBuf::Eof) | Ok(TcpBuf::Shutdown) => return,
+                Ok(TcpBuf::Timeout) => {
+                    note_tcp_timeout(phase, src);
+                    return;
+                }
                 Err(error) => {
                     warn!(%error, peer = %src.peer_endpoint, "syslog TCP octet-counting read failed");
                     return;
@@ -464,6 +622,7 @@ async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
             };
             // Scan for space separator within available bytes.
             let mut consumed = 0;
+            let mut invalid = false;
             for &b in available {
                 consumed += 1;
                 if b == b' ' {
@@ -472,12 +631,17 @@ async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
                 }
                 if !b.is_ascii_digit() || len_buf.len() > 7 {
                     // Not a valid octet-counting length; abort.
-                    warn!(peer = %src.peer_endpoint, "syslog TCP octet-counting: invalid length prefix");
-                    return;
+                    invalid = true;
+                    break;
                 }
                 len_buf.push(b as char);
             }
             reader.consume(consumed);
+            if invalid {
+                warn!(peer = %src.peer_endpoint, "syslog TCP octet-counting: invalid length prefix");
+                metrics::counter!("bonsai_syslog_tcp_protocol_errors_total").increment(1);
+                return;
+            }
             if found_space {
                 break;
             }
@@ -487,19 +651,38 @@ async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
             Ok(n) if n <= max_frame_bytes => n,
             Ok(n) => {
                 warn!(peer = %src.peer_endpoint, bytes = n, "syslog TCP octet-counted frame exceeded limit");
+                metrics::counter!("bonsai_syslog_tcp_oversize_total").increment(1);
                 return;
             }
             Err(_) => {
                 warn!(peer = %src.peer_endpoint, len = %len_buf, "syslog TCP octet-counting: invalid length");
+                metrics::counter!("bonsai_syslog_tcp_protocol_errors_total").increment(1);
                 return;
             }
         };
 
-        // Read exactly msg_len bytes.
+        // Read exactly msg_len bytes under the frame-completion deadline.
         let mut msg_buf = vec![0u8; msg_len];
-        if let Err(error) = reader.read_exact(&mut msg_buf).await {
-            warn!(%error, peer = %src.peer_endpoint, "syslog TCP octet-counting: incomplete frame");
+        let deadline = tcp_read_deadline(first_frame, true, started, deadlines);
+        let phase = if first_frame { "initial" } else { "frame" };
+        if deadline.is_zero() {
+            note_tcp_timeout(phase, src);
             return;
+        }
+        let read_res = tokio::select! {
+            _ = shutdown.changed() => return,
+            res = tokio::time::timeout(deadline, reader.read_exact(&mut msg_buf)) => res,
+        };
+        match read_res {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                warn!(%error, peer = %src.peer_endpoint, "syslog TCP octet-counting: incomplete frame");
+                return;
+            }
+            Err(_) => {
+                note_tcp_timeout(phase, src);
+                return;
+            }
         }
 
         let raw = String::from_utf8_lossy(&msg_buf).trim_end().to_string();
@@ -514,6 +697,7 @@ async fn run_tcp_octet_counting<R: tokio::io::AsyncBufRead + Unpin>(
             shun_engine,
         )
         .await;
+        first_frame = false;
     }
 }
 
@@ -604,6 +788,12 @@ async fn handle_frame(
     // canonical device address; candidate attributes ride inside `value`
     // as an explicit hypothesis for downstream read-only correlation.
     bus.publish(TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: "syslog".to_string(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: src.source_key.clone(),
         vendor: target.candidate_vendor().to_string(),
         hostname: event.hostname.clone(),
@@ -619,6 +809,12 @@ async fn handle_frame(
 
     for fact in facts {
         bus.publish(TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: "syslog".to_string(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: src.source_key.clone(),
             vendor: target.candidate_vendor().to_string(),
             hostname: fact.hostname.clone(),
@@ -844,9 +1040,7 @@ impl SyslogArchive {
         // internal buffer — the blocking write(2) may still be in flight.
         // flush() drains the pending operation so a returned Ok means the
         // line is actually in the file (forensic archive ordering).
-        file.flush()
-            .await
-            .context("flush syslog archive line")?;
+        file.flush().await.context("flush syslog archive line")?;
         Ok(())
     }
 }
@@ -1323,6 +1517,7 @@ mod tests {
     #[test]
     fn resolves_syslog_hostname_to_managed_target() {
         let targets = vec![TargetConfig {
+            acquisition: Default::default(),
             extra_ips: Vec::new(),
             optional: false,
             paths: Vec::new(),
@@ -1351,6 +1546,9 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            security: None,
+            client_cert: None,
+            client_key: None,
         }];
         let map = SyslogTargetMap::new(&targets);
         let event = parse_syslog(

@@ -1,0 +1,1 @@
+{"run_id":"r100k-rep-drain500-1794843713","tag":"r100k-rep-drain500","deployment":"native-host","network_ns":"host","sender_dest":"127.0.0.1:56570","tcp_dest":"127.0.0.1:56570","http":"127.0.0.1:44054","metrics":"127.0.0.1:49430","core_pid_file":"/tmp/wp65a-m2-r100k-rep-drain500-1794843713/core.pid","workdir":"/tmp/wp65a-m2-r100k-rep-drain500-1794843713"}

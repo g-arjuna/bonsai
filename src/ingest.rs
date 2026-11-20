@@ -27,6 +27,7 @@ use crate::config::{
 };
 use crate::counter_summarizer::CounterSummarizer;
 use crate::event_bus::InProcessBus;
+use crate::subscription_sessions::SessionLifecycleEvent;
 use crate::subscription_status::SubscriptionPlan;
 use crate::telemetry::{TelemetryEvent, TelemetryUpdate};
 
@@ -178,6 +179,19 @@ impl TelemetryDebouncer {
 
         let classified = update.classify();
 
+        // M5.2B review B8: gNMI observations carrying subscription
+        // session provenance are coverage evidence — debounce keys bind
+        // only (target, path[, if_name]), not the session, so an
+        // unchanged ON_CHANGE value across a reconnect would be dropped
+        // and the new session could never establish coverage. These
+        // updates bypass debounce entirely and reach the verifier (and
+        // graph writer) raw; overload is still bounded downstream by
+        // the event-bus router, whose rejection aborts the ingest
+        // stream explicitly rather than silently dropping evidence.
+        if update.source_protocol == "gnmi" && !update.session_id.is_empty() {
+            return false;
+        }
+
         // Value-aware debounce: drop non-counter updates whose value hasn't changed within the window.
         // State changes (different value) always pass through immediately.
         match &classified {
@@ -255,6 +269,11 @@ pub fn telemetry_to_ingest_update(
 ) -> Result<ProtoTelemetryIngestUpdate> {
     Ok(ProtoTelemetryIngestUpdate {
         collector_id: collector_id.to_string(),
+        plan_id: update.plan_id.clone(),
+        session_id: update.session_id.clone(),
+        source_protocol: update.source_protocol.clone(),
+        gnmi_path: encode_gnmi_paths(&update.gnmi_path),
+        is_delete: update.is_delete,
         target: update.target.clone(),
         vendor: update.vendor.clone(),
         hostname: update.hostname.clone(),
@@ -275,8 +294,17 @@ pub fn summary_to_ingest_update(
     summary: InterfaceSummary,
 ) -> Result<ProtoTelemetryIngestUpdate> {
     // target and if_name are already on the summary; use template metadata when available.
+    // M5.2B: an aggregate window may span observations from different
+    // subscription sessions, so a summary must NEVER inherit the
+    // template's plan/session identity — derived summaries are
+    // explicitly non-authoritative for raw subscription coverage.
     Ok(ProtoTelemetryIngestUpdate {
         collector_id: collector_id.to_string(),
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: "gnmi_summary".to_string(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
         target: template.map_or_else(|| summary.target.clone(), |t| t.target.clone()),
         vendor: template.map_or_else(String::new, |t| t.vendor.clone()),
         hostname: template.map_or_else(String::new, |t| t.hostname.clone()),
@@ -293,6 +321,12 @@ pub fn summary_to_ingest_update(
 pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<TelemetryUpdate> {
     if let Some(summary) = update.interface_summary {
         return Ok(TelemetryUpdate {
+            plan_id: update.plan_id,
+            session_id: update.session_id,
+            source_protocol: update.source_protocol,
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: update.target,
             vendor: update.vendor,
             hostname: update.hostname,
@@ -306,8 +340,15 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
 
     let value = rmp_serde::from_slice(&update.value_msgpack)
         .with_context(|| format!("invalid telemetry value_msgpack for path '{}'", update.path))?;
+    let gnmi_path = decode_gnmi_paths(&update.gnmi_path).context("invalid telemetry gnmi_path")?;
 
     Ok(TelemetryUpdate {
+        plan_id: update.plan_id,
+        session_id: update.session_id,
+        source_protocol: update.source_protocol,
+        gnmi_path,
+        is_delete: update.is_delete,
+        collector_id: String::new(),
         target: update.target,
         vendor: update.vendor,
         hostname: update.hostname,
@@ -317,6 +358,40 @@ pub fn ingest_update_to_telemetry(update: ProtoTelemetryIngestUpdate) -> Result<
         path: update.path,
         value,
     })
+}
+
+/// `gnmi_path` wire framing: each structured path is a u32-LE length
+/// prefix followed by its prost-encoded `gnmi.Path`. prost bytes avoid
+/// a cross-package proto import; empty bytes decode to an empty vec
+/// (non-gNMI producers carry no structured evidence).
+fn encode_gnmi_paths(paths: &[crate::proto::gnmi::Path]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for path in paths {
+        let encoded = path.encode_to_vec();
+        out.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+        out.extend_from_slice(&encoded);
+    }
+    out
+}
+
+fn decode_gnmi_paths(bytes: &[u8]) -> Result<Vec<crate::proto::gnmi::Path>> {
+    let mut paths = Vec::new();
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        if rest.len() < 4 {
+            anyhow::bail!("truncated gnmi_path frame");
+        }
+        let len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+        rest = &rest[4..];
+        if rest.len() < len {
+            anyhow::bail!("truncated gnmi_path frame payload");
+        }
+        paths.push(
+            crate::proto::gnmi::Path::decode(&rest[..len]).context("invalid gnmi_path frame")?,
+        );
+        rest = &rest[len..];
+    }
+    Ok(paths)
 }
 
 fn interface_summary_to_json(summary: InterfaceSummary) -> serde_json::Value {
@@ -701,8 +776,15 @@ async fn queue_bus_updates_summary(
                     Some(update) => {
                         let classified = update.classify();
                         if let TelemetryEvent::InterfaceStats { .. } = classified {
-                            // Counter update: feed the summarizer.
-                            if let Some(summary) = summarizer.observe(&update) {
+                            // M5.2B: observations carrying authoritative
+                            // session provenance must reach the core raw —
+                            // a mixed-session aggregate can never stand in
+                            // for per-session receive evidence.
+                            if update.source_protocol == "gnmi" && !update.session_id.is_empty() {
+                                let proto = telemetry_to_ingest_update(collector_id, &update)?;
+                                queue.append(proto, collector_id)?;
+                            } else if let Some(summary) = summarizer.observe(&update) {
+                                // Counter update: feed the summarizer.
                                 let proto = summary_to_ingest_update(collector_id, Some(&update), summary)?;
                                 queue.append(proto, collector_id)?;
                                 metrics::counter!("bonsai_summaries_emitted_total", "collector_id" => collector_id.to_string()).increment(1);
@@ -1279,6 +1361,12 @@ mod tests {
     #[test]
     fn telemetry_ingest_proto_round_trips_msgpack_payload() {
         let update = TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
             target: "10.0.0.1:57400".to_string(),
             vendor: "nokia_srl".to_string(),
             hostname: "srl1".to_string(),
@@ -1311,6 +1399,12 @@ mod tests {
 
         for index in 0_u64..1_000 {
             let update = TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1353,6 +1447,12 @@ mod tests {
 
         for index in 0_i64..1_000 {
             let update = TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1481,6 +1581,12 @@ mod tests {
         telemetry_to_ingest_update(
             collector_id,
             &TelemetryUpdate {
+                plan_id: String::new(),
+                session_id: String::new(),
+                source_protocol: String::new(),
+                gnmi_path: Vec::new(),
+                is_delete: false,
+                collector_id: String::new(),
                 target: "10.0.0.1:57400".to_string(),
                 vendor: "nokia_srl".to_string(),
                 hostname: "srl1".to_string(),
@@ -1829,6 +1935,16 @@ mod tests {
         // All RPCs other than telemetry_ingest are unused by the drain
         // path — written out explicitly because #[async_trait] cannot
         // desugar async fns emitted by an inner macro_rules! call.
+        async fn subscription_lifecycle(
+            &self,
+            _r: tonic::Request<tonic::Streaming<crate::api::pb::SubscriptionLifecycleEvent>>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::SubscriptionLifecycleResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("subscription_lifecycle"))
+        }
+
         async fn get_leader(
             &self,
             _r: tonic::Request<crate::api::pb::GetLeaderRequest>,
@@ -2269,6 +2385,42 @@ mod tests {
     }
 }
 
+/// Convert an internal lifecycle event to its wire form. The collector
+/// id is stamped here from the authenticated session identity — never
+/// trusted from event content.
+fn lifecycle_event_to_proto(
+    collector_id: &str,
+    ev: &SessionLifecycleEvent,
+) -> crate::api::pb::SubscriptionLifecycleEvent {
+    crate::api::pb::SubscriptionLifecycleEvent {
+        collector_id: collector_id.to_string(),
+        device_address: ev.target.clone(),
+        plan_id: ev.plan_id.clone(),
+        session_id: ev.session_id.clone(),
+        state: ev.state.clone(),
+        transition_seq: ev.transition_seq,
+        authority_epoch: ev.authority_epoch,
+        assignment_generation: ev.assignment_generation,
+        collector_session_generation: ev.collector_session_generation,
+        execution_generation: ev.execution_generation,
+        occurred_at_ns: ev.occurred_at_ns,
+        detail: ev.detail.clone(),
+        protocol_version: crate::api::PROTOCOL_VERSION,
+        submitted_paths: ev
+            .submitted_paths
+            .iter()
+            .map(|e| crate::api::pb::SubscriptionPath {
+                path: e.path.clone(),
+                origin: e.origin.clone(),
+                mode: e.mode.clone(),
+                sample_interval_ns: e.sample_interval_ns,
+                ..Default::default()
+            })
+            .collect(),
+        acquisition: ev.acquisition.clone(),
+    }
+}
+
 pub async fn run_collector_manager(
     cfg: Arc<RuntimeConfig>,
     _collector_cfg: Arc<CollectorConfig>,
@@ -2288,7 +2440,39 @@ pub async fn run_collector_manager(
         .unwrap_or_else(|| "unknown".to_string());
 
     let startup_instant = Instant::now();
-    let mut subscribers: crate::subscriber::SubscriberHandleMap = HashMap::new();
+    let mut subscribers: crate::subscriber::SubscriberHandleMap =
+        crate::subscriber::SubscriberHandleMap::new();
+    // Authoritative subscription-lifecycle channel (M5.2B): bounded,
+    // never silently dropped — a full channel applies backpressure to
+    // the emitting subscriber rather than losing a terminal transition.
+    // A dedicated forwarder task owns the receiver and maintains its own
+    // core connection so lifecycle evidence survives assignment-stream
+    // reconnects; stale (epoch, generation) stamps are fenced core-side.
+    let (lifecycle_tx, lifecycle_rx) = mpsc::channel::<SessionLifecycleEvent>(1024);
+    {
+        let fwd_cfg = Arc::clone(&cfg);
+        let fwd_id = collector_id.clone();
+        let fwd_shutdown = shutdown.clone();
+        tokio::spawn(run_lifecycle_forwarder(
+            fwd_cfg,
+            fwd_id,
+            lifecycle_rx,
+            fwd_shutdown,
+        ));
+    }
+    let lifecycle_tx = Some(lifecycle_tx);
+    // Last (authority_epoch, generation) applied — persists across
+    // reconnects. Core numbers generations per collector id within an
+    // authority epoch; a core restart produces a NEW epoch, so delayed
+    // previous-epoch updates and stale generations are both fenced.
+    let mut last_authority_epoch: u64 = 0;
+    let mut last_applied_generation: u64 = 0;
+    // Bounded disconnect policy: subscribers survive a brief assignment
+    // stream outage but are stopped once the lease expires. The lease is
+    // measured from stream loss and is only RENEWED by an accepted full
+    // sync — a bare TCP/gRPC connection or registration never renews
+    // stale assignment authority.
+    let mut disconnected_since: Option<Instant> = None;
 
     loop {
         let mut client = match create_ingest_client(&cfg).await {
@@ -2297,7 +2481,10 @@ pub async fn run_collector_manager(
                 warn!(%error, %collector_id, "failed to connect to core for assignments; retrying in 5s");
                 tokio::select! {
                     _ = shutdown.changed() => return Ok(()),
-                    _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                        enforce_assignment_disconnect_lease(&mut subscribers, &mut disconnected_since).await;
+                        continue;
+                    }
                 }
             }
         };
@@ -2326,13 +2513,28 @@ pub async fn run_collector_manager(
             Err(error) => {
                 warn!(%error, %collector_id, "failed to register collector; retrying in 5s");
                 tokio::select! {
-                    _ = shutdown.changed() => return Ok(()),
-                    _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                    _ = shutdown.changed() => {
+                        crate::subscriber::stop_all_subscribers(&mut subscribers).await;
+                        return Ok(());
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                        enforce_assignment_disconnect_lease(&mut subscribers, &mut disconnected_since).await;
+                        continue;
+                    }
                 }
             }
         };
+        // Registration alone does NOT renew assignment authority: the
+        // disconnect lease keeps running until an accepted full sync.
+        if disconnected_since.is_none() {
+            disconnected_since = Some(Instant::now());
+        }
 
         let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        // Independent lease enforcement inside the connected loop: a
+        // half-open or nonresponsive assignment channel must not renew
+        // authority — only an accepted full sync does.
+        let mut lease_interval = tokio::time::interval(Duration::from_secs(5));
 
         loop {
             tokio::select! {
@@ -2344,22 +2546,39 @@ pub async fn run_collector_manager(
                 msg = stream.message() => {
                     match msg {
                         Ok(Some(update)) => {
-                            handle_assignment_update(
+                            let renewed = handle_assignment_update(
                                 update,
                                 &bus,
                                 &subscription_plan_tx,
                                 &mut subscribers,
+                                &mut last_authority_epoch,
+                                &mut last_applied_generation,
+                                &lifecycle_tx,
                             ).await;
+                            // Authority is renewed ONLY by an accepted
+                            // full sync — never by connection alone.
+                            if renewed {
+                                disconnected_since = None;
+                            }
                         }
                         Ok(None) => {
                             warn!("assignment stream closed by core; reconnecting");
+                            if disconnected_since.is_none() {
+                                disconnected_since = Some(Instant::now());
+                            }
                             break;
                         }
                         Err(error) => {
                             warn!(%error, "assignment stream error; reconnecting");
+                            if disconnected_since.is_none() {
+                                disconnected_since = Some(Instant::now());
+                            }
                             break;
                         }
                     }
+                }
+                _ = lease_interval.tick() => {
+                    enforce_assignment_disconnect_lease(&mut subscribers, &mut disconnected_since).await;
                 }
                 _ = heartbeat_interval.tick() => {
                     let sub_count = subscribers.len() as u32;
@@ -2422,6 +2641,8 @@ pub async fn run_collector_manager(
                         recent_warn_count: 0,
                         recent_error_count: 0,
                         receiver_statuses: receiver_snapshots,
+                        applied_assignment_generation: last_applied_generation,
+                        authority_epoch: last_authority_epoch,
                     };
                     if let Err(error) = client.heartbeat(stats).await {
                         warn!(%error, "failed to send heartbeat");
@@ -2432,36 +2653,418 @@ pub async fn run_collector_manager(
     }
 }
 
-async fn handle_assignment_update(
+/// Dedicated lifecycle-evidence forwarder (M5.2B). Maintains its own
+/// core connection independent of the assignment stream: connects
+/// lazily on the first event, reconnects with backoff on failure, and
+/// buffers events in the bounded channel while disconnected. Events
+/// carry the (authority_epoch, assignment_generation) stamp from when
+/// they were emitted, so delayed delivery across a core restart is
+/// fenced by the core's epoch check — a stale lifecycle event can never
+/// become current authority.
+/// Upper bound on the per-session latest-event resend index used to heal
+/// lifecycle delivery across stream reconnects (M5.2B B3).
+const LIFECYCLE_RESEND_INDEX_CAP: usize = 4096;
+
+/// Bounded latest-state resend index for the lifecycle forwarder
+/// (M5.2B review B10). Retains the newest event per
+/// (target, session_id); eviction is true LRU by last-note order, so a
+/// frequently updated live session is never evicted in favor of a stale
+/// terminal record — the old FIFO-by-first-seen order could drop live
+/// sessions under churn. `drain` replays in note order; per-session
+/// `transition_seq` remains the authoritative ordering core-side, so
+/// cross-session replay order carries no authority semantics.
+#[derive(Default)]
+struct LifecycleResendIndex {
+    entries: HashMap<(String, String), (u64, SessionLifecycleEvent)>,
+    clock: u64,
+}
+
+impl LifecycleResendIndex {
+    fn note(&mut self, ev: &SessionLifecycleEvent) {
+        self.clock += 1;
+        let key = (ev.target.clone(), ev.session_id.clone());
+        if !self.entries.contains_key(&key) && self.entries.len() >= LIFECYCLE_RESEND_INDEX_CAP {
+            if let Some(victim) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (seq, _))| *seq)
+                .map(|(k, _)| k.clone())
+            {
+                self.entries.remove(&victim);
+                metrics::counter!("bonsai_lifecycle_resend_evicted_total").increment(1);
+            }
+        }
+        self.entries.insert(key, (self.clock, ev.clone()));
+    }
+
+    /// Newest event per session, oldest-noted first.
+    fn drain(&self) -> Vec<SessionLifecycleEvent> {
+        let mut ordered: Vec<&(u64, SessionLifecycleEvent)> = self.entries.values().collect();
+        ordered.sort_by_key(|(seq, _)| *seq);
+        ordered.into_iter().map(|(_, ev)| ev.clone()).collect()
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_resend_tests {
+    use super::{LIFECYCLE_RESEND_INDEX_CAP, LifecycleResendIndex};
+    use crate::subscription_sessions::SessionLifecycleEvent;
+
+    fn ev(session_id: &str, seq: u64) -> SessionLifecycleEvent {
+        SessionLifecycleEvent {
+            collector_id: "c1".to_string(),
+            target: "dut:57400".to_string(),
+            plan_id: "plan-1".to_string(),
+            session_id: session_id.to_string(),
+            state: "synchronized".to_string(),
+            transition_seq: seq,
+            authority_epoch: 1,
+            assignment_generation: 1,
+            authority_instance: 0,
+            collector_session_generation: 0,
+            execution_generation: 0,
+            occurred_at_ns: 0,
+            detail: String::new(),
+            submitted_paths: Vec::new(),
+            acquisition: String::new(),
+        }
+    }
+
+    #[test]
+    fn resend_index_keeps_latest_per_session_and_drains_in_note_order() {
+        let mut idx = LifecycleResendIndex::default();
+        idx.note(&ev("s1", 1));
+        idx.note(&ev("s2", 1));
+        // Newer transition for s1 replaces the older record.
+        idx.note(&ev("s1", 2));
+        let drained = idx.drain();
+        assert_eq!(drained.len(), 2);
+        let s1 = drained.iter().find(|e| e.session_id == "s1").unwrap();
+        assert_eq!(s1.transition_seq, 2, "latest per session wins");
+    }
+
+    #[test]
+    fn resend_index_eviction_is_lru_not_fifo() {
+        let mut idx = LifecycleResendIndex::default();
+        // Fill the index, then refresh the FIRST session so it becomes
+        // most-recently-noted; churn must evict a stale session instead.
+        idx.note(&ev("keep", 1));
+        for i in 0..LIFECYCLE_RESEND_INDEX_CAP {
+            idx.note(&ev(&format!("flood-{i}"), 1));
+        }
+        // 'keep' was noted first and would be the FIFO victim; refresh it.
+        idx.note(&ev("keep", 2));
+        // One more distinct session forces exactly one eviction.
+        idx.note(&ev("trigger", 1));
+        let drained = idx.drain();
+        assert!(
+            drained
+                .iter()
+                .any(|e| e.session_id == "keep" && e.transition_seq == 2)
+        );
+        assert!(drained.iter().any(|e| e.session_id == "trigger"));
+        assert_eq!(drained.len(), LIFECYCLE_RESEND_INDEX_CAP);
+        // The evicted victim is the least-recently-noted flood entry,
+        // never the refreshed live session.
+        assert!(!drained.iter().any(|e| e.session_id == "flood-0"));
+    }
+}
+
+#[doc(hidden)]
+pub async fn run_lifecycle_forwarder(
+    cfg: Arc<RuntimeConfig>,
+    collector_id: String,
+    mut rx: mpsc::Receiver<SessionLifecycleEvent>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    // Reliable-delivery index (M5.2B B3): the newest event per
+    // (target, session_id) is retained so a dead RPC stream can be
+    // healed on reconnect. Lifecycle transitions are monotonic per
+    // session (transition_seq), so resending the latest state is
+    // idempotent core-side — already-applied sequences dedup, lost
+    // terminal states are restored. Events still queued in a dead
+    // stream's request channel are covered by this resend.
+    let mut resend_index = LifecycleResendIndex::default();
+    // Resend backlog drained ahead of fresh rx events on reconnect so
+    // older evidence never overtakes newer.
+    let mut resend: std::collections::VecDeque<SessionLifecycleEvent> =
+        std::collections::VecDeque::new();
+
+    'outer: loop {
+        // Next outbound event: resend backlog first (older evidence),
+        // then fresh producer events. With an empty backlog and no
+        // producers this parks until shutdown — no idle RPC is opened.
+        let first = if let Some(ev) = resend.pop_front() {
+            Some(ev)
+        } else {
+            tokio::select! {
+                _ = shutdown.changed() => return Ok(()),
+                ev = rx.recv() => ev,
+            }
+        };
+        let Some(first) = first else {
+            return Ok(()); // all producers gone
+        };
+        resend_index.note(&first);
+
+        let client = loop {
+            match create_ingest_client(&cfg).await {
+                Ok(c) => break c,
+                Err(error) => {
+                    warn!(%error, %collector_id, "lifecycle forwarder: core connect failed; retrying in 5s");
+                    tokio::select! {
+                        _ = shutdown.changed() => return Ok(()),
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    }
+                }
+            }
+        };
+
+        let (req_tx, req_rx) = mpsc::channel::<crate::api::pb::SubscriptionLifecycleEvent>(256);
+        let (done_tx, mut done_rx) = mpsc::channel::<()>(1);
+        {
+            let mut lc_client = client.clone();
+            tokio::spawn(async move {
+                let stream = tokio_stream::wrappers::ReceiverStream::new(req_rx);
+                let outcome = async {
+                    let resp = lc_client
+                        .subscription_lifecycle(Request::new(stream))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    // Exactly one terminal response after the client
+                    // stream closes; surface rejections honestly.
+                    let r = resp.into_inner();
+                    if r.rejected > 0 || !r.error.is_empty() {
+                        warn!(
+                            accepted = r.accepted,
+                            rejected = r.rejected,
+                            error = %r.error,
+                            "core rejected subscription lifecycle records"
+                        );
+                        metrics::counter!("bonsai_subscription_lifecycle_rejected_total")
+                            .increment(r.rejected);
+                    }
+                    Ok::<(), String>(())
+                }
+                .await;
+                if let Err(error) = outcome {
+                    warn!(%error, "subscription lifecycle RPC stream failed");
+                }
+                let _ = done_tx.send(()).await;
+            });
+        }
+
+        // Deliver the already-selected first event, then stream the
+        // rest — resend backlog ahead of fresh rx events.
+        if req_tx
+            .send(lifecycle_event_to_proto(&collector_id, &first))
+            .await
+            .is_err()
+        {
+            warn!("lifecycle RPC request channel closed");
+            continue 'outer;
+        }
+        loop {
+            // Pick the next outbound event: resend backlog first so
+            // healed older evidence never overtakes newer events.
+            let next = loop {
+                if let Some(ev) = resend.pop_front() {
+                    break Some(ev);
+                }
+                tokio::select! {
+                    _ = shutdown.changed() => return Ok(()),
+                    _ = done_rx.recv() => {
+                        warn!("subscription lifecycle RPC stream ended; reconnecting");
+                        metrics::counter!("bonsai_subscription_lifecycle_stream_reconnects_total").increment(1);
+                        // req_tx drops here → client stream closes → RPC ends.
+                        tokio::select! {
+                            _ = shutdown.changed() => return Ok(()),
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                        }
+                        // Heal: resend the newest event per session.
+                        // Core dedups by transition_seq, so this is
+                        // idempotent for already-applied states and
+                        // restores any lost terminal transition.
+                        resend.extend(resend_index.drain());
+                        continue 'outer;
+                    }
+                    ev = rx.recv() => break ev,
+                }
+            };
+            match next {
+                Some(ev) => {
+                    resend_index.note(&ev);
+                    let proto = lifecycle_event_to_proto(&collector_id, &ev);
+                    let sent = tokio::select! {
+                        _ = shutdown.changed() => return Ok(()),
+                        _ = done_rx.recv() => {
+                            warn!("subscription lifecycle RPC stream ended; reconnecting");
+                            metrics::counter!("bonsai_subscription_lifecycle_stream_reconnects_total").increment(1);
+                            tokio::select! {
+                                _ = shutdown.changed() => return Ok(()),
+                                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                            }
+                            resend.extend(resend_index.drain());
+                            continue 'outer;
+                        }
+                        r = req_tx.send(proto) => r,
+                    };
+                    if sent.is_err() {
+                        warn!("lifecycle RPC request channel closed");
+                        continue 'outer;
+                    }
+                }
+                None => return Ok(()),
+            }
+        }
+    }
+}
+
+/// Bounded disconnected-assignment policy (M5.2A): while the assignment
+/// stream is down the collector keeps its last-applied subscribers for at
+/// most this long, then stops them. Stale remote authority is never held
+/// indefinitely; recovery inside the lease preserves streams.
+pub const DISCONNECTED_ASSIGNMENT_LEASE: Duration = Duration::from_secs(90);
+
+/// Apply one assignment update to the local subscriber set.
+///
+/// Authority fencing is (authority_epoch, generation) lexicographic:
+/// - `authority_epoch == 0` → legacy core: only strictly newer
+///   `generation` values mutate state.
+/// - Newer epoch → accepted ONLY as a full sync (new authority must be
+///   established by authoritative synchronization, never by an
+///   incremental or stale-epoch message); generation expectation resets.
+/// - Same epoch → only strictly newer generations apply.
+/// - Older epoch → always rejected (delayed previous-authority update).
+/// Returns true iff an authoritative full sync was accepted — the ONLY
+/// event that renews the disconnect lease.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_assignment_update(
     update: AssignmentUpdate,
     bus: &Arc<InProcessBus>,
     subscription_plan_tx: &Option<mpsc::Sender<SubscriptionPlan>>,
     subscribers: &mut crate::subscriber::SubscriberHandleMap,
-) {
+    last_authority_epoch: &mut u64,
+    last_applied_generation: &mut u64,
+    lifecycle_tx: &Option<mpsc::Sender<SessionLifecycleEvent>>,
+) -> bool {
+    // Assignment authority stamped on every lifecycle transition this
+    // update produces: the (epoch, generation) the collector applied.
+    let authority_epoch = update.authority_epoch;
+    let assignment_generation = update.generation;
+    let lifecycle = lifecycle_tx
+        .as_ref()
+        .map(|tx| crate::subscriber::LifecycleHandle {
+            tx: tx.clone(),
+            authority_epoch,
+            assignment_generation,
+            collector_session_generation: update.collector_session_generation,
+        });
+    let mut renewed = false;
+    if update.authority_epoch == 0 {
+        // Legacy core without epoch fencing.
+        if update.generation > 0 {
+            if update.generation <= *last_applied_generation {
+                tracing::debug!(
+                    update_generation = update.generation,
+                    last_applied_generation = *last_applied_generation,
+                    "stale or duplicate assignment generation ignored"
+                );
+                return false;
+            }
+            *last_applied_generation = update.generation;
+        }
+    } else if update.authority_epoch < *last_authority_epoch {
+        tracing::debug!(
+            update_epoch = update.authority_epoch,
+            last_epoch = *last_authority_epoch,
+            "stale authority epoch rejected"
+        );
+        return false;
+    } else if update.authority_epoch > *last_authority_epoch {
+        // New authority epoch: only a full sync may establish it.
+        if !update.is_full_sync {
+            tracing::debug!(
+                update_epoch = update.authority_epoch,
+                "incremental update for unseen authority epoch rejected"
+            );
+            return false;
+        }
+        *last_authority_epoch = update.authority_epoch;
+        *last_applied_generation = update.generation;
+        renewed = true;
+    } else {
+        // Same epoch: strictly newer generation required.
+        if update.generation <= *last_applied_generation {
+            tracing::debug!(
+                update_generation = update.generation,
+                last_applied_generation = *last_applied_generation,
+                "stale or duplicate assignment generation ignored"
+            );
+            return false;
+        }
+        *last_applied_generation = update.generation;
+        if update.is_full_sync {
+            renewed = true;
+        }
+    }
+
     if update.is_full_sync {
-        info!("full assignment sync received, stopping unassigned subscribers");
+        info!(
+            generation = update.generation,
+            "full assignment sync received, reconciling subscribers"
+        );
         let assigned_addresses: std::collections::HashSet<String> = update
             .assignments
             .iter()
+            .filter(|a| !a.rejected)
             .filter_map(|a| a.device.as_ref().map(|d| d.address.clone()))
             .collect();
 
         let current_addresses: Vec<String> = subscribers.keys().cloned().collect();
         for addr in current_addresses {
             if !assigned_addresses.contains(&addr) {
+                info!(address = %addr, "assignment withdrawn — stopping subscriber");
                 crate::subscriber::stop_subscriber(&addr, subscribers).await;
             }
         }
     }
 
     for assignment in update.assignments {
+        // Capture the address BEFORE conversion: a malformed or
+        // unconvertible device must still stop any obsolete subscriber —
+        // it may have been retained by the full-sync address set.
+        let address_hint = assignment
+            .device
+            .as_ref()
+            .map(|d| d.address.clone())
+            .unwrap_or_default();
         let Some(device) = assignment.device else {
             continue;
         };
         let mut target = match crate::api::target_from_managed_device(Some(device)) {
             Ok(t) => t,
             Err(e) => {
-                warn!(error = %e, "invalid device in assignment");
+                // Fail closed: an unconvertible replacement must not
+                // preserve stale acquisition authority.
+                warn!(
+                    address = %address_hint,
+                    error = %e,
+                    "invalid device in assignment — stopping any subscriber"
+                );
+                if !address_hint.is_empty() {
+                    crate::subscriber::stop_subscriber(&address_hint, subscribers).await;
+                    let stub = crate::config::TargetConfig {
+                        address: address_hint.clone(),
+                        ..Default::default()
+                    };
+                    publish_assignment_plan_status(
+                        subscription_plan_tx,
+                        &stub,
+                        "rejected",
+                        format!("invalid assignment device: {e:#}"),
+                    );
+                }
                 continue;
             }
         };
@@ -2470,19 +3073,111 @@ async fn handle_assignment_update(
         target.username = Some(assignment.username);
         target.password = Some(assignment.password);
 
-        // In collector mode, we don't have a vault, so we pass a dummy/empty vault or update spawn_subscriber
-        // For now, we'll pass the Arc<InProcessBus> and Option<mpsc::Sender<SubscriptionPlan>> correctly.
-        if let Err(error) = crate::subscriber::spawn_subscriber_with_creds(
-            target,
+        if assignment.rejected {
+            warn!(
+                address = %target.address,
+                reason = %assignment.reject_reason,
+                "assignment rejected by core — ensuring no subscriber runs"
+            );
+            crate::subscriber::stop_subscriber(&target.address, subscribers).await;
+            publish_assignment_plan_status(
+                subscription_plan_tx,
+                &target,
+                "rejected",
+                assignment.reject_reason.clone(),
+            );
+            if let Some(h) = &lifecycle {
+                let plan = crate::subscriber::planned_subscription_plan_for_target(&target);
+                crate::subscriber::SessionEmitter::for_plan(h, &target.address, &plan.plan_id)
+                    .emit_plan("failed", &assignment.reject_reason)
+                    .await;
+            }
+            continue;
+        }
+
+        match crate::subscriber::spawn_subscriber_with_creds(
+            target.clone(),
             bus,
             None, // debouncer is local to core
             subscription_plan_tx.as_ref(),
             subscribers,
+            lifecycle.as_ref(),
         )
         .await
         {
-            warn!(%error, "failed to start assigned subscriber");
+            Ok(crate::subscriber::SpawnOutcome::Unchanged) => {}
+            Ok(crate::subscriber::SpawnOutcome::Started) => {
+                info!(address = %target.address, "assigned subscriber (re)started");
+            }
+            Ok(crate::subscriber::SpawnOutcome::Stopped) => {
+                info!(address = %target.address, "assignment requires no acquisition — stream stopped");
+            }
+            Err(error) => {
+                // Fail closed: an invalid replacement must not preserve
+                // an obsolete insecure or broader subscription.
+                warn!(address = %target.address, %error, "assigned subscriber failed to start");
+                crate::subscriber::stop_subscriber(&target.address, subscribers).await;
+                publish_assignment_plan_status(
+                    subscription_plan_tx,
+                    &target,
+                    "rejected",
+                    format!("{error:#}"),
+                );
+                if let Some(h) = &lifecycle {
+                    let plan = crate::subscriber::planned_subscription_plan_for_target(&target);
+                    crate::subscriber::SessionEmitter::for_plan(h, &target.address, &plan.plan_id)
+                        .emit_plan("failed", format!("{error:#}"))
+                        .await;
+                }
+            }
         }
+    }
+    renewed
+}
+
+/// Enforce the bounded disconnected-assignment lease: once the
+/// assignment stream has been down longer than
+/// `DISCONNECTED_ASSIGNMENT_LEASE`, every remaining subscriber is
+/// stopped so stale remote authority cannot persist indefinitely.
+/// Called on each reconnect retry; a no-op while connected or inside
+/// the lease.
+pub async fn enforce_assignment_disconnect_lease(
+    subscribers: &mut crate::subscriber::SubscriberHandleMap,
+    disconnected_since: &mut Option<Instant>,
+) {
+    let Some(since) = *disconnected_since else {
+        return;
+    };
+    if since.elapsed() < DISCONNECTED_ASSIGNMENT_LEASE || subscribers.is_empty() {
+        return;
+    }
+    warn!(
+        lease_secs = DISCONNECTED_ASSIGNMENT_LEASE.as_secs(),
+        held_subscribers = subscribers.len(),
+        "assignment stream disconnect lease expired — stopping subscribers"
+    );
+    crate::subscriber::stop_all_subscribers(subscribers).await;
+}
+
+/// Publish a non-acquiring plan status (rejected/disabled) for an
+/// assignment outcome. Uses the deterministic plan identity of the
+/// target's acquisition config so status lands on the same plan the
+/// operator sees; paths are cleared — nothing was requested.
+fn publish_assignment_plan_status(
+    subscription_plan_tx: &Option<mpsc::Sender<SubscriptionPlan>>,
+    target: &crate::config::TargetConfig,
+    state: &str,
+    detail: String,
+) {
+    let Some(tx) = subscription_plan_tx else {
+        return;
+    };
+    let mut plan = crate::subscriber::planned_subscription_plan_for_target(target);
+    plan.state = state.to_string();
+    plan.detail = detail;
+    plan.paths.clear();
+    if tx.try_send(plan).is_err() {
+        warn!(address = %target.address, "subscription plan status channel full — status dropped");
     }
 }
 

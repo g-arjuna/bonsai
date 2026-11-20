@@ -554,6 +554,10 @@ fn managed_device_from_cli_add(add: &DeviceCliAdd) -> ManagedDevice {
         site: add.site.clone().unwrap_or_default(),
         selected_paths: Vec::new(),
         collector_id: String::new(),
+        acquisition: String::new(),
+        security: String::new(),
+        client_cert: String::new(),
+        client_key: String::new(),
     }
 }
 
@@ -572,6 +576,13 @@ fn managed_device_from_target(target: TargetConfig) -> ManagedDevice {
         site: target.site.unwrap_or_default(),
         selected_paths: Vec::new(),
         collector_id: target.collector_id.unwrap_or_default(),
+        acquisition: target.acquisition.as_str().to_string(),
+        security: target
+            .security
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default(),
+        client_cert: target.client_cert.unwrap_or_default(),
+        client_key: target.client_key.unwrap_or_default(),
     }
 }
 
@@ -629,6 +640,7 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
                     role: add.role,
                     site: add.site,
                     collector_id: None,
+                    acquisition: bonsai::config::AcquisitionMode::Automatic,
                     selected_paths: Vec::new(),
                     extra_ips: Vec::new(),
                     paths: vec![],
@@ -643,6 +655,9 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
                     inventory_platform: None,
                     inventory_status: None,
                     inventory_tenant: None,
+                    security: None,
+                    client_cert: None,
+                    client_key: None,
                 },
                 "cli",
                 "cli_add_device",

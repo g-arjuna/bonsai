@@ -199,6 +199,7 @@ fn free_port() -> u16 {
 
 fn target(hostname: &str, address: &str, vendor: &str, site: &str) -> TargetConfig {
     TargetConfig {
+        acquisition: Default::default(),
         extra_ips: Vec::new(),
         optional: false,
         paths: Vec::new(),
@@ -222,6 +223,9 @@ fn target(hostname: &str, address: &str, vendor: &str, site: &str) -> TargetConf
         inventory_platform: None,
         inventory_status: None,
         inventory_tenant: None,
+        security: None,
+        client_cert: None,
+        client_key: None,
         created_at_ns: 0,
         updated_at_ns: 0,
         created_by: String::new(),
@@ -704,6 +708,12 @@ fn snmp_trap_update(
         }
     }
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: source_key.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: String::new(),
@@ -751,6 +761,12 @@ fn snmp_fact_update(
         }
     }
     TelemetryUpdate {
+        plan_id: String::new(),
+        session_id: String::new(),
+        source_protocol: String::new(),
+        gnmi_path: Vec::new(),
+        is_delete: false,
+        collector_id: String::new(),
         target: source_key.to_string(),
         vendor: "nokia_srl".to_string(),
         hostname: String::new(),
