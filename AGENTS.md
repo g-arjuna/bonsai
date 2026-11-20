@@ -20,6 +20,27 @@
 
 ## Build and test discipline
 
+### Host resource policy (OOM prevention, 2026-11-14)
+
+The dev host is 8 CPU / ~46 GB RAM with desktop + lab services running; a
+prior parallel build OOM-killed the desktop session. Rules:
+
+- `.cargo/config.toml` caps `jobs = 6`. For heavyweight test compilation
+  prefer `CARGO_BUILD_JOBS=2` (e.g. the final gate run
+  `CARGO_BUILD_JOBS=2 scripts/ci/gates.sh l0 l1 l2 l3`).
+- One heavyweight Cargo owner per shared `target`; never run two cargo
+  builds concurrently. Lightweight `cargo check -p <crate>` may use up to
+  4–6 jobs when measured safe.
+- Keep ≥8–10 GB available memory during builds; record peak process-tree
+  RSS, min available memory, concurrent links and OOM events in
+  `docs/build-times/runs.csv` for expensive runs.
+- Native builds: the lbug CMake build inherits cargo's job cap; do not
+  raise `CMAKE_BUILD_PARALLEL_LEVEL` beyond it on this host.
+- Where supported, contain build trees in a user systemd scope with
+  `MemoryHigh`/`MemoryMax` (e.g. `systemd-run --user --scope -p
+  MemoryHigh=32G -p MemoryMax=40G ...`) — never modify system OOM
+  policies, swap, or privileged settings without owner authorization.
+
 **Required for Devin and other agents:** [Bonsai Build Acceleration Playbook](docs/BUILD_ACCELERATION_PLAYBOOK_2026-11-11.md) documents the source-measured bottlenecks, safe iteration lanes, cache/worktree ownership, performance experiments and BN-019 acceptance. It complements (does not relax) the correctness/test gates below.
 
 ### Fast feedback without false-green verification

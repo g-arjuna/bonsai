@@ -20,6 +20,24 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
+/// BN-022: provision an API key through protected AuthStore. The legacy
+/// graph `api_key` ConfigItem path is retired — post-migration graph rows
+/// cannot authorize, so tests must seed the auth store directly.
+fn seed_api_key(store: &bonsai::graph::GraphStore, item: bonsai::graph::ConfigItemRecord) {
+    let v: serde_json::Value =
+        serde_json::from_str(&item.content_json).expect("api_key content_json");
+    store
+        .auth_store
+        .upsert_api_key_verifier(
+            &item.id,
+            &item.name,
+            v["key_hash"].as_str().expect("key_hash"),
+            v["scope"].as_str().unwrap_or("read"),
+            v["expires_at_ns"].as_i64().unwrap_or(0),
+        )
+        .expect("seed api key");
+}
+
 async fn set_app_config(store: &GraphStore, name: &str, value: &str) {
     store
         .upsert_config_item(ConfigItemRecord {
@@ -290,7 +308,10 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
         &format!("http://{addr}"),
     )
     .await;
-    set_app_config(&graph_store, "routing_service_token", token).await;
+    graph_store
+        .auth_store
+        .set_service_token("routing_service_token", token)
+        .expect("set routing service token");
 
     // Remote MCP tool: get_prefix_journey (`routing` is `None`, forcing HTTP client execution)
     let journey_val = call_tool_with_store_and_routing(
@@ -397,8 +418,9 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
     set_app_config(&graph_store, "require_auth", "1").await;
     let scoped_key = "bsk_scoped_speaker11_vrf10_key";
     let key_hash = hex::encode(Sha256::digest(scoped_key.as_bytes()));
-    graph_store
-        .upsert_config_item(ConfigItemRecord {
+    seed_api_key(
+        &graph_store,
+        ConfigItemRecord {
             id: "key-scoped-r06".to_string(),
             config_class: "api_key".to_string(),
             vendor: String::new(),
@@ -413,9 +435,8 @@ async fn r05_r06_remote_mcp_projector_and_scoped_routing_verification() {
             .to_string(),
             enabled: true,
             created_by: "test".to_string(),
-        })
-        .await
-        .expect("insert scoped api key");
+        },
+    );
 
     let bonsai_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

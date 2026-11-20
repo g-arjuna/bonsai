@@ -30,6 +30,9 @@ async fn main() -> Result<()> {
     if let Some(command) = cli::YangCliCommand::parse()? {
         return cli::run_yang_cli(command).await;
     }
+    if let Some(command) = cli::AuthCliCommand::parse()? {
+        return cli::run_auth_cli(command).await;
+    }
 
     server_startup::run_server().await
 }

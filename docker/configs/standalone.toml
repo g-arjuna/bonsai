@@ -20,6 +20,9 @@ max_batch_rows         = 1000
 enabled             = false
 authority           = "routing_service"
 tcp_addr            = "0.0.0.0:11019"
+# Plain http to the compose-internal bonsai-routing hostname requires
+# BONSAI_ROUTING_ALLOW_INSECURE_HTTP=1 (set in docker-compose.yml).
+# Outside compose, use https or a loopback address.
 routing_service_url = "http://bonsai-routing:8081"
 
 # No [[target]] blocks — devices are added via the UI onboarding wizard or

@@ -426,6 +426,19 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         }
     }
 
+    // BN-022: migrate legacy graph credential records into protected auth
+    // storage BEFORE serving requests. Failure is fatal for auth — the
+    // process continues for non-auth duties but every auth decision fails
+    // closed until the migration can complete.
+    if let Some(Store::Core(ref core_store)) = store {
+        match core_store.auth_store.ensure_migrated(core_store).await {
+            Ok(()) => {}
+            Err(e) => {
+                error!(error = %e, "auth storage migration failed — auth will fail closed");
+            }
+        }
+    }
+
     // D4-7 T5: Restore all runtime config overrides from DB (streaming, retention, ai, etc.).
     if let Some(Store::Core(ref core_store)) = store {
         let n =
@@ -1905,7 +1918,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     // HTTPS: accept each TCP connection, upgrade to TLS, then serve.
                     let mut join_set: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
                     loop {
-                        let (tcp, _peer) = match http_listener.accept().await {
+                        let (tcp, peer) = match http_listener.accept().await {
                             Ok(p) => p,
                             Err(e) => {
                                 warn!(%e, "HTTPS accept error");
@@ -1923,7 +1936,18 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                                     )
                                     .serve_connection(
                                         io,
-                                        hyper::service::service_fn(move |req| {
+                                        hyper::service::service_fn(move |mut req| {
+                                            // Mark requests served over the
+                                            // verified TLS listener so auth
+                                            // handlers can set Secure cookies.
+                                            req.extensions_mut()
+                                                .insert(bonsai::http_server::TlsConnection);
+                                            // TCP peer address for the
+                                            // supplementary login source
+                                            // rate limit (never forwarded
+                                            // headers).
+                                            req.extensions_mut()
+                                                .insert(axum::extract::ConnectInfo(peer));
                                             let mut svc = svc.clone();
                                             async move { tower::Service::call(&mut svc, req).await }
                                         }),
@@ -1937,12 +1961,18 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                     #[allow(unreachable_code)]
                     Ok::<_, std::convert::Infallible>(())
                 } else {
-                    axum::serve(http_listener, router)
-                        .await
-                        .map_err(|e| {
-                            warn!(%e, "HTTP server exited with error");
-                        })
-                        .ok();
+                    // ConnectInfo exposes the TCP peer address to handlers
+                    // (login source rate limit); it is the connection peer,
+                    // never a client-supplied forwarding header.
+                    axum::serve(
+                        http_listener,
+                        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    )
+                    .await
+                    .map_err(|e| {
+                        warn!(%e, "HTTP server exited with error");
+                    })
+                    .ok();
                     Ok(())
                 };
                 if let Err(e) = serve_result {

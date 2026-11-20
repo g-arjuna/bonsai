@@ -1,0 +1,87 @@
+candidate_sha=549568b8d5d3b7fb032dad5a27336b57bcbc359e
+binary=/home/arjuna/Desktop/bonsai/target/debug/bonsai
+77920bfe6f2ea88fc8922001f4e889a0e716885f4aa93c6616e64497db81d301  /home/arjuna/Desktop/bonsai/target/debug/bonsai
+workdir=/tmp/bonsai-final-recovery.FOKnYs
+date=2026-11-15T17:37:44Z
+=== A. live instance ===
+PASS  live server start
+PASS  env-admin login
+PASS  operator login
+PASS  viewer login
+PASS  viewer GET /api/auth/users denied (HTTP 403)
+PASS  operator GET /api/auth/users denied (HTTP 403)
+PASS  anon GET /api/config-items (HTTP 401)
+PASS  api keys created+revoked
+PASS  viewer POST /api/config-items denied (HTTP 403)
+PASS  operator POST /api/config-items allowed (HTTP 204)
+PASS  read-key GET config-items (HTTP 200)
+PASS  read-key POST denied (HTTP 403)
+PASS  revoked key denied (HTTP 401)
+PASS  set routing_service_token
+PASS  set internal_service_token
+=== A2. routing credential consumption ===
+PASS  routing health via recorder (HTTP 200)
+PASS  routing credential consumed by loopback service
+PASS  scoped routing key matching speaker (HTTP 200)
+PASS  scoped routing key wrong speaker denied (HTTP 403)
+PASS  matching-speaker request proxied with internal credential
+PASS  wrong-speaker request never proxied
+=== B. backup-restore roundtrip ===
+PASS  auth backup
+PASS  verify-backup
+PASS  backup manifest present
+PASS  post-restore server start
+PASS  post-restore anon denied (HTTP 401)
+PASS  post-restore admin login
+PASS  post-restore operator+viewer login
+PASS  pre-backup JWT valid after restore (HTTP 200)
+PASS  api key auth after restore (HTTP 200)
+PASS  revoked key still denied (HTTP 401)
+PASS  post-restore viewer write denied (HTTP 403)
+PASS  list-service-tokens
+PASS  routing token present
+PASS  internal token present
+PASS  auth db mode 600
+=== C. negatives ===
+PASS  verify-backup wrong passphrase
+PASS  verify-backup missing key material
+PASS  verify-backup corrupt snapshot
+PASS  verify-backup truncated snapshot
+PASS  verify-backup tampered manifest
+PASS  verify-backup missing manifest
+PASS  verify-backup unsupported format
+PASS  wrong passphrase startup fails closed
+PASS  restart after wrong-key case
+=== D. emergency rotation ===
+PASS  pre-rotation login token minted
+PASS  rotate-emergency
+PASS  post-rotation start
+PASS  pre-rotation JWT denied after restart (HTTP 401)
+PASS  fresh login after rotation
+PASS  historical restore start
+PASS  restored old JWT verifies (resurrection confirmed)
+PASS  rotate-emergency on restored
+PASS  post-restore-rotation start
+PASS  old JWT denied after reconciliation rotation (HTTP 401)
+PASS  login after reconciliation
+=== E. legacy migration ===
+PASS  fixture seed
+PASS  legacy server start (migration runs)
+PASS  migration logged
+PASS  legacy user login
+PASS  legacy api key auth
+PASS  user class tombstoned
+PASS  no plaintext verifier in graph
+PASS  routing token imported
+PASS  disabled internal token quarantined
+PASS  no plaintext service token in graph
+=== F. mismatch cases ===
+PASS  older-graph/newer-authstore anon denied
+PASS  older-graph/newer-authstore authed denied (HTTP 503)
+PASS  older-authstore/newer-graph anon denied
+PASS  older-authstore/newer-graph bad-key denied
+[2m2026-11-15T17:41:29.397118Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"bgp_edge_migration" [3melapsed_ms[0m[2m=[0m23
+[2m2026-11-15T17:41:29.426096Z[0m [31mERROR[0m [2mbonsai::server_startup[0m[2m:[0m auth storage migration failed — auth will fail closed [3merror[0m[2m=[0mmigration tombstone 'user/cfg-user-legacy-viewer' claims 'imported' but no protected counterpart exists in the auth store
+[2m2026-11-15T17:41:31.033410Z[0m [31mERROR[0m [2mbonsai::http_server::auth[0m[2m:[0m auth storage migration failed — denying request [3merror[0m[2m=[0mauth migration previously failed; retrying shortly
+=== DONE: 0 failure(s) ===
+evidence: /tmp/bonsai-final-recovery.FOKnYs

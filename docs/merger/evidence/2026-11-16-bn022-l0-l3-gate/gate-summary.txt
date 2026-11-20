@@ -1,0 +1,27 @@
+# BN-022 Secure Core — trusted local gate L0-L3 summary (sanitized)
+# Source log: /tmp/final-gates-5570585.log (ephemeral); this file is the durable record.
+
+command: scripts/ci/run-local.sh --trusted --shared-target l0 l1 l2 l3
+candidate_sha: 5570585313088bb5074e7bb3565bbb9cba76b49c
+branch: feat/bn022-auth-storage
+image: bonsai-ci:local
+mode: trusted (warm dedicated caches, shared host target)
+toolchain: rustc/cargo 1.95.0, sccache 0.15.0, node v20.20.2, python 3.12.3
+date: 2026-11-16 (log mtime 09:57 local)
+
+=== Gate outcomes ===
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+206 passed, 3 skipped, 1 deselected, 8 warnings in 6.92s
+L3: OK
+
+=== Gate outcomes ===
+  l0   PASS
+  l1   PASS
+  l2   PASS
+  l3   PASS
+ALL REQUESTED GATES PASSED
+=== local CI finished: sha=5570585313088bb5074e7bb3565bbb9cba76b49c image=bonsai-ci:local mode=trusted tiers=l0 l1 l2 l3 exit=0 ===
+logs: $HOME/Desktop/bonsai/target/ci/local-run-20261116-092619 ; gate log inside snapshot target/ci/ (kept only with CI_SNAPSHOT=1)
+
+test-result lines: 48
+failures: 0
