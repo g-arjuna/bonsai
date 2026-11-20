@@ -16,11 +16,12 @@ mod parser;
 
 pub use compiler::{
     CompileOptions, CompiledCatalogue, CompiledFeature, CompiledModule, ModuleInput,
-    SchemaPathEntry, compile, filter_by_features,
+    SchemaPathEntry, compile, compile_with_diagnostics, filter_by_features,
 };
 pub use parser::{Module, parse_module};
 
 use std::collections::BTreeSet;
+use std::io::BufReader;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -86,14 +87,50 @@ pub fn load_module_inputs(
             }
         };
         match parse_module(&raw) {
-            Ok(module) => inputs.push(ModuleInput {
-                module,
-                vendor_scope: record.vendor_scope.clone(),
-                source_kind: record.source_kind.clone(),
-                source_ref: record.source_ref.clone(),
-                trust: record.trust.clone(),
-                checksum_sha256: record.checksum_sha256.clone(),
-            }),
+            Ok(module) => {
+                // C4: the stored metadata must agree with the parsed
+                // declaration — a blob whose name/revision was mislabeled at
+                // import time must not silently index under the wrong key.
+                let declared_name = module.name.clone();
+                let declared_rev = module.latest_revision();
+                // Revision is enforced only when the record carries a real
+                // revision — "unknown" means the line-based metadata parser
+                // could not determine one (e.g. single-line declarations),
+                // which is not evidence of mislabeling.
+                let rev_mismatch = !record.revision.is_empty()
+                    && record.revision != "unknown"
+                    && declared_rev != record.revision;
+                if declared_name != record.module_name || rev_mismatch {
+                    diagnostics.push(format!(
+                        "module record '{}'@'{}' content declares '{}'@'{}' — record/content mismatch",
+                        record.module_name, record.revision, declared_name, declared_rev
+                    ));
+                    continue;
+                }
+                // Verify blob integrity before compilation.
+                use sha2::{Digest, Sha256};
+                let digest = hex::encode(Sha256::digest(raw.as_bytes()));
+                if !record.checksum_sha256.is_empty() && digest != record.checksum_sha256 {
+                    diagnostics.push(format!(
+                        "module '{}@{}' checksum mismatch: stored record claims {} but content hashes to {}",
+                        record.module_name, record.revision, record.checksum_sha256, digest
+                    ));
+                    continue;
+                }
+                inputs.push(ModuleInput {
+                    module,
+                    vendor_scope: record.vendor_scope.clone(),
+                    source_kind: record.source_kind.clone(),
+                    source_ref: record.source_ref.clone(),
+                    trust: record.trust.clone(),
+                    checksum_sha256: record.checksum_sha256.clone(),
+                    approved: record.approved,
+                    license: record.license.clone(),
+                    platforms: record.platforms.clone(),
+                    pinned_ref: record.pinned_ref.clone(),
+                    source_id: record.source_id.clone(),
+                })
+            }
             Err(e) => diagnostics.push(format!(
                 "module '{}@{}' parse failed: {}",
                 record.module_name, record.revision, e
@@ -106,12 +143,12 @@ pub fn load_module_inputs(
 /// Compile the library's modules into a deterministic compiled catalogue and
 /// persist it as an inactive bundle. Returns the compiled catalogue.
 pub fn compile_library(library: &YangLibrary, trusted_only: bool) -> Result<CompiledCatalogue> {
-    let (inputs, mut pre_diagnostics) = load_module_inputs(library, !trusted_only)?;
+    let (inputs, pre_diagnostics) = load_module_inputs(library, !trusted_only)?;
     let options = CompileOptions { trusted_only };
-    let mut catalogue = compile(inputs, &options);
-    catalogue
-        .diagnostics
-        .splice(0..0, pre_diagnostics.drain(..));
+    // Pre-compilation diagnostics (unreadable/mislabeled/corrupt records)
+    // participate in status and schema identity — they can never be
+    // silently downgraded to `complete`.
+    let catalogue = compile_with_diagnostics(inputs, &options, pre_diagnostics);
     persist_compiled(library, &catalogue)?;
     Ok(catalogue)
 }
@@ -124,18 +161,98 @@ fn bundle_path(library: &YangLibrary, schema_id: &str) -> PathBuf {
     compiled_dir(library).join(format!("{}.json", schema_id))
 }
 
+/// Strict schema-id validation. Ids are generated as `ysc-<32 lowercase
+/// hex>`; anything else (including path separators, `..`, absolute paths)
+/// is rejected before it can reach a filesystem join.
+fn valid_schema_id(schema_id: &str) -> bool {
+    let Some(hex) = schema_id.strip_prefix("ysc-") else {
+        return false;
+    };
+    hex.len() == 32
+        && hex
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Deserialize + integrity-check a compiled bundle: the embedded
+/// `schema_id` must equal the requested id AND recompute identically from
+/// the bundle's semantic content. Returns the catalogue on success.
+fn read_verified_bundle(library: &YangLibrary, schema_id: &str) -> Result<CompiledCatalogue> {
+    if !valid_schema_id(schema_id) {
+        bail!("invalid compiled schema id '{}'", schema_id);
+    }
+    let path = bundle_path(library, schema_id);
+    let raw = std::fs::read(&path)
+        .with_context(|| format!("failed to read compiled bundle '{}'", path.display()))?;
+    let catalogue: CompiledCatalogue =
+        serde_json::from_slice(&raw).context("invalid compiled catalogue JSON")?;
+    if catalogue.schema_id != schema_id {
+        bail!(
+            "compiled bundle '{}' embeds schema_id '{}' — identity mismatch",
+            schema_id,
+            catalogue.schema_id
+        );
+    }
+    let recomputed = compiler::recompute_schema_id(&catalogue);
+    if recomputed != schema_id {
+        bail!(
+            "compiled bundle '{}' fails integrity check: content hashes to '{}'",
+            schema_id,
+            recomputed
+        );
+    }
+    Ok(catalogue)
+}
+
 /// Write the compiled catalogue to `compiled/<schema_id>.json` atomically and
 /// refresh `compiled/index.json`. Does NOT activate it.
 pub fn persist_compiled(library: &YangLibrary, catalogue: &CompiledCatalogue) -> Result<()> {
+    if !valid_schema_id(&catalogue.schema_id) {
+        bail!("refusing to persist bundle with invalid schema id");
+    }
+    // Identity must match content — never store a bundle under a lying id.
+    let recomputed = compiler::recompute_schema_id(catalogue);
+    if recomputed != catalogue.schema_id {
+        bail!(
+            "compiled catalogue identity mismatch: schema_id '{}' but content hashes to '{}'",
+            catalogue.schema_id,
+            recomputed
+        );
+    }
     let dir = compiled_dir(library);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create '{}'", dir.display()))?;
     let target = bundle_path(library, &catalogue.schema_id);
-    let tmp = dir.join(format!(".{}.tmp", catalogue.schema_id));
     let raw = serde_json::to_vec(catalogue).context("failed to serialize compiled catalogue")?;
     if raw.len() as u64 > MAX_COMPILED_BUNDLE_BYTES {
         bail!("compiled catalogue exceeds size limit");
     }
+    // Bundles are immutable and content-addressed: an existing file under
+    // this identity must verify (embedded id + recomputed hash). A second
+    // compile of identical input yields the same schema_id but a different
+    // `compiled_at_ns`, so byte-equality is NOT the invariant — verified
+    // semantic identity is. First writer wins; later identical identities
+    // are idempotent no-ops.
+    if target.exists() {
+        match read_verified_bundle(library, &catalogue.schema_id) {
+            Ok(_) => {
+                refresh_compiled_index(library)?;
+                return Ok(());
+            }
+            Err(e) => bail!(
+                "compiled bundle '{}' exists but fails integrity verification ({}); refusing to overwrite",
+                catalogue.schema_id,
+                e
+            ),
+        }
+    }
+    // Unique tmp name: concurrent persists of the same identity must not
+    // interleave writes into one temp file.
+    let tmp = dir.join(format!(
+        ".{}.{}.tmp",
+        catalogue.schema_id,
+        std::process::id()
+    ));
     std::fs::write(&tmp, &raw)
         .with_context(|| format!("failed to write compiled bundle '{}'", tmp.display()))?;
     std::fs::rename(&tmp, &target).with_context(|| {
@@ -171,22 +288,20 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_string();
-            // Read header fields cheaply by loading the whole file; bundles
-            // are bounded by MAX_COMPILED_BUNDLE_BYTES.
-            let (module_count, path_count, diagnostics, compiled_at_ns) = std::fs::read(&path)
+            // Streamed header parse: serde skips unknown fields without
+            // building a DOM and `from_reader` consumes the file
+            // incrementally, so indexing a 512 MiB bundle costs bounded
+            // memory (CPU is still O(file size) — documented limit).
+            let header = std::fs::File::open(&path)
                 .ok()
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                .map(|v| {
+                .and_then(|f| serde_json::from_reader::<_, BundleHeader>(BufReader::new(f)).ok());
+            let (module_count, path_count, diagnostics, compiled_at_ns) = header
+                .map(|h| {
                     (
-                        v.get("module_count").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-                        v.get("path_count").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-                        v.get("diagnostics")
-                            .and_then(|x| x.as_array())
-                            .map(|a| a.len())
-                            .unwrap_or(0),
-                        v.get("compiled_at_ns")
-                            .and_then(|x| x.as_i64())
-                            .unwrap_or(0),
+                        h.module_count,
+                        h.path_count,
+                        h.diagnostics.len(),
+                        h.compiled_at_ns,
                     )
                 })
                 .unwrap_or((0, 0, 0, 0));
@@ -205,7 +320,7 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
             });
         }
     }
-    infos.sort_by(|a, b| b.compiled_at_ns.cmp(&a.compiled_at_ns));
+    infos.sort_by_key(|i| std::cmp::Reverse(i.compiled_at_ns));
     // Bounded retention: keep newest MAX_COMPILED_BUNDLES, evict the rest —
     // but never evict the active bundle.
     let active_id = active.clone();
@@ -238,35 +353,41 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
-            if let Ok(bytes) = std::fs::read(&path)
-                && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            if let Ok(f) = std::fs::File::open(&path)
+                && let Ok(h) = serde_json::from_reader::<_, BundleHeader>(BufReader::new(f))
             {
                 final_infos.push(CompiledBundleInfo {
                     schema_id: schema_id.clone(),
-                    compiled_at_ns: v
-                        .get("compiled_at_ns")
-                        .and_then(|x| x.as_i64())
-                        .unwrap_or(0),
-                    module_count: v.get("module_count").and_then(|x| x.as_u64()).unwrap_or(0)
-                        as usize,
-                    path_count: v.get("path_count").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-                    diagnostics: v
-                        .get("diagnostics")
-                        .and_then(|x| x.as_array())
-                        .map(|a| a.len())
-                        .unwrap_or(0),
+                    compiled_at_ns: h.compiled_at_ns,
+                    module_count: h.module_count,
+                    path_count: h.path_count,
+                    diagnostics: h.diagnostics.len(),
                     active: active_id.as_deref() == Some(schema_id.as_str()),
                 });
             }
         }
     }
-    final_infos.sort_by(|a, b| b.compiled_at_ns.cmp(&a.compiled_at_ns));
+    final_infos.sort_by_key(|i| std::cmp::Reverse(i.compiled_at_ns));
     let index_path = dir.join(INDEX_FILE);
-    let tmp = dir.join(format!(".{}.tmp", INDEX_FILE));
+    let tmp = dir.join(format!(".{}.{}.tmp", INDEX_FILE, std::process::id()));
     let raw = serde_json::to_vec_pretty(&final_infos).context("serialize compiled index")?;
     std::fs::write(&tmp, raw)?;
     std::fs::rename(&tmp, &index_path)?;
     Ok(())
+}
+
+/// Header-only view of a compiled bundle for index refresh — unknown
+/// fields are skipped by serde without materializing the full document.
+#[derive(Deserialize)]
+struct BundleHeader {
+    #[serde(default)]
+    module_count: usize,
+    #[serde(default)]
+    path_count: usize,
+    #[serde(default)]
+    compiled_at_ns: i64,
+    #[serde(default)]
+    diagnostics: Vec<serde::de::IgnoredAny>,
 }
 
 fn active_pointer_path(library: &YangLibrary) -> PathBuf {
@@ -286,37 +407,30 @@ fn load_active(library: &YangLibrary) -> Result<Option<String>> {
 /// Atomically point `active.json` at an existing compiled bundle.
 /// Rollback = activate an older schema_id. Fails if the bundle is absent.
 pub fn activate_compiled(library: &YangLibrary, schema_id: &str) -> Result<()> {
-    let path = bundle_path(library, schema_id);
-    if !path.exists() {
-        bail!("compiled bundle '{}' not found", schema_id);
-    }
+    // Verify the bundle exists AND passes integrity checks BEFORE moving
+    // the pointer — a corrupt or mismatched bundle can never become active,
+    // and a failed activation leaves the previous catalogue untouched.
+    let _verified = read_verified_bundle(library, schema_id)?;
     let dir = compiled_dir(library);
     std::fs::create_dir_all(&dir)?;
     let pointer = ActivePointer {
         schema_id: schema_id.to_string(),
     };
     let raw = serde_json::to_vec(&pointer)?;
-    let tmp = dir.join(".active.tmp");
+    let tmp = dir.join(format!(".active.{}.tmp", std::process::id()));
     std::fs::write(&tmp, raw)?;
     std::fs::rename(&tmp, active_pointer_path(library))?;
     refresh_compiled_index(library)?;
     Ok(())
 }
 
-/// Load the active compiled catalogue, if any.
+/// Load the active compiled catalogue, if any. A corrupt or tampered
+/// active bundle fails closed (error), never silently returns partial data.
 pub fn load_active_catalogue(library: &YangLibrary) -> Result<Option<CompiledCatalogue>> {
     let Some(schema_id) = load_active(library)? else {
         return Ok(None);
     };
-    let path = bundle_path(library, &schema_id);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = std::fs::read(&path)
-        .with_context(|| format!("failed to read compiled bundle '{}'", path.display()))?;
-    let catalogue: CompiledCatalogue =
-        serde_json::from_slice(&raw).context("invalid compiled catalogue JSON")?;
-    Ok(Some(catalogue))
+    read_verified_bundle(library, &schema_id).map(Some)
 }
 
 /// List retained compiled bundles (newest first).
@@ -424,12 +538,7 @@ pub fn search_active_paths(
 /// Load a specific compiled bundle by schema id (for inspection/rollback
 /// preview without activating).
 pub fn load_compiled(library: &YangLibrary, schema_id: &str) -> Result<CompiledCatalogue> {
-    let path = bundle_path(library, schema_id);
-    if !path.exists() {
-        bail!("compiled bundle '{}' not found", schema_id);
-    }
-    let raw = std::fs::read(&path)?;
-    serde_json::from_slice(&raw).context("invalid compiled catalogue JSON")
+    read_verified_bundle(library, schema_id)
 }
 
 /// Convenience: parse + compile directly from an in-memory module set

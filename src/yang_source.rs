@@ -25,7 +25,8 @@ pub struct YangSourceEntry {
     pub id: String,
     pub vendor: String,
     pub repo: String,
-    /// Exact commit SHA or tag. Required — HEAD is never implied.
+    /// Exact 40-hex commit SHA. Required — HEAD, branches and tags are
+    /// moving references and are rejected by manifest validation.
     pub pinned_ref: String,
     /// Platform/NOS applicability tags. `"*"` matches everything.
     #[serde(default)]
@@ -114,13 +115,18 @@ fn validate_manifest(manifest: &YangSourceManifest) -> Result<()> {
             );
         }
         let reference = source.pinned_ref.trim();
-        if reference.is_empty()
-            || reference == "HEAD"
-            || reference == "main"
-            || reference == "master"
-        {
+        // pinned_ref MUST be a full 40-hex commit SHA. Branch names and tags
+        // are moving references: a tag can be re-pointed and a branch
+        // advances, so neither can serve as an immutable pin. (Tags were
+        // previously tolerated; production manifests use SHAs exclusively.)
+        let is_commit_sha = reference.len() == 40
+            && reference
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if !is_commit_sha {
             bail!(
-                "YANG source '{}' must pin an exact ref (commit SHA or tag), not '{}'",
+                "YANG source '{}' pinned_ref must be a full 40-hex commit SHA (got '{}'); \
+                 branches and tags are moving references and are not accepted",
                 source.id,
                 reference
             );

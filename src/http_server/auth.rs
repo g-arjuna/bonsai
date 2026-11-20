@@ -941,6 +941,10 @@ fn required_role(method: &str, path: &str) -> Role {
         || path == "/api/db/purge"
         || path == "/api/db/backup"
         || path == "/api/restart"
+        // Schema compilation/activation mutates the authoritative catalogue
+        // — administrative only, never generic operator.
+        || path == "/api/yang/compile"
+        || path == "/api/yang/activate"
     {
         return Role::Admin;
     }
@@ -2026,5 +2030,44 @@ pub(super) async fn ldap_test_handler(
             serde_json::json!({"success": true, "message": "LDAP bind successful"}),
         )),
         Err(e) => Ok(Json(serde_json::json!({"success": false, "error": e}))),
+    }
+}
+
+#[cfg(test)]
+mod rbac_tests {
+    use super::{Role, required_role};
+
+    #[test]
+    fn yang_mutations_require_admin() {
+        for path in ["/api/yang/compile", "/api/yang/activate"] {
+            for method in ["POST", "PUT", "DELETE"] {
+                assert_eq!(
+                    required_role(method, path),
+                    Role::Admin,
+                    "{method} {path} must require Admin"
+                );
+            }
+        }
+        // Operator and Viewer must not satisfy the requirement.
+        assert!(Role::Operator < Role::Admin);
+        assert!(Role::Viewer < Role::Admin);
+        assert!(Role::ApiReadonly < Role::Admin);
+    }
+
+    #[test]
+    fn yang_reads_stay_read_only() {
+        for path in [
+            "/api/yang/modules",
+            "/api/yang/search",
+            "/api/yang/sources",
+            "/api/yang/compiled",
+            "/api/yang/paths",
+        ] {
+            assert_eq!(
+                required_role("GET", path),
+                Role::Viewer,
+                "GET {path} must remain viewer-readable"
+            );
+        }
     }
 }

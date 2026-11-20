@@ -2867,10 +2867,9 @@ pub async fn run_lifecycle_forwarder(
         loop {
             // Pick the next outbound event: resend backlog first so
             // healed older evidence never overtakes newer events.
-            let next = loop {
-                if let Some(ev) = resend.pop_front() {
-                    break Some(ev);
-                }
+            let next = if let Some(ev) = resend.pop_front() {
+                Some(ev)
+            } else {
                 tokio::select! {
                     _ = shutdown.changed() => return Ok(()),
                     _ = done_rx.recv() => {
@@ -2888,7 +2887,7 @@ pub async fn run_lifecycle_forwarder(
                         resend.extend(resend_index.drain());
                         continue 'outer;
                     }
-                    ev = rx.recv() => break ev,
+                    ev = rx.recv() => ev,
                 }
             };
             match next {

@@ -1063,6 +1063,7 @@ pub(super) async fn run_yang_cli(command: YangCliCommand) -> Result<()> {
                     license: String::new(),
                     platforms: Vec::new(),
                     pinned_ref: String::new(),
+                    source_id: String::new(),
                     filename_prefixes: Vec::new(),
                 },
                 catalogue_dir,
@@ -1127,9 +1128,18 @@ pub(super) async fn run_yang_cli(command: YangCliCommand) -> Result<()> {
             for d in catalogue.diagnostics.iter().take(20) {
                 println!("  diagnostic: {d}");
             }
-            if activate {
+            // Only a `complete` catalogue may be activated implicitly;
+            // partial catalogues stay available for inspection but are
+            // never promoted to active state without an explicit
+            // `bonsai yang activate <id>` decision.
+            if activate && catalogue.status == "complete" {
                 bonsai::yang_schema::activate_compiled(&library, &catalogue.schema_id)?;
                 println!("activated {}", catalogue.schema_id);
+            } else if activate {
+                println!(
+                    "not activated: catalogue status is '{}' (partial catalogues require explicit `bonsai yang activate`)",
+                    catalogue.status
+                );
             } else {
                 println!(
                     "bundle retained (not activated); use `bonsai yang activate {}`",

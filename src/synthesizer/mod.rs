@@ -770,6 +770,8 @@ mod tests {
                 license: String::new(),
                 platforms: Vec::new(),
                 pinned_ref: String::new(),
+                source_id: String::new(),
+                approved: false,
                 relative_path: "modules/openconfig-interfaces@2024-01-01.yang".to_string(),
                 checksum_sha256: "abc".to_string(),
                 imported_at_ns: 1,

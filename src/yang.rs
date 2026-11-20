@@ -45,6 +45,15 @@ pub struct YangModuleRecord {
     pub platforms: Vec<String>,
     #[serde(default)]
     pub pinned_ref: String,
+    /// Pinned source manifest ID this record was imported from ("" for
+    /// ad-hoc directory imports). Provenance for M6C applicability.
+    #[serde(default)]
+    pub source_id: String,
+    /// Operator-approved content for a same name+revision conflict group.
+    /// Approval is the ONLY way effective selection changes silently
+    /// impossible: approved content always wins, deterministically.
+    #[serde(default)]
+    pub approved: bool,
     pub imported_at_ns: i64,
 }
 
@@ -103,6 +112,9 @@ pub struct YangImportOptions {
     pub license: String,
     pub platforms: Vec<String>,
     pub pinned_ref: String,
+    /// Pinned source manifest ID (from `YangSource.id`); empty for
+    /// ad-hoc directory imports.
+    pub source_id: String,
     /// When non-empty, only files whose name starts with one of these
     /// prefixes are imported.
     pub filename_prefixes: Vec<String>,
@@ -302,6 +314,8 @@ impl YangLibrary {
                 license: options.license.clone(),
                 platforms: options.platforms.clone(),
                 pinned_ref: options.pinned_ref.clone(),
+                source_id: options.source_id.clone(),
+                approved: false,
                 relative_path,
                 checksum_sha256,
                 imported_at_ns: now_ns(),
@@ -426,6 +440,7 @@ impl YangLibrary {
                                 license: source.license.clone(),
                                 platforms: source.platforms.clone(),
                                 pinned_ref: source.pinned_ref.clone(),
+                                source_id: source.id.clone(),
                                 filename_prefixes: source.prefixes.clone(),
                             },
                             catalogue_dir,
@@ -467,11 +482,48 @@ impl YangLibrary {
     }
 
     /// Deterministic active-module view: for each (name, revision) content
-    /// conflict, select the winner by trust rank, then newest import, then
-    /// checksum. Previously stored content is never removed.
+    /// conflict, select the winner by approval, then trust rank, then
+    /// lowest checksum (stable — new imports never silently displace).
+    /// Previously stored content is never removed.
     pub fn active_modules(&self) -> Result<Vec<YangModuleRecord>> {
         let state = self.load_state()?;
         Ok(select_active_records(&state.modules))
+    }
+
+    /// Explicitly approve one stored record as the effective content for
+    /// its (module_name, revision) conflict group. This is the auditable
+    /// promotion path: selection changes only through this call (or a
+    /// higher-trust import), never implicitly on re-import.
+    pub fn approve_module(
+        &self,
+        module_name: &str,
+        revision: &str,
+        checksum_sha256: &str,
+    ) -> Result<()> {
+        let mut state = self.load_state()?;
+        let mut found = false;
+        for module in &mut state.modules {
+            if module.module_name == module_name
+                && module.revision == revision
+                && module.checksum_sha256 == checksum_sha256
+            {
+                module.approved = true;
+                found = true;
+            } else if module.module_name == module_name && module.revision == revision {
+                // Approval is exclusive within a conflict group.
+                module.approved = false;
+            }
+        }
+        if !found {
+            bail!(
+                "no stored module record for {}@{} with checksum {}",
+                module_name,
+                revision,
+                checksum_sha256
+            );
+        }
+        self.save_state(&state)?;
+        Ok(())
     }
 
     pub fn search(&self, query: &str) -> Result<YangSearchResult> {
@@ -634,6 +686,7 @@ impl YangLibrary {
                 license: String::new(),
                 platforms: Vec::new(),
                 pinned_ref: String::new(),
+                source_id: String::new(),
                 filename_prefixes: Vec::new(),
             },
             catalogue_dir,
@@ -662,8 +715,16 @@ impl YangLibrary {
     fn save_state(&self, state: &YangLibraryState) -> Result<()> {
         let path = self.root.join(INDEX_FILE);
         let raw = serde_json::to_vec_pretty(state).context("failed to serialize YANG index")?;
-        std::fs::write(&path, raw)
-            .with_context(|| format!("failed to write YANG index '{}'", path.display()))
+        // Atomic replace: a crash mid-write must never leave a torn index
+        // that load_state would fail on. Unique tmp name avoids interleaved
+        // writes between concurrent savers in this process.
+        let tmp = self
+            .root
+            .join(format!(".{}.{}.tmp", INDEX_FILE, std::process::id()));
+        std::fs::write(&tmp, raw)
+            .with_context(|| format!("failed to write YANG index tmp '{}'", tmp.display()))?;
+        std::fs::rename(&tmp, &path)
+            .with_context(|| format!("failed to replace YANG index '{}'", path.display()))
     }
 }
 
@@ -865,7 +926,11 @@ fn append_bytes(builder: &mut tar::Builder<File>, path: &str, bytes: &[u8]) -> R
         .with_context(|| format!("failed to append '{}' to YANG bundle", path))
 }
 
-fn run_git<I, S>(cwd: Option<&Path>, args: I) -> Result<()>
+/// Bound on any single git subprocess during YANG sync. A hung or
+/// pathologically slow remote must not block the control plane forever.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn spawn_git<I, S>(cwd: Option<&Path>, args: I) -> Result<std::process::Child>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
@@ -875,11 +940,66 @@ where
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
-    let status = cmd.status().context("git is required for yang-sync")?;
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("git is required for yang-sync")
+}
+
+/// Wait for `child` up to GIT_TIMEOUT, killing it on expiry.
+fn wait_git(child: &mut std::process::Child) -> Result<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + GIT_TIMEOUT;
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(status),
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    bail!("git command timed out after {:?}", GIT_TIMEOUT);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+fn run_git<I, S>(cwd: Option<&Path>, args: I) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    use std::io::Read;
+    let mut child = spawn_git(cwd, args)?;
+    // Drain both pipes on threads so a chatty git (fetch progress) cannot
+    // deadlock on a full pipe buffer while we wait.
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = out_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = err_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let status = wait_git(&mut child)?;
+    let _ = out_thread.join();
+    let stderr = err_thread.join().unwrap_or_default();
     if status.success() {
         Ok(())
     } else {
-        bail!("git command failed with exit code {:?}", status.code())
+        bail!(
+            "git command failed ({}): {}",
+            status.code().map(|c| c.to_string()).unwrap_or_default(),
+            String::from_utf8_lossy(&stderr).trim()
+        )
     }
 }
 
@@ -888,19 +1008,32 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let mut cmd = Command::new("git");
-    cmd.args(args);
-    if let Some(cwd) = cwd {
-        cmd.current_dir(cwd);
+    use std::io::Read;
+    let mut child = spawn_git(cwd, args)?;
+    // Drain pipes concurrently-ish: read stderr after wait would deadlock on
+    // large output, so spawn a thread for stderr while we wait on stdout.
+    let mut stderr_pipe = child.stderr.take();
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let mut stdout = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_end(&mut stdout)
+            .context("failed to read git stdout")?;
     }
-    let output = cmd.output().context("git is required for yang-sync")?;
-    if !output.status.success() {
+    let status = wait_git(&mut child)?;
+    let stderr = stderr_thread.join().unwrap_or_default();
+    if !status.success() {
         bail!(
             "git command failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            String::from_utf8_lossy(&stderr).trim()
         );
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&stdout).trim().to_string())
 }
 
 /// Check out `repo` at exactly `pinned_ref` in `dir`, returning the resolved
@@ -908,10 +1041,27 @@ where
 /// moving default branch can never leak in. Re-running always lands on the
 /// pinned ref (idempotent).
 fn checkout_pinned(dir: &Path, repo: &str, pinned_ref: &str) -> Result<String> {
-    if !dir.exists() {
+    let cache_existed = dir.exists();
+    if !cache_existed {
         std::fs::create_dir_all(dir)?;
         run_git(Some(dir), ["init", "--quiet"])?;
         run_git(Some(dir), ["remote", "add", "origin", repo])?;
+    } else {
+        // C2: an existing cache directory must provably belong to THIS
+        // source's repository. A manifest change that repoints `repo` under
+        // an unchanged source id must never fetch content from an unrelated
+        // previously cached origin while recording the new repo as
+        // provenance — fail closed instead.
+        let origin = git_output(Some(dir), ["remote", "get-url", "origin"])
+            .with_context(|| format!("YANG cache '{}' has no origin remote", dir.display()))?;
+        if origin != repo {
+            bail!(
+                "YANG cache '{}' origin '{}' does not match source repo '{}' — refusing to reuse a foreign cache; remove the directory and re-sync",
+                dir.display(),
+                origin,
+                repo
+            );
+        }
     }
     // Fetch exactly the pinned object (GitHub allows fetching reachable SHAs
     // and tags). --depth 1 keeps the cache bounded. When the direct fetch
@@ -976,9 +1126,17 @@ pub fn trust_rank(trust: &str) -> u8 {
     }
 }
 
-/// Deterministic winner selection for same (module_name, revision) content
-/// conflicts: highest trust rank, then newest import, then lowest checksum
-/// for a stable total order. All records remain stored for rollback/audit.
+/// Deterministic winner selection for same (name, revision) content
+/// conflicts — an explicit, auditable promotion policy:
+///
+/// 1. Operator-approved records win (set via `approve_module`).
+/// 2. Highest trust rank.
+/// 3. Lowest checksum — content-addressed and STABLE: a newly imported
+///    equal-trust conflicting module can never silently displace the
+///    incumbent; changing the winner requires either higher trust or an
+///    explicit approval.
+///
+/// All records remain stored for rollback/audit.
 pub fn select_active_records(records: &[YangModuleRecord]) -> Vec<YangModuleRecord> {
     let mut groups: std::collections::BTreeMap<(String, String), Vec<&YangModuleRecord>> =
         std::collections::BTreeMap::new();
@@ -991,9 +1149,9 @@ pub fn select_active_records(records: &[YangModuleRecord]) -> Vec<YangModuleReco
     let mut out = Vec::new();
     for (_key, mut group) in groups {
         group.sort_by(|a, b| {
-            trust_rank(&b.trust)
-                .cmp(&trust_rank(&a.trust))
-                .then_with(|| b.imported_at_ns.cmp(&a.imported_at_ns))
+            b.approved
+                .cmp(&a.approved)
+                .then_with(|| trust_rank(&b.trust).cmp(&trust_rank(&a.trust)))
                 .then_with(|| a.checksum_sha256.cmp(&b.checksum_sha256))
         });
         out.push(group[0].clone());
@@ -1051,6 +1209,8 @@ mod tests {
                 license: String::new(),
                 platforms: Vec::new(),
                 pinned_ref: String::new(),
+                source_id: String::new(),
+                approved: false,
                 relative_path: "modules/openconfig-interfaces@2024-01-01.yang".to_string(),
                 checksum_sha256: "abc".to_string(),
                 imported_at_ns: 1,
@@ -1079,6 +1239,8 @@ mod tests {
                 license: String::new(),
                 platforms: Vec::new(),
                 pinned_ref: String::new(),
+                source_id: String::new(),
+                approved: false,
                 relative_path: "modules/openconfig-bgp@2024-01-01.yang".to_string(),
                 checksum_sha256: "abc".to_string(),
                 imported_at_ns: 1,

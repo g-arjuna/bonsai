@@ -123,7 +123,7 @@ fn lex(input: &str) -> Result<Vec<Tok>, String> {
                 }
                 toks.push(Tok::Str(s));
             }
-            '{' | '}' | ';' | '(' | ')' => {
+            '{' | '}' | ';' | '(' | ')' | '/' => {
                 toks.push(Tok::Punct(c));
                 i += 1;
             }
@@ -269,6 +269,10 @@ pub struct Refine {
     pub presence: Option<String>,
     pub min_elements: Option<u64>,
     pub max_elements: Option<u64>,
+    /// Keywords inside the refine body that are legal YANG but not
+    /// interpreted (uses, augment, must, when, type, if-feature, ...).
+    /// Compilation turns these into diagnostics.
+    pub unsupported: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -283,7 +287,17 @@ pub struct Deviation {
     pub description: Option<String>,
     pub reference: Option<String>,
     pub status: Option<String>,
+    /// `deviate add|delete|replace|not-supported` statements in this
+    /// deviation body. `has_block` records whether a `{ ... }` data-def
+    /// block followed the kind (contents are not interpreted).
+    pub deviates: Vec<Deviate>,
     pub children: Vec<Deviation>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Deviate {
+    pub kind: String,
+    pub has_block: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -429,32 +443,62 @@ impl Parser {
         }
     }
 
-    /// Node identifier target: bare `prefix:name` / `/a/b` path or a
-    /// quoted/concatenated string form used by vendor models.
+    /// Node identifier target: a schema-node identifier — bare
+    /// `prefix:name`, an absolute `/a/b/c` path, or quoted/`+`-concatenated
+    /// string forms used by vendor models. Segments may individually carry
+    /// `prefix:` qualifiers; the returned string preserves them verbatim
+    /// (including a leading `/`) for namespace-aware resolution.
     fn target_ident(&mut self) -> Result<String, String> {
         let mut out = String::new();
-        loop {
-            match self.peek().clone() {
-                Tok::Str(s) => {
-                    out.push_str(&s);
-                    self.pos += 1;
-                }
-                Tok::Ident(s) if s == "+" => {
-                    self.pos += 1;
-                }
-                Tok::Ident(s) => {
-                    out.push_str(&s);
-                    self.pos += 1;
-                    break;
-                }
-                _ => break,
+        if self.eat_punct('/') {
+            out.push('/');
+        }
+        // First segment is required.
+        match self.peek() {
+            Tok::Str(_) | Tok::Ident(_) => {}
+            other => {
+                return Err(format!("expected target identifier, found {:?}", other));
             }
         }
-        if out.trim().is_empty() {
-            return Err(format!(
-                "expected target identifier, found {:?}",
-                self.peek()
-            ));
+        loop {
+            // One segment: ident/string with optional '+'-joined parts.
+            match self.next() {
+                Tok::Str(s) => out.push_str(&s),
+                Tok::Ident(s) if s == "+" => {
+                    return Err("unexpected '+' at start of target segment".into());
+                }
+                Tok::Ident(s) => out.push_str(&s),
+                other => return Err(format!("expected target segment, found {:?}", other)),
+            }
+            while matches!(self.peek(), Tok::Ident(s) if s == "+") {
+                self.pos += 1;
+                match self.next() {
+                    Tok::Str(s) => out.push_str(&s),
+                    Tok::Ident(s) => out.push_str(&s),
+                    other => {
+                        return Err(format!("expected string after '+', found {:?}", other));
+                    }
+                }
+            }
+            if self.eat_punct('/') {
+                out.push('/');
+                // A trailing '/' with no following segment is malformed.
+                match self.peek() {
+                    Tok::Str(_) => {}
+                    Tok::Ident(s) if s != "+" => {}
+                    other => {
+                        return Err(format!(
+                            "expected target segment after '/', found {:?}",
+                            other
+                        ));
+                    }
+                }
+                continue;
+            }
+            break;
+        }
+        if out.trim().is_empty() || out == "/" {
+            return Err("empty target identifier".into());
         }
         Ok(out)
     }
@@ -473,8 +517,10 @@ impl Parser {
     }
 
     fn parse_module(&mut self) -> Result<Module, String> {
-        let mut module = Module::default();
-        module.yang_version = "1".to_string();
+        let mut module = Module {
+            yang_version: "1".to_string(),
+            ..Default::default()
+        };
         if self.eat_keyword("module") {
             module.is_submodule = false;
         } else if self.eat_keyword("submodule") {
@@ -490,7 +536,9 @@ impl Parser {
 
         loop {
             match self.peek().clone() {
-                Tok::Eof => break,
+                Tok::Eof => {
+                    return Err("unterminated module: unexpected end of input".into());
+                }
                 Tok::Punct('}') => {
                     self.pos += 1;
                     break;
@@ -657,6 +705,13 @@ impl Parser {
         // Revisions are conventionally newest-first; sort descending for
         // deterministic latest_revision().
         module.revisions.sort_by(|a, b| b.date.cmp(&a.date));
+        if !matches!(self.peek(), Tok::Eof) {
+            module.diagnostics.push(format!(
+                "unexpected token {:?} after module '{}' closing brace",
+                self.peek(),
+                module.name
+            ));
+        }
         Ok(module)
     }
 
@@ -732,11 +787,18 @@ impl Parser {
             status: None,
             if_features: Vec::new(),
         };
-        self.expect_punct('{')?;
-        self.depth += 1;
-        self.parse_feature_body(&mut f)?;
-        self.depth -= 1;
-        self.expect_punct('}')?;
+        // `feature name;` (bodiless) is legal YANG — body is optional.
+        if self.eat_punct('{') {
+            self.depth += 1;
+            if self.depth > MAX_NESTING_DEPTH {
+                return Err("maximum nesting depth exceeded".into());
+            }
+            self.parse_feature_body(&mut f)?;
+            self.depth -= 1;
+            self.expect_punct('}')?;
+        } else {
+            self.expect_punct(';')?;
+        }
         Ok(f)
     }
 
@@ -774,6 +836,9 @@ impl Parser {
         };
         self.expect_punct('{')?;
         self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            return Err("maximum nesting depth exceeded".into());
+        }
         loop {
             if self.at_punct('}') || matches!(self.peek(), Tok::Eof) {
                 break;
@@ -817,6 +882,9 @@ impl Parser {
         };
         self.expect_punct('{')?;
         self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            return Err("maximum nesting depth exceeded".into());
+        }
         loop {
             if self.at_punct('}') || matches!(self.peek(), Tok::Eof) {
                 break;
@@ -870,8 +938,13 @@ impl Parser {
             description: None,
             reference: None,
             status: None,
+            deviates: Vec::new(),
             children: Vec::new(),
         };
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            return Err("maximum nesting depth exceeded".into());
+        }
         loop {
             if self.at_punct('}') || matches!(self.peek(), Tok::Eof) {
                 break;
@@ -888,20 +961,48 @@ impl Parser {
             } else if self.eat_keyword("deviation") {
                 let child = self.parse_deviation()?;
                 d.children.push(child);
+            } else if self.eat_keyword("deviate") {
+                d.deviates.push(self.parse_deviate()?);
             } else {
                 self.skip_statement()?;
             }
         }
+        self.depth -= 1;
         self.expect_punct('}')?;
         Ok(d)
     }
 
+    /// `deviate <kind> [ { data-defs } ] ;` inside a deviation body.
+    /// The kind is recorded; block contents are consumed but not
+    /// interpreted (add/delete/replace semantics are partial — see
+    /// docs/YANG_CATALOGUE.md).
+    fn parse_deviate(&mut self) -> Result<Deviate, String> {
+        let kind = self.ident()?;
+        let has_block = self.eat_punct('{');
+        if has_block {
+            self.depth += 1;
+            if self.depth > MAX_NESTING_DEPTH {
+                return Err("maximum nesting depth exceeded".into());
+            }
+            self.skip_balanced()?;
+            self.depth -= 1;
+        }
+        // Both forms end with ';' — `deviate kind;` and `deviate kind {…};`.
+        self.expect_punct(';')?;
+        Ok(Deviate { kind, has_block })
+    }
+
     /// Parse statements until '}' or EOF. Does not consume the closing '}'.
+    /// Guarded against unbounded recursion via grouping/augment nesting.
     fn parse_stmt_list(&mut self) -> Result<Vec<Stmt>, String> {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            return Err("maximum nesting depth exceeded".into());
+        }
         let mut out = Vec::new();
         loop {
             match self.peek().clone() {
-                Tok::Punct('}') | Tok::Eof => return Ok(out),
+                Tok::Punct('}') | Tok::Eof => break,
                 Tok::Ident(kw) => {
                     self.bump_statement()?;
                     match kw.as_str() {
@@ -964,6 +1065,8 @@ impl Parser {
                 }
             }
         }
+        self.depth -= 1;
+        Ok(out)
     }
 
     /// Parse `name { node-body }` for a data-definition keyword already
@@ -1090,11 +1193,19 @@ impl Parser {
                         "key" => {
                             self.pos += 1;
                             // key-stmt argument is a space-separated list of
-                            // key leaf names in declaration order.
-                            for k in self.string()?.split_whitespace() {
+                            // key leaf names in declaration order; RFC 7950
+                            // quotes it, but tolerate the unquoted form.
+                            let arg = match self.peek() {
+                                Tok::Str(_) => {
+                                    let s = self.string()?;
+                                    self.expect_punct(';')?;
+                                    s
+                                }
+                                _ => self.raw_value_until_semi()?,
+                            };
+                            for k in arg.split_whitespace() {
                                 node.keys.push(k.to_string());
                             }
-                            self.expect_punct(';')?;
                         }
                         "presence" => {
                             self.pos += 1;
@@ -1224,6 +1335,9 @@ impl Parser {
         let braced = self.eat_punct('{');
         if braced {
             self.depth += 1;
+            if self.depth > MAX_NESTING_DEPTH {
+                return Err("maximum nesting depth exceeded".into());
+            }
             loop {
                 if self.at_punct('}') || matches!(self.peek(), Tok::Eof) {
                     break;
@@ -1330,6 +1444,9 @@ impl Parser {
             return Ok(uses);
         }
         self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            return Err("maximum nesting depth exceeded".into());
+        }
         loop {
             if self.at_punct('}') || matches!(self.peek(), Tok::Eof) {
                 break;
@@ -1373,6 +1490,16 @@ impl Parser {
                                     r.max_elements = Some(self.uint_value()?);
                                     self.expect_punct(';')?;
                                 } else {
+                                    // refine may legally contain uses,
+                                    // augment, must/when, type, if-feature
+                                    // etc. — record the ACTUAL keyword so
+                                    // compilation can diagnose rather than
+                                    // silently drop.
+                                    let bad = match self.peek() {
+                                        Tok::Ident(s) => s.clone(),
+                                        other => format!("{:?}", other),
+                                    };
+                                    r.unsupported.push(bad);
                                     self.skip_statement()?;
                                 }
                             }

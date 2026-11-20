@@ -27,6 +27,28 @@ fn module_input(name: &str) -> ModuleInput {
         source_ref: path.display().to_string(),
         trust: "trusted".to_string(),
         checksum_sha256: format!("fixture-{}", name),
+        approved: false,
+        license: String::new(),
+        platforms: Vec::new(),
+        pinned_ref: String::new(),
+        source_id: String::new(),
+    }
+}
+
+fn inline_input(name: &str, yang: &str) -> ModuleInput {
+    let module = bonsai::yang_schema::parse_module(yang).expect("inline module parses");
+    ModuleInput {
+        module,
+        vendor_scope: "test".to_string(),
+        source_kind: "inline".to_string(),
+        source_ref: name.to_string(),
+        trust: "trusted".to_string(),
+        checksum_sha256: format!("inline-{}", name),
+        approved: false,
+        license: String::new(),
+        platforms: Vec::new(),
+        pinned_ref: String::new(),
+        source_id: String::new(),
     }
 }
 
@@ -69,6 +91,7 @@ fn import_stores_content_addressed_immutable_modules() {
                 license: "test-license".to_string(),
                 platforms: vec!["test_platform".to_string()],
                 pinned_ref: "abc123".to_string(),
+                source_id: String::new(),
                 filename_prefixes: Vec::new(),
             },
             Path::new("config/path_profiles"),
@@ -122,6 +145,7 @@ fn conflicting_same_name_revision_never_overwrites_approved_content() {
                 license: String::new(),
                 platforms: vec![],
                 pinned_ref: String::new(),
+                source_id: String::new(),
                 filename_prefixes: vec![],
             },
             Path::new("config/path_profiles"),
@@ -147,6 +171,7 @@ fn conflicting_same_name_revision_never_overwrites_approved_content() {
                 license: String::new(),
                 platforms: vec![],
                 pinned_ref: String::new(),
+                source_id: String::new(),
                 filename_prefixes: vec![],
             },
             Path::new("config/path_profiles"),
@@ -204,6 +229,8 @@ fn active_selection_is_deterministic() {
             license: String::new(),
             platforms: vec![],
             pinned_ref: String::new(),
+            source_id: String::new(),
+            approved: false,
             relative_path: format!("modules/blobs/{}.yang", sum),
             checksum_sha256: sum.into(),
             imported_at_ns: ts,
@@ -217,8 +244,9 @@ fn active_selection_is_deterministic() {
     let active = select_active_records(&records);
     assert_eq!(active.len(), 2);
     let m = active.iter().find(|r| r.module_name == "m").unwrap();
-    // Same trust → newest import wins (ccc @300), deterministically.
-    assert_eq!(m.checksum_sha256, "ccc");
+    // Same trust → lowest checksum wins: stable and content-addressed, so a
+    // newly imported equal-trust conflict can never silently displace.
+    assert_eq!(m.checksum_sha256, "aaa");
 }
 
 #[test]
@@ -249,6 +277,7 @@ fn oversized_and_filtered_files_are_bounded() {
                 license: String::new(),
                 platforms: vec![],
                 pinned_ref: String::new(),
+                source_id: String::new(),
                 filename_prefixes: vec!["keep".into()],
             },
             Path::new("config/path_profiles"),
@@ -270,6 +299,7 @@ fn oversized_and_filtered_files_are_bounded() {
                 license: String::new(),
                 platforms: vec![],
                 pinned_ref: String::new(),
+                source_id: String::new(),
                 filename_prefixes: vec![],
             },
             Path::new("config/path_profiles"),
@@ -314,6 +344,8 @@ fn pinned_git_sync_is_reproducible_and_offline() {
         "init",
     ]);
     let sha = git(&["rev-parse", "HEAD"]);
+    // Tags are moving references and are rejected by manifest validation;
+    // the pin must be the commit SHA itself.
     git(&["tag", "pinned-v1"]);
     // Move HEAD forward with a second commit — sync must NOT pick this up.
     std::fs::write(
@@ -342,7 +374,7 @@ fn pinned_git_sync_is_reproducible_and_offline() {
 id = "pin-src"
 vendor = "testpin"
 repo = "file://{}"
-pinned_ref = "pinned-v1"
+pinned_ref = "{sha}"
 platforms = ["test_platform"]
 subdirs = ["models"]
 license = "test"
@@ -372,7 +404,9 @@ enabled = true
         .iter()
         .find(|m| m.module_name == "pin")
         .expect("pin module imported");
-    assert_eq!(pin.pinned_ref, "pinned-v1");
+    // pinned_ref is the immutable commit SHA from the manifest (tags and
+    // branches are rejected by validation).
+    assert_eq!(pin.pinned_ref, sha);
     assert_eq!(
         pin.source_ref,
         format!("file://{}@{}", remote.display(), sha)
@@ -435,6 +469,7 @@ fn bundle_roundtrip_verifies_content_identity() {
                 license: String::new(),
                 platforms: vec![],
                 pinned_ref: String::new(),
+                source_id: String::new(),
                 filename_prefixes: vec![],
             },
             Path::new("config/path_profiles"),
@@ -604,6 +639,7 @@ fn compile_persist_activate_search_and_rollback() {
                 license: String::new(),
                 platforms: vec![],
                 pinned_ref: String::new(),
+                source_id: String::new(),
                 filename_prefixes: vec![],
             },
             Path::new("config/path_profiles"),
@@ -653,7 +689,17 @@ fn compile_persist_activate_search_and_rollback() {
             .replace("interface MTU", "interface MTU v2"),
     )
     .unwrap();
-    library
+    // Conflicting same name+revision content never displaces the incumbent
+    // implicitly (stable-checksum selection); promotion requires approval.
+    let before = library.load_state().unwrap();
+    let incumbent = before
+        .modules
+        .iter()
+        .find(|m| m.module_name == "test-base")
+        .unwrap()
+        .checksum_sha256
+        .clone();
+    let report2 = library
         .import_directory(
             &src,
             &YangImportOptions {
@@ -664,9 +710,25 @@ fn compile_persist_activate_search_and_rollback() {
                 license: String::new(),
                 platforms: vec![],
                 pinned_ref: String::new(),
+                source_id: String::new(),
                 filename_prefixes: vec![],
             },
             Path::new("config/path_profiles"),
+        )
+        .unwrap();
+    assert!(report2.warnings.iter().any(|w| w.contains("conflicting")));
+    let challenger = library
+        .load_state()
+        .unwrap()
+        .modules
+        .into_iter()
+        .find(|m| m.module_name == "test-base" && m.checksum_sha256 != incumbent)
+        .expect("conflicting record stored");
+    library
+        .approve_module(
+            "test-base",
+            &challenger.revision,
+            &challenger.checksum_sha256,
         )
         .unwrap();
     let c2 = compile_library(&library, true).unwrap();
@@ -726,6 +788,11 @@ fn parses_and_compiles_real_openconfig_models() {
                 source_ref: path.display().to_string(),
                 trust: "trusted".into(),
                 checksum_sha256: String::new(),
+                approved: false,
+                license: String::new(),
+                platforms: Vec::new(),
+                pinned_ref: String::new(),
+                source_id: String::new(),
             });
         }
     }
@@ -870,17 +937,6 @@ fn parses_and_compiles_real_openconfig_models() {
 // ---------------------------------------------------------------------------
 // Lexer / string semantics (RFC 7950 §6.1.3)
 // ---------------------------------------------------------------------------
-
-fn inline_input(name: &str, yang: &str) -> ModuleInput {
-    ModuleInput {
-        module: bonsai::yang_schema::parse_module(yang).expect("inline module parses"),
-        vendor_scope: "test".into(),
-        source_kind: "fixture".into(),
-        source_ref: name.into(),
-        trust: "trusted".into(),
-        checksum_sha256: String::new(),
-    }
-}
 
 #[test]
 fn string_lexing_follows_rfc7950_613() {
@@ -1028,4 +1084,619 @@ fn catalogue_status_distinguishes_complete_partial_failed() {
     // No inputs -> failed.
     let empty = compile_parsed(Vec::new(), &CompileOptions::default());
     assert_eq!(empty.status, "failed");
+}
+
+// ---------------------------------------------------------------------------
+// Corrective review regressions (A/B/C/D findings)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn schema_identity_binds_semantics_not_just_names() {
+    let opts = CompileOptions::default();
+    let base = compile_parsed(vec![module_input("test-base")], &opts);
+    // Same input → same identity.
+    let again = compile_parsed(vec![module_input("test-base")], &opts);
+    assert_eq!(base.schema_id, again.schema_id);
+    // Adding a module changes identity.
+    let more = compile_parsed(
+        vec![module_input("test-base"), module_input("test-sub")],
+        &opts,
+    );
+    assert_ne!(base.schema_id, more.schema_id);
+    // A semantic change inside the module changes identity.
+    let changed_yang = r#"module solo {
+  yang-version "1.1";
+  namespace "urn:t:solo";
+  prefix s;
+  revision "2024-01-01";
+  container c { leaf x { type string; } }
+}
+"#;
+    let c1 = compile_parsed(vec![inline_input("solo", changed_yang)], &opts);
+    let c2_yang = changed_yang.replace("leaf x { type string; }", "leaf x { type uint32; }");
+    let c2 = compile_parsed(vec![inline_input("solo", &c2_yang)], &opts);
+    assert_ne!(
+        c1.schema_id, c2.schema_id,
+        "type change must change identity"
+    );
+    // Diagnostics participate: a pre-diagnostic changes status AND identity.
+    let with_diag = bonsai::yang_schema::compile_with_diagnostics(
+        vec![inline_input("solo", changed_yang)],
+        &opts,
+        vec!["pre-existing failure".to_string()],
+    );
+    assert_eq!(with_diag.status, "partial");
+    assert_ne!(c1.schema_id, with_diag.schema_id);
+}
+
+#[test]
+fn pre_compilation_diagnostics_never_yield_complete() {
+    // An unreadable/corrupt module record surfaces as a pre-diagnostic and
+    // must downgrade the catalogue — never silently `complete`.
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("good.yang"),
+        "module good { yang-version \"1\"; namespace \"urn:g\"; prefix g; revision \"2024-01-01\"; container c { leaf x { type string; } } }\n",
+    )
+    .unwrap();
+    library
+        .import_directory(
+            &src,
+            &YangImportOptions {
+                source_kind: "test".into(),
+                source_ref: "t".into(),
+                vendor_scope: "v".into(),
+                trust: "trusted".into(),
+                license: String::new(),
+                platforms: vec![],
+                pinned_ref: String::new(),
+                source_id: String::new(),
+                filename_prefixes: vec![],
+            },
+            Path::new("config/path_profiles"),
+        )
+        .unwrap();
+    // Corrupt the stored blob: record/content mismatch must be diagnosed.
+    let state = library.load_state().unwrap();
+    let rel = &state.modules[0].relative_path;
+    let blob = dir.path().join("lib").join(rel);
+    std::fs::write(&blob, "module different { }\n").unwrap();
+    let catalogue = compile_library(&library, true).unwrap();
+    assert_ne!(
+        catalogue.status, "complete",
+        "diags={:?}",
+        catalogue.diagnostics
+    );
+    assert!(
+        catalogue.diagnostics.iter().any(|d| d.contains("mismatch")
+            || d.contains("checksum")
+            || d.contains("parse failed")),
+        "expected record/content diagnostic, got {:?}",
+        catalogue.diagnostics
+    );
+}
+
+#[test]
+fn corrupt_or_traversal_bundle_ids_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("m.yang"),
+        "module m { yang-version \"1\"; namespace \"urn:m\"; prefix m; revision \"2024-01-01\"; container c { leaf x { type string; } } }\n",
+    )
+    .unwrap();
+    library
+        .import_directory(
+            &src,
+            &YangImportOptions {
+                source_kind: "test".into(),
+                source_ref: "t".into(),
+                vendor_scope: "v".into(),
+                trust: "trusted".into(),
+                license: String::new(),
+                platforms: vec![],
+                pinned_ref: String::new(),
+                source_id: String::new(),
+                filename_prefixes: vec![],
+            },
+            Path::new("config/path_profiles"),
+        )
+        .unwrap();
+    let cat = compile_library(&library, true).unwrap();
+    assert_eq!(cat.status, "complete");
+    activate_compiled(&library, &cat.schema_id).unwrap();
+
+    // Path traversal / invalid ids rejected.
+    for bad in ["../escape", "ysc-../../x", "not-an-id", "ysc-zzzz"] {
+        assert!(activate_compiled(&library, bad).is_err(), "accepted {bad}");
+    }
+
+    // Corrupt the active bundle → load fails closed.
+    let bundle = dir
+        .path()
+        .join("lib")
+        .join("compiled")
+        .join(format!("{}.json", cat.schema_id));
+    let mut v: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&bundle).unwrap()).unwrap();
+    v["paths"] = serde_json::json!([]);
+    std::fs::write(&bundle, serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(
+        load_active_catalogue(&library).is_err(),
+        "corrupt bundle accepted"
+    );
+}
+
+#[test]
+fn failed_activation_preserves_previous_catalogue() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    for (name, leaf) in [("a", "x"), ("b", "y")] {
+        std::fs::write(
+            src.join(format!("{name}.yang")),
+            format!("module {name} {{ yang-version \"1\"; namespace \"urn:{name}\"; prefix {name}; revision \"2024-01-01\"; container c {{ leaf {leaf} {{ type string; }} }} }}\n"),
+        )
+        .unwrap();
+    }
+    library
+        .import_directory(
+            &src,
+            &YangImportOptions {
+                source_kind: "test".into(),
+                source_ref: "t".into(),
+                vendor_scope: "v".into(),
+                trust: "trusted".into(),
+                license: String::new(),
+                platforms: vec![],
+                pinned_ref: String::new(),
+                source_id: String::new(),
+                filename_prefixes: vec![],
+            },
+            Path::new("config/path_profiles"),
+        )
+        .unwrap();
+    let c1 = compile_library(&library, true).unwrap();
+    activate_compiled(&library, &c1.schema_id).unwrap();
+
+    // Remove module b → different (still complete? no—fewer modules, still
+    // complete) catalogue; activate fails only for bogus id.
+    assert!(activate_compiled(&library, "ysc-00000000000000000000000000000000").is_err());
+    let active = load_active_catalogue(&library).unwrap().unwrap();
+    assert_eq!(
+        active.schema_id, c1.schema_id,
+        "failed activation disturbed active"
+    );
+}
+
+#[test]
+fn parent_if_feature_gates_descendants() {
+    let yang = r#"module featgate {
+  yang-version "1.1";
+  namespace "urn:t:fg";
+  prefix fg;
+  revision "2024-01-01";
+  feature gated;
+  container parent {
+    if-feature fg:gated;
+    leaf child { type string; }
+    list items {
+      key name;
+      leaf name { type string; }
+      leaf inner { type uint32; }
+    }
+  }
+  container open { leaf free { type string; } }
+}
+"#;
+    let cat = compile_parsed(
+        vec![inline_input("featgate", yang)],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    for p in [
+        "/parent",
+        "/parent/child",
+        "/parent/items[name]",
+        "/parent/items[name]/inner",
+    ] {
+        let e = find_path(&cat, p).unwrap_or_else(|| panic!("missing {}", p));
+        assert!(
+            e.required_features.iter().any(|f| f.contains("gated")),
+            "{} missing inherited gate: {:?}",
+            p,
+            e.required_features
+        );
+    }
+    let open = find_path(&cat, "/open/free").unwrap();
+    assert!(open.required_features.is_empty());
+    // Boolean expression canonicalization: 'gated and gated' stays an expr,
+    // not a bogus feature name.
+    let yang2 = yang.replace(
+        "if-feature fg:gated;",
+        "if-feature \"fg:gated and fg:gated\";",
+    );
+    let cat2 = compile_parsed(
+        vec![inline_input("featgate", &yang2)],
+        &CompileOptions::default(),
+    );
+    let e = find_path(&cat2, "/parent/child").unwrap();
+    assert!(
+        e.required_features.iter().any(|f| f.contains(" and ")),
+        "boolean expr not preserved: {:?}",
+        e.required_features
+    );
+    // filter_by_features evaluates the expression.
+    let enabled: std::collections::BTreeSet<String> =
+        ["fg:gated".to_string()].into_iter().collect();
+    assert_eq!(
+        filter_by_features(&cat2.paths, &enabled).len(),
+        cat2.paths.len()
+    );
+    let none: std::collections::BTreeSet<String> = Default::default();
+    let gated_out = filter_by_features(&cat2.paths, &none);
+    assert!(gated_out.iter().all(|e| e.path.starts_with("/open")));
+}
+
+#[test]
+fn namespace_qualified_augment_targets_correct_module() {
+    // Two modules expose identically named roots; a prefixed augment must
+    // hit the module its prefix resolves to, not first local-name match.
+    let mod_a = r#"module moda {
+  yang-version "1.1";
+  namespace "urn:t:a";
+  prefix ma;
+  revision "2024-01-01";
+  container system { leaf a { type string; } }
+}
+"#;
+    let mod_b = r#"module modb {
+  yang-version "1.1";
+  namespace "urn:t:b";
+  prefix mb;
+  revision "2024-01-01";
+  container system { leaf b { type string; } }
+}
+"#;
+    let aug = r#"module augm {
+  yang-version "1.1";
+  namespace "urn:t:aug";
+  prefix ag;
+  revision "2024-01-01";
+  import moda { prefix ma; }
+  import modb { prefix mb; }
+  augment "/ma:system" { leaf only-a { type string; } }
+  augment "/mb:system" { leaf only-b { type string; } }
+}
+"#;
+    let cat = compile_parsed(
+        vec![
+            inline_input("moda", mod_a),
+            inline_input("modb", mod_b),
+            inline_input("augm", aug),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    let a_sys = cat
+        .paths
+        .iter()
+        .find(|p| p.module == "moda" && p.path == "/system")
+        .unwrap();
+    let _ = a_sys;
+    // Augmented leaves carry augment provenance: they are declared by
+    // `augm`, emitted under the target module's tree.
+    assert!(
+        cat.paths
+            .iter()
+            .any(|p| p.path == "/system/only-a" && p.module == "augm")
+    );
+    assert!(
+        cat.paths
+            .iter()
+            .any(|p| p.path == "/system/only-b" && p.module == "augm")
+    );
+    assert!(
+        !cat.paths
+            .iter()
+            .any(|p| p.path == "/system/only-a" && p.module == "moda" && p.module_prefix == "ma")
+    );
+}
+
+#[test]
+fn ambiguous_unprefixed_target_is_diagnosed() {
+    let mod_a = r#"module moda2 {
+  yang-version "1.1";
+  namespace "urn:t:a2";
+  prefix ma;
+  revision "2024-01-01";
+  container dup { leaf a { type string; } }
+}
+"#;
+    let mod_b = r#"module modb2 {
+  yang-version "1.1";
+  namespace "urn:t:b2";
+  prefix mb;
+  revision "2024-01-01";
+  container dup { leaf b { type string; } }
+}
+"#;
+    let aug = r#"module augm2 {
+  yang-version "1.1";
+  namespace "urn:t:aug2";
+  prefix ag;
+  revision "2024-01-01";
+  import moda2 { prefix ma; }
+  import modb2 { prefix mb; }
+  augment "/dup" { leaf x { type string; } }
+}
+"#;
+    let cat = compile_parsed(
+        vec![
+            inline_input("moda2", mod_a),
+            inline_input("modb2", mod_b),
+            inline_input("augm2", aug),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "partial");
+    assert!(
+        cat.diagnostics.iter().any(|d| d.contains("ambiguous")),
+        "expected ambiguity diagnostic, got {:?}",
+        cat.diagnostics
+    );
+}
+
+#[test]
+fn deviate_not_supported_prunes_node() {
+    let base = r#"module dbase {
+  yang-version "1.1";
+  namespace "urn:t:db";
+  prefix db;
+  revision "2024-01-01";
+  container c {
+    leaf keep { type string; }
+    leaf drop { type string; }
+  }
+}
+"#;
+    let dev = r#"module ddev {
+  yang-version "1.1";
+  namespace "urn:t:dd";
+  prefix dd;
+  revision "2024-01-01";
+  import dbase { prefix db; }
+  deviation "/db:c/drop" {
+    deviate not-supported;
+  }
+}
+"#;
+    let cat = compile_parsed(
+        vec![inline_input("dbase", base), inline_input("ddev", dev)],
+        &CompileOptions::default(),
+    );
+    assert!(cat.paths.iter().any(|p| p.path == "/c/keep"));
+    assert!(
+        !cat.paths.iter().any(|p| p.path == "/c/drop"),
+        "not-supported node must be pruned"
+    );
+}
+
+#[test]
+fn parser_rejects_unterminated_module_and_accepts_unquoted_keys() {
+    // Missing closing brace → hard parse error.
+    let truncated = "module trunc { yang-version \"1\"; namespace \"urn:t\"; prefix t;";
+    assert!(bonsai::yang_schema::parse_module(truncated).is_err());
+
+    // Unquoted multi-key `key a b;` parses as two keys.
+    let yang = r#"module keys {
+  yang-version "1.1";
+  namespace "urn:t:k";
+  prefix k;
+  revision "2024-01-01";
+  list pair {
+    key a b;
+    leaf a { type string; }
+    leaf b { type string; }
+  }
+}
+"#;
+    let cat = compile_parsed(vec![inline_input("keys", yang)], &CompileOptions::default());
+    let e = find_path(&cat, "/pair[a][b]").unwrap_or_else(|| {
+        panic!(
+            "status={} diags={:?} paths={:?}",
+            cat.status,
+            cat.diagnostics,
+            cat.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(e.keys, vec!["a".to_string(), "b".to_string()]);
+}
+
+#[test]
+fn slash_bearing_augment_target_parses() {
+    // Absolute path target beginning with '/'.
+    let base = r#"module sbase {
+  yang-version "1.1";
+  namespace "urn:t:sb";
+  prefix sb;
+  revision "2024-01-01";
+  container c { leaf x { type string; } }
+}
+"#;
+    let aug = r#"module saug {
+  yang-version "1.1";
+  namespace "urn:t:sa";
+  prefix sa;
+  revision "2024-01-01";
+  import sbase { prefix sb; }
+  augment "/sb:c" { leaf added { type string; } }
+}
+"#;
+    let cat = compile_parsed(
+        vec![inline_input("sbase", base), inline_input("saug", aug)],
+        &CompileOptions::default(),
+    );
+    assert!(
+        cat.paths.iter().any(|p| p.path == "/c/added"),
+        "diags={:?}",
+        cat.diagnostics
+    );
+}
+
+#[test]
+fn unsupported_refine_semantics_are_diagnosed() {
+    let base = r#"module rbase {
+  yang-version "1.1";
+  namespace "urn:t:rb";
+  prefix rb;
+  revision "2024-01-01";
+  grouping g {
+    leaf f { type string; mandatory true; }
+  }
+  container c { uses g; }
+}
+"#;
+    let refined = r#"module rref {
+  yang-version "1.1";
+  namespace "urn:t:rr";
+  prefix rr;
+  revision "2024-01-01";
+  import rbase { prefix rb; }
+  container top {
+    uses rb:g {
+      refine f {
+        mandatory false;
+        must "custom-must";
+      }
+    }
+  }
+}
+"#;
+    let cat = compile_parsed(
+        vec![inline_input("rbase", base), inline_input("rref", refined)],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "partial", "diags={:?}", cat.diagnostics);
+    assert!(
+        cat.diagnostics
+            .iter()
+            .any(|d| d.contains("refine") && d.contains("must")),
+        "expected unsupported-refine diagnostic, got {:?}",
+        cat.diagnostics
+    );
+    // Supported refine still applied: mandatory false on /top/f.
+    let e = find_path(&cat, "/top/f").unwrap();
+    assert!(!e.mandatory);
+}
+
+#[test]
+fn deep_nesting_is_bounded() {
+    // Pathological nesting must error, not overflow the stack.
+    let mut yang = String::from(
+        "module deep { yang-version \"1\"; namespace \"urn:t:d\"; prefix d; revision \"2024-01-01\";\n",
+    );
+    for i in 0..500 {
+        yang.push_str(&format!("container n{} {{\n", i));
+    }
+    yang.push_str("leaf x { type string; }\n");
+    for _ in 0..500 {
+        yang.push_str("}\n");
+    }
+    yang.push_str("}\n");
+    // Either parse fails or compile reports depth diagnostics — never panic.
+    match bonsai::yang_schema::parse_module(&yang) {
+        Ok(m) => {
+            let cat = compile_parsed(
+                vec![ModuleInput {
+                    module: m,
+                    vendor_scope: "t".into(),
+                    source_kind: "t".into(),
+                    source_ref: "deep".into(),
+                    trust: "trusted".into(),
+                    checksum_sha256: String::new(),
+                    approved: false,
+                    license: String::new(),
+                    platforms: vec![],
+                    pinned_ref: String::new(),
+                    source_id: String::new(),
+                }],
+                &CompileOptions::default(),
+            );
+            assert_ne!(cat.status, "complete");
+        }
+        Err(_) => {}
+    }
+}
+
+#[test]
+fn conflict_promotion_requires_explicit_approval() {
+    // Equal trust, different content, later import: incumbent (lowest
+    // checksum) must NOT be silently displaced.
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let opts = |refname: &str| YangImportOptions {
+        source_kind: "test".into(),
+        source_ref: refname.into(),
+        vendor_scope: "v".into(),
+        trust: "trusted".into(),
+        license: String::new(),
+        platforms: vec![],
+        pinned_ref: String::new(),
+        source_id: String::new(),
+        filename_prefixes: vec![],
+    };
+    let src1 = dir.path().join("s1");
+    let src2 = dir.path().join("s2");
+    std::fs::create_dir_all(&src1).unwrap();
+    std::fs::create_dir_all(&src2).unwrap();
+    std::fs::write(
+        src1.join("dup.yang"),
+        "module dup { yang-version \"1\"; namespace \"urn:d1\"; prefix d; revision \"2024-01-01\"; container a { leaf x { type string; } } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src2.join("dup.yang"),
+        "module dup { yang-version \"1\"; namespace \"urn:d2\"; prefix d; revision \"2024-01-01\"; container b { leaf y { type uint32; } } }\n",
+    )
+    .unwrap();
+    library
+        .import_directory(&src1, &opts("one"), Path::new("config/path_profiles"))
+        .unwrap();
+    library
+        .import_directory(&src2, &opts("two"), Path::new("config/path_profiles"))
+        .unwrap();
+    let state = library.load_state().unwrap();
+    let dups: Vec<_> = state
+        .modules
+        .iter()
+        .filter(|m| m.module_name == "dup")
+        .collect();
+    assert_eq!(dups.len(), 2);
+    // Winner is deterministic: lowest checksum among equal trust.
+    let active = library.active_modules().unwrap();
+    let winner = active.iter().find(|m| m.module_name == "dup").unwrap();
+    let expected = dups
+        .iter()
+        .min_by(|a, b| a.checksum_sha256.cmp(&b.checksum_sha256))
+        .unwrap();
+    assert_eq!(winner.checksum_sha256, expected.checksum_sha256);
+    // Explicit approval promotes the OTHER record.
+    let other = dups
+        .iter()
+        .find(|m| m.checksum_sha256 != winner.checksum_sha256)
+        .unwrap();
+    library
+        .approve_module("dup", &other.revision, &other.checksum_sha256)
+        .unwrap();
+    let active2 = library.active_modules().unwrap();
+    let winner2 = active2.iter().find(|m| m.module_name == "dup").unwrap();
+    assert_eq!(winner2.checksum_sha256, other.checksum_sha256);
+    assert!(winner2.approved);
 }
