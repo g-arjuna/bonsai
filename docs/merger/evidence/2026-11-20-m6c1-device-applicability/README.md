@@ -61,6 +61,12 @@ Base: `origin/main` `50055bb7bc0cd960a8ac0876177cf3249c7f6a1a`.
 
 ## Gate-tested SHA / merge SHA
 
-- Gate-tested production SHA: recorded in the PR body and final
-  report (filled at gate completion).
+- Gate-tested production SHA: `6cc23cfb43be880d4fd820e5732c2cf05c7e8968`
+- Canonical trusted-local gate `scripts/ci/run-local.sh --trusted
+  --shared-target-dir /home/arjuna/Desktop/bonsai/target
+  --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native l0 l1 l2 l3`
+  with `CI_BUILD_JOBS=2`: **L0 PASS, L1 PASS, L2 PASS, L3 PASS**
+  (2026-11-20, ~3200 s wall). L2 manifest now includes
+  `yang_device_applicability` — 12/12 PASS inside the gate; lib
+  463/463; `yang_catalogue` 42/42; all M5/BN-022 suites green.
 - Merge SHA: recorded post-merge in the closure report.
