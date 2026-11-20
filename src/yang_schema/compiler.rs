@@ -1924,6 +1924,121 @@ fn feature_atom_enabled(atom: &str, enabled: &BTreeSet<String>) -> bool {
     false
 }
 
+/// Tri-state truth for feature evidence (M6C-1). `Unknown` is a real
+/// outcome: evidence that cannot prove a feature enabled or disabled
+/// must never be collapsed into either boolean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeatureTruth {
+    True,
+    False,
+    Unknown,
+}
+
+impl FeatureTruth {
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::False, _) | (_, Self::False) => Self::False,
+            (Self::True, Self::True) => Self::True,
+            _ => Self::Unknown,
+        }
+    }
+    fn or(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::True, _) | (_, Self::True) => Self::True,
+            (Self::False, Self::False) => Self::False,
+            _ => Self::Unknown,
+        }
+    }
+    fn not(self) -> Self {
+        match self {
+            Self::True => Self::False,
+            Self::False => Self::True,
+            Self::Unknown => Self::Unknown,
+        }
+    }
+}
+
+/// Evaluate one canonical if-feature expression with explicit unknown
+/// handling. `atom_truth` resolves a single feature atom (already in
+/// canonical `prefix:local` or bare form); returning `Unknown` for an
+/// atom propagates through the boolean expression per three-valued
+/// logic. Malformed expressions evaluate to `Unknown` — a gate we
+/// cannot parse must never create positive applicability.
+pub fn eval_feature_expr_tristate(
+    expr: &str,
+    atom_truth: &dyn Fn(&str) -> FeatureTruth,
+) -> FeatureTruth {
+    let tokens = lex_feature_expr(expr);
+    let mut pos = 0usize;
+    fn peek<'a>(t: &'a [Ftok], p: &mut usize) -> Option<&'a Ftok> {
+        t.get(*p)
+    }
+    fn parse_or(
+        t: &[Ftok],
+        p: &mut usize,
+        f: &dyn Fn(&str) -> FeatureTruth,
+    ) -> Option<FeatureTruth> {
+        let mut v = parse_and(t, p, f)?;
+        while matches!(peek(t, p), Some(Ftok::Op("or"))) {
+            *p += 1;
+            let r = parse_and(t, p, f)?;
+            v = v.or(r);
+        }
+        Some(v)
+    }
+    fn parse_and(
+        t: &[Ftok],
+        p: &mut usize,
+        f: &dyn Fn(&str) -> FeatureTruth,
+    ) -> Option<FeatureTruth> {
+        let mut v = parse_not(t, p, f)?;
+        while matches!(peek(t, p), Some(Ftok::Op("and"))) {
+            *p += 1;
+            let r = parse_not(t, p, f)?;
+            v = v.and(r);
+        }
+        Some(v)
+    }
+    fn parse_not(
+        t: &[Ftok],
+        p: &mut usize,
+        f: &dyn Fn(&str) -> FeatureTruth,
+    ) -> Option<FeatureTruth> {
+        if matches!(peek(t, p), Some(Ftok::Op("not"))) {
+            *p += 1;
+            return Some(parse_not(t, p, f)?.not());
+        }
+        parse_primary(t, p, f)
+    }
+    fn parse_primary(
+        t: &[Ftok],
+        p: &mut usize,
+        f: &dyn Fn(&str) -> FeatureTruth,
+    ) -> Option<FeatureTruth> {
+        match t.get(*p)? {
+            Ftok::LParen => {
+                *p += 1;
+                let v = parse_or(t, p, f)?;
+                if matches!(t.get(*p), Some(Ftok::RParen)) {
+                    *p += 1;
+                    Some(v)
+                } else {
+                    None
+                }
+            }
+            Ftok::Feature(name) => {
+                *p += 1;
+                Some(f(name))
+            }
+            _ => None,
+        }
+    }
+    match parse_or(&tokens, &mut pos, atom_truth) {
+        Some(v) if pos == tokens.len() => v,
+        _ => FeatureTruth::Unknown,
+    }
+}
+
 /// Return path entries whose required feature expressions are all satisfied
 /// by `enabled`. Expressions with unparseable content fail closed (entry
 /// excluded) — a gate we cannot evaluate must not silently pass.

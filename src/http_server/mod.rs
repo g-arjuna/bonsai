@@ -83,6 +83,7 @@ use device::{
     device_detail_handler, device_enrichment_conflicts_handler, device_enrichment_handler,
     device_gnmi_readiness_handler, device_optics_handler, device_recommendations_handler,
     device_reparse_handler, device_sensors_handler, device_streaming_readiness_handler,
+    device_yang_applicability_handler, device_yang_applicability_refresh_handler,
     enrichment_audit_handler, enrichment_list_handler, enrichment_remove_handler,
     enrichment_run_handler, enrichment_test_handler, enrichment_upsert_handler,
     netbox_import_handler, profiles_handler, save_custom_profile_handler, yang_activate_handler,
@@ -1861,6 +1862,14 @@ fn device_routes() -> Router<AppState> {
         .route(
             "/api/devices/{address}/config-history",
             get(device_config_history_handler),
+        )
+        .route(
+            "/api/devices/{address}/yang-applicability",
+            get(device_yang_applicability_handler),
+        )
+        .route(
+            "/api/devices/{address}/yang-applicability/refresh",
+            post(device_yang_applicability_refresh_handler),
         )
         .route(
             "/api/devices/{address}/reparse",

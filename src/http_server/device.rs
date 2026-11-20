@@ -1095,6 +1095,237 @@ pub(super) async fn yang_paths_handler(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     Ok(Json(YangPathsResponse { result }))
 }
+
+// ── M6C-1 device applicability ─────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub(super) struct YangApplicabilityParams {
+    /// Filter paths by status (applicable|candidate|not_applicable|
+    /// unknown|stale|conflicted).
+    status: Option<String>,
+    /// Restrict to one module name.
+    module: Option<String>,
+    /// Restrict to one schema kind (container|list|leaf|...).
+    kind: Option<String>,
+    /// Page size for path results (default 500, max 5000).
+    limit: Option<usize>,
+    /// Page offset for path results.
+    offset: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub(super) struct YangApplicabilityResponse {
+    address: String,
+    /// Persisted snapshot view with computed freshness; `null` when no
+    /// refresh has ever run for this device.
+    snapshot: Option<crate::yang_applicability::ApplicabilitySnapshotView>,
+    /// Filtered/paginated path-level results.
+    paths: Vec<crate::yang_schema::applicability::PathResult>,
+    /// Total path results matching the filters (before pagination).
+    paths_matching: usize,
+    /// Module-level results (bounded by the resolver).
+    modules: Vec<crate::yang_schema::applicability::ModuleResult>,
+}
+
+#[derive(Serialize)]
+pub(super) struct YangApplicabilityRefreshResponse {
+    snapshot_id: i64,
+    device_key: String,
+    overall_status: String,
+    outcome: String,
+    schema_id: Option<String>,
+    content_id: Option<String>,
+    datastore: Option<String>,
+    evidence_fingerprint: String,
+    paths_total: usize,
+    modules_total: usize,
+    evaluated_at_ns: i64,
+    error: Option<String>,
+}
+
+/// GET — read the persisted applicability snapshot. Never connects to
+/// the device; freshness is computed against the current active
+/// catalogue and evidence age policy.
+pub(super) async fn device_yang_applicability_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    Query(params): Query<YangApplicabilityParams>,
+) -> Result<Json<YangApplicabilityResponse>, (StatusCode, String)> {
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+    let store = state.registry.sqlite_store().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "applicability store unavailable".to_string(),
+    ))?;
+    let (lib, cache, key) = yang_roots(&state);
+    let library = YangLibrary::open(
+        std::path::Path::new(&lib),
+        std::path::Path::new(&cache),
+        &key,
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let now_ns = crate::graph::common::now_ns();
+    let view = crate::yang_applicability::load_snapshot_view(&store, &library, &target, now_ns)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let (paths, paths_matching, modules) = match &view {
+        Some(v) => {
+            let mut filtered: Vec<_> = v
+                .snapshot
+                .result
+                .paths
+                .iter()
+                .filter(|p| {
+                    params
+                        .status
+                        .as_deref()
+                        .is_none_or(|s| p.status.as_str() == s)
+                        && params.module.as_deref().is_none_or(|m| p.module == m)
+                        && params.kind.as_deref().is_none_or(|k| p.kind == k)
+                })
+                .cloned()
+                .collect();
+            let matching = filtered.len();
+            let offset = params.offset.unwrap_or(0);
+            let limit = params.limit.unwrap_or(500).min(5000);
+            let page: Vec<_> = filtered
+                .drain(offset.min(filtered.len())..)
+                .take(limit)
+                .collect();
+            let modules = v
+                .snapshot
+                .result
+                .modules
+                .iter()
+                .filter(|m| params.module.as_deref().is_none_or(|mm| m.name == mm))
+                .cloned()
+                .collect();
+            (page, matching, modules)
+        }
+        None => (Vec::new(), 0, Vec::new()),
+    };
+
+    Ok(Json(YangApplicabilityResponse {
+        address,
+        snapshot: view,
+        paths,
+        paths_matching,
+        modules,
+    }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct YangApplicabilityRefreshBody {
+    /// Datastore to evaluate (e.g. "ietf-datastores:running" or
+    /// "operational"); defaults to the unambiguous device default.
+    datastore: Option<String>,
+}
+
+/// POST — bounded refresh: capabilities + RFC 8525 probe + resolve +
+/// persist. Uses existing credential resolution and transport security;
+/// never writes to the device and never touches acquisition intent.
+pub(super) async fn device_yang_applicability_refresh_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    body: Option<Json<YangApplicabilityRefreshBody>>,
+) -> Result<Json<YangApplicabilityRefreshResponse>, (StatusCode, String)> {
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+    let store = state.registry.sqlite_store().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "applicability store unavailable".to_string(),
+    ))?;
+    let (lib, cache, key) = yang_roots(&state);
+    let library = YangLibrary::open(
+        std::path::Path::new(&lib),
+        std::path::Path::new(&cache),
+        &key,
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let resolved = resolve_target_credentials_for_discovery(&target, &state.credentials)
+        .map_err(|e| (StatusCode::FAILED_DEPENDENCY, e.to_string()))?;
+    let discovery_input = DiscoveryInput {
+        address: target.address.clone(),
+        username: resolved.as_ref().map(|creds| creds.username.clone()),
+        password: resolved.as_ref().map(|creds| creds.password.to_string()),
+        username_env: None,
+        password_env: None,
+        ca_cert_path: target.ca_cert.clone(),
+        tls_domain: target.tls_domain.clone(),
+        security: target.security,
+        client_cert_path: target.client_cert.clone(),
+        client_key_path: target.client_key.clone(),
+        role_hint: target.role.clone(),
+        environment_archetype: None,
+        vault: Some(std::sync::Arc::clone(&state.credentials)),
+    };
+
+    let identity_ambiguous = device_identity_ambiguous(&state, &target);
+
+    let snapshot = crate::yang_applicability::refresh_device_applicability(
+        &crate::yang_applicability::RefreshInput {
+            target: &target,
+            library: &library,
+            discovery_input: &discovery_input,
+            identity_ambiguous,
+            requested_datastore: body.and_then(|b| b.0.datastore),
+            store: &store,
+        },
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(YangApplicabilityRefreshResponse {
+        snapshot_id: snapshot.snapshot_id,
+        device_key: snapshot.device_key,
+        overall_status: snapshot.overall_status,
+        outcome: snapshot.outcome,
+        schema_id: snapshot.schema_id,
+        content_id: snapshot.content_id,
+        datastore: snapshot.datastore,
+        evidence_fingerprint: snapshot.evidence_fingerprint,
+        paths_total: snapshot.result.paths_total,
+        modules_total: snapshot.result.modules.len(),
+        evaluated_at_ns: snapshot.evaluated_at_ns,
+        error: snapshot.error,
+    }))
+}
+
+/// True when another registered device shares this device's canonical
+/// address or external identity — evidence must stay unmerged.
+fn device_identity_ambiguous(state: &AppState, target: &TargetConfig) -> bool {
+    let canonical = crate::registry::canonical_device_key(&target.address);
+    let targets = match state.registry.list_all_targets() {
+        Ok(t) => t,
+        Err(_) => return true, // cannot disprove ambiguity → preserve it
+    };
+    targets.iter().any(|other| {
+        other.address != target.address
+            && (crate::registry::canonical_device_key(&other.address) == canonical
+                || match (&target.external_id, &other.external_id) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                })
+    })
+}
+
 pub(super) async fn apply_device_selected_paths_handler(
     State(state): State<AppState>,
     Path(address): Path<String>,

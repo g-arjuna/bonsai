@@ -1,5 +1,33 @@
 # Bonsai current state
 
+20 November update — **M6C-1 device-effective YANG applicability merged.**
+Bonsai now answers, per device, which compiled YANG catalogue paths are
+evidence-justified as applicable: complete gNMI Capabilities evidence
+(name/org/version per `ModelData`, encodings, security provenance),
+bounded RFC 8525 YANG Library discovery over gNMI `Get` (NMDA
+module-set/schema/datastore model plus legacy `/modules-state`
+fallback, explicit outcome taxonomy), a deterministic tri-state
+resolver (`src/yang_schema/applicability.rs`) honouring exact
+revision/namespace/organization identity, feature `if-feature`
+expressions, deviations, import-only modules and datastore linkage,
+durable SQLite snapshots (schema v9, freshness + invalidation), and
+read-only API (`GET /api/devices/{address}/yang-applicability`,
+Admin `POST .../refresh`). Capabilities-only evidence never yields
+`applicable`; unsupported/denied/malformed discovery stays explicit.
+Applicability is schema-level only — not transport-probed, subscribed
+or projected; acquisition enforcement is M6C-2, UI is M6D.
+Evidence: `docs/merger/evidence/2026-11-20-m6c1-device-applicability/`.
+
+Earlier merged milestones on this line: BN-022 protected auth storage
+(PR #17; deployment limits noted in backlog), selective gNMI
+acquisition contract M5.1–M5.2B (assignment lifecycle, subscription
+truth), M6A/M6B effective YANG catalogue (PR #40 @ e7cb22c — pinned
+source manifest, content-addressed compiled bundles, deterministic
+schema paths, Admin-gated compile/activate).
+
+The detailed snapshot below remains the 30 October–8 November baseline
+and is historical context, not the current development stage.
+
 8 November repository review: BN-006 bounded live acceptance is complete;
 the detailed snapshot below is the 30 October baseline. BN-006 code and fixtures
 were committed in `0b89f00`. The EOS reconnect replay regression is fixed, including legacy

@@ -701,6 +701,14 @@ mod tests {
                 confidence: 0.9,
             }],
             warnings: Vec::new(),
+            capability_evidence: crate::yang_schema::applicability::CapabilityEvidence {
+                observed_at_ns: 0,
+                gnmi_version: String::new(),
+                encodings: Vec::new(),
+                security_mode: String::new(),
+                models: Vec::new(),
+                collector_id: None,
+            },
         };
         let report = synthesize_for_target(
             &target("spine", "nokia_srl"),

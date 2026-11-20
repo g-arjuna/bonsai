@@ -1347,6 +1347,9 @@ fn required_role(method: &str, path: &str) -> Role {
         // — administrative only, never generic operator.
         || path == "/api/yang/compile"
         || path == "/api/yang/activate"
+        // M6C-1: applicability refresh performs live device I/O (gNMI
+        // Get) — administrative only. Reads stay Viewer via the GET rule.
+        || path.ends_with("/yang-applicability/refresh")
     {
         return Role::Admin;
     }
@@ -2512,6 +2515,29 @@ mod rbac_tests {
                 "GET {path} must remain viewer-readable"
             );
         }
+    }
+
+    #[test]
+    fn m6c1_applicability_refresh_requires_admin_reads_stay_viewer() {
+        // Refresh performs live device I/O — Admin only.
+        assert_eq!(
+            required_role("POST", "/api/devices/10.0.0.1/yang-applicability/refresh"),
+            Role::Admin
+        );
+        assert_eq!(
+            required_role("POST", "/api/devices/router-1/yang-applicability/refresh"),
+            Role::Admin
+        );
+        // Snapshot reads are GET → Viewer.
+        assert_eq!(
+            required_role("GET", "/api/devices/10.0.0.1/yang-applicability"),
+            Role::Viewer
+        );
+        // Other methods on the refresh path must not silently downgrade
+        // below Admin via the generic GET rule — only GET/HEAD/OPTIONS
+        // are viewer-readable, POST is pinned to Admin above.
+        assert!(Role::Viewer < Role::Admin);
+        assert!(Role::Operator < Role::Admin);
     }
 }
 

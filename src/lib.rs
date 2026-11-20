@@ -65,6 +65,8 @@ pub mod telemetry_identity;
 pub mod tls_util;
 pub mod write_coordinator;
 pub mod yang;
+pub mod yang_applicability;
+pub mod yang_library;
 pub mod yang_schema;
 pub mod yang_source;
 
