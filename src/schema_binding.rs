@@ -275,3 +275,513 @@ pub fn binding_record_state(record: Option<&SchemaBindingRecord>) -> &'static st
         None => "none",
     }
 }
+
+// ── M6C-2 evidence-expiry authority ─────────────────────────────────
+//
+// A schema-bound approval is derived from device applicability evidence
+// with a bounded validity window (`yang_applicability::EVIDENCE_MAX_AGE_NS`,
+// 24 h). Two independent layers enforce that window:
+//
+// 1. AUTHORIZATION — `binding_evidence_state` is evaluated at every
+//    execution/lifecycle decision boundary (assignment build, lifecycle
+//    admission). An expired or unverifiable approval is never authority,
+//    regardless of whether the reconciler has run.
+// 2. RECONCILIATION — `reconcile_schema_binding_expiry` proactively
+//    revokes stale approvals and resyncs collectors within a bounded
+//    interval so obsolete subscribers are withdrawn through the
+//    established assignment mechanism.
+//
+// Tests inject `SchemaBindingClock` so the 24-hour window is exercised
+// deterministically — never via wall-clock sleeps.
+
+/// Wall clock for schema-binding expiry decisions. Production uses the
+/// system clock; tests inject a controllable source.
+#[derive(Clone)]
+pub struct SchemaBindingClock {
+    now: std::sync::Arc<dyn Fn() -> i64 + Send + Sync>,
+}
+
+impl SchemaBindingClock {
+    pub fn system() -> Self {
+        Self {
+            now: std::sync::Arc::new(crate::graph::common::now_ns),
+        }
+    }
+
+    /// Fixed clock — a single instant for the process lifetime.
+    pub fn fixed(now_ns: i64) -> Self {
+        Self {
+            now: std::sync::Arc::new(move || now_ns),
+        }
+    }
+
+    /// Shared-cell clock — the caller advances time by storing a new
+    /// value into the atomic. Deterministic expiry tests use this.
+    pub fn shared(cell: std::sync::Arc<std::sync::atomic::AtomicI64>) -> Self {
+        Self {
+            now: std::sync::Arc::new(move || {
+                cell.load(std::sync::atomic::Ordering::SeqCst)
+            }),
+        }
+    }
+
+    pub fn now(&self) -> i64 {
+        (self.now)()
+    }
+}
+
+/// Freshness state of the device evidence an approval was derived from,
+/// evaluated at `now_ns` against the APPROVED snapshot row — never the
+/// latest snapshot, which may describe different evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingEvidenceState {
+    /// Approved evidence is inside its validity window.
+    Current,
+    /// Evidence aged past `EVIDENCE_MAX_AGE_NS`, is future-dated beyond
+    /// the clock-skew tolerance, or carries no observation timestamp —
+    /// it can no longer prove the device schema the approval assumed.
+    Expired,
+    /// The approved snapshot row is missing, its evidence fingerprint
+    /// does not match the binding, or the store could not be read —
+    /// authority is unverifiable and must fail closed.
+    Unverifiable,
+}
+
+/// Evaluate whether `binding`'s approved device evidence still proves
+/// freshness at `now_ns`. Cheap by design: one primary-key snapshot
+/// lookup — never schema evaluation per call.
+pub fn binding_evidence_state(
+    store: &SqliteStore,
+    binding: &SchemaBindingConfig,
+    now_ns: i64,
+) -> BindingEvidenceState {
+    if binding.mode != "schema_bound" || binding.snapshot_id <= 0 {
+        return BindingEvidenceState::Unverifiable;
+    }
+    let Ok(Some(row)) = store.get_yang_applicability_snapshot(binding.snapshot_id) else {
+        return BindingEvidenceState::Unverifiable;
+    };
+    if row.evidence_fingerprint != binding.evidence_fingerprint {
+        return BindingEvidenceState::Unverifiable;
+    }
+    match row.observed_at_ns {
+        Some(observed) if observed > 0 => {
+            if observed
+                > now_ns.saturating_add(yang_applicability::FUTURE_EVIDENCE_TOLERANCE_NS)
+                || now_ns.saturating_sub(observed) > yang_applicability::EVIDENCE_MAX_AGE_NS
+            {
+                BindingEvidenceState::Expired
+            } else {
+                BindingEvidenceState::Current
+            }
+        }
+        _ => BindingEvidenceState::Expired,
+    }
+}
+
+/// Outcome of one bounded expiry-reconciliation pass.
+#[derive(Clone, Debug, Default)]
+pub struct SchemaBindingExpiryReport {
+    /// Active schema-bound approvals evaluated this pass.
+    pub evaluated: usize,
+    /// Device addresses whose approved evidence expired.
+    pub expired: Vec<String>,
+    /// Device addresses whose approved evidence was unverifiable.
+    pub unverifiable: Vec<String>,
+    /// Device addresses whose approval was actually revoked.
+    pub revoked: Vec<String>,
+}
+
+/// Bounded reconciliation interval for the periodic driver. Combined
+/// with the authorization checks at the assignment/lifecycle
+/// boundaries, an expired approval stops authorizing new executions
+/// immediately and is withdrawn operationally within this interval.
+pub const SCHEMA_BINDING_RECONCILE_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(60);
+
+/// Re-check every active schema-bound approval against its persisted
+/// device evidence and revoke stale authority through the same durable
+/// path as operator revocation, then resync the assigned collector so
+/// the obsolete subscriber is withdrawn through the established
+/// assignment mechanism.
+///
+/// Revocation is fingerprint-guarded: only the exact approval evaluated
+/// is revoked, so a concurrent administrative reapproval (which mints a
+/// new binding fingerprint) is never clobbered. Disconnected collectors
+/// need no special handling — the durable revocation is authoritative
+/// and the next assignment sync delivers the withdrawal.
+pub async fn reconcile_schema_binding_expiry(
+    registry: &ApiRegistry,
+    collector_manager: Option<&crate::assignment::CollectorManager>,
+    now_ns: i64,
+) -> Result<SchemaBindingExpiryReport> {
+    let mut report = SchemaBindingExpiryReport::default();
+    let Some(store) = registry.sqlite_store() else {
+        // No durable store → no durable schema-binding authority can
+        // exist; nothing to reconcile.
+        return Ok(report);
+    };
+    for target in registry.list_all_targets()? {
+        let Some(binding) = target.schema_binding.as_ref() else {
+            continue;
+        };
+        if binding.mode != "schema_bound" {
+            continue;
+        }
+        report.evaluated += 1;
+        let (stale_bucket, reason) = match binding_evidence_state(&store, binding, now_ns) {
+            BindingEvidenceState::Current => continue,
+            BindingEvidenceState::Expired => (&mut report.expired, "evidence_expired"),
+            BindingEvidenceState::Unverifiable => {
+                (&mut report.unverifiable, "evidence_unverifiable")
+            }
+        };
+        stale_bucket.push(target.address.clone());
+        let revoked = registry.revoke_schema_binding_if_current(
+            &target.address,
+            "system",
+            reason,
+            "schema_binding_expiry_reconcile",
+            &binding.binding_fingerprint,
+        )?;
+        if let Some(updated) = revoked {
+            report.revoked.push(updated.address.clone());
+            if let (Some(cid), Some(manager)) =
+                (updated.collector_id.as_deref(), collector_manager)
+            {
+                manager.resync_collector(cid).await;
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// Periodic driver for [`reconcile_schema_binding_expiry`]. Runs one
+/// pass immediately at startup — covering a core restart after expiry —
+/// then every `interval`. This is the WITHDRAWAL layer only: the
+/// authorization boundary rejects expired bindings independently of
+/// this timer.
+pub async fn run_schema_binding_expiry_reconciler(
+    registry: std::sync::Arc<ApiRegistry>,
+    collector_manager: Option<std::sync::Arc<crate::assignment::CollectorManager>>,
+    interval: std::time::Duration,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let clock = SchemaBindingClock::system();
+    loop {
+        match reconcile_schema_binding_expiry(
+            registry.as_ref(),
+            collector_manager.as_deref(),
+            clock.now(),
+        )
+        .await
+        {
+            Ok(report) if report.revoked.is_empty() => {}
+            Ok(report) => {
+                tracing::info!(
+                    evaluated = report.evaluated,
+                    expired = report.expired.len(),
+                    unverifiable = report.unverifiable.len(),
+                    revoked = report.revoked.len(),
+                    "schema-binding expiry reconciliation revoked stale approvals"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(%e, "schema-binding expiry reconciliation failed");
+            }
+        }
+        tokio::select! {
+            _ = shutdown.changed() => break,
+            _ = tokio::time::sleep(interval) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::TargetConfig;
+    use crate::sqlite_store::YangApplicabilitySnapshotRow;
+    use std::sync::Arc;
+
+    const NOW: i64 = 1_000_000_000_000_000_000;
+
+    fn binding(snapshot_id: i64, evidence_fp: &str) -> SchemaBindingConfig {
+        SchemaBindingConfig {
+            mode: "schema_bound".to_string(),
+            schema_id: "a".repeat(64),
+            snapshot_id,
+            content_id: Some("content-1".to_string()),
+            datastore: Some("ietf-datastores:operational".to_string()),
+            evidence_fingerprint: evidence_fp.to_string(),
+            plan_id: "plan-1".to_string(),
+            binding_fingerprint: "bind-fp".to_string(),
+            approval_revision: 1,
+            collector_id: Some("c1".to_string()),
+            approved_by: "admin".to_string(),
+            approved_at_ns: 42,
+        }
+    }
+
+    fn snapshot_row(
+        device_key: &str,
+        address: &str,
+        snapshot_id_hint: i64,
+        evidence_fp: &str,
+        observed_at_ns: Option<i64>,
+    ) -> YangApplicabilitySnapshotRow {
+        let _ = snapshot_id_hint;
+        YangApplicabilitySnapshotRow {
+            id: 0,
+            device_key: device_key.to_string(),
+            device_address: address.to_string(),
+            collector_id: Some("c1".to_string()),
+            schema_id: Some("a".repeat(64)),
+            content_id: Some("content-1".to_string()),
+            datastore: Some("ietf-datastores:operational".to_string()),
+            overall_status: "applicable".to_string(),
+            outcome: "ok".to_string(),
+            result_json: "{}".to_string(),
+            capabilities_json: None,
+            yang_library_json: None,
+            evidence_fingerprint: evidence_fp.to_string(),
+            observed_at_ns,
+            evaluated_at_ns: NOW,
+            error: None,
+            created_at_ns: NOW,
+        }
+    }
+
+    fn bound_target(address: &str) -> TargetConfig {
+        let mut target = TargetConfig {
+            address: address.to_string(),
+            enabled: true,
+            collector_id: Some("c1".to_string()),
+            ..Default::default()
+        };
+        target.schema_binding = Some(binding(7, "ev-fp"));
+        target
+    }
+
+    fn activation_record(target: &TargetConfig) -> SchemaBindingRecord {
+        let binding = target.schema_binding.clone().unwrap();
+        SchemaBindingRecord {
+            device_key: crate::registry::device_identity_key(target),
+            device_address: target.address.clone(),
+            mode: "schema_bound".to_string(),
+            policy_json: "{}".to_string(),
+            approved_plan_json: Some("{}".to_string()),
+            approval_revision: 1,
+            approval_fingerprint: Some(binding.binding_fingerprint.clone()),
+            state: "active".to_string(),
+            approved_by: Some("admin".to_string()),
+            approved_at_ns: Some(42),
+            revoked_by: None,
+            revoked_at_ns: None,
+            revoke_reason: None,
+            created_at_ns: 1,
+            updated_at_ns: 1,
+        }
+    }
+
+    /// Registry + store + device carrying an active schema-bound
+    /// approval backed by snapshot row `snapshot_id`.
+    async fn bound_device(
+        dir: &tempfile::TempDir,
+        address: &str,
+        snapshot_row_seed: &YangApplicabilitySnapshotRow,
+    ) -> (Arc<ApiRegistry>, Arc<SqliteStore>, TargetConfig, i64) {
+        let registry = Arc::new(ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap());
+        let store = registry.sqlite_store().unwrap();
+        let snapshot_id = store.save_yang_applicability_snapshot(snapshot_row_seed).unwrap();
+        let mut target = bound_target(address);
+        target.schema_binding.as_mut().unwrap().snapshot_id = snapshot_id;
+        let device_key = crate::registry::device_identity_key(&target);
+        // Re-key the snapshot row to the target identity (address-derived).
+        let mut row = snapshot_row_seed.clone();
+        row.device_key = device_key;
+        row.device_address = address.to_string();
+        let snapshot_id = store.save_yang_applicability_snapshot(&row).unwrap();
+        target.schema_binding.as_mut().unwrap().snapshot_id = snapshot_id;
+
+        let mut plain = target.clone();
+        plain.schema_binding = None;
+        registry
+            .add_device_with_audit(plain, "test", "test_add")
+            .unwrap();
+        registry
+            .assign_device_with_audit(address, Some("c1".to_string()), "test", "test_assign")
+            .unwrap();
+        let record = activation_record(&target);
+        registry
+            .activate_schema_binding(target.clone(), record, 0, "admin", "activate")
+            .unwrap();
+        (registry, store, target, snapshot_id)
+    }
+
+    #[test]
+    fn evidence_state_classifies_current_expired_and_unverifiable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(dir.path()).unwrap();
+        let target = bound_target("10.0.0.9");
+        let key = crate::registry::device_identity_key(&target);
+        let row = snapshot_row(&key, "10.0.0.9:57400", 0, "ev-fp", Some(NOW - 1000));
+        let id = store.save_yang_applicability_snapshot(&row).unwrap();
+        let mut b = binding(id, "ev-fp");
+        b.snapshot_id = id;
+
+        assert_eq!(
+            binding_evidence_state(&store, &b, NOW),
+            BindingEvidenceState::Current
+        );
+        // Aged past the 24h window.
+        assert_eq!(
+            binding_evidence_state(
+                &store,
+                &b,
+                NOW + yang_applicability::EVIDENCE_MAX_AGE_NS + 1
+            ),
+            BindingEvidenceState::Expired
+        );
+        // Future-dated beyond skew tolerance.
+        assert_eq!(
+            binding_evidence_state(
+                &store,
+                &b,
+                NOW - yang_applicability::FUTURE_EVIDENCE_TOLERANCE_NS - 2_000
+            ),
+            BindingEvidenceState::Expired
+        );
+        // Fingerprint mismatch → unverifiable.
+        let mut bad = b.clone();
+        bad.evidence_fingerprint = "other".to_string();
+        assert_eq!(
+            binding_evidence_state(&store, &bad, NOW),
+            BindingEvidenceState::Unverifiable
+        );
+        // Missing snapshot row → unverifiable.
+        let mut missing = b.clone();
+        missing.snapshot_id = 999_999;
+        assert_eq!(
+            binding_evidence_state(&store, &missing, NOW),
+            BindingEvidenceState::Unverifiable
+        );
+        // Non-schema-bound mode → unverifiable.
+        let mut legacy = b.clone();
+        legacy.mode = "legacy".to_string();
+        assert_eq!(
+            binding_evidence_state(&store, &legacy, NOW),
+            BindingEvidenceState::Unverifiable
+        );
+        // Missing observation timestamp → expired.
+        let row2 = snapshot_row(&key, "10.0.0.9:57400", 0, "ev-fp", None);
+        let id2 = store.save_yang_applicability_snapshot(&row2).unwrap();
+        let mut b2 = b.clone();
+        b2.snapshot_id = id2;
+        assert_eq!(
+            binding_evidence_state(&store, &b2, NOW),
+            BindingEvidenceState::Expired
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_revokes_expired_and_spares_fresh_and_reapproved() {
+        let dir = tempfile::tempdir().unwrap();
+        let address = "10.0.0.10";
+        let key_target = bound_target(address);
+        let key = crate::registry::device_identity_key(&key_target);
+        // Evidence already older than the validity window at `now`.
+        let stale_row = snapshot_row(
+            &key,
+            address,
+            0,
+            "ev-fp",
+            Some(NOW - yang_applicability::EVIDENCE_MAX_AGE_NS - 1),
+        );
+        let (registry, store, _target, _id) =
+            bound_device(&dir, address, &stale_row).await;
+
+        // Fingerprint guard: a mismatched expectation must not revoke.
+        assert!(
+            registry
+                .revoke_schema_binding_if_current(
+                    address,
+                    "system",
+                    "test",
+                    "test_guard",
+                    "not-the-current-fingerprint"
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(registry.get_device(address).unwrap().unwrap().schema_binding.is_some());
+
+        let report = reconcile_schema_binding_expiry(&registry, None, NOW)
+            .await
+            .unwrap();
+        assert_eq!(report.evaluated, 1);
+        assert!(report.expired.contains(&address.to_string()));
+        assert!(report.revoked.contains(&address.to_string()));
+
+        let device = registry.get_device(address).unwrap().unwrap();
+        assert!(device.schema_binding.is_none());
+        assert_eq!(device.acquisition, AcquisitionMode::Disabled);
+        let record = store
+            .get_schema_binding(&crate::registry::device_identity_key(&device))
+            .unwrap()
+            .expect("policy record");
+        assert_eq!(record.state, "revoked");
+        assert_eq!(record.revoke_reason.as_deref(), Some("evidence_expired"));
+
+        // Idempotent: a second pass finds nothing to revoke.
+        let report2 = reconcile_schema_binding_expiry(&registry, None, NOW)
+            .await
+            .unwrap();
+        assert_eq!(report2.evaluated, 0);
+        assert!(report2.revoked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconcile_spares_current_evidence_and_newer_reapproval() {
+        let dir = tempfile::tempdir().unwrap();
+        let address = "10.0.0.11";
+        let key_target = bound_target(address);
+        let key = crate::registry::device_identity_key(&key_target);
+        let fresh_row = snapshot_row(&key, address, 0, "ev-fp", Some(NOW - 1000));
+        let (registry, _store, _target, _id) = bound_device(&dir, address, &fresh_row).await;
+
+        let report = reconcile_schema_binding_expiry(&registry, None, NOW)
+            .await
+            .unwrap();
+        assert_eq!(report.evaluated, 1);
+        assert!(report.revoked.is_empty());
+        assert!(registry.get_device(address).unwrap().unwrap().schema_binding.is_some());
+    }
+
+    #[tokio::test]
+    async fn reconcile_revokes_unverifiable_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let address = "10.0.0.12";
+        let key_target = bound_target(address);
+        let key = crate::registry::device_identity_key(&key_target);
+        // Snapshot fingerprint does not match the approved binding.
+        let mismatched = snapshot_row(&key, address, 0, "different-fp", Some(NOW - 1000));
+        let (registry, _store, _target, _id) = bound_device(&dir, address, &mismatched).await;
+
+        let report = reconcile_schema_binding_expiry(&registry, None, NOW)
+            .await
+            .unwrap();
+        assert!(report.unverifiable.contains(&address.to_string()));
+        assert!(report.revoked.contains(&address.to_string()));
+        let record_reason = registry
+            .sqlite_store()
+            .unwrap()
+            .get_schema_binding(&crate::registry::device_identity_key(
+                &registry.get_device(address).unwrap().unwrap(),
+            ))
+            .unwrap()
+            .expect("record")
+            .revoke_reason;
+        assert_eq!(record_reason.as_deref(), Some("evidence_unverifiable"));
+    }
+}

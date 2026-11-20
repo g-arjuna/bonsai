@@ -106,6 +106,10 @@ pub struct CollectorManager {
     /// Optional event sender — wired after construction from GraphStore::event_sender().
     event_tx: Mutex<Option<broadcast::Sender<BonsaiEvent>>>,
     health_emitter: Option<Arc<crate::health_emitter::HealthEmitter>>,
+    /// Clock for schema-binding evidence-expiry authorization checks.
+    /// Production uses the system clock; tests inject a controllable
+    /// source so the 24-hour window is deterministic.
+    schema_binding_clock: crate::schema_binding::SchemaBindingClock,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -203,6 +207,7 @@ impl CollectorManager {
             sites_cache: Arc::new(Mutex::new(Vec::new())),
             event_tx: Mutex::new(None),
             health_emitter: None,
+            schema_binding_clock: crate::schema_binding::SchemaBindingClock::system(),
         };
         manager
     }
@@ -222,6 +227,17 @@ impl CollectorManager {
         registry: Arc<crate::subscription_sessions::SubscriptionSessionRegistry>,
     ) -> Self {
         self.session_registry = Some(registry);
+        self
+    }
+
+    /// Inject the clock used for schema-binding evidence-expiry
+    /// authorization checks (tests only; production keeps the system
+    /// clock).
+    pub fn with_schema_binding_clock(
+        mut self,
+        clock: crate::schema_binding::SchemaBindingClock,
+    ) -> Self {
+        self.schema_binding_clock = clock;
         self
     }
 
@@ -861,6 +877,42 @@ impl CollectorManager {
                     ));
                 }
                 continue;
+            }
+            // M6C-2 expiry authorization layer: a schema-bound approval
+            // whose approved device evidence has aged past its validity
+            // window — or can no longer be verified — is not authority.
+            // Deliver an explicit rejection through the established
+            // assignment mechanism so acquisition authority is withdrawn
+            // even before the expiry reconciler runs; never a silent drop
+            // that would leave a previous execution live.
+            if let Some(binding) = target.schema_binding.as_ref()
+                && binding.mode == "schema_bound"
+            {
+                let evidence = self.registry.sqlite_store().map(|store| {
+                    crate::schema_binding::binding_evidence_state(
+                        store.as_ref(),
+                        binding,
+                        self.schema_binding_clock.now(),
+                    )
+                });
+                let reason = match evidence {
+                    Some(crate::schema_binding::BindingEvidenceState::Current) => None,
+                    Some(crate::schema_binding::BindingEvidenceState::Expired) => {
+                        Some("schema_binding_evidence_expired")
+                    }
+                    _ => Some("schema_binding_evidence_unverifiable"),
+                };
+                if let Some(reason) = reason {
+                    if lifecycle_aware {
+                        assignments.push(rejected_assignment(&target, reason.to_string()));
+                    } else {
+                        blocked.push((
+                            target.address.clone(),
+                            "schema_bound_requires_newer_collector",
+                        ));
+                    }
+                    continue;
+                }
             }
             if !acquisition_aware && target.acquisition != AcquisitionMode::Automatic {
                 blocked.push((

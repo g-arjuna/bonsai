@@ -128,6 +128,10 @@ pub struct BonsaiService<S: BonsaiStore> {
     /// the actual Subscribe path set. `None` when no verifier runs.
     subscription_plan_tx:
         Option<tokio::sync::mpsc::Sender<crate::subscription_status::SubscriptionPlan>>,
+    /// Clock for schema-binding evidence-expiry authorization checks at
+    /// the lifecycle boundary (M6C-2). Production uses the system clock;
+    /// tests inject a controllable source.
+    schema_binding_clock: crate::schema_binding::SchemaBindingClock,
 }
 
 impl<S: BonsaiStore> BonsaiService<S> {
@@ -164,6 +168,7 @@ impl<S: BonsaiStore> BonsaiService<S> {
                 crate::subscription_sessions::SubscriptionSessionRegistry::new(),
             ),
             subscription_plan_tx: None,
+            schema_binding_clock: crate::schema_binding::SchemaBindingClock::system(),
         }
     }
 
@@ -205,6 +210,17 @@ impl<S: BonsaiStore> BonsaiService<S> {
     pub fn with_sqlite_store(mut self, store: Arc<crate::sqlite_store::SqliteStore>) -> Self {
         self.collector_authz = CollectorAuthz::new(Some(Arc::clone(&store)));
         self.sqlite_store = Some(store);
+        self
+    }
+
+    /// Inject the clock used for schema-binding evidence-expiry
+    /// authorization checks (tests only; production keeps the system
+    /// clock).
+    pub fn with_schema_binding_clock(
+        mut self,
+        clock: crate::schema_binding::SchemaBindingClock,
+    ) -> Self {
+        self.schema_binding_clock = clock;
         self
     }
 
@@ -2299,6 +2315,46 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                     "lifecycle event denied: schema binding does not match durable approval"
                 );
                 continue;
+            }
+
+            // M6C-2 expiry authorization layer: a schema-bound approval
+            // whose approved device evidence has aged past its validity
+            // window — or can no longer be verified — is not authority.
+            // Lifecycle evidence relying on it is rejected here even
+            // before the expiry reconciler withdraws the assignment;
+            // this check never trusts the wire-claimed binding alone.
+            if let Some(binding) = bound_binding
+                && binding.mode == "schema_bound"
+            {
+                let evidence = self.sqlite_store.as_ref().map(|store| {
+                    crate::schema_binding::binding_evidence_state(
+                        store.as_ref(),
+                        binding,
+                        self.schema_binding_clock.now(),
+                    )
+                });
+                let reason = match evidence {
+                    Some(crate::schema_binding::BindingEvidenceState::Current) => None,
+                    Some(crate::schema_binding::BindingEvidenceState::Expired) => {
+                        Some("schema_binding_expired")
+                    }
+                    _ => Some("schema_binding_unverifiable"),
+                };
+                if let Some(reason) = reason {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => reason
+                    )
+                    .increment(1);
+                    tracing::warn!(
+                        collector_id = %grant.collector_id(),
+                        device = %event.device_address,
+                        reason,
+                        "lifecycle event denied: schema-bound approval evidence expired"
+                    );
+                    continue;
+                }
             }
 
             // B3: a manifest-carrying event must prove its plan_id is

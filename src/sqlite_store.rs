@@ -2297,6 +2297,30 @@ impl SqliteStore {
         Ok(id)
     }
 
+    /// Fetch one snapshot row by id. Schema-binding expiry checks must
+    /// evaluate the APPROVED evidence row, not merely the latest
+    /// snapshot for the device.
+    pub fn get_yang_applicability_snapshot(
+        &self,
+        id: i64,
+    ) -> Result<Option<YangApplicabilitySnapshotRow>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id, device_key, device_address, collector_id, schema_id,
+                    content_id, datastore, overall_status, outcome,
+                    result_json, capabilities_json, yang_library_json,
+                    evidence_fingerprint, observed_at_ns, evaluated_at_ns,
+                    error, created_at_ns
+             FROM yang_applicability_snapshots
+             WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query([id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(snapshot_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Latest snapshot for a device identity key, if any.
     pub fn latest_yang_applicability_snapshot(
         &self,

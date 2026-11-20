@@ -454,6 +454,38 @@ impl ApiRegistry {
         reason: &str,
         action: &str,
     ) -> Result<Option<TargetConfig>> {
+        self.revoke_schema_binding_impl(address, actor, reason, action, None)
+    }
+
+    /// Revoke only when the device's CURRENT binding still carries
+    /// `expected_fingerprint`. The expiry reconciler uses this guard so a
+    /// concurrent administrative reapproval — which mints a new binding
+    /// fingerprint — is never clobbered by a stale revocation.
+    pub fn revoke_schema_binding_if_current(
+        &self,
+        address: &str,
+        actor: &str,
+        reason: &str,
+        action: &str,
+        expected_fingerprint: &str,
+    ) -> Result<Option<TargetConfig>> {
+        self.revoke_schema_binding_impl(
+            address,
+            actor,
+            reason,
+            action,
+            Some(expected_fingerprint),
+        )
+    }
+
+    fn revoke_schema_binding_impl(
+        &self,
+        address: &str,
+        actor: &str,
+        reason: &str,
+        action: &str,
+        expected_fingerprint: Option<&str>,
+    ) -> Result<Option<TargetConfig>> {
         let address = normalize_address(address)?;
         if self.sqlite_store.is_none() {
             bail!("schema-bound revocation requires the SQLite config store");
@@ -465,6 +497,15 @@ impl ApiRegistry {
         let Some(existing) = state.targets.get(&address).cloned() else {
             return Ok(None);
         };
+        if let Some(fp) = expected_fingerprint {
+            let current = existing
+                .schema_binding
+                .as_ref()
+                .is_some_and(|b| b.mode == "schema_bound" && b.binding_fingerprint == fp);
+            if !current {
+                return Ok(None);
+            }
+        }
         let device_key = device_identity_key(&existing);
         let mut updated = existing.clone();
         updated.schema_binding = None;

@@ -1165,6 +1165,27 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         });
     }
 
+    // M6C-2: bounded schema-binding expiry reconciliation. The
+    // authorization boundaries (assignment build, lifecycle admission)
+    // already reject expired approvals independently of this timer;
+    // this task proactively revokes stale approvals and resyncs
+    // collectors so obsolete subscribers are withdrawn through the
+    // established assignment mechanism within a bounded interval.
+    if let Some(ref manager) = collector_manager {
+        let registry_for_expiry = std::sync::Arc::clone(&registry);
+        let manager_for_expiry = std::sync::Arc::clone(manager);
+        let expiry_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            bonsai::schema_binding::run_schema_binding_expiry_reconciler(
+                registry_for_expiry,
+                Some(manager_for_expiry),
+                bonsai::schema_binding::SCHEMA_BINDING_RECONCILE_INTERVAL,
+                expiry_shutdown,
+            )
+            .await;
+        });
+    }
+
     // Verifier readiness contract: local acquisition and remote telemetry
     // ingestion must not start until the coverage verifier has registered
     // its event-bus subscriber and finished boot-time initialization —

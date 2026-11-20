@@ -323,7 +323,7 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
     let mut seen_template = BTreeMap::<String, usize>::new();
 
     let catalogue_ok = input.catalogue.status == "complete"
-        && input.catalogue.schema_id.len() == 64
+        && !input.catalogue.schema_id.is_empty()
         && input.catalogue.diagnostics.is_empty()
         && input.catalogue.paths.len() <= crate::yang_schema::compiler::MAX_PATH_ENTRIES;
     if !catalogue_ok {

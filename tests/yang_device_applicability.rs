@@ -730,7 +730,10 @@ fn t8_device_identity_binding_isolation() {
 fn t9_snapshot_persistence_restart_and_staleness() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(dir.path()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 9);
+    assert_eq!(
+        store.schema_version().unwrap(),
+        bonsai::sqlite_store::CURRENT_SCHEMA_VERSION
+    );
 
     let catalogue = compile_app();
     let caps = caps_evidence(vec![advertised("test-app", "example", "1")]);
