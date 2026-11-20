@@ -1965,7 +1965,7 @@ fn trust_update_fails_closed_on_conflicting_records() {
             .unwrap();
     }
     let err = library
-        .set_module_trust("dup", Some("2024-01-01"), "experimental")
+        .set_module_trust("dup", None, "experimental")
         .unwrap_err();
     assert!(
         err.to_string().contains("ambiguous"),
