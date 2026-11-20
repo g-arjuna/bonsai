@@ -24,7 +24,7 @@ const DB_FILE: &str = CONFIG_DB_FILE_NAME;
 /// Schema version the management service migrates to. Read-only
 /// consumers (routing service) compare against this and fail closed
 /// when the database is older.
-pub const CURRENT_SCHEMA_VERSION: i64 = 8;
+pub const CURRENT_SCHEMA_VERSION: i64 = 9;
 
 /// True when an `ALTER TABLE ... ADD COLUMN` failed only because the
 /// column already exists (i.e. a previous migration attempt partially
@@ -548,6 +548,41 @@ impl SqliteStore {
             )
             .context("schema v8 verification failed")?;
             db.execute("PRAGMA user_version=8", [])
+                .context("failed to set schema version")?;
+        }
+
+        // Version 9: M6C-1 device-effective YANG applicability evidence.
+        // Durable, bounded snapshots binding (device identity, catalogue
+        // schema_id, module-set content-id, datastore, evidence
+        // fingerprint, timestamps, resolver result, raw evidence JSON).
+        // Additive only; history is retained per device_key and pruned
+        // to a bounded count — never overwritten in place.
+        if user_version < 9 {
+            db.execute_batch(
+                "CREATE TABLE IF NOT EXISTS yang_applicability_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_key TEXT NOT NULL,
+                    device_address TEXT NOT NULL,
+                    collector_id TEXT,
+                    schema_id TEXT,
+                    content_id TEXT,
+                    datastore TEXT,
+                    overall_status TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    capabilities_json TEXT,
+                    yang_library_json TEXT,
+                    evidence_fingerprint TEXT NOT NULL,
+                    observed_at_ns INTEGER,
+                    evaluated_at_ns INTEGER NOT NULL,
+                    error TEXT,
+                    created_at_ns INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_yas_device
+                    ON yang_applicability_snapshots(device_key, evaluated_at_ns DESC);",
+            )
+            .context("schema v9 migration failed")?;
+            db.execute("PRAGMA user_version=9", [])
                 .context("failed to set schema version")?;
         }
 
@@ -1862,6 +1897,159 @@ impl SqliteStore {
 
         Ok(updated)
     }
+
+    // ── M6C-1 YANG applicability snapshots ────────────────────────────
+
+    /// Persist one device applicability snapshot (append-only history).
+    /// Returns the new row id. Rows beyond
+    /// [`YANG_APPLICABILITY_HISTORY`] per device_key are pruned.
+    pub fn save_yang_applicability_snapshot(
+        &self,
+        snap: &YangApplicabilitySnapshotRow,
+    ) -> Result<i64> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        tx.execute(
+            "INSERT INTO yang_applicability_snapshots (
+                device_key, device_address, collector_id, schema_id,
+                content_id, datastore, overall_status, outcome,
+                result_json, capabilities_json, yang_library_json,
+                evidence_fingerprint, observed_at_ns, evaluated_at_ns,
+                error, created_at_ns
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            params![
+                snap.device_key,
+                snap.device_address,
+                snap.collector_id,
+                snap.schema_id,
+                snap.content_id,
+                snap.datastore,
+                snap.overall_status,
+                snap.outcome,
+                snap.result_json,
+                snap.capabilities_json,
+                snap.yang_library_json,
+                snap.evidence_fingerprint,
+                snap.observed_at_ns,
+                snap.evaluated_at_ns,
+                snap.error,
+                snap.created_at_ns,
+            ],
+        )
+        .context("insert yang applicability snapshot")?;
+        let id = tx.last_insert_rowid();
+        tx.execute(
+            "DELETE FROM yang_applicability_snapshots
+             WHERE device_key = ?1 AND id NOT IN (
+                 SELECT id FROM yang_applicability_snapshots
+                 WHERE device_key = ?1
+                 ORDER BY evaluated_at_ns DESC, id DESC
+                 LIMIT ?2
+             )",
+            params![snap.device_key, YANG_APPLICABILITY_HISTORY],
+        )
+        .context("prune yang applicability history")?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Latest snapshot for a device identity key, if any.
+    pub fn latest_yang_applicability_snapshot(
+        &self,
+        device_key: &str,
+    ) -> Result<Option<YangApplicabilitySnapshotRow>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id, device_key, device_address, collector_id, schema_id,
+                    content_id, datastore, overall_status, outcome,
+                    result_json, capabilities_json, yang_library_json,
+                    evidence_fingerprint, observed_at_ns, evaluated_at_ns,
+                    error, created_at_ns
+             FROM yang_applicability_snapshots
+             WHERE device_key = ?1
+             ORDER BY evaluated_at_ns DESC, id DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query([device_key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(snapshot_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Bounded snapshot history for a device identity key (newest first).
+    pub fn list_yang_applicability_snapshots(
+        &self,
+        device_key: &str,
+        limit: usize,
+    ) -> Result<Vec<YangApplicabilitySnapshotRow>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id, device_key, device_address, collector_id, schema_id,
+                    content_id, datastore, overall_status, outcome,
+                    result_json, capabilities_json, yang_library_json,
+                    evidence_fingerprint, observed_at_ns, evaluated_at_ns,
+                    error, created_at_ns
+             FROM yang_applicability_snapshots
+             WHERE device_key = ?1
+             ORDER BY evaluated_at_ns DESC, id DESC
+             LIMIT ?2",
+        )?;
+        let mut rows = stmt.query(params![device_key, limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(snapshot_row(row)?);
+        }
+        Ok(out)
+    }
+}
+
+/// One persisted M6C-1 applicability snapshot row. JSON payloads are
+/// stored as TEXT; the typed decoding lives in `yang_applicability`.
+#[derive(Clone, Debug)]
+pub struct YangApplicabilitySnapshotRow {
+    pub id: i64,
+    pub device_key: String,
+    pub device_address: String,
+    pub collector_id: Option<String>,
+    pub schema_id: Option<String>,
+    pub content_id: Option<String>,
+    pub datastore: Option<String>,
+    pub overall_status: String,
+    pub outcome: String,
+    pub result_json: String,
+    pub capabilities_json: Option<String>,
+    pub yang_library_json: Option<String>,
+    pub evidence_fingerprint: String,
+    pub observed_at_ns: Option<i64>,
+    pub evaluated_at_ns: i64,
+    pub error: Option<String>,
+    pub created_at_ns: i64,
+}
+
+/// Bounded per-device snapshot history retained in SQLite.
+pub const YANG_APPLICABILITY_HISTORY: i64 = 16;
+
+fn snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<YangApplicabilitySnapshotRow> {
+    Ok(YangApplicabilitySnapshotRow {
+        id: row.get(0)?,
+        device_key: row.get(1)?,
+        device_address: row.get(2)?,
+        collector_id: row.get(3)?,
+        schema_id: row.get(4)?,
+        content_id: row.get(5)?,
+        datastore: row.get(6)?,
+        overall_status: row.get(7)?,
+        outcome: row.get(8)?,
+        result_json: row.get(9)?,
+        capabilities_json: row.get(10)?,
+        yang_library_json: row.get(11)?,
+        evidence_fingerprint: row.get(12)?,
+        observed_at_ns: row.get(13)?,
+        evaluated_at_ns: row.get(14)?,
+        error: row.get(15)?,
+        created_at_ns: row.get(16)?,
+    })
 }
 
 fn now_ns() -> i64 {
@@ -1997,7 +2185,7 @@ mod tests {
     fn fresh_database_reaches_v8_with_inventory_columns_and_index() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_at(&dir).expect("open");
-        assert_eq!(store.schema_version().expect("version"), 8);
+        assert_eq!(store.schema_version().expect("version"), 9);
 
         let db = store.db.lock().unwrap();
         let mut stmt = db
@@ -2054,7 +2242,7 @@ mod tests {
         }
 
         let store = SqliteStore::open_file(&db_path).expect("migrate v5->v8");
-        assert_eq!(store.schema_version().expect("version"), 8);
+        assert_eq!(store.schema_version().expect("version"), 9);
 
         let devices = store.list_devices().expect("list");
         assert_eq!(devices.len(), 1);
@@ -2106,7 +2294,7 @@ mod tests {
         }
 
         let store = SqliteStore::open_file(&db_path).expect("migrate partial v6");
-        assert_eq!(store.schema_version().expect("version"), 8);
+        assert_eq!(store.schema_version().expect("version"), 9);
         let devices = store.list_devices().expect("list");
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].address, "10.0.0.2");

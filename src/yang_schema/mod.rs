@@ -11,12 +11,23 @@
 //! failed compile never disturbs the active catalogue and rollback is a
 //! pointer switch.
 
+pub mod applicability;
 mod compiler;
 mod parser;
 
+pub use applicability::{
+    APPLICABILITY_RESULT_VERSION, AdvertisedModel, ApplicabilityInput, ApplicabilityResult,
+    ApplicabilityStatus, CapabilityEvidence, DeviceBinding, DeviceModuleEvidence,
+    MAX_MODULE_RESULTS, MAX_PATH_RESULTS, ModuleClassification, ModuleEvidenceSource, ModuleResult,
+    PathResult, ReasonCode, YangLibraryDatastore, YangLibraryEvidence, YangLibraryModule,
+    YangLibraryModuleSet, YangLibraryOutcome, YangLibrarySchema, YangLibraryTree,
+    resolve_applicability,
+};
+pub use compiler::FeatureTruth;
 pub use compiler::{
     CompileOptions, CompiledCatalogue, CompiledFeature, CompiledModule, ModuleInput,
-    SchemaPathEntry, compile, compile_with_diagnostics, filter_by_features,
+    SchemaPathEntry, compile, compile_with_diagnostics, eval_feature_expr_tristate,
+    filter_by_features,
 };
 pub use parser::{Module, parse_module};
 

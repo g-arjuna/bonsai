@@ -155,3 +155,102 @@ compiles YANG.
 `GET /api/yang/*` reads require Viewer (or scoped ApiReadonly where
 applicable). `POST /api/yang/compile` and `POST /api/yang/activate`
 require the Admin role — they mutate the authoritative catalogue.
+
+## Device applicability (M6C-1)
+
+The compiled catalogue describes the *source* schema. M6C-1 adds a
+deterministic, evidence-backed layer answering "which catalogue paths
+can Bonsai justify as applicable **for this particular device**, on
+which evidence, and with which uncertainty?"
+
+### Evidence sources (kept distinct)
+
+- **gNMI Capabilities** — complete `ModelData` entries
+  (name/organization/version), gNMI service version, encodings,
+  security mode and observation provenance are preserved in
+  `CapabilityEvidence`. Capabilities establish *candidates only*: a
+  gNMI `ModelData.version` is **not** a YANG module revision and is
+  never compared as one.
+- **RFC 8525 YANG Library** — bounded, read-only gNMI `Get` probes of
+  `/yang-library` (NMDA module-set/schema/datastore model) with a
+  legacy RFC 7895 `/modules-state` fallback. Both modern and legacy
+  trees are reconstructed from arbitrary gNMI update shapes (prefixes,
+  keyed elements, leaf-list encodings) under strict size/depth/count
+  bounds. Outcomes are explicit: `complete`, `legacy`, `unsupported`,
+  `permission_denied`, `incomplete`, `malformed`, `timeout`,
+  `transport_failure`, `conflicting_module_definitions`,
+  `unsupported_encoding`, `datastore_schema_missing`,
+  `datastore_schema_ambiguous`. None of the negative outcomes is ever
+  treated as an empty-but-complete module set.
+- **Compiled catalogue** — only integrity-verified active bundles are
+  used; `partial`/`failed`/`unknown` catalogues cap every conclusion
+  below `applicable`.
+
+### Resolution rules (`src/yang_schema/applicability.rs`)
+
+- Module identity is matched on name + independently reported
+  revision + namespace + organization. Absent evidence stays absent;
+  a revision that cannot be resolved exactly yields `unknown`, never a
+  newest-match guess. Conflicting namespace/organization/revision
+  evidence yields `conflicted`.
+- Feature gates reuse the compiler's expression machinery extended to
+  tri-state evaluation: `if-feature` requirements resolve to
+  `applicable` (all true), `not_applicable` (a required feature is
+  provably disabled), or `unknown`/`feature_state_unknown` — unknown
+  feature state is never interpreted as enabled.
+- `deviate not-supported` semantics supported by the M6B compiler are
+  honoured (pruned nodes never appear); device-advertised deviation
+  modules whose subtree semantics the compiler cannot evaluate cap
+  affected paths at `unknown` with
+  `deviation_semantics_unsupported`.
+- Import-only modules supply referenced definitions but classify as
+  `not_applicable` for data-tree applicability.
+- Datastore linkage is explicit: the evaluated datastore's schema →
+  module-set mapping is selected (default `ietf-datastores:running`
+  when unambiguous) and config/state classification is checked against
+  it. Multiple datastore schemas are never silently merged.
+- Device identity comes from the registry binding (canonical address /
+  external id / collector), never hostname or transport IP alone;
+  ambiguous identity yields `conflicted` with `identity_ambiguity`.
+
+### Status model
+
+`applicable` requires: verified complete catalogue + authoritative
+YANG-Library-backed module evidence + exact revision/namespace match +
+feature gates satisfied + datastore linkage + no unsupported deviation
+semantics. `candidate` covers capabilities-only or datastore-unlinked
+evidence. `unknown`, `not_applicable`, `conflicted` and `stale`
+(freshness) cover the remaining honest states. Every result carries
+deterministic reason codes, `paths_total`/`paths_truncated` truth and
+a content fingerprint over catalogue + device evidence.
+
+### Persistence and API
+
+Snapshots persist in `bonsai_config.db` (schema v9,
+`yang_applicability_snapshots`) with bounded payloads, device-identity
+binding, schema/content-id binding, evidence fingerprint, freshness
+policy (24h evidence age + catalogue `schema_id` match) and bounded
+history — historical snapshots are never silently erased. Freshness is
+computed at read time; a stale snapshot reports `stale` with explicit
+reasons rather than mutating history.
+
+- `GET /api/devices/{address}/yang-applicability` — Viewer; reads the
+  persisted snapshot only (never connects to the device); bounded
+  `module`/`status`/`kind`/`limit`/`offset` filtering with truthful
+  `paths_matching` counts.
+- `POST /api/devices/{address}/yang-applicability/refresh` — Admin;
+  performs the bounded capabilities + YANG Library probe through the
+  existing credential/transport-security path and persists a new
+  snapshot. Optional `{"datastore": "..."}` body selects the datastore.
+  It never issues gNMI `Set`, never creates subscriptions and never
+  changes acquisition intent.
+
+### What this does not claim
+
+Applicability is **schema-level**: it says a path is justified by
+catalogue + device module-set evidence — it is not transport-probed,
+not subscribed, not received and not projected. Remote-collector-only
+devices are not discoverable from Core (explicit
+`collector_discovery_required`-class limitation recorded for M6C-2).
+Enforcing applicability into acquisition planning is M6C-2; the UI
+schema browser and plan preview is M6D.

@@ -1,14 +1,15 @@
 # Canonical YANG source manifest for Bonsai.
 #
-# Every entry pins an exact immutable git ref (commit SHA or tag). Moving
-# branches are never promoted automatically: `bonsai yang sync` checks out
-# `pinned_ref` exactly and records it as provenance.
+# Every entry pins an exact immutable git ref — a full 40-hex commit SHA.
+# Branches and tags are moving references and are rejected at validation;
+# `bonsai yang sync` checks out `pinned_ref` exactly and records it as
+# provenance.
 #
 # Fields:
 #   id          stable source identifier
 #   vendor      vendor_scope recorded on imported modules
 #   repo        git repository URL (https only)
-#   pinned_ref  exact commit SHA or tag to check out
+#   pinned_ref  exact 40-hex commit SHA to check out
 #   platforms   platform/NOS applicability tags ("*" = all)
 #   subdirs     repository-relative directories scanned for *.yang files
 #   prefixes    optional filename prefixes to restrict scope (empty = all)

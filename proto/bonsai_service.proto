@@ -144,12 +144,30 @@ message PathProfileMatch {
   float  confidence               = 4;
 }
 
+// M6C-1: complete typed gNMI Capabilities evidence. `version` is the
+// gNMI model version — provenance only, never a YANG module revision.
+message AdvertisedModelData {
+  string name         = 1;
+  string organization = 2;
+  string version      = 3;
+}
+
+message CapabilityEvidence {
+  int64  observed_at_ns        = 1;
+  string gnmi_version          = 2;
+  repeated string supported_encodings = 3;
+  string security_mode         = 4;
+  repeated AdvertisedModelData models  = 5;
+  string collector_id          = 6;
+}
+
 message DiscoveryReport {
   string vendor_detected                     = 1;
   repeated string models_advertised          = 2;
   string gnmi_encoding                       = 3;
   repeated PathProfileMatch recommended_profiles = 4;
   repeated string warnings                   = 5;
+  CapabilityEvidence capability_evidence     = 6;
 }
 
 // ── Interfaces ────────────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ use crate::catalogue::{
 };
 use crate::proto::gnmi::g_nmi_client::GNmiClient;
 use crate::proto::gnmi::{CapabilityRequest, Encoding, ModelData};
+use crate::yang_schema::applicability::{AdvertisedModel, CapabilityEvidence};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
 const PATH_PROFILE_DIR: &str = "config/path_profiles";
@@ -47,6 +48,13 @@ pub struct DiscoveryReport {
     pub gnmi_encoding: String,
     pub recommended_profiles: Vec<PathProfileMatch>,
     pub warnings: Vec<String>,
+    /// M6C-1: complete typed Capabilities evidence — every advertised
+    /// `ModelData` (name/organization/version), gNMI version, supported
+    /// encodings, observation time and transport security label.
+    /// `ModelData.version` is model-version provenance only; it is NOT a
+    /// YANG module revision and must never be compared as one.
+    #[serde(default)]
+    pub capability_evidence: CapabilityEvidence,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -105,18 +113,25 @@ pub async fn discover_device(input: DiscoveryInput) -> Result<DiscoveryReport> {
         .with_context(|| format!("Capabilities RPC failed for {address}"))?
         .into_inner();
 
+    let effective_security = crate::gnmi_security::infer_effective_mode(
+        input.security,
+        input
+            .ca_cert_path
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false),
+    );
+    let capability_evidence = capability_evidence_from_response(
+        &response,
+        effective_security.label(),
+        crate::graph::common::now_ns(),
+    );
+
     let summary =
         CapabilitySummary::from_response(&response.supported_models, &response.supported_encodings);
     let mut warnings = discovery_warnings(&summary, input.role_hint.as_deref());
     if matches!(
-        crate::gnmi_security::infer_effective_mode(
-            input.security,
-            input
-                .ca_cert_path
-                .as_deref()
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false),
-        ),
+        effective_security,
         crate::gnmi_security::EffectiveSecurity::Plaintext { .. }
     ) {
         warnings.push(
@@ -138,7 +153,50 @@ pub async fn discover_device(input: DiscoveryInput) -> Result<DiscoveryReport> {
         gnmi_encoding: summary.encoding.clone(),
         recommended_profiles,
         warnings,
+        capability_evidence,
     })
+}
+
+/// Build the complete typed Capabilities evidence record (M6C-1).
+/// Models are sorted and deduplicated deterministically; empty optional
+/// fields are preserved as empty strings, never dropped.
+fn capability_evidence_from_response(
+    response: &crate::proto::gnmi::CapabilityResponse,
+    security_mode: &str,
+    observed_at_ns: i64,
+) -> CapabilityEvidence {
+    let mut models: Vec<AdvertisedModel> = response
+        .supported_models
+        .iter()
+        .map(|m| AdvertisedModel {
+            name: m.name.clone(),
+            organization: m.organization.clone(),
+            version: m.version.clone(),
+        })
+        .collect();
+    models.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.organization.cmp(&b.organization))
+            .then_with(|| a.version.cmp(&b.version))
+    });
+    models.dedup();
+    let mut encodings: Vec<String> = response
+        .supported_encodings
+        .iter()
+        .filter_map(|e| Encoding::try_from(*e).ok())
+        .map(|e| e.as_str_name().to_string())
+        .collect();
+    encodings.sort();
+    encodings.dedup();
+    CapabilityEvidence {
+        observed_at_ns,
+        gnmi_version: response.g_nmi_version.clone(),
+        encodings,
+        security_mode: security_mode.to_string(),
+        models,
+        collector_id: None,
+    }
 }
 
 pub async fn gnmi_readiness_report(
@@ -686,7 +744,7 @@ fn discovery_warnings(summary: &CapabilitySummary, role_hint: Option<&str>) -> V
     warnings
 }
 
-async fn connect(input: &DiscoveryInput) -> Result<Channel> {
+pub(crate) async fn connect(input: &DiscoveryInput) -> Result<Channel> {
     let conn = crate::gnmi_security::resolve_conn_security_parts(
         input.security,
         input.ca_cert_path.as_deref(),
@@ -730,8 +788,8 @@ async fn connect(input: &DiscoveryInput) -> Result<Channel> {
         .with_context(|| format!("failed to connect to {endpoint}"))
 }
 
-fn add_auth_metadata(
-    request: &mut Request<CapabilityRequest>,
+pub(crate) fn add_auth_metadata<T>(
+    request: &mut Request<T>,
     username: Option<&str>,
     password: Option<&str>,
 ) {

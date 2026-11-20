@@ -385,6 +385,51 @@ pub(super) fn openapi_schema() -> serde_json::Value {
                     }}}}
                 }
             },
+            "/api/devices/{address}/yang-applicability": {
+                "get": {
+                    "tags": ["Devices & Onboarding"],
+                    "summary": "Device-effective YANG applicability snapshot",
+                    "description": "Returns the persisted M6C-1 applicability snapshot for a device: which compiled YANG catalogue paths Bonsai can justify as applicable given the device's gNMI Capabilities and (when available) RFC 8525 YANG Library evidence. Results are evidence-backed and tri-state (applicable / candidate / unknown / not_applicable / conflicted / stale); capabilities-only evidence never yields 'applicable'. Supports bounded module/path filtering via query parameters; responses are bounded with truthful counts. Does not connect to the device.",
+                    "parameters": [
+                        { "name": "address", "in": "path", "required": true, "schema": { "type": "string" }},
+                        { "name": "module", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Restrict path results to one YANG module name" },
+                        { "name": "status", "in": "query", "required": false, "schema": { "type": "string", "enum": ["applicable", "candidate", "unknown", "not_applicable", "conflicted", "stale"] }, "description": "Restrict path results to one applicability status" },
+                        { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 5000 }, "description": "Maximum path entries returned (bounded; default 500)" },
+                        { "name": "offset", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 0 }, "description": "Path result offset for pagination" }
+                    ],
+                    "responses": {
+                        "200": { "description": "Applicability snapshot", "content": { "application/json": { "schema": { "type": "object" } }}},
+                        "404": { "description": "No applicability snapshot exists for this device — run the refresh endpoint first" }
+                    }
+                }
+            },
+            "/api/devices/{address}/yang-applicability/refresh": {
+                "post": {
+                    "tags": ["Devices & Onboarding"],
+                    "summary": "Refresh device YANG applicability",
+                    "description": "Performs a bounded, read-only device discovery: gNMI Capabilities (full ModelData evidence preserved) plus an RFC 8525 YANG Library probe via gNMI Get over the registry-approved connection. Re-evaluates the active compiled YANG catalogue against the fresh evidence and persists a new applicability snapshot. Admin role required. Never issues gNMI Set or creates subscriptions; acquisition intent is unchanged. Returns explicit outcomes for unsupported/denied/timeout/malformed evidence rather than assuming a module set.",
+                    "parameters": [{ "name": "address", "in": "path", "required": true, "schema": { "type": "string" }}],
+                    "requestBody": {
+                        "required": false,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "datastore": { "type": "string", "description": "Datastore to evaluate (e.g. 'ietf-datastores:running' or 'operational'); defaults to running when unambiguous" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": { "description": "Fresh applicability snapshot persisted", "content": { "application/json": { "schema": { "type": "object" } }}},
+                        "403": { "description": "Insufficient role (Admin required)" },
+                        "404": { "description": "Device not found in registry" },
+                        "503": { "description": "Discovery failed — snapshot records the explicit outcome; no applicability claimed" }
+                    }
+                }
+            },
             "/api/devices/{address}/config-history": {
                 "get": {
                     "tags": ["Devices & Onboarding"],

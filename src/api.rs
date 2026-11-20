@@ -2972,6 +2972,27 @@ fn site_from_proto(site: Option<Site>) -> anyhow::Result<SiteRecord> {
     })
 }
 
+fn capability_evidence_to_proto(
+    evidence: crate::yang_schema::applicability::CapabilityEvidence,
+) -> pb::CapabilityEvidence {
+    pb::CapabilityEvidence {
+        observed_at_ns: evidence.observed_at_ns,
+        gnmi_version: evidence.gnmi_version,
+        supported_encodings: evidence.encodings,
+        security_mode: evidence.security_mode,
+        models: evidence
+            .models
+            .into_iter()
+            .map(|m| pb::AdvertisedModelData {
+                name: m.name,
+                organization: m.organization,
+                version: m.version,
+            })
+            .collect(),
+        collector_id: evidence.collector_id.unwrap_or_default(),
+    }
+}
+
 fn discovery_report_to_proto(report: discovery::DiscoveryReport) -> DiscoveryReport {
     DiscoveryReport {
         vendor_detected: report.vendor_detected,
@@ -3000,6 +3021,7 @@ fn discovery_report_to_proto(report: discovery::DiscoveryReport) -> DiscoveryRep
             })
             .collect(),
         warnings: report.warnings,
+        capability_evidence: Some(capability_evidence_to_proto(report.capability_evidence)),
     }
 }
 
