@@ -651,6 +651,81 @@ pub fn load_active_catalogue(library: &YangLibrary) -> Result<Option<CompiledCat
     read_verified_bundle(library, &schema_id).map(Some)
 }
 
+/// Authority classification for the active catalogue pointer/bundle.
+/// This is intentionally richer than `Option<CompiledCatalogue>` so
+/// callers cannot mistake "no verified catalogue" for "verified but
+/// empty" or hide corruption behind a load error.
+#[derive(Debug)]
+pub enum ActiveCatalogueState {
+    /// No active pointer exists.
+    Absent,
+    /// Pointer exists but is unreadable/malformed or names an invalid id.
+    CorruptPointer,
+    /// Pointer names a bundle that cannot be stat'ed/read.
+    UnreadableBundle,
+    /// Bundle read/parse/integrity check failed.
+    InvalidBundle,
+    /// Bundle verifies but its compile status is not `complete`.
+    Partial(CompiledCatalogue),
+    /// Verified complete active catalogue.
+    Verified(CompiledCatalogue),
+}
+
+impl ActiveCatalogueState {
+    pub fn catalogue(&self) -> Option<&CompiledCatalogue> {
+        match self {
+            Self::Partial(c) | Self::Verified(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    pub fn schema_id(&self) -> Option<&str> {
+        self.catalogue().map(|c| c.schema_id.as_str())
+    }
+
+    /// Reason code suitable for fail-closed planning/freshness views.
+    pub fn reason_code(&self) -> Option<crate::yang_schema::applicability::ReasonCode> {
+        use crate::yang_schema::applicability::ReasonCode;
+        match self {
+            Self::Absent => Some(ReasonCode::CatalogueUnavailable),
+            Self::CorruptPointer | Self::InvalidBundle => {
+                Some(ReasonCode::CatalogueIntegrityFailure)
+            }
+            Self::UnreadableBundle => Some(ReasonCode::CatalogueFailed),
+            Self::Partial(_) => Some(ReasonCode::CataloguePartial),
+            Self::Verified(_) => None,
+        }
+    }
+}
+
+/// Inspect the active pointer and verify the referenced bundle without
+/// collapsing distinct failure classes into `Option`/`Result` ambiguity.
+pub fn active_catalogue_state(library: &YangLibrary) -> ActiveCatalogueState {
+    let path = active_pointer_path(library);
+    if !path.exists() {
+        return ActiveCatalogueState::Absent;
+    }
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(_) => return ActiveCatalogueState::CorruptPointer,
+    };
+    let pointer: ActivePointer = match serde_json::from_str(&raw) {
+        Ok(pointer) => pointer,
+        Err(_) => return ActiveCatalogueState::CorruptPointer,
+    };
+    if !valid_schema_id(&pointer.schema_id) {
+        return ActiveCatalogueState::CorruptPointer;
+    }
+    match verify_bundle(library, &pointer.schema_id) {
+        Ok(catalogue) if catalogue.status == "complete" => {
+            ActiveCatalogueState::Verified(catalogue)
+        }
+        Ok(catalogue) => ActiveCatalogueState::Partial(catalogue),
+        Err(VerifyFailure::Invalid(_)) => ActiveCatalogueState::InvalidBundle,
+        Err(VerifyFailure::Unreadable(_)) => ActiveCatalogueState::UnreadableBundle,
+    }
+}
+
 /// List retained compiled bundles (newest first).
 pub fn list_compiled(library: &YangLibrary) -> Result<Vec<CompiledBundleInfo>> {
     refresh_compiled_index(library)?;

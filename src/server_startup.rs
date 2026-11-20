@@ -2375,6 +2375,7 @@ async fn publish_blocked_plan_tx(
     // when no Subscribe RPC is ever attempted.
     if let Some(handle) = lifecycle {
         subscriber::SessionEmitter::for_plan(handle, &target.address, &plan.plan_id)
+            .with_schema_binding(target.schema_binding.clone())
             .emit_plan(state, detail.clone())
             .await;
     }
@@ -2417,6 +2418,19 @@ pub(super) async fn spawn_subscriber(
             &target,
             "disabled",
             "inventory-only asset has no collection plan".to_string(),
+            lifecycle,
+        )
+        .await;
+        return Ok(());
+    }
+    if let Some(reason) = subscriber::schema_binding_block_reason(&target) {
+        tracing::info!(address = %address, reason, "schema-bound assignment blocked — no subscriber");
+        stop_subscriber(&address, subscribers).await;
+        publish_blocked_plan_tx(
+            subscription_plan_tx,
+            &target,
+            "rejected",
+            reason.to_string(),
             lifecycle,
         )
         .await;
@@ -2506,7 +2520,8 @@ pub(super) async fn spawn_subscriber(
         target.acquisition,
         lifecycle.cloned(),
         std::sync::Arc::clone(&execution_seq),
-    );
+    )
+    .with_schema_binding(target.schema_binding.clone());
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
     subscribers.insert(

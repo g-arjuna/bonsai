@@ -1350,6 +1350,10 @@ fn required_role(method: &str, path: &str) -> Role {
         // M6C-1: applicability refresh performs live device I/O (gNMI
         // Get) — administrative only. Reads stay Viewer via the GET rule.
         || path.ends_with("/yang-applicability/refresh")
+        // M6C-2: schema-bound approval activation and revocation mutate
+        // durable acquisition authority — administrative only.
+        || path.ends_with("/schema-binding/activate")
+        || path.ends_with("/schema-binding/revoke")
     {
         return Role::Admin;
     }

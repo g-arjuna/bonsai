@@ -15,15 +15,17 @@ use crate::registry::canonical_device_key;
 use crate::sqlite_store::{SqliteStore, YangApplicabilitySnapshotRow};
 use crate::yang::YangLibrary;
 use crate::yang_library::probe_yang_library;
+use crate::yang_schema::active_catalogue_state;
 use crate::yang_schema::applicability::{
     self, ApplicabilityResult, CapabilityEvidence, DeviceBinding, YangLibraryOutcome,
 };
-use crate::yang_schema::{self, CompiledCatalogue};
 
 /// Evidence older than this is reported stale on read (never silently
 /// current). Chosen conservatively: device module-sets change on
 /// software upgrades, not minutes.
 pub const EVIDENCE_MAX_AGE_NS: i64 = 24 * 60 * 60 * 1_000_000_000;
+/// Small tolerated clock skew for evidence timestamps.
+pub const FUTURE_EVIDENCE_TOLERANCE_NS: i64 = 60 * 1_000_000_000;
 
 /// Inputs for one bounded refresh. The caller resolves credentials and
 /// builds the DiscoveryInput through the existing secure path — this
@@ -95,6 +97,10 @@ pub struct ApplicabilitySnapshotView {
     pub freshness_reasons: Vec<applicability::ReasonCode>,
     /// schema_id of the currently active catalogue at read time.
     pub active_schema_id: Option<String>,
+    /// Why the active catalogue could not be used as authority, when it
+    /// could not. `None` only for a verified complete active catalogue.
+    #[serde(default)]
+    pub catalogue_state: Option<applicability::ReasonCode>,
 }
 
 /// Perform a bounded refresh for one device: capabilities → YANG
@@ -119,12 +125,12 @@ pub async fn refresh_device_applicability(
     let device_key = device.identity_key();
 
     // ── Catalogue (verified, fail-closed) ─────────────────────────────
-    let (catalogue, catalogue_diagnostics) = match yang_schema::load_active_catalogue(input.library)
-    {
-        Ok(Some(c)) => (Some(c), Vec::new()),
-        Ok(None) => (None, vec!["no active compiled catalogue".to_string()]),
-        Err(e) => (None, vec![format!("active catalogue load failed: {e:#}")]),
-    };
+    let catalogue_state = active_catalogue_state(input.library);
+    let catalogue_diagnostics = catalogue_state
+        .reason_code()
+        .map(|rc| vec![format!("active catalogue state: {}", rc.as_str())])
+        .unwrap_or_default();
+    let catalogue = catalogue_state.catalogue().cloned();
 
     // ── Capabilities evidence ─────────────────────────────────────────
     let mut diagnostics = catalogue_diagnostics.clone();
@@ -181,7 +187,7 @@ pub async fn refresh_device_applicability(
         yang_library: Some(yang_library),
     };
 
-    let row = snapshot_to_row(&snapshot, snapshot_id_placeholder());
+    let row = snapshot_to_row(&snapshot, snapshot_id_placeholder())?;
     let id = input
         .store
         .save_yang_applicability_snapshot(&row)
@@ -197,8 +203,23 @@ fn snapshot_id_placeholder() -> i64 {
 
 /// Serialize a snapshot into its storage row. Payloads are bounded by
 /// the resolver's result caps; oversized serialization fails closed.
-pub fn snapshot_to_row(snap: &ApplicabilitySnapshot, id: i64) -> YangApplicabilitySnapshotRow {
-    YangApplicabilitySnapshotRow {
+pub fn snapshot_to_row(
+    snap: &ApplicabilitySnapshot,
+    id: i64,
+) -> Result<YangApplicabilitySnapshotRow> {
+    let result_json =
+        serde_json::to_string(&snap.result).context("serialize applicability result")?;
+    let capabilities_json = snap
+        .capabilities
+        .as_ref()
+        .map(|c| serde_json::to_string(c).context("serialize capabilities evidence"))
+        .transpose()?;
+    let yang_library_json = snap
+        .yang_library
+        .as_ref()
+        .map(|y| serde_json::to_string(y).context("serialize yang library evidence"))
+        .transpose()?;
+    Ok(YangApplicabilitySnapshotRow {
         id,
         device_key: snap.device_key.clone(),
         device_address: snap.device_address.clone(),
@@ -208,21 +229,15 @@ pub fn snapshot_to_row(snap: &ApplicabilitySnapshot, id: i64) -> YangApplicabili
         datastore: snap.datastore.clone(),
         overall_status: snap.overall_status.clone(),
         outcome: snap.outcome.clone(),
-        result_json: serde_json::to_string(&snap.result).unwrap_or_else(|_| "{}".to_string()),
-        capabilities_json: snap
-            .capabilities
-            .as_ref()
-            .and_then(|c| serde_json::to_string(c).ok()),
-        yang_library_json: snap
-            .yang_library
-            .as_ref()
-            .and_then(|y| serde_json::to_string(y).ok()),
+        result_json,
+        capabilities_json,
+        yang_library_json,
         evidence_fingerprint: snap.evidence_fingerprint.clone(),
         observed_at_ns: snap.observed_at_ns,
         evaluated_at_ns: snap.evaluated_at_ns,
         error: snap.error.clone(),
         created_at_ns: snap.created_at_ns,
-    }
+    })
 }
 
 /// Deserialize a stored row back into a snapshot. Returns Err on
@@ -272,6 +287,10 @@ pub fn evaluate_freshness(
     now_ns: i64,
 ) -> (SnapshotFreshness, Vec<applicability::ReasonCode>) {
     let mut reasons = Vec::new();
+    // Result version must be one this build can interpret.
+    if snapshot.result.result_version != applicability::APPLICABILITY_RESULT_VERSION {
+        reasons.push(applicability::ReasonCode::CatalogueIntegrityFailure);
+    }
     // Schema version changed: snapshot bound to a different catalogue.
     if let (Some(snap_schema), Some(active)) = (&snapshot.schema_id, active_schema_id)
         && snap_schema != active
@@ -279,14 +298,31 @@ pub fn evaluate_freshness(
         reasons.push(applicability::ReasonCode::SchemaVersionChanged);
     }
     // Evidence aged beyond policy.
-    if let Some(observed) = snapshot.observed_at_ns
-        && now_ns.saturating_sub(observed) > EVIDENCE_MAX_AGE_NS
-    {
+    if let Some(observed) = snapshot.observed_at_ns {
+        let age = now_ns.saturating_sub(observed);
+        if age > EVIDENCE_MAX_AGE_NS {
+            reasons.push(applicability::ReasonCode::EvidenceExpired);
+        }
+        // Future-dated evidence is invalid outside a small clock-skew
+        // tolerance; it cannot prove freshness.
+        if observed > now_ns.saturating_add(FUTURE_EVIDENCE_TOLERANCE_NS) {
+            reasons.push(applicability::ReasonCode::EvidenceExpired);
+        }
+    } else {
+        // Missing observation timestamp can never prove freshness.
         reasons.push(applicability::ReasonCode::EvidenceExpired);
     }
-    // No usable observed timestamp at all → cannot prove freshness.
-    if snapshot.observed_at_ns.is_none() && !reasons.is_empty() {
-        // covered by schema change; nothing extra
+    // Conflicted/unsupported resolver outcomes are not eligible evidence.
+    if matches!(
+        snapshot.result.overall_status,
+        applicability::ApplicabilityStatus::Conflicted
+            | applicability::ApplicabilityStatus::Stale
+            | applicability::ApplicabilityStatus::Unknown
+    ) || snapshot.result.paths_truncated
+        || snapshot.outcome != "ok"
+        || snapshot.error.is_some()
+    {
+        reasons.push(applicability::ReasonCode::EvidenceTruncated);
     }
     if reasons.is_empty() {
         (SnapshotFreshness::Fresh, reasons)
@@ -335,23 +371,49 @@ pub fn load_snapshot_view(
                 error: Some(format!("{e:#}")),
                 created_at_ns: row.created_at_ns,
             };
-            let active_schema_id = active_schema_id(library);
+            let state = active_catalogue_state(library);
+            let active_schema_id = state.schema_id().map(str::to_string);
             return Ok(Some(ApplicabilitySnapshotView {
                 snapshot: stub,
                 freshness: SnapshotFreshness::Invalid,
                 freshness_reasons: vec![applicability::ReasonCode::CatalogueIntegrityFailure],
                 active_schema_id,
+                catalogue_state: state.reason_code(),
             }));
         }
     };
-    let active_schema_id = active_schema_id(library);
-    let (freshness, freshness_reasons) =
-        evaluate_freshness(&snapshot, active_schema_id.as_deref(), now_ns);
+    let state = active_catalogue_state(library);
+    let active_schema_id = state.schema_id().map(str::to_string);
+    let mut freshness_reasons =
+        evaluate_freshness(&snapshot, active_schema_id.as_deref(), now_ns).1;
+    // Bind the snapshot to the CURRENT device/collector identity. A
+    // snapshot observed for another device or collector is never
+    // reusable authority for this target.
+    if snapshot.device_key != device_key
+        || snapshot.device_address != target.address
+        || snapshot.collector_id != target.collector_id
+    {
+        freshness_reasons.push(applicability::ReasonCode::IdentityAmbiguity);
+    }
+    if snapshot.schema_id.is_none() || snapshot.evidence_fingerprint.is_empty() {
+        freshness_reasons.push(applicability::ReasonCode::CatalogueIntegrityFailure);
+    }
+    if let Some(rc) = state.reason_code() {
+        freshness_reasons.push(rc);
+    }
+    freshness_reasons.sort();
+    freshness_reasons.dedup();
+    let freshness = if freshness_reasons.is_empty() {
+        SnapshotFreshness::Fresh
+    } else {
+        SnapshotFreshness::Stale
+    };
     Ok(Some(ApplicabilitySnapshotView {
         snapshot,
         freshness,
         freshness_reasons,
         active_schema_id,
+        catalogue_state: state.reason_code(),
     }))
 }
 
@@ -372,11 +434,4 @@ fn empty_result(err: &anyhow::Error) -> ApplicabilityResult {
         evaluated_at_ns: 0,
         evidence_observed_at_ns: None,
     }
-}
-
-fn active_schema_id(library: &YangLibrary) -> Option<String> {
-    yang_schema::load_active_catalogue(library)
-        .ok()
-        .flatten()
-        .map(|c: CompiledCatalogue| c.schema_id)
 }

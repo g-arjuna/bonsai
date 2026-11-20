@@ -757,7 +757,7 @@ fn t9_snapshot_persistence_restart_and_staleness() {
         error: None,
         created_at_ns: 10_000,
     };
-    let row = yang_applicability::snapshot_to_row(&snap, 0);
+    let row = yang_applicability::snapshot_to_row(&snap, 0).unwrap();
     let id = store.save_yang_applicability_snapshot(&row).unwrap();
     assert!(id > 0);
 
@@ -805,7 +805,7 @@ fn t9_snapshot_persistence_restart_and_staleness() {
         let mut s = snap.clone();
         s.evaluated_at_ns = 20_000 + i;
         s.created_at_ns = 20_000 + i;
-        let r = yang_applicability::snapshot_to_row(&s, 0);
+        let r = yang_applicability::snapshot_to_row(&s, 0).unwrap();
         store2.save_yang_applicability_snapshot(&r).unwrap();
     }
     let history = store2

@@ -1332,6 +1332,7 @@ pub(super) fn target_from_request(
         inventory_tenant: None,
         paths: vec![],
         optional: false,
+        schema_binding: None,
     })
 }
 /// Parse the optional security intent for managed-device requests.

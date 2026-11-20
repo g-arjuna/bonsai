@@ -377,6 +377,7 @@ mod tests {
             security: None,
             client_cert: None,
             client_key: None,
+            schema_binding: None,
         };
         let gnmi = GnmiReadinessReport {
             service_status: "reachable".to_string(),

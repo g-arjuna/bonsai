@@ -1575,6 +1575,7 @@ mod tests {
             security: None,
             client_cert: None,
             client_key: None,
+            schema_binding: None,
         }];
         let map = SnmpTargetMap::new(&targets);
         let resolved = map.resolve(
@@ -1646,6 +1647,7 @@ mod tests {
             security: None,
             client_cert: None,
             client_key: None,
+            schema_binding: None,
         };
         // Two tenants reuse the same private IP.
         let map = SnmpTargetMap::new(&[

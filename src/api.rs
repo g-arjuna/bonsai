@@ -24,7 +24,7 @@ use crate::store::BonsaiStore;
 use crate::telemetry_identity::VerifiedIngressPrincipal;
 use crate::write_coordinator::{PriorityWriteRequest, WriteCoordinator};
 
-pub const PROTOCOL_VERSION_CURRENT: u32 = 4;
+pub const PROTOCOL_VERSION_CURRENT: u32 = 5;
 pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_CURRENT;
 
 /// Minimum collector protocol version that understands the acquisition
@@ -48,6 +48,13 @@ pub const SECURITY_CONTRACT_VERSION: u32 = 3;
 /// explicit rejected/unavailable outcome — a rejected assignment must
 /// never be delivered to them (it would be misread as usable).
 pub const ASSIGNMENT_LIFECYCLE_CONTRACT_VERSION: u32 = 4;
+
+/// Minimum collector protocol version that understands the schema-bound
+/// acquisition contract (`ManagedDevice.schema_binding_*`, lifecycle
+/// binding echo). A collector below this version would ignore the
+/// approval binding and could execute an unapproved manifest, so
+/// schema-bound assignments must never be delivered to it.
+pub const SCHEMA_BOUND_CONTRACT_VERSION: u32 = 5;
 
 /// Version compatibility result. Major skew (>= 10 apart) is a hard error;
 /// any other mismatch is a warning; matching versions are compatible.
@@ -2260,6 +2267,40 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 continue;
             }
 
+            // M6C-2 schema-bound authority: the durable approval on the
+            // assigned target is the only binding Core trusts. A bound
+            // device must echo the exact current approval on every
+            // lifecycle event; an unbound device must not carry binding
+            // claims at all. Revoked/stale/forged/partial echoes fail
+            // closed before any manifest or session state is applied.
+            let schema_binding = schema_binding_from_lifecycle_event(&event);
+            let bound_binding = assigned_target
+                .as_ref()
+                .and_then(|t| t.schema_binding.as_ref());
+            let binding_ok = match (bound_binding, schema_binding.as_ref()) {
+                (Some(binding), Some(echo)) => {
+                    schema_binding_echo_matches(binding, echo, grant.collector_id())
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if !binding_ok {
+                rejected += 1;
+                metrics::counter!(
+                    "bonsai_subscription_lifecycle_rejected_total",
+                    "reason" => "schema_binding_mismatch"
+                )
+                .increment(1);
+                tracing::warn!(
+                    collector_id = %grant.collector_id(),
+                    device = %event.device_address,
+                    bound = bound_binding.is_some(),
+                    echoed = schema_binding.is_some(),
+                    "lifecycle event denied: schema binding does not match durable approval"
+                );
+                continue;
+            }
+
             // B3: a manifest-carrying event must prove its plan_id is
             // the deterministic identity of the normalized submitted
             // manifest under the declared acquisition intent. A mismatch
@@ -2386,20 +2427,39 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 if acquisition == crate::config::AcquisitionMode::Explicit
                     && let Some(target) = assigned_target.as_ref()
                 {
+                    let exact_schema_bound = target
+                        .schema_binding
+                        .as_ref()
+                        .is_some_and(|b| b.mode == "schema_bound");
                     match crate::subscriber::authorized_explicit_entries(target) {
                         Ok(authorized) => {
-                            let broadened = entries.iter().any(|e| !authorized.contains(e));
-                            if broadened {
+                            // Schema-bound execution must submit the exact
+                            // approved manifest — no broadening AND no
+                            // narrowing/omission. Legacy explicit plans keep
+                            // the documented authorized-subset contract.
+                            let invalid = if exact_schema_bound {
+                                let submitted: std::collections::HashSet<_> =
+                                    entries.iter().cloned().collect();
+                                submitted != authorized || entries.len() != authorized.len()
+                            } else {
+                                entries.iter().any(|e| !authorized.contains(e))
+                            };
+                            if invalid {
                                 rejected += 1;
                                 metrics::counter!(
                                     "bonsai_subscription_lifecycle_rejected_total",
-                                    "reason" => "manifest_broadens_assignment"
+                                    "reason" => if exact_schema_bound {
+                                        "manifest_not_approved"
+                                    } else {
+                                        "manifest_broadens_assignment"
+                                    }
                                 )
                                 .increment(1);
                                 tracing::warn!(
                                     collector_id = %grant.collector_id(),
                                     device = %event.device_address,
-                                    "lifecycle event denied: explicit manifest exceeds authorized selection"
+                                    exact_schema_bound,
+                                    "lifecycle event denied: manifest does not equal the authorized selection"
                                 );
                                 continue;
                             }
@@ -2442,6 +2502,7 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 detail: event.detail,
                 submitted_paths,
                 acquisition: event.acquisition,
+                schema_binding,
             };
             let outcome = self.session_registry.apply(&internal, true);
             match &outcome {
@@ -2857,6 +2918,61 @@ pub fn managed_device_from_target(target: &TargetConfig) -> ManagedDevice {
             .unwrap_or_default(),
         client_cert: target.client_cert.clone().unwrap_or_default(),
         client_key: target.client_key.clone().unwrap_or_default(),
+        schema_binding_mode: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.mode.clone())
+            .unwrap_or_default(),
+        schema_id: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.schema_id.clone())
+            .unwrap_or_default(),
+        snapshot_id: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.snapshot_id)
+            .unwrap_or_default(),
+        content_id: target
+            .schema_binding
+            .as_ref()
+            .and_then(|b| b.content_id.clone())
+            .unwrap_or_default(),
+        datastore: target
+            .schema_binding
+            .as_ref()
+            .and_then(|b| b.datastore.clone())
+            .unwrap_or_default(),
+        evidence_fingerprint: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.evidence_fingerprint.clone())
+            .unwrap_or_default(),
+        plan_id: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.plan_id.clone())
+            .unwrap_or_default(),
+        binding_fingerprint: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.binding_fingerprint.clone())
+            .unwrap_or_default(),
+        approval_revision: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.approval_revision)
+            .unwrap_or_default(),
+        approved_by: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.approved_by.clone())
+            .unwrap_or_default(),
+        approved_at_ns: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.approved_at_ns)
+            .unwrap_or_default(),
     }
 }
 
@@ -2868,6 +2984,7 @@ pub fn target_from_managed_device(
         return Err("device.address is required");
     }
 
+    let schema_binding = schema_binding_from_proto(&device);
     Ok(TargetConfig {
         address: device.address,
         enabled: device.enabled.unwrap_or(true),
@@ -2919,6 +3036,126 @@ pub fn target_from_managed_device(
         inventory_tenant: None,
         paths: vec![],
         optional: false,
+        schema_binding,
+    })
+}
+
+fn schema_binding_from_lifecycle_event(
+    event: &SubscriptionLifecycleEvent,
+) -> Option<crate::config::SchemaBindingConfig> {
+    let mode = event.schema_binding_mode.trim();
+    if mode.is_empty() {
+        return None;
+    }
+    if mode != "schema_bound" {
+        return Some(crate::config::SchemaBindingConfig {
+            mode: mode.to_string(),
+            ..Default::default()
+        });
+    }
+    let valid = !event.schema_id.trim().is_empty()
+        && !event.evidence_fingerprint.trim().is_empty()
+        && !event.binding_fingerprint.trim().is_empty()
+        && !event.schema_binding_plan_id.trim().is_empty()
+        && event.approval_revision > 0
+        && !event.approved_by.trim().is_empty()
+        && event.snapshot_id > 0;
+    Some(crate::config::SchemaBindingConfig {
+        mode: if valid {
+            "schema_bound".to_string()
+        } else {
+            "schema_bound_invalid".to_string()
+        },
+        schema_id: event.schema_id.clone(),
+        snapshot_id: event.snapshot_id,
+        content_id: None,
+        datastore: option_string(event.datastore.clone()),
+        evidence_fingerprint: event.evidence_fingerprint.clone(),
+        plan_id: event.schema_binding_plan_id.clone(),
+        binding_fingerprint: event.binding_fingerprint.clone(),
+        approval_revision: event.approval_revision,
+        collector_id: option_string(event.collector_id.clone()),
+        approved_by: event.approved_by.clone(),
+        approved_at_ns: 0,
+    })
+}
+
+/// Exact authority-field comparison between the durable approved binding
+/// on the assigned target and the collector's lifecycle echo. Fields that
+/// are not part of the wire echo (content_id, approved_at_ns) are not
+/// compared; every echoed authority field must match the CURRENT durable
+/// approval, and both sides must name the authenticated collector.
+fn schema_binding_echo_matches(
+    binding: &crate::config::SchemaBindingConfig,
+    echo: &crate::config::SchemaBindingConfig,
+    collector_id: &str,
+) -> bool {
+    binding.mode == "schema_bound"
+        && echo.mode == "schema_bound"
+        && binding.schema_id == echo.schema_id
+        && binding.snapshot_id == echo.snapshot_id
+        && binding.datastore == echo.datastore
+        && binding.evidence_fingerprint == echo.evidence_fingerprint
+        && binding.plan_id == echo.plan_id
+        && binding.binding_fingerprint == echo.binding_fingerprint
+        && binding.approval_revision == echo.approval_revision
+        && binding.approved_by == echo.approved_by
+        && binding.collector_id.as_deref() == Some(collector_id)
+        && echo.collector_id.as_deref() == Some(collector_id)
+}
+
+fn schema_binding_from_proto(device: &ManagedDevice) -> Option<crate::config::SchemaBindingConfig> {
+    let mode = device.schema_binding_mode.trim();
+    if mode.is_empty() {
+        return None;
+    }
+    if mode != "schema_bound" {
+        // Any non-empty binding claim that is not the exact approved mode
+        // is an invalid binding — never silently treated as unbound.
+        return Some(crate::config::SchemaBindingConfig {
+            mode: mode.to_string(),
+            ..Default::default()
+        });
+    }
+    // Fail closed on a partial binding: every authority field must be
+    // present or the collector must not execute the assignment.
+    if device.schema_id.trim().is_empty()
+        || device.evidence_fingerprint.trim().is_empty()
+        || device.plan_id.trim().is_empty()
+        || device.binding_fingerprint.trim().is_empty()
+        || device.approval_revision == 0
+        || device.snapshot_id <= 0
+        || device.approved_by.trim().is_empty()
+        || device.approved_at_ns <= 0
+    {
+        return Some(crate::config::SchemaBindingConfig {
+            mode: "schema_bound_invalid".to_string(),
+            schema_id: device.schema_id.clone(),
+            snapshot_id: device.snapshot_id,
+            content_id: option_string(device.content_id.clone()),
+            datastore: option_string(device.datastore.clone()),
+            evidence_fingerprint: device.evidence_fingerprint.clone(),
+            plan_id: device.plan_id.clone(),
+            binding_fingerprint: device.binding_fingerprint.clone(),
+            approval_revision: device.approval_revision,
+            collector_id: option_string(device.collector_id.clone()),
+            approved_by: device.approved_by.clone(),
+            approved_at_ns: device.approved_at_ns,
+        });
+    }
+    Some(crate::config::SchemaBindingConfig {
+        mode: "schema_bound".to_string(),
+        schema_id: device.schema_id.clone(),
+        snapshot_id: device.snapshot_id,
+        content_id: option_string(device.content_id.clone()),
+        datastore: option_string(device.datastore.clone()),
+        evidence_fingerprint: device.evidence_fingerprint.clone(),
+        plan_id: device.plan_id.clone(),
+        binding_fingerprint: device.binding_fingerprint.clone(),
+        approval_revision: device.approval_revision,
+        collector_id: option_string(device.collector_id.clone()),
+        approved_by: device.approved_by.clone(),
+        approved_at_ns: device.approved_at_ns,
     })
 }
 
@@ -3173,5 +3410,76 @@ fn ts_val(v: &Value) -> i64 {
     match v {
         Value::TimestampNs(dt) => dt.unix_timestamp_nanos() as i64,
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod schema_binding_tests {
+    use super::{pb, schema_binding_echo_matches, schema_binding_from_lifecycle_event};
+    use crate::config::SchemaBindingConfig;
+
+    fn binding() -> SchemaBindingConfig {
+        SchemaBindingConfig {
+            mode: "schema_bound".to_string(),
+            schema_id: "a".repeat(64),
+            snapshot_id: 7,
+            content_id: Some("content-1".to_string()),
+            datastore: Some("ietf-datastores:operational".to_string()),
+            evidence_fingerprint: "ev-fp".to_string(),
+            plan_id: "approved-plan".to_string(),
+            binding_fingerprint: "bind-fp".to_string(),
+            approval_revision: 2,
+            collector_id: Some("c1".to_string()),
+            approved_by: "admin".to_string(),
+            approved_at_ns: 123,
+        }
+    }
+
+    fn lifecycle_event() -> pb::SubscriptionLifecycleEvent {
+        pb::SubscriptionLifecycleEvent {
+            collector_id: "c1".to_string(),
+            device_address: "10.0.0.9:57400".to_string(),
+            plan_id: "submitted-manifest-plan".to_string(),
+            session_id: "sess-1".to_string(),
+            state: "submitted".to_string(),
+            schema_binding_mode: "schema_bound".to_string(),
+            schema_id: "a".repeat(64),
+            snapshot_id: 7,
+            datastore: "ietf-datastores:operational".to_string(),
+            evidence_fingerprint: "ev-fp".to_string(),
+            binding_fingerprint: "bind-fp".to_string(),
+            approval_revision: 2,
+            approved_by: "admin".to_string(),
+            schema_binding_plan_id: "approved-plan".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn lifecycle_echo_uses_dedicated_binding_plan_id() {
+        let event = lifecycle_event();
+        let echo = schema_binding_from_lifecycle_event(&event).expect("echo");
+        assert_eq!(echo.mode, "schema_bound");
+        assert_eq!(echo.plan_id, "approved-plan");
+        assert_ne!(echo.plan_id, event.plan_id);
+        assert!(schema_binding_echo_matches(&binding(), &echo, "c1"));
+    }
+
+    #[test]
+    fn forged_or_partial_echo_fails_closed() {
+        let event = lifecycle_event();
+        let echo = schema_binding_from_lifecycle_event(&event).expect("echo");
+        assert!(!schema_binding_echo_matches(&binding(), &echo, "c2"));
+
+        let mut stale = event.clone();
+        stale.approval_revision = 1;
+        let echo = schema_binding_from_lifecycle_event(&stale).expect("echo");
+        assert!(!schema_binding_echo_matches(&binding(), &echo, "c1"));
+
+        let mut partial = event;
+        partial.schema_binding_plan_id.clear();
+        let echo = schema_binding_from_lifecycle_event(&partial).expect("echo");
+        assert_eq!(echo.mode, "schema_bound_invalid");
+        assert!(!schema_binding_echo_matches(&binding(), &echo, "c1"));
     }
 }

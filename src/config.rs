@@ -2056,6 +2056,42 @@ pub struct TargetConfig {
     /// Inventory-declared tenant label. `None` when the source has none.
     #[serde(default)]
     pub inventory_tenant: Option<String>,
+    /// M6C-2 schema-bound acquisition approval. Present only after an
+    /// Admin activation committed a verified-catalogue + fresh-evidence
+    /// plan binding; absent means legacy acquisition semantics.
+    #[serde(default)]
+    pub schema_binding: Option<SchemaBindingConfig>,
+}
+
+/// Durable identity of an approved schema-bound acquisition plan.
+/// The exact executable manifest remains `selected_paths`; this record
+/// binds that manifest to catalogue/evidence/collector/approval state.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SchemaBindingConfig {
+    /// Always "schema_bound" for an active approval.
+    #[serde(default)]
+    pub mode: String,
+    pub schema_id: String,
+    #[serde(default)]
+    pub snapshot_id: i64,
+    #[serde(default)]
+    pub content_id: Option<String>,
+    #[serde(default)]
+    pub datastore: Option<String>,
+    #[serde(default)]
+    pub evidence_fingerprint: String,
+    #[serde(default)]
+    pub plan_id: String,
+    #[serde(default)]
+    pub binding_fingerprint: String,
+    #[serde(default)]
+    pub approval_revision: u64,
+    #[serde(default)]
+    pub collector_id: Option<String>,
+    #[serde(default)]
+    pub approved_by: String,
+    #[serde(default)]
+    pub approved_at_ns: i64,
 }
 
 /// Operator acquisition intent for gNMI telemetry collection.

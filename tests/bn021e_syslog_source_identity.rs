@@ -76,6 +76,7 @@ fn target(hostname: &str, address: &str, vendor: &str, site: &str) -> TargetConf
         created_by: String::new(),
         updated_by: String::new(),
         last_operator_action: String::new(),
+        schema_binding: None,
     }
 }
 

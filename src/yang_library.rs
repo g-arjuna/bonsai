@@ -415,6 +415,15 @@ fn reconstruct_tree(
     let mut json_bytes = 0usize;
 
     for notification in &response.notification {
+        // RFC 6901-style gNMI relative-path rule: when a notification
+        // carries a prefix, each update path is relative to it. Some
+        // implementations send the full path in `update.path` anyway;
+        // joining is still correct because an absolute update path is
+        // treated as already rooted (see `join_path_segments`).
+        let prefix_segments = match notification.prefix.as_ref() {
+            Some(prefix) => Some(path_segments(prefix)?),
+            None => None,
+        };
         for update in &notification.update {
             update_count += 1;
             if update_count > MAX_UPDATES {
@@ -423,7 +432,18 @@ fn reconstruct_tree(
             let (Some(update_path), Some(update_val)) = (&update.path, &update.val) else {
                 continue;
             };
-            let segments = path_segments(update_path)?;
+            let mut segments = prefix_segments.clone().unwrap_or_default();
+            let update_segments = path_segments(update_path)?;
+            if update_segments.first().is_some_and(|(name, _)| name == "/") {
+                // Absolute update path replaces the prefix rather than
+                // being appended to it.
+                segments = update_segments;
+            } else {
+                segments.extend(update_segments);
+            }
+            if segments.is_empty() {
+                return Err("empty reconstructed path".to_string());
+            }
             let value = typed_value_to_json(update_val, &mut json_bytes)?;
             insert_at_path(&mut root, &segments, value)?;
         }

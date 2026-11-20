@@ -329,6 +329,15 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
     if !catalogue_ok {
         rejection_reasons.push("catalogue_not_authoritative".to_string());
     }
+    if target
+        .collector_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
+        rejection_reasons.push("missing_collector".to_string());
+    }
 
     let snapshot = input.snapshot;
     let fresh = matches!(input.freshness, Some(SnapshotFreshness::Fresh));
@@ -339,7 +348,9 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
         }
     }
     if let Some(snap) = snapshot {
-        if snap.result.result_version != crate::yang_schema::applicability::APPLICABILITY_RESULT_VERSION {
+        if snap.result.result_version
+            != crate::yang_schema::applicability::APPLICABILITY_RESULT_VERSION
+        {
             rejection_reasons.push("unsupported_result_version".to_string());
         }
         if snap.device_key != device_key || snap.device_address != target.address {
@@ -545,28 +556,14 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
                 reject_reasons_from_status(result.status),
                 Vec::new(),
             ));
-            rejection_reasons.push(format!(
-                "path[{index}]:{}",
-                result.status.as_str()
-            ));
+            rejection_reasons.push(format!("path[{index}]:{}", result.status.as_str()));
             continue;
         }
-        if result.keys.is_empty()
-            && path.elem.iter().any(|e| !e.key.is_empty())
-        {
-            decisions.push(decision(
-                index,
-                selected,
-                PathDecisionKind::ListKeysUnresolved,
-                false,
-                Some(schema_path),
-                Some(module),
-                vec!["list_keys_unresolved".to_string()],
-                Vec::new(),
-            ));
-            rejection_reasons.push(format!("path[{index}]:list_keys_unresolved"));
-            continue;
-        }
+        // List-key correctness is enforced by `template_matches`: a selected
+        // gNMI path may only carry key names the schema template declares, and
+        // a list segment selected without keys matches no template at all
+        // (`no_exact_schema_path_result`). `PathResult::keys` only describes
+        // the matched node's own list keys, so it cannot gate ancestor keys.
         let entry = catalogue_entry_for(input.catalogue, &schema_path);
         let mut path_warnings = Vec::new();
         if entry.is_none() {
@@ -583,9 +580,7 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
             rejection_reasons.push(format!("path[{index}]:schema_path_not_in_catalogue"));
             continue;
         }
-        if !selected.origin.is_empty()
-            && !gnmi_path::valid_origin(&selected.origin)
-        {
+        if !selected.origin.is_empty() && !gnmi_path::valid_origin(&selected.origin) {
             decisions.push(decision(
                 index,
                 selected,
@@ -625,8 +620,8 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
         let mode = selected.mode.trim().to_ascii_uppercase();
         let interval = selected.sample_interval_ns;
         entries.push((
-            selected.origin.clone(),
-            selected.path.clone(),
+            path.origin.clone(),
+            crate::subscriber::path_to_string(&path),
             mode.clone(),
             interval,
         ));
@@ -656,8 +651,13 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
     let plan_id = plan_id_for(AcquisitionMode::Explicit, &entries);
     let binding_fingerprint = sha256_hex(&[
         &input.catalogue.schema_id,
-        snapshot.map(|s| s.evidence_fingerprint.as_str()).unwrap_or(""),
-        snapshot.map(|s| s.snapshot_id.to_string()).unwrap_or_default().as_str(),
+        snapshot
+            .map(|s| s.evidence_fingerprint.as_str())
+            .unwrap_or(""),
+        snapshot
+            .map(|s| s.snapshot_id.to_string())
+            .unwrap_or_default()
+            .as_str(),
         snapshot.and_then(|s| s.datastore.as_deref()).unwrap_or(""),
         target.collector_id.as_deref().unwrap_or(""),
         &device_key,
@@ -685,7 +685,10 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
             .datastore
             .map(str::to_string)
             .or_else(|| snapshot.and_then(|s| s.datastore.clone())),
-        collector_id: target.collector_id.clone().or_else(|| input.collector_id.map(str::to_string)),
+        collector_id: target
+            .collector_id
+            .clone()
+            .or_else(|| input.collector_id.map(str::to_string)),
         acquisition_mode: AcquisitionMode::Explicit.as_str().to_string(),
         selected_paths: input.selected_paths.to_vec(),
         proposed_subscriptions: proposed,
@@ -786,7 +789,8 @@ mod tests {
                     device_revision: Some("2024-01-01".to_string()),
                     organization: String::new(),
                     namespace: "https://openconfig.net/yang/interfaces".to_string(),
-                    classification: crate::yang_schema::applicability::ModuleClassification::Implemented,
+                    classification:
+                        crate::yang_schema::applicability::ModuleClassification::Implemented,
                     enabled_features: Vec::new(),
                     features_state_known: true,
                     deviations: Vec::new(),
@@ -860,6 +864,22 @@ mod tests {
         assert!(first.activation_permitted, "{:?}", first.rejection_reasons);
         assert_eq!(first.plan_id, second.plan_id);
         assert_eq!(first.binding_fingerprint, second.binding_fingerprint);
+        // The approved plan identity must be the same normalized manifest
+        // identity the subscriber submits on the wire — never a raw
+        // selected_paths spelling that lifecycle fencing cannot match.
+        let manifest_entries = vec![(
+            "oc-if".to_string(),
+            "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets".to_string(),
+            "SAMPLE".to_string(),
+            30_000_000_000_u64,
+        )];
+        assert_eq!(
+            first.plan_id,
+            crate::subscriber::acquisition_plan_id(
+                crate::config::AcquisitionMode::Explicit,
+                &manifest_entries
+            )
+        );
         assert_eq!(first.proposed_subscriptions.len(), 1);
         assert_eq!(first.decisions[0].kind, PathDecisionKind::Eligible);
     }
@@ -885,7 +905,11 @@ mod tests {
         };
         let eval = evaluate_schema_plan(&input);
         assert!(!eval.activation_permitted);
-        assert!(eval.rejection_reasons.iter().any(|r| r == "snapshot_not_fresh"));
+        assert!(
+            eval.rejection_reasons
+                .iter()
+                .any(|r| r == "snapshot_not_fresh")
+        );
     }
 
     #[test]
@@ -920,6 +944,44 @@ mod tests {
         };
         let eval = evaluate_schema_plan(&input);
         assert!(!eval.activation_permitted);
-        assert_eq!(eval.decisions[0].kind, PathDecisionKind::ConfigurationDataExcluded);
+        assert_eq!(
+            eval.decisions[0].kind,
+            PathDecisionKind::ConfigurationDataExcluded
+        );
+    }
+
+    #[test]
+    fn keyless_list_segment_is_rejected() {
+        let cat = catalogue();
+        let snap = snapshot();
+        let tgt = target();
+        let sel = vec![SelectedSubscriptionPath {
+            path: "/interfaces/interface/state/counters/in-octets".to_string(),
+            origin: "oc-if".to_string(),
+            provenance: String::new(),
+            mode: "SAMPLE".to_string(),
+            sample_interval_ns: 30_000_000_000,
+            rationale: "test".to_string(),
+            optional: false,
+        }];
+        let input = SchemaPlanInput {
+            catalogue: &cat,
+            snapshot: Some(&snap),
+            freshness: Some(SnapshotFreshness::Fresh),
+            freshness_reasons: &[],
+            target: &tgt,
+            selected_paths: &sel,
+            datastore: Some("ietf-datastores:operational"),
+            collector_id: Some("collector-a"),
+            expected_config_revision: None,
+            now_ns: 20,
+        };
+        let eval = evaluate_schema_plan(&input);
+        assert!(!eval.activation_permitted);
+        assert!(
+            eval.rejection_reasons
+                .iter()
+                .any(|r| r == "path[0]:no_exact_schema_path_result")
+        );
     }
 }
