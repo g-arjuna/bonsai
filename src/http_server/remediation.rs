@@ -1624,6 +1624,13 @@ pub(super) async fn list_config_items_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     if !is_admin {
         items.retain(|i| !crate::graph::is_sensitive_config_class(&i.config_class));
+        // F1/F7: names carrying tokens or auth policy inside allowed
+        // classes are redacted for non-admin readers.
+        for i in items.iter_mut() {
+            if crate::graph::PROTECTED_CONFIG_NAMES.contains(&i.name.as_str()) {
+                i.content_json = "\"[REDACTED]\"".to_string();
+            }
+        }
     }
     Ok(Json(items))
 }
@@ -1640,10 +1647,6 @@ const ALLOWED_CONFIG_CLASSES: &[&str] = &[
     "gnmi_known_issues",
     "playbook",
     "runtime_config",
-    "api_key",
-    "user",
-    "jwt_revoked",
-    "jwt_secret",
     "app_config",
 ];
 
@@ -1652,16 +1655,51 @@ pub(super) async fn upsert_config_item_handler(
     role: Option<axum::Extension<crate::http_server::auth::Role>>,
     Json(item): Json<crate::graph::ConfigItemRecord>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // BN-022: writing credential-bearing classes (users, API keys, JWT
-    // material) is admin-only; otherwise an Operator could mint credentials.
+    // SEC-20/WP1.3: authorization is enforced INSIDE the store's write
+    // boundary (`upsert_config_item_authorized`): the effective persisted
+    // identity is resolved by a targeted id lookup under the same write
+    // lock that performs the MERGE, so there is no check/write race and
+    // no full-table scan. `admin` is the caller's authenticated role.
+    //
+    // The checks below only select the correct rejection STATUS for
+    // credential classes that can never be written through this API; the
+    // store remains the authoritative boundary for the effective
+    // persisted identity on id collisions.
     let is_admin = matches!(
         role,
         Some(axum::Extension(crate::http_server::auth::Role::Admin))
     );
-    if !is_admin && crate::graph::is_sensitive_config_class(&item.config_class) {
+    let existing = state
+        .store
+        .config_item_identity(&item.id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let (eff_name, eff_class) =
+        existing.unwrap_or_else(|| (item.name.clone(), item.config_class.clone()));
+    if !is_admin
+        && (crate::graph::is_sensitive_config_class(&eff_class)
+            || crate::graph::PROTECTED_CONFIG_NAMES.contains(&eff_name.as_str()))
+    {
         return Err((
             StatusCode::FORBIDDEN,
-            "config class is restricted to admin principals".to_string(),
+            "config item is restricted to admin principals".to_string(),
+        ));
+    }
+    if crate::graph::RETIRED_CREDENTIAL_CLASSES.contains(&eff_class.as_str()) {
+        return Err((
+            StatusCode::GONE,
+            "credential classes are managed by the protected auth store; \
+             use /api/auth/* endpoints"
+                .to_string(),
+        ));
+    }
+    if crate::auth_store::PROTECTED_SECRET_CONFIG_NAMES.contains(&item.name.as_str()) {
+        return Err((
+            StatusCode::GONE,
+            "secret-bearing config names are managed by the protected auth \
+             store; use `bonsai auth set-service-token` or the documented \
+             environment override"
+                .to_string(),
         ));
     }
     if item.id.is_empty() || item.id.len() > 256 {
@@ -1687,8 +1725,17 @@ pub(super) async fn upsert_config_item_handler(
     }
     state
         .store
-        .upsert_config_item(item)
+        .upsert_config_item_authorized(item, is_admin)
         .await
         .map(|_| StatusCode::NO_CONTENT)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+        .map_err(|e| match e {
+            crate::graph::ConfigWriteRejection::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "config item is restricted to admin principals".to_string(),
+            ),
+            crate::graph::ConfigWriteRejection::Gone(msg) => (StatusCode::GONE, msg.to_string()),
+            crate::graph::ConfigWriteRejection::Store(e) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
+            }
+        })
 }

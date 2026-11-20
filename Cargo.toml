@@ -73,6 +73,17 @@ path = "src/bin/routing_service.rs"
 name = "bonsai-migrate"
 path = "src/bin/bonsai_migrate.rs"
 
+# Disposable recovery/migration fixture seeder — NOT a production
+# utility. Built only with `--features test-fixtures`; refuses to run
+# against a pre-existing database file.
+[[bin]]
+name = "wp28_fixture_seed"
+path = "src/bin/wp28_fixture_seed.rs"
+required-features = ["test-fixtures"]
+
+[features]
+test-fixtures = []
+
 [dependencies]
 rbmp-core = { workspace = true }
 rbmp-rib = { workspace = true }

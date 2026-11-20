@@ -1,0 +1,5 @@
+candidate_sha=621955fc9b683de20175bf614bc5660904745a51
+binary=/home/arjuna/Desktop/bonsai/target/debug/bonsai
+1250f03f10eaa2e70a0460b005dd445e40b6ebadde56bb43c5ff29486eec9cf8  /home/arjuna/Desktop/bonsai/target/debug/bonsai
+workdir=/tmp/bonsai-final-recovery.aJnIrs
+date=2026-11-16T03:51:32Z

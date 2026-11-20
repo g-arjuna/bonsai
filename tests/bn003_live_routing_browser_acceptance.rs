@@ -406,17 +406,8 @@ async fn test_bn003_live_routing_browser_acceptance() -> Result<()> {
         .await?;
 
     graph_store
-        .upsert_config_item(ConfigItemRecord {
-            id: "app-cfg-routing-token".to_string(),
-            config_class: "app_config".to_string(),
-            vendor: String::new(),
-            name: "routing_service_token".to_string(),
-            version: "1".to_string(),
-            content_json: "\"bn003-token\"".to_string(),
-            enabled: true,
-            created_by: "bn003-test".to_string(),
-        })
-        .await?;
+        .auth_store
+        .set_service_token("routing_service_token", "bn003-token")?;
 
     graph_store
         .upsert_config_item(ConfigItemRecord {

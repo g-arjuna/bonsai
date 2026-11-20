@@ -3150,13 +3150,31 @@ pub async fn load_projection_checkpoint(
 }
 
 /// Resolve the private routing service `(base_url, token, has_explicit_db_url)` from `GraphStore` (`app_config`) or environment (`R05`/`R06`).
+///
+/// SEC-02 fail-closed contract: a service token that EXISTS in AuthStore
+/// but cannot be decrypted — wrong at-rest key, corrupted ciphertext,
+/// unavailable store — is a hard error, never a fallback to another
+/// credential or to `BONSAI_ROUTING_SERVICE_TOKEN`. The env fallback is
+/// permitted ONLY when no stored credential exists at all (genuine
+/// absence = explicit operator configuration).
 pub async fn resolve_routing_service_endpoint_config(
     store: &crate::graph::GraphStore,
-) -> (String, Option<String>, bool) {
+) -> anyhow::Result<(String, Option<String>, bool)> {
+    // SEC-18: a graph READ ERROR is not "configuration absent". Silently
+    // defaulting to an empty item list would fall back to the env/default
+    // URL while a valid stored credential is retained — the token could
+    // then be transmitted to an unintended destination. Distinguish:
+    //   - storage unavailable  → hard error (fail closed);
+    //   - config absent        → explicit env/default fallback (unchanged).
     let items = store
         .list_config_items(Some("app_config".to_string()))
         .await
-        .unwrap_or_default();
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "routing endpoint config read failed; refusing to resolve \
+                 credentials against an unreadable graph: {e:#}"
+            )
+        })?;
     let db_url = items
         .iter()
         .find(|i| i.name == "routing_service_url" && i.enabled)
@@ -3167,23 +3185,129 @@ pub async fn resolve_routing_service_endpoint_config(
         std::env::var("BONSAI_ROUTING_SERVICE_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8081".to_string())
     });
-    let token = items
-        .iter()
-        .find(|i| {
-            (i.name == "routing_service_token" || i.name == "internal_service_token") && i.enabled
-        })
-        .map(|i| i.content_json.trim().trim_matches('"').to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::env::var("BONSAI_ROUTING_SERVICE_TOKEN")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-        });
-    (
-        url.trim_end_matches('/').to_string(),
-        token,
-        has_explicit_db_url,
-    )
+    // F7/F8: service tokens live sealed in AuthStore (`service_tokens`),
+    // never in graph ConfigItems — post-migration graph rows are audit
+    // tombstones whose content must not be mistaken for credentials.
+    // A stored credential that fails to decrypt is FATAL: falling back
+    // to another name or the env var would silently change the
+    // authentication identity (SEC-02).
+    let mut token = None;
+    for name in ["routing_service_token", "internal_service_token"] {
+        match store.auth_store.get_service_token(name) {
+            Ok(Some(t)) if !t.trim().is_empty() => {
+                token = Some(t);
+                break;
+            }
+            Ok(_) => continue,
+            Err(e) => {
+                return Err(e.context(format!(
+                    "service token '{name}' exists in the auth store but \
+                     cannot be decrypted; refusing credential fallback"
+                )));
+            }
+        }
+    }
+    let token = token.or_else(|| {
+        std::env::var("BONSAI_ROUTING_SERVICE_TOKEN")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+    });
+    let url = url.trim_end_matches('/').to_string();
+    // SEC-20: the destination authority for protected service credentials
+    // must be a well-formed http(s) URL — no userinfo, no exotic schemes,
+    // no ambiguous query/fragment components. An invalid configured
+    // destination fails closed: the credential is never transmitted to
+    // an unparseable or unintended target. Transport contract: https for
+    // non-loopback hosts; plain http only for loopback or under the
+    // documented BONSAI_ROUTING_ALLOW_INSECURE_HTTP override.
+    validate_routing_service_url(&url)?;
+    Ok((url, token, has_explicit_db_url))
+}
+
+/// SEC-20: every HTTP client that may carry `x-bonsai-routing-token`
+/// MUST be built through this helper. Redirects are disabled
+/// unconditionally: a redirect could transfer the protected service
+/// credential to an unauthorized destination. The routing-service
+/// contract does not use redirects; consumers fail closed on a 3xx
+/// instead of following it. New credential-bearing consumers inherit
+/// this policy by construction — do not hand-roll `reqwest::Client`
+/// builders for routing-service requests.
+pub fn routing_service_http_client(
+    timeout: std::time::Duration,
+) -> anyhow::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(Into::into)
+}
+
+/// SEC-20: structural validation of the configured routing-service
+/// endpoint. Accepts `http`/`https` URLs with a host and no userinfo;
+/// rejects everything else (including empty/relative values) so a bad
+/// `routing_service_url` can never smuggle credentials to an
+/// unintended or unparseable destination.
+///
+/// Transport contract: `https` is required for non-loopback
+/// destinations — protected service credentials must not cross a
+/// network in plaintext. Plain `http` is permitted only for loopback
+/// (`127.0.0.0/8`, `::1`, `localhost`) or when the operator sets the
+/// documented `BONSAI_ROUTING_ALLOW_INSECURE_HTTP=1` override for a
+/// trusted internal/dev deployment (e.g. the compose `bonsai-routing`
+/// sibling container). URLs carrying a query or fragment are rejected:
+/// they are ambiguous base components that would corrupt the
+/// `{base}/internal/routing/v1/...` join.
+pub fn validate_routing_service_url(url: &str) -> anyhow::Result<()> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| anyhow::anyhow!("routing_service_url is not a valid URL: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => anyhow::bail!("routing_service_url scheme '{other}' is not supported"),
+    }
+    if parsed.host_str().is_none() {
+        anyhow::bail!("routing_service_url has no host");
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        anyhow::bail!("routing_service_url must not contain userinfo credentials");
+    }
+    if parsed.query().is_some() {
+        anyhow::bail!("routing_service_url must not contain a query component");
+    }
+    if parsed.fragment().is_some() {
+        anyhow::bail!("routing_service_url must not contain a fragment component");
+    }
+    if parsed.scheme() == "http" && !insecure_http_transport_permitted(&parsed) {
+        anyhow::bail!(
+            "routing_service_url uses plain http to a non-loopback host; \
+             use https, or set BONSAI_ROUTING_ALLOW_INSECURE_HTTP=1 for a \
+             trusted internal/development deployment"
+        );
+    }
+    Ok(())
+}
+
+/// True when plain-HTTP transport to `parsed`'s host is permitted:
+/// loopback destinations always, anything else only under the explicit
+/// `BONSAI_ROUTING_ALLOW_INSECURE_HTTP` operator override.
+fn insecure_http_transport_permitted(parsed: &reqwest::Url) -> bool {
+    if std::env::var("BONSAI_ROUTING_ALLOW_INSECURE_HTTP")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    // url::Url::host_str keeps brackets on IPv6 literals.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    bare.eq_ignore_ascii_case("localhost")
 }
 
 /// Project new durable `RibEvent`s after `checkpoint.last_applied_sequence` into `GraphStore`.
@@ -3211,7 +3335,7 @@ pub async fn project_remote_routing_events_to_graph(
     batch_limit: usize,
 ) -> anyhow::Result<ProjectionStepReport> {
     let (base_url, token, has_explicit_db_url) =
-        resolve_routing_service_endpoint_config(store).await;
+        resolve_routing_service_endpoint_config(store).await?;
     if !has_explicit_db_url {
         if let Some(in_proc) = default_routing_service() {
             if !in_proc.projection_semantics_ready {
@@ -3230,9 +3354,10 @@ pub async fn project_remote_routing_events_to_graph(
         "{base_url}/internal/routing/v1/events?after_seq={}&limit={limit}",
         cp.last_applied_sequence
     );
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()?;
+    // SEC-20: credential-bearing request — never follow redirects (a
+    // redirect could transfer `x-bonsai-routing-token` to an
+    // unauthorized destination); fail closed instead.
+    let client = routing_service_http_client(std::time::Duration::from_secs(3))?;
     let mut req = client.get(&url);
     if let Some(t) = token {
         req = req.header("x-bonsai-routing-token", t);

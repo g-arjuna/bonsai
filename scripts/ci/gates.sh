@@ -209,6 +209,9 @@ L2_INTEGRATION_TESTS="
   bn021f_hardening
   bn021g_collector_trust_foundation
   bn022_graph_read_boundary
+  bn022_auth_storage
+  bn022_auth_closure
+  bn022_sec19_sec20
   m3_syslog_tcp_availability
   gnmi_selective_acquisition
   gnmi_security_connectivity
