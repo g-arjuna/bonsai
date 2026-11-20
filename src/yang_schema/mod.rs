@@ -11,6 +11,7 @@
 //! failed compile never disturbs the active catalogue and rollback is a
 //! pointer switch.
 
+pub mod acquisition;
 pub mod applicability;
 mod compiler;
 mod parser;
