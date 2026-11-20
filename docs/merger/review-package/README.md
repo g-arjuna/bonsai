@@ -171,3 +171,69 @@ cargo build --bin bonsai
 cargo build --features test-fixtures --bin wp28_fixture_seed
 KEEP_WORK=1 scripts/recovery/final_candidate_recovery.sh target/debug/bonsai
 ```
+
+---
+
+## 2026-11-20 reconciliation update (main @ d3dd771)
+
+PR #17 was 111 commits behind `main`. Reconciliation merge
+`2ce3b2c57520558cdce3187de0dd9e10d433c76e` merges `origin/main` @
+`d3dd771` into `feat/bn022-auth-storage` @ `85f4c29` (history-preserving,
+no force-push). A docs/evidence-only successor commit may follow; no
+production `src/` change after `2ce3b2c`.
+
+### Conflicts resolved (4 files)
+
+| File | Resolution |
+|---|---|
+| `scripts/ci/gates.sh` | Union: kept BN-022 L2 targets (`bn022_auth_storage`, `bn022_auth_closure`, `bn022_sec19_sec20`) AND new main targets (`m3_syslog_tcp_availability`, `gnmi_selective_acquisition`, `gnmi_security_connectivity`, `gnmi_assignment_lifecycle`, `wp65a_embedding_lifecycle`). |
+| `src/http_server/change_capture.rs` | Kept branch side: `resolve_routing_service_endpoint` returns `Result` (fail-closed credential resolution); main's tuple signature was superseded by the merged `mod.rs`. |
+| `src/graph/mod.rs` | Test `TargetConfig` literal: kept main's `security`/`client_cert`/`client_key` fields (M5.1 gNMI security contract still present in `config.rs`). |
+| `src/server_startup.rs` | Union: `with_auth_policy` (branch) + `with_dev_open_credential_assignments`, `with_session_registry`, `with_subscription_plan_tx` (main M5.2B subscription lifecycle) on `CoreService`; CollectorService keeps `with_auth_policy` + `with_dev_open_credential_assignments` per main. |
+
+All other both-sides-modified files (`cli.rs`, `lib.rs`,
+`http_server/mod.rs`, `managed_devices.rs`, `remediation.rs`,
+`routing_service/mod.rs`, `AGENTS.md`, `BONSAI_BACKLOG.md`,
+`docs/DEVELOPMENT.md`, `docs/build-times/runs.csv`) auto-merged;
+verified the effective diff vs `origin/main` is exactly the BN-022
+surface (60 files, +13677/−644) with no main functionality dropped —
+M5.2B trusted subscription lifecycle, collector registration/authority
+fencing, verifier readiness/coverage, and remediation persistence
+hardening all present.
+
+### New evidence on `2ce3b2c`
+
+- Focused suites: `bn022_auth_closure` 49, `bn022_auth_storage` 12,
+  `bn022_graph_read_boundary` 5, `bn022_sec19_sec20` 13,
+  `b11_b12_b13_routing_workflow` 3 — **82/82 PASS**.
+- Recovery harness: **79 PASS / 0 FAIL** —
+  `docs/merger/evidence/2026-11-20-bn022-reconcile-recovery/`.
+- Canonical trusted-local gates **L0/L1/L2/L3 ALL PASS** —
+  `docs/merger/evidence/2026-11-20-bn022-reconcile-gate/`
+  (`run-local.sh --trusted --shared-target-dir --lbug-native`,
+  sha=2ce3b2c, exit 0).
+
+### Security review notes (implementer pass — NOT WP2.9)
+
+Re-verified on the integrated tree: `AuthStore` remains sole credential
+authority; graph `ConfigItem`s hold only certified migration tombstones;
+`upsert_config_item_authorized` enforces effective-identity checks under
+the write lock; retired classes/secret names fail closed (403/410);
+`routing_service_url` is admin-only destination authority, credentialed
+clients never follow redirects, non-loopback plain HTTP rejected unless
+explicit override; migration markers are bound to the attached graph
+state (`ensure_migrated` SEC-11 scan) and fail closed on mismatch;
+staged detect→import→verify→quarantine→scrub→manifest ordering with
+idempotent resume preserved. No new defects found; this is implementer
+review only.
+
+### Outstanding
+
+- **WP2.9 qualified independent security review remains OPEN.** This
+  package is preparation, not approval. Items needing reviewer sign-off:
+  the reconciliation conflict resolutions above, JWT key-cache
+  cross-process policy (limitation 1), `jwt_revoked` tombstone
+  certification via durable manifest (limitation 2), and manifest
+  digest authenticity scope (limitation 7).
+- PR #17 must not merge before WP2.9 approval and explicit owner
+  authorization.
