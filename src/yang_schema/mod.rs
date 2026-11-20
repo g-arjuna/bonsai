@@ -250,48 +250,91 @@ fn valid_schema_id(schema_id: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Why bundle integrity could not be established. Retention must
+/// distinguish proven-invalid content (safe to evict) from unreadable
+/// files (integrity unknown — fail closed, preserve the bytes).
+enum VerifyFailure {
+    /// Content is definitively not a valid bundle for this identity:
+    /// oversized, unparseable, identity-mismatched or hash-mismatched.
+    Invalid(anyhow::Error),
+    /// The file could not be stat'ed or read — integrity is unknown.
+    Unreadable(anyhow::Error),
+}
+
 /// Deserialize + integrity-check a compiled bundle: the embedded
 /// `schema_id` must equal the requested id AND recompute identically from
-/// the bundle's semantic content. Returns the catalogue on success.
-fn read_verified_bundle(library: &YangLibrary, schema_id: &str) -> Result<CompiledCatalogue> {
+/// the bundle's semantic content. Classifies failures so callers can
+/// fail closed differently for corrupt content vs transient IO errors.
+fn verify_bundle(
+    library: &YangLibrary,
+    schema_id: &str,
+) -> std::result::Result<CompiledCatalogue, VerifyFailure> {
     if !valid_schema_id(schema_id) {
-        bail!("invalid compiled schema id '{}'", schema_id);
+        return Err(VerifyFailure::Invalid(anyhow::anyhow!(
+            "invalid compiled schema id '{}'",
+            schema_id
+        )));
     }
     let path = bundle_path(library, schema_id);
     // Bound the read: the write path enforces MAX_COMPILED_BUNDLE_BYTES,
     // but a corrupt or hostile file placed in compiled/ must not be
     // materialized into memory unbounded.
-    let len = std::fs::metadata(&path)
-        .with_context(|| format!("failed to stat compiled bundle '{}'", path.display()))?
-        .len();
+    let len = match std::fs::metadata(&path) {
+        Ok(m) => m.len(),
+        Err(e) => {
+            return Err(VerifyFailure::Unreadable(anyhow::Error::new(e).context(
+                format!("failed to stat compiled bundle '{}'", path.display()),
+            )));
+        }
+    };
     if len > MAX_COMPILED_BUNDLE_BYTES {
-        bail!(
+        return Err(VerifyFailure::Invalid(anyhow::anyhow!(
             "compiled bundle '{}' exceeds size limit ({} > {} bytes)",
             schema_id,
             len,
             MAX_COMPILED_BUNDLE_BYTES
-        );
+        )));
     }
-    let raw = std::fs::read(&path)
-        .with_context(|| format!("failed to read compiled bundle '{}'", path.display()))?;
-    let catalogue: CompiledCatalogue =
-        serde_json::from_slice(&raw).context("invalid compiled catalogue JSON")?;
+    let raw = match std::fs::read(&path) {
+        Ok(raw) => raw,
+        Err(e) => {
+            return Err(VerifyFailure::Unreadable(anyhow::Error::new(e).context(
+                format!("failed to read compiled bundle '{}'", path.display()),
+            )));
+        }
+    };
+    let catalogue: CompiledCatalogue = match serde_json::from_slice(&raw) {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(VerifyFailure::Invalid(
+                anyhow::Error::new(e).context("invalid compiled catalogue JSON"),
+            ));
+        }
+    };
     if catalogue.schema_id != schema_id {
-        bail!(
+        return Err(VerifyFailure::Invalid(anyhow::anyhow!(
             "compiled bundle '{}' embeds schema_id '{}' — identity mismatch",
             schema_id,
             catalogue.schema_id
-        );
+        )));
     }
     let recomputed = compiler::recompute_schema_id(&catalogue);
     if recomputed != schema_id {
-        bail!(
+        return Err(VerifyFailure::Invalid(anyhow::anyhow!(
             "compiled bundle '{}' fails integrity check: content hashes to '{}'",
             schema_id,
             recomputed
-        );
+        )));
     }
     Ok(catalogue)
+}
+
+/// Deserialize + integrity-check a compiled bundle, failing closed on
+/// either proven-invalid content or unreadable files.
+fn read_verified_bundle(library: &YangLibrary, schema_id: &str) -> Result<CompiledCatalogue> {
+    verify_bundle(library, schema_id).map_err(|e| match e {
+        VerifyFailure::Invalid(e) | VerifyFailure::Unreadable(e) => e,
+    })
 }
 
 /// Write the compiled catalogue to `compiled/<schema_id>.json` atomically and
@@ -416,16 +459,46 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
     }
     infos.sort_by_key(|i| std::cmp::Reverse(i.compiled_at_ns));
     // Bounded retention: keep newest MAX_COMPILED_BUNDLES, evict the rest —
-    // but never evict the active bundle.
+    // but never evict the active bundle. Eviction is destructive, so the
+    // ordering must not rest on unverified metadata: a forged bundle can
+    // carry a valid `ysc-` filename, a matching embedded schema_id and a
+    // fabricated `compiled_at_ns` (e.g. i64::MAX) while its semantic
+    // content is invalid. A header-consistent embedded id is NOT proof of
+    // integrity — only a recomputed content hash is.
+    //
+    // Verification is therefore lazy and bounded: it runs only when the
+    // bundle count actually exceeds the retention bound (steady-state
+    // refreshes never materialize bundle bodies), walks candidates in
+    // claimed-newest order, and stops verifying once the retained set is
+    // full — bundles beyond the cutoff are evicted on ordering alone
+    // because 32 integrity-verified newer bundles already justify it.
     let active_id = active.clone();
-    let mut kept = 0usize;
-    for info in &infos {
-        let is_active = Some(info.schema_id.as_str()) == active_id.as_deref();
-        if kept >= MAX_COMPILED_BUNDLES && !is_active {
-            let _ = std::fs::remove_file(bundle_path(library, &info.schema_id));
-            continue;
+    if infos.len() > MAX_COMPILED_BUNDLES {
+        let mut kept = 0usize;
+        for info in &infos {
+            let is_active = Some(info.schema_id.as_str()) == active_id.as_deref();
+            if is_active {
+                kept += 1;
+                continue;
+            }
+            if kept >= MAX_COMPILED_BUNDLES {
+                let _ = std::fs::remove_file(bundle_path(library, &info.schema_id));
+                continue;
+            }
+            match verify_bundle(library, &info.schema_id) {
+                Ok(_) => kept += 1,
+                // Proven-invalid bundles are evicted immediately: every
+                // read path rejects them, so they must not occupy a
+                // retention slot or outrank legitimate bundles.
+                Err(VerifyFailure::Invalid(_)) => {
+                    let _ = std::fs::remove_file(bundle_path(library, &info.schema_id));
+                }
+                // Integrity cannot be established (transient IO): fail
+                // closed — preserve the file but grant it no trusted
+                // retention slot.
+                Err(VerifyFailure::Unreadable(_)) => {}
+            }
         }
-        kept += 1;
     }
     // Rebuild infos after eviction.
     let mut final_infos = Vec::new();

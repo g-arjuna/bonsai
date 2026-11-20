@@ -2026,3 +2026,80 @@ fn unverified_bundle_metadata_cannot_shape_index() {
     // to index-driven consumers and sorts as epoch-0 for retention.
     assert!(cdir.join(format!("{forged_name}.json")).exists());
 }
+
+#[test]
+fn forged_bundle_metadata_cannot_evict_verified_bundles() {
+    // A forged bundle can carry a valid `ysc-<32 hex>` filename, an
+    // embedded schema_id matching that filename, syntactically valid
+    // catalogue JSON whose semantic content does NOT hash to that
+    // identity, and a fabricated compiled_at_ns of i64::MAX. Header
+    // checks alone cannot detect this; retention must verify semantic
+    // integrity before trusting the timestamp, or the forged bundle
+    // occupies a retention slot and evicts a legitimate bundle.
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+
+    // 40 legitimate bundles with strictly increasing compiled_at_ns —
+    // retention keeps the newest 32 (L8..=L39) and evicts L0..=L7.
+    let mut legit_ids = Vec::new();
+    for i in 0..40u64 {
+        let mut cat = compile_parsed(
+            vec![inline_input(
+                &format!("legit{i}"),
+                &tiny_yang(&format!("urn:legit{i}")),
+            )],
+            &CompileOptions::default(),
+        );
+        cat.compiled_at_ns = 1_000 + i as i64;
+        persist_compiled(&library, &cat).unwrap();
+        legit_ids.push(cat.schema_id.clone());
+    }
+    let cdir = dir.path().join("lib").join("compiled");
+    // Sanity: steady-state retention already evicted the oldest legit
+    // bundles before the forged file ever appeared.
+    assert!(cdir.join(format!("{}.json", legit_ids[7])).exists() == false);
+    assert!(cdir.join(format!("{}.json", legit_ids[8])).exists());
+
+    // Forge: valid filename + matching embedded id + invalid semantic
+    // content + maximum timestamp.
+    let forged_id = format!("ysc-{}", "b".repeat(32));
+    std::fs::write(
+        cdir.join(format!("{forged_id}.json")),
+        format!(
+            "{{\"schema_version\":1,\"schema_id\":\"{forged_id}\",\"compiled_at_ns\":{},\"module_count\":0,\"path_count\":0,\"modules\":[],\"paths\":[],\"diagnostics\":[]}}",
+            i64::MAX
+        ),
+    )
+    .unwrap();
+
+    // Trigger a retention pass.
+    list_compiled(&library).unwrap();
+
+    // The forged bundle must not survive retention: it is proven invalid
+    // and evicted rather than trusted.
+    assert!(
+        !cdir.join(format!("{forged_id}.json")).exists(),
+        "forged bundle must be evicted by verified retention"
+    );
+    // Every legitimate retained bundle must still be present — the
+    // forged i64::MAX timestamp must not have displaced L8 (the oldest
+    // bundle that retention is required to keep).
+    for id in &legit_ids[8..] {
+        assert!(
+            cdir.join(format!("{id}.json")).exists(),
+            "legitimate retained bundle {id} was evicted by forged metadata"
+        );
+    }
+    // And the retained count stays within the bound.
+    let remaining: Vec<_> = std::fs::read_dir(&cdir)
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.path().extension().and_then(|x| x.to_str()) == Some("json")
+                && e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n != "index.json" && n != "active.json" && !n.starts_with('.'))
+        })
+        .collect();
+    assert_eq!(remaining.len(), 32);
+}
