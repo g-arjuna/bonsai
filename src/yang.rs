@@ -713,18 +713,11 @@ impl YangLibrary {
     }
 
     fn save_state(&self, state: &YangLibraryState) -> Result<()> {
-        let path = self.root.join(INDEX_FILE);
         let raw = serde_json::to_vec_pretty(state).context("failed to serialize YANG index")?;
         // Atomic replace: a crash mid-write must never leave a torn index
-        // that load_state would fail on. Unique tmp name avoids interleaved
-        // writes between concurrent savers in this process.
-        let tmp = self
-            .root
-            .join(format!(".{}.{}.tmp", INDEX_FILE, std::process::id()));
-        std::fs::write(&tmp, raw)
-            .with_context(|| format!("failed to write YANG index tmp '{}'", tmp.display()))?;
-        std::fs::rename(&tmp, &path)
-            .with_context(|| format!("failed to replace YANG index '{}'", path.display()))
+        // that load_state would fail on. Unique tmp name per call avoids
+        // interleaved writes between concurrent savers in this process.
+        crate::yang_schema::write_file_atomic(&self.root, INDEX_FILE, &raw)
     }
 }
 

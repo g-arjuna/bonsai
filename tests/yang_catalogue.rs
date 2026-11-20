@@ -9,7 +9,8 @@ use bonsai::yang::{
 };
 use bonsai::yang_schema::{
     CompileOptions, ModuleInput, SchemaPathQuery, activate_compiled, compile_library,
-    compile_parsed, filter_by_features, list_compiled, load_active_catalogue, search_active_paths,
+    compile_parsed, filter_by_features, list_compiled, load_active_catalogue, persist_compiled,
+    search_active_paths,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -1699,4 +1700,126 @@ fn conflict_promotion_requires_explicit_approval() {
     let winner2 = active2.iter().find(|m| m.module_name == "dup").unwrap();
     assert_eq!(winner2.checksum_sha256, other.checksum_sha256);
     assert!(winner2.approved);
+}
+
+#[test]
+fn compiled_index_refresh_is_memory_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("m.yang"),
+        "module m {\n yang-version \"1\";\n namespace \"urn:m\";\n prefix m;\n revision \"2024-01-01\";\n container c { leaf l { type string; } }\n}\n",
+    )
+    .unwrap();
+    library
+        .import_directory(
+            &src,
+            &YangImportOptions {
+                source_kind: "test".into(),
+                source_ref: "t".into(),
+                vendor_scope: "v".into(),
+                trust: "trusted".into(),
+                license: String::new(),
+                platforms: vec![],
+                pinned_ref: String::new(),
+                source_id: String::new(),
+                filename_prefixes: vec![],
+            },
+            Path::new("config/path_profiles"),
+        )
+        .unwrap();
+    compile_library(&library, true).unwrap();
+
+    // A large foreign bundle: valid JSON with header fields early and
+    // ~64 MiB of uninteresting payload. Index refresh must stream it —
+    // RSS must not grow proportionally to the file size.
+    let compiled = library.root().join("compiled");
+    let big_id = format!("ysc-{}", "a".repeat(32));
+    let pad = "x".repeat(64 * 1024 * 1024);
+    let raw = format!(
+        "{{\"schema_version\":1,\"schema_id\":\"{big_id}\",\"compiled_at_ns\":7,\"module_count\":3,\"path_count\":11,\"status\":\"complete\",\"modules\":[],\"paths\":[],\"diagnostics\":[],\"pad\":\"{pad}\"}}"
+    );
+    std::fs::write(compiled.join(format!("{big_id}.json")), raw).unwrap();
+
+    fn rss_kb() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("VmRSS:"))
+                    .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+            })
+            .unwrap_or(0)
+    }
+    let before = rss_kb();
+    let infos = list_compiled(&library).unwrap();
+    let after = rss_kb();
+    let info = infos
+        .iter()
+        .find(|i| i.schema_id == big_id)
+        .expect("large bundle indexed");
+    assert_eq!(info.module_count, 3);
+    assert_eq!(info.path_count, 11);
+    assert_eq!(info.compiled_at_ns, 7);
+    let delta_kb = after.saturating_sub(before);
+    assert!(
+        delta_kb < 32 * 1024,
+        "index refresh retained ~{} KiB for a 64 MiB bundle",
+        delta_kb
+    );
+}
+
+#[test]
+fn concurrent_persist_and_activate_are_safe() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("m.yang"),
+        "module m {\n yang-version \"1\";\n namespace \"urn:m\";\n prefix m;\n revision \"2024-01-01\";\n container c { leaf l { type string; } }\n}\n",
+    )
+    .unwrap();
+    library
+        .import_directory(
+            &src,
+            &YangImportOptions {
+                source_kind: "test".into(),
+                source_ref: "t".into(),
+                vendor_scope: "v".into(),
+                trust: "trusted".into(),
+                license: String::new(),
+                platforms: vec![],
+                pinned_ref: String::new(),
+                source_id: String::new(),
+                filename_prefixes: vec![],
+            },
+            Path::new("config/path_profiles"),
+        )
+        .unwrap();
+    let cat = compile_library(&library, true).unwrap();
+
+    // Concurrent persists of the same identity, concurrent activations and
+    // concurrent readers must never publish a torn bundle or pointer.
+    std::thread::scope(|s| {
+        for _ in 0..4 {
+            s.spawn(|| persist_compiled(&library, &cat).unwrap());
+        }
+        for _ in 0..2 {
+            s.spawn(|| activate_compiled(&library, &cat.schema_id).unwrap());
+        }
+        for _ in 0..2 {
+            s.spawn(|| {
+                let _ = load_active_catalogue(&library);
+                let _ = list_compiled(&library);
+            });
+        }
+    });
+    let active = load_active_catalogue(&library).unwrap().unwrap();
+    assert_eq!(active.schema_id, cat.schema_id);
+    // The published bundle must still verify.
+    let bundles = list_compiled(&library).unwrap();
+    assert!(bundles.iter().any(|b| b.schema_id == cat.schema_id));
 }

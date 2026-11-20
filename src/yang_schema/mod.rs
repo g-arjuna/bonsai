@@ -22,7 +22,8 @@ pub use parser::{Module, parse_module};
 
 use std::collections::BTreeSet;
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -157,6 +158,31 @@ fn compiled_dir(library: &YangLibrary) -> PathBuf {
     library.root().join(COMPILED_DIR)
 }
 
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Write `bytes` to `dir/name` atomically: a unique tmp file (pid +
+/// process-wide counter — pid alone is NOT unique across threads), fsync,
+/// then rename over the target. Concurrent writers can never share a tmp
+/// path, so a torn write can never be published.
+pub(crate) fn write_file_atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(".{}.{}.{}.tmp", name, std::process::id(), seq));
+    let result = (|| -> Result<()> {
+        let mut f = std::fs::File::create(&tmp)
+            .with_context(|| format!("failed to create tmp '{}'", tmp.display()))?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, dir.join(name))
+        .with_context(|| format!("failed to atomically replace '{}/{}'", dir.display(), name))
+}
+
 fn bundle_path(library: &YangLibrary, schema_id: &str) -> PathBuf {
     compiled_dir(library).join(format!("{}.json", schema_id))
 }
@@ -182,6 +208,20 @@ fn read_verified_bundle(library: &YangLibrary, schema_id: &str) -> Result<Compil
         bail!("invalid compiled schema id '{}'", schema_id);
     }
     let path = bundle_path(library, schema_id);
+    // Bound the read: the write path enforces MAX_COMPILED_BUNDLE_BYTES,
+    // but a corrupt or hostile file placed in compiled/ must not be
+    // materialized into memory unbounded.
+    let len = std::fs::metadata(&path)
+        .with_context(|| format!("failed to stat compiled bundle '{}'", path.display()))?
+        .len();
+    if len > MAX_COMPILED_BUNDLE_BYTES {
+        bail!(
+            "compiled bundle '{}' exceeds size limit ({} > {} bytes)",
+            schema_id,
+            len,
+            MAX_COMPILED_BUNDLE_BYTES
+        );
+    }
     let raw = std::fs::read(&path)
         .with_context(|| format!("failed to read compiled bundle '{}'", path.display()))?;
     let catalogue: CompiledCatalogue =
@@ -246,21 +286,9 @@ pub fn persist_compiled(library: &YangLibrary, catalogue: &CompiledCatalogue) ->
             ),
         }
     }
-    // Unique tmp name: concurrent persists of the same identity must not
-    // interleave writes into one temp file.
-    let tmp = dir.join(format!(
-        ".{}.{}.tmp",
-        catalogue.schema_id,
-        std::process::id()
-    ));
-    std::fs::write(&tmp, &raw)
-        .with_context(|| format!("failed to write compiled bundle '{}'", tmp.display()))?;
-    std::fs::rename(&tmp, &target).with_context(|| {
-        format!(
-            "failed to activate compiled bundle write '{}'",
-            target.display()
-        )
-    })?;
+    // Unique tmp name per call: concurrent persists of the same identity
+    // must not interleave writes into one temp file.
+    write_file_atomic(&dir, &format!("{}.json", catalogue.schema_id), &raw)?;
     refresh_compiled_index(library)?;
     Ok(())
 }
@@ -368,12 +396,8 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
         }
     }
     final_infos.sort_by_key(|i| std::cmp::Reverse(i.compiled_at_ns));
-    let index_path = dir.join(INDEX_FILE);
-    let tmp = dir.join(format!(".{}.{}.tmp", INDEX_FILE, std::process::id()));
     let raw = serde_json::to_vec_pretty(&final_infos).context("serialize compiled index")?;
-    std::fs::write(&tmp, raw)?;
-    std::fs::rename(&tmp, &index_path)?;
-    Ok(())
+    write_file_atomic(&dir, INDEX_FILE, &raw)
 }
 
 /// Header-only view of a compiled bundle for index refresh — unknown
@@ -417,9 +441,7 @@ pub fn activate_compiled(library: &YangLibrary, schema_id: &str) -> Result<()> {
         schema_id: schema_id.to_string(),
     };
     let raw = serde_json::to_vec(&pointer)?;
-    let tmp = dir.join(format!(".active.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, raw)?;
-    std::fs::rename(&tmp, active_pointer_path(library))?;
+    write_file_atomic(&dir, ACTIVE_POINTER, &raw)?;
     refresh_compiled_index(library)?;
     Ok(())
 }
