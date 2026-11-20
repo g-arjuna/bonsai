@@ -637,6 +637,17 @@ fn managed_device_from_cli_add(add: &DeviceCliAdd) -> ManagedDevice {
         security: String::new(),
         client_cert: String::new(),
         client_key: String::new(),
+        schema_binding_mode: String::new(),
+        schema_id: String::new(),
+        snapshot_id: 0,
+        content_id: String::new(),
+        datastore: String::new(),
+        evidence_fingerprint: String::new(),
+        plan_id: String::new(),
+        binding_fingerprint: String::new(),
+        approval_revision: 0,
+        approved_by: String::new(),
+        approved_at_ns: 0,
     }
 }
 
@@ -662,6 +673,61 @@ fn managed_device_from_target(target: TargetConfig) -> ManagedDevice {
             .unwrap_or_default(),
         client_cert: target.client_cert.unwrap_or_default(),
         client_key: target.client_key.unwrap_or_default(),
+        schema_binding_mode: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.mode.clone())
+            .unwrap_or_default(),
+        schema_id: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.schema_id.clone())
+            .unwrap_or_default(),
+        snapshot_id: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.snapshot_id)
+            .unwrap_or(0),
+        content_id: target
+            .schema_binding
+            .as_ref()
+            .and_then(|b| b.content_id.clone())
+            .unwrap_or_default(),
+        datastore: target
+            .schema_binding
+            .as_ref()
+            .and_then(|b| b.datastore.clone())
+            .unwrap_or_default(),
+        evidence_fingerprint: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.evidence_fingerprint.clone())
+            .unwrap_or_default(),
+        plan_id: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.plan_id.clone())
+            .unwrap_or_default(),
+        binding_fingerprint: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.binding_fingerprint.clone())
+            .unwrap_or_default(),
+        approval_revision: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.approval_revision)
+            .unwrap_or(0),
+        approved_by: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.approved_by.clone())
+            .unwrap_or_default(),
+        approved_at_ns: target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.approved_at_ns)
+            .unwrap_or(0),
     }
 }
 
@@ -737,6 +803,7 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
                     security: None,
                     client_cert: None,
                     client_key: None,
+                    schema_binding: None,
                 },
                 "cli",
                 "cli_add_device",

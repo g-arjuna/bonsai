@@ -51,6 +51,23 @@ message ManagedDevice {
   string security       = 15;
   string client_cert    = 16; // path or vault: reference
   string client_key     = 17; // path or vault: reference
+  // M6C-2 schema-bound acquisition contract (protocol >= 5). When
+  // schema_binding_mode="schema_bound", selected_paths is the exact
+  // approved manifest and the binding fields identify the durable Core
+  // approval. Collectors below SCHEMA_BOUND_CONTRACT_VERSION must never
+  // receive these assignments — they would ignore the binding and could
+  // silently execute an unapproved plan.
+  string schema_binding_mode = 18;
+  string schema_id           = 19;
+  int64  snapshot_id         = 20;
+  string content_id          = 21;
+  string datastore           = 22;
+  string evidence_fingerprint = 23;
+  string plan_id             = 24;
+  string binding_fingerprint = 25;
+  uint64 approval_revision   = 26;
+  string approved_by         = 27;
+  int64  approved_at_ns      = 28;
 }
 
 message AddDeviceRequest        { ManagedDevice device = 1; }
@@ -331,6 +348,22 @@ message SubscriptionLifecycleEvent {
   // session_id for a Subscribe attempt. 0 = legacy/invalid for
   // session-scoped records.
   uint64 execution_generation = 15;
+  // M6C-2 schema-bound approval echo. Populated only when the applied
+  // assignment carried schema_binding_mode="schema_bound"; the core
+  // requires these to equal the CURRENT durable approval and the
+  // submitted manifest to equal the approved path set exactly.
+  string schema_binding_mode   = 16;
+  string schema_id             = 17;
+  string evidence_fingerprint  = 18;
+  string binding_fingerprint   = 19;
+  uint64 approval_revision     = 20;
+  int64  snapshot_id           = 21;
+  string datastore             = 22;
+  string approved_by           = 23;
+  // Approved schema-plan identity. This is deliberately separate from the
+  // top-level plan_id, which remains the submitted-manifest identity used
+  // by M5.2B coverage fencing.
+  string schema_binding_plan_id = 24;
 }
 
 message SubscriptionLifecycleResponse {

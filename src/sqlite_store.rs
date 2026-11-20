@@ -24,7 +24,7 @@ const DB_FILE: &str = CONFIG_DB_FILE_NAME;
 /// Schema version the management service migrates to. Read-only
 /// consumers (routing service) compare against this and fail closed
 /// when the database is older.
-pub const CURRENT_SCHEMA_VERSION: i64 = 9;
+pub const CURRENT_SCHEMA_VERSION: i64 = 11;
 
 /// True when an `ALTER TABLE ... ADD COLUMN` failed only because the
 /// column already exists (i.e. a previous migration attempt partially
@@ -69,6 +69,25 @@ fn security_from_col(
                     format!("invalid stored security mode '{raw}'").into(),
                 )
             }),
+    }
+}
+
+/// Decode a stored `schema_binding_json` column. NULL/empty = no schema-bound
+/// approval; corrupt JSON is a hard read error — a persisted approval must
+/// never silently degrade to legacy acquisition.
+fn schema_binding_from_col(
+    value: Option<String>,
+    col: usize,
+) -> std::result::Result<Option<crate::config::SchemaBindingConfig>, rusqlite::Error> {
+    match value.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(raw) => serde_json::from_str(raw).map(Some).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                col,
+                rusqlite::types::Type::Text,
+                format!("invalid stored schema binding: {e}").into(),
+            )
+        }),
     }
 }
 
@@ -586,6 +605,54 @@ impl SqliteStore {
                 .context("failed to set schema version")?;
         }
 
+        // Version 10: M6C-2 durable schema-binding policy and approved
+        // plan bindings. One row per device key keeps activation state
+        // atomic with audit metadata; plan payloads are stored as JSON
+        // and revalidated before use — never trusted from clients.
+        if user_version < 10 {
+            db.execute_batch(
+                "CREATE TABLE IF NOT EXISTS schema_bindings (
+                    device_key TEXT PRIMARY KEY,
+                    device_address TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    policy_json TEXT NOT NULL,
+                    approved_plan_json TEXT,
+                    approval_revision INTEGER NOT NULL DEFAULT 0,
+                    approval_fingerprint TEXT,
+                    state TEXT NOT NULL,
+                    approved_by TEXT,
+                    approved_at_ns INTEGER,
+                    revoked_by TEXT,
+                    revoked_at_ns INTEGER,
+                    revoke_reason TEXT,
+                    created_at_ns INTEGER NOT NULL,
+                    updated_at_ns INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_schema_bindings_state
+                    ON schema_bindings(state, updated_at_ns DESC);",
+            )
+            .context("schema v10 migration failed")?;
+            db.execute("PRAGMA user_version=10", [])
+                .context("failed to set schema version")?;
+        }
+
+        // Version 11: M6C-2 schema-bound acquisition approval on the
+        // device row itself. `schema_bindings` remains the audit/policy
+        // record; the devices column is the authoritative runtime binding
+        // so registry load, assignment build, and lifecycle verification
+        // all observe the same committed approval.
+        if user_version < 11 {
+            match db.execute_batch("ALTER TABLE devices ADD COLUMN schema_binding_json TEXT") {
+                Ok(()) => {}
+                Err(e) if is_duplicate_column_error(&e) => {}
+                Err(e) => return Err(e).context("schema v11 migration failed on devices ALTER"),
+            }
+            verify_device_columns(&db, &["schema_binding_json"])
+                .context("schema v11 verification failed")?;
+            db.execute("PRAGMA user_version=11", [])
+                .context("failed to set schema version")?;
+        }
+
         Ok(())
     }
 
@@ -746,23 +813,14 @@ impl SqliteStore {
         new: Option<&str>,
     ) -> Result<()> {
         let db = self.db.lock().unwrap();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
-            .unwrap_or(0);
-
-        db.execute(
-            "INSERT INTO audit_log (table_name, operation, record_key, actor, action, timestamp_ns, old_value, new_value) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![table, operation, key, actor, action, now, old, new],
-        )?;
-        Ok(())
+        audit_row(&db, table, operation, key, actor, action, old, new)
     }
 
     // ── Device registry ─────────────────────────────────────────────────────────
 
     pub fn list_devices(&self) -> Result<Vec<crate::config::TargetConfig>> {
         let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare("SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key FROM devices")?;
+        let mut stmt = db.prepare("SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key, schema_binding_json FROM devices")?;
         let rows = stmt.query_map([], |row| {
             let paths_json: String = row.get(14)?;
             let paths: Vec<String> = serde_json::from_str(&paths_json).unwrap_or_default();
@@ -807,6 +865,7 @@ impl SqliteStore {
                 security: security_from_col(row.get(29)?, 29)?,
                 client_cert: row.get(30)?,
                 client_key: row.get(31)?,
+                schema_binding: schema_binding_from_col(row.get(32)?, 32)?,
                 ..Default::default()
             })
         })?;
@@ -817,7 +876,7 @@ impl SqliteStore {
     pub fn get_device(&self, address: &str) -> Result<Option<crate::config::TargetConfig>> {
         let db = self.db.lock().unwrap();
         let result = db.query_row(
-            "SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key FROM devices WHERE address = ?1",
+            "SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key, schema_binding_json FROM devices WHERE address = ?1",
             params![address],
             |row| {
                 let paths_json: String = row.get(14)?;
@@ -863,6 +922,7 @@ impl SqliteStore {
                     security: security_from_col(row.get(29)?, 29)?,
                     client_cert: row.get(30)?,
                     client_key: row.get(31)?,
+                    schema_binding: schema_binding_from_col(row.get(32)?, 32)?,
                     ..Default::default()
                 })
             },
@@ -892,11 +952,16 @@ impl SqliteStore {
         let paths_json = serde_json::to_string(&device.paths).unwrap_or_default();
         let selected_paths_json = serde_json::to_string(&device.selected_paths).unwrap_or_default();
         let extra_ips_json = serde_json::to_string(&device.extra_ips).unwrap_or_default();
+        let schema_binding_json = device
+            .schema_binding
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
 
         {
             let db = self.db.lock().unwrap();
             db.execute(
-                "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32) ON CONFLICT(address) DO UPDATE SET enabled=?2, hostname=?3, tls_domain=?4, vendor=?5, credential_alias=?6, username_env=?7, role=?8, site=?9, collector_id=?10, username=?11, password=?12, password_env=?13, ca_cert=?14, paths=?15, optional=?16, updated_at_ns=?18, updated_by=?20, last_operator_action=?21, external_id=?22, inventory_only=?23, selected_paths=?24, extra_ips=?25, inventory_platform=?26, inventory_status=?27, inventory_tenant=?28, acquisition=?29, security=?30, client_cert=?31, client_key=?32",
+                "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key, schema_binding_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33) ON CONFLICT(address) DO UPDATE SET enabled=?2, hostname=?3, tls_domain=?4, vendor=?5, credential_alias=?6, username_env=?7, role=?8, site=?9, collector_id=?10, username=?11, password=?12, password_env=?13, ca_cert=?14, paths=?15, optional=?16, updated_at_ns=?18, updated_by=?20, last_operator_action=?21, external_id=?22, inventory_only=?23, selected_paths=?24, extra_ips=?25, inventory_platform=?26, inventory_status=?27, inventory_tenant=?28, acquisition=?29, security=?30, client_cert=?31, client_key=?32, schema_binding_json=?33",
                 params![
                     device.address,
                     device.enabled,
@@ -930,6 +995,7 @@ impl SqliteStore {
                     device.security.map(|m| m.as_str()),
                     device.client_cert,
                     device.client_key,
+                    schema_binding_json,
                 ],
             )?;
         }
@@ -971,7 +1037,14 @@ impl SqliteStore {
             .map(|d| serde_json::to_string(&d).unwrap());
         let rows = {
             let db = self.db.lock().unwrap();
-            db.execute("DELETE FROM devices WHERE address = ?1", params![address])?
+            let rows = db.execute("DELETE FROM devices WHERE address = ?1", params![address])?;
+            if rows > 0 {
+                db.execute(
+                    "DELETE FROM schema_bindings WHERE device_address = ?1",
+                    params![address],
+                )?;
+            }
+            rows
         };
         if rows > 0 {
             self.audit(
@@ -1898,6 +1971,277 @@ impl SqliteStore {
         Ok(updated)
     }
 
+    // ── M6C-2 schema-bound acquisition policy ─────────────────────────
+
+    /// Read the durable schema-binding policy/approval row for a device
+    /// identity key (external_id when present, else canonical address).
+    pub fn get_schema_binding(&self, device_key: &str) -> Result<Option<SchemaBindingRecord>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT device_key, device_address, mode, policy_json,
+                    approved_plan_json, approval_revision, approval_fingerprint,
+                    state, approved_by, approved_at_ns, revoked_by,
+                    revoked_at_ns, revoke_reason, created_at_ns, updated_at_ns
+             FROM schema_bindings WHERE device_key = ?1",
+        )?;
+        let mut rows = stmt.query([device_key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(schema_binding_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Bounded listing for audit/diagnostic surfaces.
+    pub fn list_schema_bindings(&self, limit: usize) -> Result<Vec<SchemaBindingRecord>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT device_key, device_address, mode, policy_json,
+                    approved_plan_json, approval_revision, approval_fingerprint,
+                    state, approved_by, approved_at_ns, revoked_by,
+                    revoked_at_ns, revoke_reason, created_at_ns, updated_at_ns
+             FROM schema_bindings ORDER BY updated_at_ns DESC, device_key ASC LIMIT ?1",
+        )?;
+        let mut rows = stmt.query(params![limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(schema_binding_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// Atomically commit an approved schema-bound acquisition: the device
+    /// row's runtime binding, the durable policy/plan audit row, and both
+    /// audit entries land in one SQLite transaction. `expected_revision`
+    /// is the previously persisted `approval_revision` (0 when none); the
+    /// supplied record must carry exactly `expected_revision + 1`, so a
+    /// stale approval can never overwrite a newer one.
+    pub fn activate_schema_binding(
+        &self,
+        device_key: &str,
+        device: &crate::config::TargetConfig,
+        record: &SchemaBindingRecord,
+        expected_revision: i64,
+        actor: &str,
+        action: &str,
+    ) -> Result<SchemaBindingRecord> {
+        if record.device_key != device_key || record.device_address != device.address {
+            anyhow::bail!("schema binding record does not match target device");
+        }
+        if record.approval_revision != expected_revision + 1 {
+            anyhow::bail!(
+                "schema binding approval_revision {} does not follow expected revision {}",
+                record.approval_revision,
+                expected_revision
+            );
+        }
+        let old_target = self.get_device(&device.address)?;
+        let old_json = old_target
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?
+            .unwrap_or_default();
+        let new_json = serde_json::to_string(device)?;
+        let old_record = self.get_schema_binding(device_key)?;
+        let old_record_json = old_record
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?
+            .unwrap_or_default();
+        let new_record_json = serde_json::to_string(record)?;
+        let schema_binding_json = device
+            .schema_binding
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let selected_paths_json = serde_json::to_string(&device.selected_paths)?;
+        let now = now_ns();
+
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        let current_revision: Option<i64> = tx
+            .query_row(
+                "SELECT approval_revision FROM schema_bindings WHERE device_key = ?1",
+                [device_key],
+                |row| row.get(0),
+            )
+            .ok();
+        let current_revision = current_revision.unwrap_or(0);
+        if current_revision != expected_revision {
+            anyhow::bail!(
+                "schema binding revision changed during activation: expected {}, found {}",
+                expected_revision,
+                current_revision
+            );
+        }
+
+        tx.execute(
+            "UPDATE devices SET acquisition = ?2, selected_paths = ?3,
+                    schema_binding_json = ?4, inventory_only = ?5,
+                    updated_at_ns = ?6, updated_by = ?7, last_operator_action = ?8
+             WHERE address = ?1",
+            params![
+                device.address,
+                device.acquisition.as_str(),
+                selected_paths_json,
+                schema_binding_json,
+                device.inventory_only,
+                now,
+                actor,
+                action,
+            ],
+        )
+        .context("activate schema binding on device row")?;
+
+        tx.execute(
+            "INSERT INTO schema_bindings (
+                device_key, device_address, mode, policy_json, approved_plan_json,
+                approval_revision, approval_fingerprint, state, approved_by,
+                approved_at_ns, revoked_by, revoked_at_ns, revoke_reason,
+                created_at_ns, updated_at_ns
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+             ON CONFLICT(device_key) DO UPDATE SET
+                device_address = excluded.device_address,
+                mode = excluded.mode,
+                policy_json = excluded.policy_json,
+                approved_plan_json = excluded.approved_plan_json,
+                approval_revision = excluded.approval_revision,
+                approval_fingerprint = excluded.approval_fingerprint,
+                state = excluded.state,
+                approved_by = excluded.approved_by,
+                approved_at_ns = excluded.approved_at_ns,
+                revoked_by = NULL,
+                revoked_at_ns = NULL,
+                revoke_reason = NULL,
+                updated_at_ns = excluded.updated_at_ns",
+            params![
+                record.device_key,
+                record.device_address,
+                record.mode,
+                record.policy_json,
+                record.approved_plan_json,
+                record.approval_revision,
+                record.approval_fingerprint,
+                record.state,
+                record.approved_by,
+                record.approved_at_ns,
+                record.revoked_by,
+                record.revoked_at_ns,
+                record.revoke_reason,
+                record.created_at_ns,
+                record.updated_at_ns,
+            ],
+        )
+        .context("upsert schema binding policy")?;
+
+        audit_row(
+            &tx,
+            "devices",
+            "UPDATE",
+            &device.address,
+            actor,
+            action,
+            Some(&old_json),
+            Some(&new_json),
+        )?;
+        audit_row(
+            &tx,
+            "schema_bindings",
+            "UPSERT",
+            device_key,
+            actor,
+            action,
+            (!old_record_json.is_empty()).then_some(old_record_json.as_str()),
+            Some(&new_record_json),
+        )?;
+        tx.commit()?;
+        Ok(record.clone())
+    }
+
+    /// Revoke the durable schema-bound approval for a device. The device
+    /// row loses its runtime binding and acquisition is disabled so no
+    /// delayed lifecycle event or stale assignment can keep collecting
+    /// under the revoked plan. The policy row is retained for audit.
+    pub fn revoke_schema_binding(
+        &self,
+        device_key: &str,
+        device_address: &str,
+        actor: &str,
+        reason: &str,
+        action: &str,
+    ) -> Result<SchemaBindingRecord> {
+        let old_target = self.get_device(device_address)?;
+        let old_json = old_target
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?
+            .unwrap_or_default();
+        let old_record = self
+            .get_schema_binding(device_key)?
+            .ok_or_else(|| anyhow!("no schema binding for device key '{device_key}'"))?;
+        let old_record_json = serde_json::to_string(&old_record)?;
+        let now = now_ns();
+        let mut revoked = old_record.clone();
+        revoked.state = "revoked".to_string();
+        revoked.revoked_by = Some(actor.to_string());
+        revoked.revoked_at_ns = Some(now);
+        revoked.revoke_reason = Some(reason.to_string());
+        revoked.updated_at_ns = now;
+        let new_record_json = serde_json::to_string(&revoked)?;
+
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        tx.execute(
+            "UPDATE devices SET schema_binding_json = NULL,
+                    acquisition = ?2, updated_at_ns = ?3,
+                    updated_by = ?4, last_operator_action = ?5
+             WHERE address = ?1",
+            params![
+                device_address,
+                crate::config::AcquisitionMode::Disabled.as_str(),
+                now,
+                actor,
+                action,
+            ],
+        )
+        .context("revoke schema binding on device row")?;
+        tx.execute(
+            "UPDATE schema_bindings SET state = ?2, revoked_by = ?3,
+                    revoked_at_ns = ?4, revoke_reason = ?5, updated_at_ns = ?6
+             WHERE device_key = ?1",
+            params![
+                device_key,
+                revoked.state,
+                revoked.revoked_by,
+                revoked.revoked_at_ns,
+                revoked.revoke_reason,
+                revoked.updated_at_ns,
+            ],
+        )
+        .context("revoke schema binding policy")?;
+        audit_row(
+            &tx,
+            "devices",
+            "UPDATE",
+            device_address,
+            actor,
+            action,
+            Some(&old_json),
+            None,
+        )?;
+        audit_row(
+            &tx,
+            "schema_bindings",
+            "REVOKE",
+            device_key,
+            actor,
+            action,
+            Some(&old_record_json),
+            Some(&new_record_json),
+        )?;
+        tx.commit()?;
+        Ok(revoked)
+    }
+
     // ── M6C-1 YANG applicability snapshots ────────────────────────────
 
     /// Persist one device applicability snapshot (append-only history).
@@ -1953,6 +2297,30 @@ impl SqliteStore {
         Ok(id)
     }
 
+    /// Fetch one snapshot row by id. Schema-binding expiry checks must
+    /// evaluate the APPROVED evidence row, not merely the latest
+    /// snapshot for the device.
+    pub fn get_yang_applicability_snapshot(
+        &self,
+        id: i64,
+    ) -> Result<Option<YangApplicabilitySnapshotRow>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id, device_key, device_address, collector_id, schema_id,
+                    content_id, datastore, overall_status, outcome,
+                    result_json, capabilities_json, yang_library_json,
+                    evidence_fingerprint, observed_at_ns, evaluated_at_ns,
+                    error, created_at_ns
+             FROM yang_applicability_snapshots
+             WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query([id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(snapshot_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Latest snapshot for a device identity key, if any.
     pub fn latest_yang_applicability_snapshot(
         &self,
@@ -2004,6 +2372,48 @@ impl SqliteStore {
     }
 }
 
+/// Durable M6C-2 schema-binding policy/approval row. `approved_plan_json`
+/// and `policy_json` are audit payloads produced server-side; the runtime
+/// authority remains the `devices.schema_binding_json` column.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SchemaBindingRecord {
+    pub device_key: String,
+    pub device_address: String,
+    pub mode: String,
+    pub policy_json: String,
+    pub approved_plan_json: Option<String>,
+    pub approval_revision: i64,
+    pub approval_fingerprint: Option<String>,
+    pub state: String,
+    pub approved_by: Option<String>,
+    pub approved_at_ns: Option<i64>,
+    pub revoked_by: Option<String>,
+    pub revoked_at_ns: Option<i64>,
+    pub revoke_reason: Option<String>,
+    pub created_at_ns: i64,
+    pub updated_at_ns: i64,
+}
+
+fn schema_binding_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SchemaBindingRecord> {
+    Ok(SchemaBindingRecord {
+        device_key: row.get(0)?,
+        device_address: row.get(1)?,
+        mode: row.get(2)?,
+        policy_json: row.get(3)?,
+        approved_plan_json: row.get(4)?,
+        approval_revision: row.get(5)?,
+        approval_fingerprint: row.get(6)?,
+        state: row.get(7)?,
+        approved_by: row.get(8)?,
+        approved_at_ns: row.get(9)?,
+        revoked_by: row.get(10)?,
+        revoked_at_ns: row.get(11)?,
+        revoke_reason: row.get(12)?,
+        created_at_ns: row.get(13)?,
+        updated_at_ns: row.get(14)?,
+    })
+}
+
 /// One persisted M6C-1 applicability snapshot row. JSON payloads are
 /// stored as TEXT; the typed decoding lives in `yang_applicability`.
 #[derive(Clone, Debug)]
@@ -2050,6 +2460,24 @@ fn snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<YangApplicabilitySn
         error: row.get(15)?,
         created_at_ns: row.get(16)?,
     })
+}
+
+fn audit_row(
+    db: &Connection,
+    table: &str,
+    operation: &str,
+    key: &str,
+    actor: &str,
+    action: &str,
+    old: Option<&str>,
+    new: Option<&str>,
+) -> Result<()> {
+    let now = now_ns();
+    db.execute(
+        "INSERT INTO audit_log (table_name, operation, record_key, actor, action, timestamp_ns, old_value, new_value) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![table, operation, key, actor, action, now, old, new],
+    )?;
+    Ok(())
 }
 
 fn now_ns() -> i64 {
@@ -2185,7 +2613,7 @@ mod tests {
     fn fresh_database_reaches_v8_with_inventory_columns_and_index() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_at(&dir).expect("open");
-        assert_eq!(store.schema_version().expect("version"), 9);
+        assert_eq!(store.schema_version().expect("version"), 11);
 
         let db = store.db.lock().unwrap();
         let mut stmt = db
@@ -2208,6 +2636,7 @@ mod tests {
             "security",
             "client_cert",
             "client_key",
+            "schema_binding_json",
         ] {
             assert!(cols.contains(col), "missing column {col}");
         }
@@ -2242,7 +2671,7 @@ mod tests {
         }
 
         let store = SqliteStore::open_file(&db_path).expect("migrate v5->v8");
-        assert_eq!(store.schema_version().expect("version"), 9);
+        assert_eq!(store.schema_version().expect("version"), 11);
 
         let devices = store.list_devices().expect("list");
         assert_eq!(devices.len(), 1);
@@ -2294,7 +2723,7 @@ mod tests {
         }
 
         let store = SqliteStore::open_file(&db_path).expect("migrate partial v6");
-        assert_eq!(store.schema_version().expect("version"), 9);
+        assert_eq!(store.schema_version().expect("version"), 11);
         let devices = store.list_devices().expect("list");
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].address, "10.0.0.2");
@@ -2387,6 +2816,102 @@ mod tests {
         store
             .upsert_device(&third, "test", "insert")
             .expect("second null id ok");
+    }
+
+    #[test]
+    fn schema_binding_activation_is_atomic_revisioned_and_revocable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_at(&dir).expect("open");
+        let binding = crate::config::SchemaBindingConfig {
+            mode: "schema_bound".to_string(),
+            schema_id: "a".repeat(64),
+            snapshot_id: 7,
+            content_id: Some("content-1".to_string()),
+            datastore: Some("ietf-datastores:operational".to_string()),
+            evidence_fingerprint: "ev-fp".to_string(),
+            plan_id: "plan-1".to_string(),
+            binding_fingerprint: "bind-fp".to_string(),
+            approval_revision: 1,
+            collector_id: Some("c1".to_string()),
+            approved_by: "admin".to_string(),
+            approved_at_ns: 123,
+        };
+        let mut device = TargetConfig {
+            address: "10.0.0.30".to_string(),
+            enabled: true,
+            collector_id: Some("c1".to_string()),
+            acquisition: crate::config::AcquisitionMode::Explicit,
+            selected_paths: vec![crate::config::SelectedSubscriptionPath {
+                path: "/interfaces".to_string(),
+                mode: "ON_CHANGE".to_string(),
+                ..Default::default()
+            }],
+            schema_binding: Some(binding.clone()),
+            ..Default::default()
+        };
+        store
+            .upsert_device(&device, "test", "seed")
+            .expect("seed device");
+        let record = SchemaBindingRecord {
+            device_key: "10.0.0.30".to_string(),
+            device_address: device.address.clone(),
+            mode: "schema_bound".to_string(),
+            policy_json: "{}".to_string(),
+            approved_plan_json: Some("{}".to_string()),
+            approval_revision: 1,
+            approval_fingerprint: Some(binding.binding_fingerprint.clone()),
+            state: "active".to_string(),
+            approved_by: Some("admin".to_string()),
+            approved_at_ns: Some(123),
+            revoked_by: None,
+            revoked_at_ns: None,
+            revoke_reason: None,
+            created_at_ns: 1,
+            updated_at_ns: 1,
+        };
+        store
+            .activate_schema_binding("10.0.0.30", &device, &record, 0, "admin", "activate")
+            .expect("activate");
+        let reread = store.get_device("10.0.0.30").expect("get").expect("some");
+        assert_eq!(reread.schema_binding, Some(binding.clone()));
+        assert_eq!(reread.acquisition, crate::config::AcquisitionMode::Explicit);
+        let stored = store
+            .get_schema_binding("10.0.0.30")
+            .expect("binding")
+            .expect("some");
+        assert_eq!(stored.state, "active");
+        assert_eq!(stored.approval_revision, 1);
+
+        // A stale approval revision cannot overwrite the committed one.
+        device.schema_binding = Some(crate::config::SchemaBindingConfig {
+            approval_revision: 2,
+            ..binding.clone()
+        });
+        let stale = record.clone();
+        assert!(
+            store
+                .activate_schema_binding("10.0.0.30", &device, &stale, 0, "admin", "activate")
+                .is_err(),
+            "stale expected_revision must fail closed"
+        );
+
+        let revoked = store
+            .revoke_schema_binding("10.0.0.30", "10.0.0.30", "admin", "rollback", "revoke")
+            .expect("revoke");
+        assert_eq!(revoked.state, "revoked");
+        assert_eq!(revoked.revoke_reason.as_deref(), Some("rollback"));
+        let after = store.get_device("10.0.0.30").expect("get").expect("some");
+        assert_eq!(after.schema_binding, None);
+        assert_eq!(after.acquisition, crate::config::AcquisitionMode::Disabled);
+        let stored = store
+            .get_schema_binding("10.0.0.30")
+            .expect("binding")
+            .expect("some");
+        assert_eq!(stored.state, "revoked");
+        assert_eq!(
+            stored.approval_revision, 1,
+            "revocation must not rewrite approval revision"
+        );
     }
 
     #[test]

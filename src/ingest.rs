@@ -2392,6 +2392,7 @@ fn lifecycle_event_to_proto(
     collector_id: &str,
     ev: &SessionLifecycleEvent,
 ) -> crate::api::pb::SubscriptionLifecycleEvent {
+    let binding = ev.schema_binding.as_ref();
     crate::api::pb::SubscriptionLifecycleEvent {
         collector_id: collector_id.to_string(),
         device_address: ev.target.clone(),
@@ -2418,6 +2419,21 @@ fn lifecycle_event_to_proto(
             })
             .collect(),
         acquisition: ev.acquisition.clone(),
+        schema_binding_mode: binding.map(|b| b.mode.clone()).unwrap_or_default(),
+        schema_id: binding.map(|b| b.schema_id.clone()).unwrap_or_default(),
+        evidence_fingerprint: binding
+            .map(|b| b.evidence_fingerprint.clone())
+            .unwrap_or_default(),
+        binding_fingerprint: binding
+            .map(|b| b.binding_fingerprint.clone())
+            .unwrap_or_default(),
+        approval_revision: binding.map(|b| b.approval_revision).unwrap_or(0),
+        snapshot_id: binding.map(|b| b.snapshot_id).unwrap_or(0),
+        datastore: binding
+            .and_then(|b| b.datastore.clone())
+            .unwrap_or_default(),
+        approved_by: binding.map(|b| b.approved_by.clone()).unwrap_or_default(),
+        schema_binding_plan_id: binding.map(|b| b.plan_id.clone()).unwrap_or_default(),
     }
 }
 
@@ -2727,6 +2743,7 @@ mod lifecycle_resend_tests {
             detail: String::new(),
             submitted_paths: Vec::new(),
             acquisition: String::new(),
+            schema_binding: None,
         }
     }
 
@@ -2767,6 +2784,58 @@ mod lifecycle_resend_tests {
         // The evicted victim is the least-recently-noted flood entry,
         // never the refreshed live session.
         assert!(!drained.iter().any(|e| e.session_id == "flood-0"));
+    }
+}
+
+#[cfg(test)]
+mod schema_binding_proto_tests {
+    use super::lifecycle_event_to_proto;
+    use crate::subscription_sessions::SessionLifecycleEvent;
+
+    #[test]
+    fn lifecycle_proto_echoes_binding_without_conflating_plan_ids() {
+        let ev = SessionLifecycleEvent {
+            collector_id: "c1".to_string(),
+            target: "10.0.0.9:57400".to_string(),
+            plan_id: "submitted-manifest-plan".to_string(),
+            session_id: "sess-1".to_string(),
+            state: "submitted".to_string(),
+            transition_seq: 1,
+            authority_epoch: 3,
+            assignment_generation: 4,
+            authority_instance: 0,
+            collector_session_generation: 2,
+            execution_generation: 5,
+            occurred_at_ns: 123,
+            detail: String::new(),
+            submitted_paths: Vec::new(),
+            acquisition: "explicit".to_string(),
+            schema_binding: Some(crate::config::SchemaBindingConfig {
+                mode: "schema_bound".to_string(),
+                schema_id: "a".repeat(64),
+                snapshot_id: 7,
+                content_id: Some("content-1".to_string()),
+                datastore: Some("ietf-datastores:operational".to_string()),
+                evidence_fingerprint: "ev-fp".to_string(),
+                plan_id: "approved-schema-plan".to_string(),
+                binding_fingerprint: "bind-fp".to_string(),
+                approval_revision: 2,
+                collector_id: Some("c1".to_string()),
+                approved_by: "admin".to_string(),
+                approved_at_ns: 99,
+            }),
+        };
+        let proto = lifecycle_event_to_proto("c1", &ev);
+        assert_eq!(proto.plan_id, "submitted-manifest-plan");
+        assert_eq!(proto.schema_binding_plan_id, "approved-schema-plan");
+        assert_eq!(proto.schema_binding_mode, "schema_bound");
+        assert_eq!(proto.schema_id, "a".repeat(64));
+        assert_eq!(proto.snapshot_id, 7);
+        assert_eq!(proto.evidence_fingerprint, "ev-fp");
+        assert_eq!(proto.binding_fingerprint, "bind-fp");
+        assert_eq!(proto.approval_revision, 2);
+        assert_eq!(proto.datastore, "ietf-datastores:operational");
+        assert_eq!(proto.approved_by, "admin");
     }
 }
 
@@ -3088,6 +3157,7 @@ pub async fn handle_assignment_update(
             if let Some(h) = &lifecycle {
                 let plan = crate::subscriber::planned_subscription_plan_for_target(&target);
                 crate::subscriber::SessionEmitter::for_plan(h, &target.address, &plan.plan_id)
+                    .with_schema_binding(target.schema_binding.clone())
                     .emit_plan("failed", &assignment.reject_reason)
                     .await;
             }
@@ -3125,6 +3195,7 @@ pub async fn handle_assignment_update(
                 if let Some(h) = &lifecycle {
                     let plan = crate::subscriber::planned_subscription_plan_for_target(&target);
                     crate::subscriber::SessionEmitter::for_plan(h, &target.address, &plan.plan_id)
+                        .with_schema_binding(target.schema_binding.clone())
                         .emit_plan("failed", format!("{error:#}"))
                         .await;
                 }

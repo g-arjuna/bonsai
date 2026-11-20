@@ -1002,6 +1002,7 @@ async fn stale_session_observation_never_projects_coverage() {
                     detail: String::new(),
                     submitted_paths: Vec::new(),
                     acquisition: String::new(),
+                    schema_binding: None,
                 },
                 true,
             );
@@ -1160,6 +1161,7 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
                     detail: String::new(),
                     submitted_paths: Vec::new(),
                     acquisition: String::new(),
+                    schema_binding: None,
                 },
                 true,
             );
@@ -1289,6 +1291,7 @@ fn lifecycle_ev(
         detail: String::new(),
         submitted_paths: Vec::new(),
         acquisition: String::new(),
+        schema_binding: None,
     }
 }
 

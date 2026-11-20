@@ -1,7 +1,28 @@
 # Bonsai current state
 
-**20 November research intake (no implementation):** [Enterprise knowledge, dark-site assurance and diagnostic-runner design](architecture/ENTERPRISE_KNOWLEDGE_OUTAGE_AND_DIAGNOSTIC_RUNNERS_2026-11-20.md) is recorded as [BN-028](../BONSAI_BACKLOG.md#bn-028--enterprise-knowledge-and-dark-site-assurance-20-november-2026). The proposed enterprise-document facts, circuit/power/OOB map, site outage engine and optional read-only diagnostic runner are **not shipped**. This does not change the M6C-1 verified status or production gate claims.
+20 November update — **M6C-2 schema-bound acquisition implemented** (branch `feat/bn015-m6c2-schema-bound-acquisition`, pending merge).
+Bonsai now enforces an approved, schema-bound acquisition manifest
+end to end: deterministic evaluator over the verified compiled
+catalogue plus freshest persisted M6C-1 applicability evidence;
+durable approval (`schema_bindings` + `devices.schema_binding_json`,
+schema v11); additive wire fields carrying the exact binding;
+collector-side fail-closed enforcement (pre-v5 collectors never
+receive bound assignments, no capability fallback); Core-side
+lifecycle verification that recomputes manifest identity and requires
+exact approved-manifest equality; and two-layer time-driven expiry —
+every execution/lifecycle decision rejects evidence older than the
+24 h validity window while a bounded 60 s reconciler revokes stale
+approvals and withdraws assignments through the established
+mechanism. Wire-level proof: `tests/yang_schema_bound_acquisition.rs`
+(6/6) drives activate → assignment → actual gNMI SubscribeRequest →
+lifecycle → coverage → revoke/expiry withdrawal over real production
+boundaries. Evidence:
+`docs/merger/evidence/2026-11-20-m6c2-schema-bound-acquisition/`.
+Remaining on this line: M6D UI schema browser + collection-plan
+preview; authenticated remote-collector discovery is a separate
+dependency.
 
+**20 November research intake (no implementation):** [Enterprise knowledge, dark-site assurance and diagnostic-runner design](architecture/ENTERPRISE_KNOWLEDGE_OUTAGE_AND_DIAGNOSTIC_RUNNERS_2026-11-20.md) is recorded as [BN-028](../BONSAI_BACKLOG.md#bn-028--enterprise-knowledge-and-dark-site-assurance-20-november-2026). The proposed enterprise-document facts, circuit/power/OOB map, site outage engine and optional read-only diagnostic runner are **not shipped**. This does not change the M6C-1/M6C-2 verified status or production gate claims.
 
 20 November update — **M6C-1 device-effective YANG applicability merged.**
 Bonsai now answers, per device, which compiled YANG catalogue paths are

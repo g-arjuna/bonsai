@@ -430,6 +430,92 @@ pub(super) fn openapi_schema() -> serde_json::Value {
                     }
                 }
             },
+            "/api/devices/{address}/schema-binding/preview": {
+                "post": {
+                    "tags": ["Devices & Onboarding"],
+                    "summary": "Preview schema-bound acquisition plan",
+                    "description": "Read-only M6C-2 evaluation: re-checks the operator-selected subscription paths against the verified active YANG catalogue and the freshest persisted applicability snapshot (freshness, identity, schema revision, datastore). Returns the deterministic plan_id, binding_fingerprint, per-path decisions, proposed subscriptions, cost estimates, and whether admin activation is currently permitted. Never mutates registry, assignment, lifecycle, or subscription state. Viewer role is sufficient because nothing is approved.",
+                    "parameters": [{ "name": "address", "in": "path", "required": true, "schema": { "type": "string" }}],
+                    "requestBody": {
+                        "required": false,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "selected_paths": { "type": "array", "description": "Operator-selected gNMI subscription paths; defaults to the device's current explicit selection", "items": { "type": "object" }},
+                                        "datastore": { "type": "string", "description": "Datastore to evaluate (e.g. 'ietf-datastores:operational'); defaults to the device selection" },
+                                        "plan_id": { "type": "string", "description": "Expected plan id from a prior preview (verified server-side)" },
+                                        "binding_fingerprint": { "type": "string", "description": "Expected binding fingerprint from a prior preview (verified server-side)" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": { "description": "Schema-bound plan preview", "content": { "application/json": { "schema": { "type": "object" } }}},
+                        "404": { "description": "Device not found in registry" }
+                    }
+                }
+            },
+            "/api/devices/{address}/schema-binding/activate": {
+                "post": {
+                    "tags": ["Devices & Onboarding"],
+                    "summary": "Activate schema-bound acquisition authority",
+                    "description": "Admin approval for schema-bound acquisition: re-evaluates server-side (client preview output is never trusted), requires a verified catalogue, fresh matching applicability evidence, and activation_permitted, then commits the approved manifest and binding atomically with a versioned approval revision and audit row. The collector assignment is resynced so the approved plan reaches the assigned collector; older collectors that cannot express schema-bound lifecycle authority are not assigned the device. Authenticated admin subject required.",
+                    "parameters": [{ "name": "address", "in": "path", "required": true, "schema": { "type": "string" }}],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "selected_paths": { "type": "array", "items": { "type": "object" }},
+                                        "datastore": { "type": "string" },
+                                        "plan_id": { "type": "string", "description": "plan_id from the approved preview; must match the fresh server evaluation" },
+                                        "binding_fingerprint": { "type": "string", "description": "binding_fingerprint from the approved preview; must match the fresh server evaluation" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": { "description": "Binding activated", "content": { "application/json": { "schema": { "type": "object" } }}},
+                        "403": { "description": "Insufficient role or missing authenticated subject (Admin required)" },
+                        "404": { "description": "Device not found in registry" },
+                        "409": { "description": "Evaluation rejected, stale/mismatched plan identity, revision conflict, or store unavailable" },
+                        "503": { "description": "Schema-binding store unavailable" }
+                    }
+                }
+            },
+            "/api/devices/{address}/schema-binding/revoke": {
+                "post": {
+                    "tags": ["Devices & Onboarding"],
+                    "summary": "Revoke schema-bound acquisition authority",
+                    "description": "Admin revocation/rollback: marks the durable schema-binding policy revoked with the supplied reason, clears the device runtime binding, disables acquisition, and resyncs the assigned collector so assignment fencing withdraws the old execution authority. Subsequent lifecycle events echoing the revoked binding are rejected at Core. Authenticated admin subject required.",
+                    "parameters": [{ "name": "address", "in": "path", "required": true, "schema": { "type": "string" }}],
+                    "requestBody": {
+                        "required": false,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "reason": { "type": "string", "description": "Operator-supplied revocation reason (default 'operator_revoked')" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": { "description": "Binding revoked", "content": { "application/json": { "schema": { "type": "object" } }}},
+                        "403": { "description": "Insufficient role or missing authenticated subject (Admin required)" },
+                        "404": { "description": "Device not found in registry" },
+                        "409": { "description": "Revocation conflict" }
+                    }
+                }
+            },
             "/api/devices/{address}/config-history": {
                 "get": {
                     "tags": ["Devices & Onboarding"],

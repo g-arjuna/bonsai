@@ -1707,6 +1707,7 @@ mod tests {
                         detail: String::new(),
                         submitted_paths: Vec::new(),
                         acquisition: String::new(),
+                        schema_binding: None,
                     },
                     true,
                 );
@@ -1779,6 +1780,7 @@ mod tests {
                 detail: String::new(),
                 submitted_paths: Vec::new(),
                 acquisition: String::new(),
+                schema_binding: None,
             },
             true,
         );
@@ -2034,6 +2036,7 @@ mod tests {
                 detail: String::new(),
                 submitted_paths: Vec::new(),
                 acquisition: String::new(),
+                schema_binding: None,
             }
         };
         let mut pending = PendingObservations::default();

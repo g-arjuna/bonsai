@@ -153,6 +153,10 @@ pub struct SessionLifecycleEvent {
     /// Acquisition intent the manifest was built under
     /// ("automatic" | "explicit" | "disabled"); empty on legacy records.
     pub acquisition: String,
+    /// M6C-2 schema-bound approval echoed by the collector. `None` for
+    /// legacy/unbound assignments; Core requires an exact match against
+    /// the current durable approval before accepting manifest evidence.
+    pub schema_binding: Option<crate::config::SchemaBindingConfig>,
 }
 
 /// Relation of an event's execution rank to the target high-water mark.
@@ -682,6 +686,7 @@ mod tests {
             detail: String::new(),
             submitted_paths: Vec::new(),
             acquisition: String::new(),
+            schema_binding: None,
         }
     }
 

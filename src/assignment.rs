@@ -8,7 +8,8 @@ use tracing::{info, warn};
 
 use crate::api::pb::{AssignmentUpdate, DeviceAssignment};
 use crate::api::{
-    ACQUISITION_CONTRACT_VERSION, ASSIGNMENT_LIFECYCLE_CONTRACT_VERSION, SECURITY_CONTRACT_VERSION,
+    ACQUISITION_CONTRACT_VERSION, ASSIGNMENT_LIFECYCLE_CONTRACT_VERSION,
+    SCHEMA_BOUND_CONTRACT_VERSION, SECURITY_CONTRACT_VERSION,
 };
 use crate::config::{AcquisitionMode, AssignmentRule, TargetConfig};
 use crate::credentials::{CredentialVault, ResolvePurpose};
@@ -105,6 +106,10 @@ pub struct CollectorManager {
     /// Optional event sender — wired after construction from GraphStore::event_sender().
     event_tx: Mutex<Option<broadcast::Sender<BonsaiEvent>>>,
     health_emitter: Option<Arc<crate::health_emitter::HealthEmitter>>,
+    /// Clock for schema-binding evidence-expiry authorization checks.
+    /// Production uses the system clock; tests inject a controllable
+    /// source so the 24-hour window is deterministic.
+    schema_binding_clock: crate::schema_binding::SchemaBindingClock,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -202,6 +207,7 @@ impl CollectorManager {
             sites_cache: Arc::new(Mutex::new(Vec::new())),
             event_tx: Mutex::new(None),
             health_emitter: None,
+            schema_binding_clock: crate::schema_binding::SchemaBindingClock::system(),
         };
         manager
     }
@@ -221,6 +227,17 @@ impl CollectorManager {
         registry: Arc<crate::subscription_sessions::SubscriptionSessionRegistry>,
     ) -> Self {
         self.session_registry = Some(registry);
+        self
+    }
+
+    /// Inject the clock used for schema-binding evidence-expiry
+    /// authorization checks (tests only; production keeps the system
+    /// clock).
+    pub fn with_schema_binding_clock(
+        mut self,
+        clock: crate::schema_binding::SchemaBindingClock,
+    ) -> Self {
+        self.schema_binding_clock = clock;
         self
     }
 
@@ -830,9 +847,73 @@ impl CollectorManager {
         let acquisition_aware = protocol_version >= ACQUISITION_CONTRACT_VERSION;
         let security_aware = protocol_version >= SECURITY_CONTRACT_VERSION;
         let lifecycle_aware = protocol_version >= ASSIGNMENT_LIFECYCLE_CONTRACT_VERSION;
+        let schema_bound_aware = protocol_version >= SCHEMA_BOUND_CONTRACT_VERSION;
         let mut assignments = Vec::new();
         let mut blocked = Vec::new();
         for target in targets {
+            // Schema-bound authority is carried inside ManagedDevice and
+            // echoed on lifecycle events; collectors below contract v5
+            // cannot express or enforce it and must never receive the
+            // assignment (fail closed, unassign for operator visibility).
+            if target.schema_binding.is_some() && !schema_bound_aware {
+                blocked.push((
+                    target.address.clone(),
+                    "schema_bound_requires_newer_collector",
+                ));
+                continue;
+            }
+            if let Some(binding) = target.schema_binding.as_ref()
+                && binding.mode != "schema_bound"
+            {
+                if lifecycle_aware {
+                    assignments.push(rejected_assignment(
+                        &target,
+                        "invalid_schema_binding".to_string(),
+                    ));
+                } else {
+                    blocked.push((
+                        target.address.clone(),
+                        "assignment_requires_newer_collector",
+                    ));
+                }
+                continue;
+            }
+            // M6C-2 expiry authorization layer: a schema-bound approval
+            // whose approved device evidence has aged past its validity
+            // window — or can no longer be verified — is not authority.
+            // Deliver an explicit rejection through the established
+            // assignment mechanism so acquisition authority is withdrawn
+            // even before the expiry reconciler runs; never a silent drop
+            // that would leave a previous execution live.
+            if let Some(binding) = target.schema_binding.as_ref()
+                && binding.mode == "schema_bound"
+            {
+                let evidence = self.registry.sqlite_store().map(|store| {
+                    crate::schema_binding::binding_evidence_state(
+                        store.as_ref(),
+                        binding,
+                        self.schema_binding_clock.now(),
+                    )
+                });
+                let reason = match evidence {
+                    Some(crate::schema_binding::BindingEvidenceState::Current) => None,
+                    Some(crate::schema_binding::BindingEvidenceState::Expired) => {
+                        Some("schema_binding_evidence_expired")
+                    }
+                    _ => Some("schema_binding_evidence_unverifiable"),
+                };
+                if let Some(reason) = reason {
+                    if lifecycle_aware {
+                        assignments.push(rejected_assignment(&target, reason.to_string()));
+                    } else {
+                        blocked.push((
+                            target.address.clone(),
+                            "schema_bound_requires_newer_collector",
+                        ));
+                    }
+                    continue;
+                }
+            }
             if !acquisition_aware && target.acquisition != AcquisitionMode::Automatic {
                 blocked.push((
                     target.address.clone(),
@@ -1219,6 +1300,7 @@ mod tests {
             security: None,
             client_cert: None,
             client_key: None,
+            schema_binding: None,
             created_at_ns: 0,
             updated_at_ns: 0,
             created_by: String::new(),
@@ -1322,6 +1404,109 @@ mod tests {
         assert_eq!(update.assignments.len(), 1);
         let device = update.assignments[0].device.as_ref().unwrap();
         assert_eq!(device.acquisition, "explicit");
+    }
+
+    fn schema_bound_target(address: &str) -> TargetConfig {
+        let mut target = acquisition_target(address, AcquisitionMode::Explicit);
+        target.selected_paths = vec![crate::config::SelectedSubscriptionPath {
+            path: "/interfaces".to_string(),
+            origin: "openconfig".to_string(),
+            mode: "ON_CHANGE".to_string(),
+            ..Default::default()
+        }];
+        target
+    }
+
+    fn schema_bound_activation(
+        target: &TargetConfig,
+    ) -> (TargetConfig, crate::sqlite_store::SchemaBindingRecord) {
+        let binding = crate::config::SchemaBindingConfig {
+            mode: "schema_bound".to_string(),
+            schema_id: "a".repeat(64),
+            snapshot_id: 9,
+            content_id: Some("content-1".to_string()),
+            datastore: Some("ietf-datastores:operational".to_string()),
+            evidence_fingerprint: "ev-fp".to_string(),
+            plan_id: "plan-1".to_string(),
+            binding_fingerprint: "bind-fp".to_string(),
+            approval_revision: 1,
+            collector_id: Some("c1".to_string()),
+            approved_by: "admin".to_string(),
+            approved_at_ns: 42,
+        };
+        let mut bound = target.clone();
+        bound.schema_binding = Some(binding.clone());
+        let record = crate::sqlite_store::SchemaBindingRecord {
+            device_key: crate::registry::device_identity_key(&bound),
+            device_address: bound.address.clone(),
+            mode: "schema_bound".to_string(),
+            policy_json: "{}".to_string(),
+            approved_plan_json: Some("{}".to_string()),
+            approval_revision: 1,
+            approval_fingerprint: Some(binding.binding_fingerprint.clone()),
+            state: "active".to_string(),
+            approved_by: Some("admin".to_string()),
+            approved_at_ns: Some(42),
+            revoked_by: None,
+            revoked_at_ns: None,
+            revoke_reason: None,
+            created_at_ns: 1,
+            updated_at_ns: 1,
+        };
+        (bound, record)
+    }
+
+    #[tokio::test]
+    async fn schema_bound_assignment_requires_v5_and_roundtrips_binding() {
+        let (manager, registry, _dir) =
+            manager_with_custom_target(schema_bound_target("10.0.0.7")).await;
+        let stored = registry.get_device("10.0.0.7").unwrap().unwrap();
+        let (bound, record) = schema_bound_activation(&stored);
+        registry
+            .activate_schema_binding(bound, record, 0, "admin", "activate")
+            .unwrap();
+
+        // v4 understands lifecycle/credential contracts but predates the
+        // schema-bound contract: the assignment must be withheld rather
+        // than delivered as a misread plan. The approval-managed collector
+        // binding is not stripped — the device stays assigned so a
+        // contract-capable registration can receive the exact authority.
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), SCHEMA_BOUND_CONTRACT_VERSION - 1, true)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("initial sync");
+        assert!(update.assignments.is_empty());
+        assert_eq!(
+            registry
+                .get_device("10.0.0.7")
+                .unwrap()
+                .unwrap()
+                .collector_id
+                .as_deref(),
+            Some("c1")
+        );
+        drop(rx);
+
+        registry
+            .assign_device_with_audit("10.0.0.7", Some("c1".to_string()), "test", "reassign")
+            .unwrap();
+        let (mut rx2, _gen2) = manager
+            .register_collector("c1".to_string(), SCHEMA_BOUND_CONTRACT_VERSION, true)
+            .await
+            .unwrap();
+        let update2 = rx2.recv().await.expect("v5 sync");
+        assert_eq!(update2.assignments.len(), 1);
+        let device = update2.assignments[0].device.as_ref().unwrap();
+        assert_eq!(device.schema_binding_mode, "schema_bound");
+        assert_eq!(device.schema_id, "a".repeat(64));
+        assert_eq!(device.snapshot_id, 9);
+        assert_eq!(device.evidence_fingerprint, "ev-fp");
+        assert_eq!(device.plan_id, "plan-1");
+        assert_eq!(device.binding_fingerprint, "bind-fp");
+        assert_eq!(device.approval_revision, 1);
+        assert_eq!(device.approved_by, "admin");
+        assert_eq!(device.approved_at_ns, 42);
     }
 
     async fn manager_with_mtls_device() -> (CollectorManager, Arc<ApiRegistry>, tempfile::TempDir) {

@@ -219,6 +219,7 @@ L2_INTEGRATION_TESTS="
   wp65a_embedding_lifecycle
   yang_catalogue
   yang_device_applicability
+  yang_schema_bound_acquisition
 "
 
 gate_l2() {

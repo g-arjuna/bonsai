@@ -594,6 +594,7 @@ fn device_target(address: &str) -> TargetConfig {
         created_by: String::new(),
         updated_by: String::new(),
         last_operator_action: String::new(),
+        schema_binding: None,
     }
 }
 
@@ -1286,6 +1287,7 @@ async fn foreign_collector_observations_never_satisfy_coverage() {
         detail: String::new(),
         submitted_paths: Vec::new(),
         acquisition: String::new(),
+        schema_binding: None,
     };
     let outcome = lab.sessions.apply(&stale_ev, true);
     assert!(
@@ -1420,6 +1422,15 @@ async fn lifecycle_manifest_must_agree_with_assignment() {
         protocol_version: PROTOCOL_VERSION_CURRENT,
         submitted_paths: paths,
         acquisition: acquisition.to_string(),
+        schema_binding_mode: String::new(),
+        schema_id: String::new(),
+        evidence_fingerprint: String::new(),
+        binding_fingerprint: String::new(),
+        approval_revision: 0,
+        snapshot_id: 0,
+        datastore: String::new(),
+        approved_by: String::new(),
+        schema_binding_plan_id: String::new(),
     };
 
     // Broad manifest: the three authorized paths PLUS an unauthorized
@@ -1897,6 +1908,15 @@ async fn authority_renewal_recovers_coverage_across_core_restart() {
                 protocol_version: PROTOCOL_VERSION_CURRENT,
                 submitted_paths: vec![],
                 acquisition: "explicit".to_string(),
+                schema_binding_mode: String::new(),
+                schema_id: String::new(),
+                evidence_fingerprint: String::new(),
+                binding_fingerprint: String::new(),
+                approval_revision: 0,
+                snapshot_id: 0,
+                datastore: String::new(),
+                approved_by: String::new(),
+                schema_binding_plan_id: String::new(),
             })
             .await
             .unwrap();
@@ -2312,6 +2332,15 @@ async fn stale_collector_session_generation_cannot_establish_authority() {
         protocol_version: PROTOCOL_VERSION_CURRENT,
         submitted_paths: manifest.clone(),
         acquisition: "explicit".to_string(),
+        schema_binding_mode: String::new(),
+        schema_id: String::new(),
+        evidence_fingerprint: String::new(),
+        binding_fingerprint: String::new(),
+        approval_revision: 0,
+        snapshot_id: 0,
+        datastore: String::new(),
+        approved_by: String::new(),
+        schema_binding_plan_id: String::new(),
     };
 
     // Baseline: a gen-1-stamped synchronized execution IS admitted
@@ -2528,6 +2557,15 @@ async fn lifecycle_admission_requires_active_registration() {
             protocol_version: PROTOCOL_VERSION_CURRENT,
             submitted_paths: manifest.clone(),
             acquisition: "explicit".to_string(),
+            schema_binding_mode: String::new(),
+            schema_id: String::new(),
+            evidence_fingerprint: String::new(),
+            binding_fingerprint: String::new(),
+            approval_revision: 0,
+            snapshot_id: 0,
+            datastore: String::new(),
+            approved_by: String::new(),
+            schema_binding_plan_id: String::new(),
         }
     };
 

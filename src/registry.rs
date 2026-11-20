@@ -258,6 +258,11 @@ impl ApiRegistry {
         reject_canonical_conflict(&state, &address)?;
         reject_external_id_conflict(&state, &target)?;
         reject_inventory_enabled(&target)?;
+        if target.schema_binding.is_some() {
+            bail!(
+                "schema-bound acquisition authority can only be committed by schema-binding activation"
+            );
+        }
 
         // Persist BEFORE committing to memory: a durable-write failure
         // must leave both stores untouched and emit no change event.
@@ -326,6 +331,34 @@ impl ApiRegistry {
             target.inventory_only = false;
         }
 
+        // M6C-2: a persisted schema-bound approval owns the acquisition
+        // manifest. Ordinary device updates must not rewrite the approved
+        // selection/acquisition/collector or clear/replace the binding —
+        // only schema-binding activation/revocation may mutate that
+        // authority. Unbound devices cannot self-approve a binding through
+        // the generic device mutation path.
+        if let Some(existing_binding) = existing.schema_binding.clone() {
+            if target.schema_binding.is_some() && target.schema_binding != existing.schema_binding {
+                bail!(
+                    "schema-bound acquisition authority can only be changed by schema-binding activation/revocation"
+                );
+            }
+            if existing_binding.mode == "schema_bound"
+                && (target.acquisition != existing.acquisition
+                    || target.selected_paths != existing.selected_paths
+                    || target.collector_id != existing.collector_id)
+            {
+                bail!(
+                    "schema-bound device '{address}' acquisition plan is approval-managed; use schema-binding activation/revocation"
+                );
+            }
+            target.schema_binding = Some(existing_binding);
+        } else if target.schema_binding.is_some() {
+            bail!(
+                "schema-bound acquisition authority can only be committed by schema-binding activation"
+            );
+        }
+
         reject_canonical_conflict(&state, &address)?;
         reject_external_id_conflict(&state, &target)?;
 
@@ -342,6 +375,158 @@ impl ApiRegistry {
 
         let _ = self.change_tx.send(RegistryChange::Updated(target.clone()));
         Ok(target)
+    }
+
+    /// Commit a schema-bound acquisition approval atomically: the device
+    /// row (runtime binding + approved manifest), the durable policy/audit
+    /// row, and registry memory all observe the same revision. Requires
+    /// the SQLite config store — the JSON fallback cannot provide the
+    /// durable schema-binding authority M6C-2 depends on.
+    pub fn activate_schema_binding(
+        &self,
+        target: TargetConfig,
+        record: crate::sqlite_store::SchemaBindingRecord,
+        expected_revision: i64,
+        actor: &str,
+        action: &str,
+    ) -> Result<TargetConfig> {
+        let address = normalize_address(&target.address)?;
+        if self.sqlite_store.is_none() {
+            bail!("schema-bound acquisition requires the SQLite config store");
+        }
+        let mut target = target;
+        target.address = address.clone();
+        target.external_id = normalize_external_id(target.external_id)?;
+
+        let device_key = device_identity_key(&target);
+        if device_key != record.device_key {
+            bail!("schema binding device key does not match target identity");
+        }
+
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        let Some(existing) = state.targets.get(&address).cloned() else {
+            bail!("device '{address}' does not exist");
+        };
+        if target.external_id.is_none() {
+            target.external_id = existing.external_id.clone();
+        }
+        stamp_existing_target_audit(&mut target, &existing, actor, action);
+        // A schema-bound approval is itself the explicit collection plan;
+        // it must never leave the asset inventory-only.
+        target.inventory_only = false;
+
+        let mut new_state = state.clone();
+        new_state.targets.insert(address.clone(), target.clone());
+        self.persist_committed(
+            &self.path,
+            &new_state,
+            self.sqlite_store.as_deref(),
+            |store| {
+                store
+                    .activate_schema_binding(
+                        &device_key,
+                        &target,
+                        &record,
+                        expected_revision,
+                        actor,
+                        action,
+                    )
+                    .map(|_| ())
+            },
+        )?;
+        *state = new_state;
+        drop(state);
+
+        let _ = self.change_tx.send(RegistryChange::Updated(target.clone()));
+        Ok(target)
+    }
+
+    /// Revoke a schema-bound approval: durable policy state, device runtime
+    /// binding, acquisition intent, and registry memory move together.
+    /// Acquisition is disabled so revoked authority cannot keep collecting.
+    pub fn revoke_schema_binding(
+        &self,
+        address: &str,
+        actor: &str,
+        reason: &str,
+        action: &str,
+    ) -> Result<Option<TargetConfig>> {
+        self.revoke_schema_binding_impl(address, actor, reason, action, None)
+    }
+
+    /// Revoke only when the device's CURRENT binding still carries
+    /// `expected_fingerprint`. The expiry reconciler uses this guard so a
+    /// concurrent administrative reapproval — which mints a new binding
+    /// fingerprint — is never clobbered by a stale revocation.
+    pub fn revoke_schema_binding_if_current(
+        &self,
+        address: &str,
+        actor: &str,
+        reason: &str,
+        action: &str,
+        expected_fingerprint: &str,
+    ) -> Result<Option<TargetConfig>> {
+        self.revoke_schema_binding_impl(address, actor, reason, action, Some(expected_fingerprint))
+    }
+
+    fn revoke_schema_binding_impl(
+        &self,
+        address: &str,
+        actor: &str,
+        reason: &str,
+        action: &str,
+        expected_fingerprint: Option<&str>,
+    ) -> Result<Option<TargetConfig>> {
+        let address = normalize_address(address)?;
+        if self.sqlite_store.is_none() {
+            bail!("schema-bound revocation requires the SQLite config store");
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("registry lock poisoned"))?;
+        let Some(existing) = state.targets.get(&address).cloned() else {
+            return Ok(None);
+        };
+        if let Some(fp) = expected_fingerprint {
+            let current = existing
+                .schema_binding
+                .as_ref()
+                .is_some_and(|b| b.mode == "schema_bound" && b.binding_fingerprint == fp);
+            if !current {
+                return Ok(None);
+            }
+        }
+        let device_key = device_identity_key(&existing);
+        let mut updated = existing.clone();
+        updated.schema_binding = None;
+        updated.acquisition = crate::config::AcquisitionMode::Disabled;
+        updated.updated_at_ns = now_ns();
+        updated.updated_by = actor.to_string();
+        updated.last_operator_action = action.to_string();
+
+        let mut new_state = state.clone();
+        new_state.targets.insert(address.clone(), updated.clone());
+        self.persist_committed(
+            &self.path,
+            &new_state,
+            self.sqlite_store.as_deref(),
+            |store| {
+                store
+                    .revoke_schema_binding(&device_key, &address, actor, reason, action)
+                    .map(|_| ())
+            },
+        )?;
+        *state = new_state;
+        drop(state);
+
+        let _ = self
+            .change_tx
+            .send(RegistryChange::Updated(updated.clone()));
+        Ok(Some(updated))
     }
 
     pub fn remove_device(&self, address: &str) -> Result<Option<TargetConfig>> {
@@ -458,6 +643,11 @@ impl ApiRegistry {
             let Some(existing) = state.targets.get(&address).cloned() else {
                 bail!("device '{address}' does not exist");
             };
+            if existing.schema_binding.is_some() && collector_id != existing.collector_id {
+                bail!(
+                    "schema-bound device '{address}' collector assignment is approval-managed; use schema-binding activation/revocation"
+                );
+            }
             let mut updated = existing;
             updated.collector_id = collector_id;
             updated.updated_at_ns = now_ns();
@@ -784,6 +974,16 @@ pub fn canonical_device_key(address: &str) -> String {
     host.to_lowercase()
 }
 
+/// Device identity key used by schema-bound acquisition evidence and
+/// policy rows: stable external identity when present, else the canonical
+/// address. Mirrors the M6C-1 snapshot binding rule exactly.
+pub fn device_identity_key(target: &TargetConfig) -> String {
+    target
+        .external_id
+        .clone()
+        .unwrap_or_else(|| canonical_device_key(&target.address))
+}
+
 /// Normalize and validate an external source identity (e.g.
 /// `netbox:https:netbox.example.com:443:device:123`). Identities are
 /// namespaced `<source>:<scope>:<kind>:<id>`-style strings; they must be
@@ -968,6 +1168,7 @@ mod tests {
             security: None,
             client_cert: None,
             client_key: None,
+            schema_binding: None,
         }
     }
 

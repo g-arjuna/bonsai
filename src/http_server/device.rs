@@ -999,6 +999,22 @@ pub(super) async fn yang_compile_handler(
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    if activated {
+        let revoked = crate::schema_binding::revoke_bindings_for_schema_change(
+            state.registry.as_ref(),
+            &catalogue.schema_id,
+            "system",
+            "yang_compile_activate",
+        )
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+        for target in revoked {
+            if let Some(cid) = target.collector_id.as_deref()
+                && let Some(manager) = state.collector_manager.as_ref()
+            {
+                manager.resync_collector(cid).await;
+            }
+        }
+    }
     Ok(Json(YangCompileResponse {
         schema_id: catalogue.schema_id,
         status: catalogue.status,
@@ -1037,6 +1053,20 @@ pub(super) async fn yang_activate_handler(
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    let revoked = crate::schema_binding::revoke_bindings_for_schema_change(
+        state.registry.as_ref(),
+        &req.schema_id,
+        "system",
+        "yang_activate",
+    )
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    for target in revoked {
+        if let Some(cid) = target.collector_id.as_deref()
+            && let Some(manager) = state.collector_manager.as_ref()
+        {
+            manager.resync_collector(cid).await;
+        }
+    }
     Ok(Json(YangActivateResponse {
         active: req.schema_id,
     }))
@@ -1141,6 +1171,9 @@ pub(super) struct YangApplicabilityRefreshResponse {
     modules_total: usize,
     evaluated_at_ns: i64,
     error: Option<String>,
+    /// True when this refresh superseded an active schema-bound approval;
+    /// the operator must re-preview/re-activate against the new evidence.
+    schema_binding_revoked: bool,
 }
 
 /// GET — read the persisted applicability snapshot. Never connects to
@@ -1176,8 +1209,23 @@ pub(super) async fn device_yang_applicability_handler(
     let view = crate::yang_applicability::load_snapshot_view(&store, &library, &target, now_ns)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let (paths, paths_matching, modules) = match &view {
+    let (paths, paths_matching, modules, snapshot_view) = match &view {
         Some(v) => {
+            // The embedded snapshot must honor the same response bound as
+            // the top-level page: never serialize the full unpaginated
+            // `result.paths` array inside `snapshot.result`.
+            let mut snapshot = v.snapshot.clone();
+            snapshot.result.paths.clear();
+            snapshot.result.paths_total = v.snapshot.result.paths_total;
+            snapshot.result.paths_truncated = v.snapshot.result.paths_truncated
+                || v.snapshot.result.paths_total > v.snapshot.result.paths.len();
+            let filtered_snapshot = crate::yang_applicability::ApplicabilitySnapshotView {
+                snapshot,
+                freshness: v.freshness,
+                freshness_reasons: v.freshness_reasons.clone(),
+                active_schema_id: v.active_schema_id.clone(),
+                catalogue_state: v.catalogue_state,
+            };
             let mut filtered: Vec<_> = v
                 .snapshot
                 .result
@@ -1208,14 +1256,14 @@ pub(super) async fn device_yang_applicability_handler(
                 .filter(|m| params.module.as_deref().is_none_or(|mm| m.name == mm))
                 .cloned()
                 .collect();
-            (page, matching, modules)
+            (page, matching, modules, Some(filtered_snapshot))
         }
-        None => (Vec::new(), 0, Vec::new()),
+        None => (Vec::new(), 0, Vec::new(), None),
     };
 
     Ok(Json(YangApplicabilityResponse {
         address,
-        snapshot: view,
+        snapshot: snapshot_view,
         paths,
         paths_matching,
         modules,
@@ -1292,6 +1340,31 @@ pub(super) async fn device_yang_applicability_refresh_handler(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    // A persisted applicability snapshot supersedes the evidence an active
+    // schema-bound approval was derived from. Revoke fail-closed so the
+    // exact approved manifest cannot keep executing against stale or
+    // changed device evidence; re-approval requires a fresh preview.
+    let schema_binding_revoked = if target.schema_binding.is_some() {
+        let revoked = state
+            .registry
+            .revoke_schema_binding(
+                &target.address,
+                "system",
+                "applicability_evidence_superseded",
+                "yang_applicability_refresh",
+            )
+            .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+        if let Some(updated) = revoked
+            && let Some(cid) = updated.collector_id.as_deref()
+            && let Some(manager) = state.collector_manager.as_ref()
+        {
+            manager.resync_collector(cid).await;
+        }
+        true
+    } else {
+        false
+    };
+
     Ok(Json(YangApplicabilityRefreshResponse {
         snapshot_id: snapshot.snapshot_id,
         device_key: snapshot.device_key,
@@ -1305,6 +1378,208 @@ pub(super) async fn device_yang_applicability_refresh_handler(
         modules_total: snapshot.result.modules.len(),
         evaluated_at_ns: snapshot.evaluated_at_ns,
         error: snapshot.error,
+        schema_binding_revoked,
+    }))
+}
+
+// ── M6C-2 schema-bound acquisition authority ────────────────────────
+
+/// Read-only schema-bound plan preview. Uses the current verified active
+/// catalogue, persisted applicability snapshot, and read-time freshness;
+/// it never mutates target, assignment, lifecycle, or subscription state.
+pub(super) async fn schema_binding_preview_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    Json(req): Json<crate::schema_binding::SchemaPlanRequest>,
+) -> Result<Json<crate::schema_binding::SchemaPlanPreview>, (StatusCode, String)> {
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+    let store = state.registry.sqlite_store().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "schema-binding store unavailable".to_string(),
+    ))?;
+    let (lib, cache, key) = yang_roots(&state);
+    let now_ns = crate::graph::common::now_ns();
+    tokio::task::spawn_blocking(move || {
+        let library = YangLibrary::open(
+            std::path::Path::new(&lib),
+            std::path::Path::new(&cache),
+            &key,
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        crate::schema_binding::evaluate_preview(&library, store.as_ref(), &target, &req, now_ns)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+}
+
+#[derive(Deserialize)]
+pub(super) struct SchemaBindingRevokeRequest {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct SchemaBindingMutationResponse {
+    success: bool,
+    device_address: String,
+    approval_revision: Option<i64>,
+    plan_id: Option<String>,
+    binding_fingerprint: Option<String>,
+    state: String,
+}
+
+fn schema_binding_actor(
+    subject: Option<axum::Extension<crate::http_server::auth::AuthenticatedSubject>>,
+) -> Result<String, (StatusCode, String)> {
+    subject
+        .map(|axum::Extension(s)| s.0)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            (
+                StatusCode::FORBIDDEN,
+                "authenticated subject is required for schema-binding approval".to_string(),
+            )
+        })
+}
+
+fn require_schema_binding_admin(
+    role: Option<axum::Extension<crate::http_server::auth::Role>>,
+) -> Result<(), (StatusCode, String)> {
+    match role {
+        Some(axum::Extension(crate::http_server::auth::Role::Admin)) => Ok(()),
+        _ => Err((
+            StatusCode::FORBIDDEN,
+            "schema-binding activation requires an authenticated admin".to_string(),
+        )),
+    }
+}
+
+/// Admin activation: re-evaluate server-side, then commit the durable
+/// binding and the approved manifest through the registry. The API never
+/// submits a gNMI subscription directly; collector resync carries the new
+/// assignment authority.
+pub(super) async fn schema_binding_activate_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    role: Option<axum::Extension<crate::http_server::auth::Role>>,
+    subject: Option<axum::Extension<crate::http_server::auth::AuthenticatedSubject>>,
+    Json(req): Json<crate::schema_binding::SchemaPlanRequest>,
+) -> Result<Json<SchemaBindingMutationResponse>, (StatusCode, String)> {
+    require_schema_binding_admin(role)?;
+    let actor = schema_binding_actor(subject)?;
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+    let store = state.registry.sqlite_store().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "schema-binding store unavailable".to_string(),
+    ))?;
+    let (lib, cache, key) = yang_roots(&state);
+    let now_ns = crate::graph::common::now_ns();
+    let activation = {
+        let store = store.clone();
+        let target = target.clone();
+        let actor = actor.clone();
+        tokio::task::spawn_blocking(move || {
+            let library = YangLibrary::open(
+                std::path::Path::new(&lib),
+                std::path::Path::new(&cache),
+                &key,
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            crate::schema_binding::activate(&library, store.as_ref(), &target, &req, &actor, now_ns)
+                .map_err(|e| (StatusCode::CONFLICT, e.to_string()))
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??
+    };
+    let expected_revision = activation.record.approval_revision - 1;
+    let updated = state
+        .registry
+        .activate_schema_binding(
+            activation.device,
+            activation.record.clone(),
+            expected_revision,
+            &actor,
+            "api_schema_binding_activate",
+        )
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+
+    if let Some(cid) = updated.collector_id.as_deref()
+        && let Some(manager) = state.collector_manager.as_ref()
+    {
+        manager.resync_collector(cid).await;
+    }
+
+    Ok(Json(SchemaBindingMutationResponse {
+        success: true,
+        device_address: updated.address,
+        approval_revision: Some(activation.record.approval_revision),
+        plan_id: Some(activation.evaluation.plan_id),
+        binding_fingerprint: Some(activation.evaluation.binding_fingerprint),
+        state: "active".to_string(),
+    }))
+}
+
+/// Admin revocation/rollback: mark the durable policy revoked, clear the
+/// device runtime binding, disable acquisition, and resync the collector
+/// so assignment fencing withdraws the old execution authority.
+pub(super) async fn schema_binding_revoke_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    role: Option<axum::Extension<crate::http_server::auth::Role>>,
+    subject: Option<axum::Extension<crate::http_server::auth::AuthenticatedSubject>>,
+    Json(req): Json<SchemaBindingRevokeRequest>,
+) -> Result<Json<SchemaBindingMutationResponse>, (StatusCode, String)> {
+    require_schema_binding_admin(role)?;
+    let actor = schema_binding_actor(subject)?;
+    let reason = req
+        .reason
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| "operator_revoked".to_string());
+    let updated = state
+        .registry
+        .revoke_schema_binding(&address, &actor, &reason, "api_schema_binding_revoke")
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+
+    if let Some(cid) = updated.collector_id.as_deref()
+        && let Some(manager) = state.collector_manager.as_ref()
+    {
+        manager.resync_collector(cid).await;
+    }
+
+    Ok(Json(SchemaBindingMutationResponse {
+        success: true,
+        device_address: updated.address,
+        approval_revision: None,
+        plan_id: None,
+        binding_fingerprint: None,
+        state: "revoked".to_string(),
     }))
 }
 
@@ -1341,6 +1616,12 @@ pub(super) async fn apply_device_selected_paths_handler(
                 format!("device '{address}' not found"),
             )
         })?;
+    if target.schema_binding.is_some() {
+        return Err((
+            StatusCode::CONFLICT,
+            "schema-bound acquisition plan is approval-managed; use schema-binding activation/revocation".to_string(),
+        ));
+    }
 
     // This endpoint applies an explicit operator path selection, so it
     // participates in the same acquisition contract as the managed-device

@@ -74,6 +74,7 @@ pub struct SessionEmitter {
     /// (M5.2B review B3). Empty for plan-level emitters.
     submitted_paths: Vec<LifecyclePathEntry>,
     acquisition: String,
+    schema_binding: Option<crate::config::SchemaBindingConfig>,
     /// Set once this emitter publishes a terminal state, so teardown
     /// paths can skip a redundant terminal transition.
     terminated: Option<Arc<AtomicBool>>,
@@ -110,6 +111,7 @@ impl SessionEmitter {
             seq: 0,
             submitted_paths: Vec::new(),
             acquisition: String::new(),
+            schema_binding: None,
             terminated,
         }
     }
@@ -124,6 +126,17 @@ impl SessionEmitter {
     ) -> Self {
         self.acquisition = acquisition.as_str().to_string();
         self.submitted_paths = paths;
+        self
+    }
+
+    /// Echo the approved schema-bound identity on every transition this
+    /// emitter publishes so the core can reject forged or stale
+    /// bindings at the authenticated lifecycle boundary.
+    pub fn with_schema_binding(
+        mut self,
+        schema_binding: Option<crate::config::SchemaBindingConfig>,
+    ) -> Self {
+        self.schema_binding = schema_binding;
         self
     }
 
@@ -152,6 +165,7 @@ impl SessionEmitter {
             detail: detail.to_string(),
             submitted_paths: self.submitted_paths.clone(),
             acquisition: self.acquisition.clone(),
+            schema_binding: self.schema_binding.clone(),
         }
     }
 
@@ -234,6 +248,7 @@ pub struct GnmiSubscriber {
     subscription_plan_tx: Option<tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     selected_paths: Vec<SelectedSubscriptionPath>,
     acquisition: AcquisitionMode,
+    schema_binding: Option<crate::config::SchemaBindingConfig>,
     lifecycle: Option<LifecycleHandle>,
     /// Per-(collector session, target) execution counter — monotonic
     /// across device-facing session mints so every execution has a
@@ -279,10 +294,22 @@ impl GnmiSubscriber {
             subscription_plan_tx,
             selected_paths,
             acquisition,
+            schema_binding: None,
             lifecycle,
             execution_seq,
             active_session: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// Attach the durable schema-bound approval this subscriber is
+    /// authorized to execute. The binding is echoed on lifecycle events
+    /// and included in the assignment fingerprint.
+    pub fn with_schema_binding(
+        mut self,
+        schema_binding: Option<crate::config::SchemaBindingConfig>,
+    ) -> Self {
+        self.schema_binding = schema_binding;
+        self
     }
 
     async fn publish_plan(&self, plan: SubscriptionPlan) {
@@ -298,6 +325,7 @@ impl GnmiSubscriber {
     async fn emit_plan_outcome(&self, state: &str, plan_id: &str, detail: &str) {
         if let Some(h) = &self.lifecycle {
             SessionEmitter::new(Some(h), &self.target, plan_id, "", None)
+                .with_schema_binding(self.schema_binding.clone())
                 .emit_plan(state, detail)
                 .await;
         }
@@ -354,6 +382,7 @@ impl GnmiSubscriber {
             detail: detail.to_string(),
             submitted_paths: Vec::new(),
             acquisition: String::new(),
+            schema_binding: self.schema_binding.clone(),
         };
         match tokio::time::timeout(Duration::from_secs(2), handle.tx.send(ev)).await {
             Ok(Ok(())) => {
@@ -407,6 +436,39 @@ impl GnmiSubscriber {
         &self,
         shutdown: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
+        // A schema-bound assignment must carry the exact durable approval
+        // and an explicit manifest. Invalid/incomplete/mismatched bindings
+        // idle here — never fall back to automatic or capability-derived
+        // collection (M6C-2 fail closed).
+        if let Some(reason) =
+            schema_binding_block_reason_parts(self.schema_binding.as_ref(), self.acquisition, None)
+        {
+            let plan_id = self
+                .schema_binding
+                .as_ref()
+                .map(|b| b.plan_id.clone())
+                .filter(|p| !p.trim().is_empty())
+                .unwrap_or_else(|| acquisition_plan_id(self.acquisition, &[]));
+            warn!(
+                target = %self.target,
+                reason,
+                "schema-bound acquisition blocked — no Subscribe RPC will be emitted"
+            );
+            self.publish_plan(SubscriptionPlan {
+                target: self.target.clone(),
+                paths: Vec::new(),
+                plan_id: plan_id.clone(),
+                session_id: String::new(),
+                state: "rejected".to_string(),
+                acquisition: self.acquisition.as_str().to_string(),
+                detail: reason.to_string(),
+            })
+            .await;
+            self.emit_plan_outcome("failed", &plan_id, reason).await;
+            idle_until_shutdown(shutdown).await;
+            return Ok(());
+        }
+
         // Disabled and rejected plans need no device contact at all —
         // decide before connecting so no Capabilities/Subscribe RPC is
         // emitted. (Automatic needs real capabilities for fallback.)
@@ -683,6 +745,7 @@ impl GnmiSubscriber {
             Some(terminated),
         )
         .with_manifest(self.acquisition, manifest)
+        .with_schema_binding(self.schema_binding.clone())
         .with_execution_generation(execution_generation);
         emitter.emit("submitted", "").await;
         emitter.emit("synchronizing", "").await;
@@ -1065,6 +1128,55 @@ pub async fn stop_all_subscribers(subscribers: &mut SubscriberHandleMap) {
     }
 }
 
+/// Schema-bound execution guard: a present binding must be the exact
+/// approved mode with every authority field populated, bound to this
+/// collector, and carried by an explicit acquisition plan. Anything else
+/// is an invalid binding — the subscriber must idle/reject rather than
+/// fall back to capability-derived or broadened collection.
+pub fn schema_binding_block_reason(target: &TargetConfig) -> Option<&'static str> {
+    schema_binding_block_reason_parts(
+        target.schema_binding.as_ref(),
+        target.acquisition,
+        target.collector_id.as_deref(),
+    )
+}
+
+/// Field-level variant for subscribers that carry the binding but not the
+/// full target row. `collector_id = None` still requires a populated
+/// binding collector identity; exact collector equality is enforced at
+/// the authenticated Core lifecycle boundary.
+pub fn schema_binding_block_reason_parts(
+    binding: Option<&crate::config::SchemaBindingConfig>,
+    acquisition: AcquisitionMode,
+    collector_id: Option<&str>,
+) -> Option<&'static str> {
+    let binding = binding?;
+    if binding.mode != "schema_bound" {
+        return Some("invalid_schema_binding");
+    }
+    if binding.schema_id.trim().is_empty()
+        || binding.evidence_fingerprint.trim().is_empty()
+        || binding.plan_id.trim().is_empty()
+        || binding.binding_fingerprint.trim().is_empty()
+        || binding.approved_by.trim().is_empty()
+        || binding.approval_revision == 0
+        || binding.snapshot_id <= 0
+        || binding.approved_at_ns <= 0
+        || binding.collector_id.as_deref().unwrap_or("").is_empty()
+    {
+        return Some("incomplete_schema_binding");
+    }
+    if let Some(expected) = collector_id
+        && binding.collector_id.as_deref() != Some(expected)
+    {
+        return Some("schema_binding_collector_mismatch");
+    }
+    if acquisition != AcquisitionMode::Explicit {
+        return Some("schema_binding_requires_explicit");
+    }
+    None
+}
+
 /// Per-process random key for assignment fingerprints. Generated once;
 /// fingerprints from different processes are incomparable by design.
 fn assignment_fingerprint_key() -> &'static [u8; 32] {
@@ -1103,6 +1215,26 @@ pub fn assignment_fingerprint(
     h.update([u8::from(target.enabled), u8::from(target.inventory_only)]);
     h.update(target.acquisition.as_str().as_bytes());
     h.update(target.vendor.as_deref().unwrap_or("").as_bytes());
+    if let Some(binding) = &target.schema_binding {
+        for part in [
+            binding.mode.as_str(),
+            binding.schema_id.as_str(),
+            binding.content_id.as_deref().unwrap_or(""),
+            binding.datastore.as_deref().unwrap_or(""),
+            binding.evidence_fingerprint.as_str(),
+            binding.plan_id.as_str(),
+            binding.binding_fingerprint.as_str(),
+            binding.collector_id.as_deref().unwrap_or(""),
+            binding.approved_by.as_str(),
+        ] {
+            h.update(part.as_bytes());
+            h.update([0x1f]);
+        }
+        h.update(binding.snapshot_id.to_le_bytes());
+        h.update(binding.approval_revision.to_le_bytes());
+        h.update(binding.approved_at_ns.to_le_bytes());
+    }
+    h.update([0x1e]);
     let mut paths: Vec<String> = target
         .selected_paths
         .iter()
@@ -1195,6 +1327,7 @@ pub async fn spawn_subscriber_with_creds(
                 "",
                 None,
             )
+            .with_schema_binding(target.schema_binding.clone())
             .emit_plan("disabled", "target disabled")
             .await;
         }
@@ -1214,7 +1347,32 @@ pub async fn spawn_subscriber_with_creds(
                 "",
                 None,
             )
+            .with_schema_binding(target.schema_binding.clone())
             .emit_plan("disabled", "inventory-only asset has no collection plan")
+            .await;
+        }
+        return Ok(SpawnOutcome::Stopped);
+    }
+
+    if let Some(reason) = schema_binding_block_reason(&target) {
+        info!(address = %address, reason, "schema-bound assignment blocked — no subscriber");
+        stop_subscriber(&address, subscribers).await;
+        if let Some(tx) = subscription_plan_tx {
+            let plan = blocked_subscription_plan(&target, "rejected", reason.to_string());
+            if tx.try_send(plan).is_err() {
+                warn!(address = %address, "subscription plan channel full — status dropped");
+            }
+        }
+        if let Some(h) = lifecycle {
+            SessionEmitter::new(
+                Some(h),
+                &address,
+                &acquisition_plan_id(target.acquisition, &[]),
+                "",
+                None,
+            )
+            .with_schema_binding(target.schema_binding.clone())
+            .emit_plan("failed", reason)
             .await;
         }
         return Ok(SpawnOutcome::Stopped);
@@ -1278,6 +1436,7 @@ pub async fn spawn_subscriber_with_creds(
                 "failed"
             };
             SessionEmitter::new(Some(h), &address, &plan.plan_id, "", None)
+                .with_schema_binding(target.schema_binding.clone())
                 .emit_plan(lc_state, &plan.detail)
                 .await;
         }
@@ -1301,7 +1460,8 @@ pub async fn spawn_subscriber_with_creds(
         target.acquisition,
         lifecycle.cloned(),
         Arc::clone(&execution_seq),
-    );
+    )
+    .with_schema_binding(target.schema_binding.clone());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let handle = tokio::spawn(async move { subscriber.run_forever(shutdown_rx).await });
     subscribers.insert(
@@ -1320,6 +1480,23 @@ pub async fn spawn_subscriber_with_creds(
 pub fn planned_subscription_plan_for_target(
     target: &crate::config::TargetConfig,
 ) -> SubscriptionPlan {
+    if let Some(reason) = schema_binding_block_reason(target) {
+        let plan_id = target
+            .schema_binding
+            .as_ref()
+            .map(|b| b.plan_id.clone())
+            .filter(|p| !p.trim().is_empty())
+            .unwrap_or_else(|| acquisition_plan_id(target.acquisition, &[]));
+        return SubscriptionPlan {
+            target: target.address.clone(),
+            paths: Vec::new(),
+            plan_id,
+            session_id: String::new(),
+            state: "rejected".to_string(),
+            acquisition: target.acquisition.as_str().to_string(),
+            detail: reason.to_string(),
+        };
+    }
     // Preview uses capability fallback hints for automatic mode; explicit
     // plans are validated strictly (no capability substitution).
     let caps = ModelCapabilities::fallback(
@@ -2058,7 +2235,7 @@ fn resolve_notification_path(prefix: Option<&Path>, update: Option<&Path>) -> Op
     }
 }
 
-fn path_to_string(path: &Path) -> String {
+pub(crate) fn path_to_string(path: &Path) -> String {
     path.elem
         .iter()
         .map(|e| {
@@ -2206,6 +2383,77 @@ mod tests {
             &caps,
         );
         assert!(matches!(plan, AcquisitionPlan::Rejected { .. }));
+    }
+
+    fn bound_target(
+        binding: crate::config::SchemaBindingConfig,
+        acquisition: AcquisitionMode,
+        collector_id: Option<&str>,
+    ) -> TargetConfig {
+        TargetConfig {
+            address: "10.0.0.9:57400".to_string(),
+            enabled: true,
+            acquisition,
+            collector_id: collector_id.map(str::to_string),
+            schema_binding: Some(binding),
+            ..Default::default()
+        }
+    }
+
+    fn valid_binding() -> crate::config::SchemaBindingConfig {
+        crate::config::SchemaBindingConfig {
+            mode: "schema_bound".to_string(),
+            schema_id: "a".repeat(64),
+            snapshot_id: 7,
+            content_id: Some("content-1".to_string()),
+            datastore: Some("ietf-datastores:operational".to_string()),
+            evidence_fingerprint: "ev-fp".to_string(),
+            plan_id: "approved-plan".to_string(),
+            binding_fingerprint: "bind-fp".to_string(),
+            approval_revision: 2,
+            collector_id: Some("c1".to_string()),
+            approved_by: "admin".to_string(),
+            approved_at_ns: 123,
+        }
+    }
+
+    #[test]
+    fn schema_bound_guard_accepts_exact_approved_binding() {
+        let target = bound_target(valid_binding(), AcquisitionMode::Explicit, Some("c1"));
+        assert_eq!(schema_binding_block_reason(&target), None);
+    }
+
+    #[test]
+    fn schema_bound_guard_rejects_invalid_and_incomplete_bindings() {
+        let mut invalid = valid_binding();
+        invalid.mode = "schema_bound_invalid".to_string();
+        let target = bound_target(invalid, AcquisitionMode::Explicit, Some("c1"));
+        assert_eq!(
+            schema_binding_block_reason(&target),
+            Some("invalid_schema_binding")
+        );
+
+        let mut incomplete = valid_binding();
+        incomplete.binding_fingerprint.clear();
+        let target = bound_target(incomplete, AcquisitionMode::Explicit, Some("c1"));
+        assert_eq!(
+            schema_binding_block_reason(&target),
+            Some("incomplete_schema_binding")
+        );
+    }
+
+    #[test]
+    fn schema_bound_guard_rejects_collector_and_mode_drift() {
+        let target = bound_target(valid_binding(), AcquisitionMode::Explicit, Some("c2"));
+        assert_eq!(
+            schema_binding_block_reason(&target),
+            Some("schema_binding_collector_mismatch")
+        );
+        let target = bound_target(valid_binding(), AcquisitionMode::Automatic, Some("c1"));
+        assert_eq!(
+            schema_binding_block_reason(&target),
+            Some("schema_binding_requires_explicit")
+        );
     }
 
     /// M5.2B review B1: the execution-counter book outlives subscriber

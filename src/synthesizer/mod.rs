@@ -657,6 +657,7 @@ mod tests {
             security: None,
             client_cert: None,
             client_key: None,
+            schema_binding: None,
         }
     }
 
