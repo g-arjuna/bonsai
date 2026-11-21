@@ -192,6 +192,30 @@ pub async fn persist_resolved_snapshot(
     diagnostics: Vec<String>,
     provenance: EvidenceProvenance,
 ) -> Result<ApplicabilitySnapshot> {
+    let snapshot =
+        resolve_applicability_snapshot(input, capabilities, yang_library, diagnostics, provenance)
+            .await?;
+    let row = snapshot_to_row(&snapshot, snapshot_id_placeholder())?;
+    let id = input
+        .store
+        .save_yang_applicability_snapshot(&row)
+        .context("persist applicability snapshot")?;
+    let mut saved = snapshot;
+    saved.snapshot_id = id;
+    Ok(saved)
+}
+
+/// Resolve already-acquired evidence into an applicability snapshot
+/// WITHOUT persisting it. Remote-discovery admission uses this so the
+/// expensive resolution happens before the short atomic
+/// snapshot+job-completion commit (M6E hardening).
+pub async fn resolve_applicability_snapshot(
+    input: &RefreshInput<'_>,
+    capabilities: Option<CapabilityEvidence>,
+    yang_library: Option<YangLibraryOutcome>,
+    diagnostics: Vec<String>,
+    provenance: EvidenceProvenance,
+) -> Result<ApplicabilitySnapshot> {
     let now_ns = crate::graph::common::now_ns();
     let target = input.target;
     let canonical = canonical_device_key(&target.address);
@@ -250,15 +274,7 @@ pub async fn persist_resolved_snapshot(
         yang_library,
         provenance,
     };
-
-    let row = snapshot_to_row(&snapshot, snapshot_id_placeholder())?;
-    let id = input
-        .store
-        .save_yang_applicability_snapshot(&row)
-        .context("persist applicability snapshot")?;
-    let mut saved = snapshot;
-    saved.snapshot_id = id;
-    Ok(saved)
+    Ok(snapshot)
 }
 
 fn snapshot_id_placeholder() -> i64 {

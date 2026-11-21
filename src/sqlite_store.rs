@@ -24,7 +24,7 @@ const DB_FILE: &str = CONFIG_DB_FILE_NAME;
 /// Schema version the management service migrates to. Read-only
 /// consumers (routing service) compare against this and fail closed
 /// when the database is older.
-pub const CURRENT_SCHEMA_VERSION: i64 = 12;
+pub const CURRENT_SCHEMA_VERSION: i64 = 13;
 
 /// True when an `ALTER TABLE ... ADD COLUMN` failed only because the
 /// column already exists (i.e. a previous migration attempt partially
@@ -712,6 +712,25 @@ impl SqliteStore {
                 }
             }
             db.execute("PRAGMA user_version=12", [])
+                .context("failed to set schema version")?;
+        }
+
+        // Version 13: M6E admission hardening. `device_revision` records
+        // the device configuration revision (TargetConfig.updated_at_ns)
+        // the job was dispatched against, so evidence gathered under
+        // obsolete connection settings can never be admitted. The
+        // 'admitting' state plus `admission_token` implement single-
+        // winner result admission: exactly one submission owns the
+        // snapshot+completion commit.
+        if user_version < 13 {
+            db.execute_batch(
+                "ALTER TABLE yang_discovery_jobs
+                    ADD COLUMN device_revision INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE yang_discovery_jobs
+                    ADD COLUMN admission_token TEXT;",
+            )
+            .context("schema v13 discovery-job admission migration failed")?;
+            db.execute("PRAGMA user_version=13", [])
                 .context("failed to set schema version")?;
         }
 
@@ -2439,9 +2458,9 @@ impl SqliteStore {
                 dispatched_at_ns, finished_at_ns, attempt_count,
                 result_classification, reason_code, snapshot_id,
                 evidence_fingerprint, result_digest, diagnostics_json,
-                created_by, updated_at_ns
+                created_by, updated_at_ns, device_revision, admission_token
              ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,
-                       ?16,?17,?18,?19,?20,?21,?22,?23)",
+                       ?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)",
             params![
                 job.job_id,
                 job.device_key,
@@ -2466,6 +2485,8 @@ impl SqliteStore {
                 job.diagnostics_json,
                 job.created_by,
                 job.updated_at_ns,
+                job.device_revision,
+                job.admission_claim,
             ],
         )
         .context("insert yang discovery job")?;
@@ -2495,7 +2516,8 @@ impl SqliteStore {
                     created_at_ns, deadline_ns, dispatched_at_ns,
                     finished_at_ns, attempt_count, result_classification,
                     reason_code, snapshot_id, evidence_fingerprint,
-                    result_digest, diagnostics_json, created_by, updated_at_ns
+                    result_digest, diagnostics_json, created_by, updated_at_ns,
+                    device_revision, admission_token
              FROM yang_discovery_jobs WHERE job_id = ?1",
         )?;
         let mut rows = stmt.query([job_id])?;
@@ -2518,10 +2540,11 @@ impl SqliteStore {
                     created_at_ns, deadline_ns, dispatched_at_ns,
                     finished_at_ns, attempt_count, result_classification,
                     reason_code, snapshot_id, evidence_fingerprint,
-                    result_digest, diagnostics_json, created_by, updated_at_ns
+                    result_digest, diagnostics_json, created_by, updated_at_ns,
+                    device_revision, admission_token
              FROM yang_discovery_jobs
              WHERE device_key = ?1
-               AND state IN ('queued','dispatched')
+               AND state IN ('queued','dispatched','admitting')
              ORDER BY id DESC",
         )?;
         let mut rows = stmt.query([device_key])?;
@@ -2545,10 +2568,11 @@ impl SqliteStore {
                     created_at_ns, deadline_ns, dispatched_at_ns,
                     finished_at_ns, attempt_count, result_classification,
                     reason_code, snapshot_id, evidence_fingerprint,
-                    result_digest, diagnostics_json, created_by, updated_at_ns
+                    result_digest, diagnostics_json, created_by, updated_at_ns,
+                    device_revision, admission_token
              FROM yang_discovery_jobs
              WHERE collector_id = ?1
-               AND state IN ('queued','dispatched')
+               AND state IN ('queued','dispatched','admitting')
              ORDER BY id ASC",
         )?;
         let mut rows = stmt.query([collector_id])?;
@@ -2570,23 +2594,23 @@ impl SqliteStore {
             match (collector_id, device_key) {
                 (Some(c), Some(d)) => (
                     "SELECT COUNT(*) FROM yang_discovery_jobs
-                 WHERE state IN ('queued','dispatched')
+                 WHERE state IN ('queued','dispatched','admitting')
                    AND collector_id = ?1 AND device_key = ?2",
                     vec![Box::new(c.to_string()), Box::new(d.to_string())],
                 ),
                 (Some(c), None) => (
                     "SELECT COUNT(*) FROM yang_discovery_jobs
-                 WHERE state IN ('queued','dispatched') AND collector_id = ?1",
+                 WHERE state IN ('queued','dispatched','admitting') AND collector_id = ?1",
                     vec![Box::new(c.to_string())],
                 ),
                 (None, Some(d)) => (
                     "SELECT COUNT(*) FROM yang_discovery_jobs
-                 WHERE state IN ('queued','dispatched') AND device_key = ?1",
+                 WHERE state IN ('queued','dispatched','admitting') AND device_key = ?1",
                     vec![Box::new(d.to_string())],
                 ),
                 (None, None) => (
                     "SELECT COUNT(*) FROM yang_discovery_jobs
-                 WHERE state IN ('queued','dispatched')",
+                 WHERE state IN ('queued','dispatched','admitting')",
                     vec![],
                 ),
             };
@@ -2614,7 +2638,8 @@ impl SqliteStore {
                     created_at_ns, deadline_ns, dispatched_at_ns,
                     finished_at_ns, attempt_count, result_classification,
                     reason_code, snapshot_id, evidence_fingerprint,
-                    result_digest, diagnostics_json, created_by, updated_at_ns
+                    result_digest, diagnostics_json, created_by, updated_at_ns,
+                    device_revision, admission_token
              FROM yang_discovery_jobs
              WHERE collector_id = ?1
                AND state IN ('queued','dispatched')
@@ -2639,14 +2664,22 @@ impl SqliteStore {
     }
 
     /// Atomically transition a job to `dispatched` under the given
-    /// collector session generation. Fails (returns false) when the job
-    /// already reached a terminal state or was completed — idempotent
-    /// re-delivery only updates the session stamp and attempt count.
+    /// collector session generation AND current assignment authority.
+    /// Dispatch re-stamps `authority_epoch`, `assignment_generation` and
+    /// `device_revision` so a job queued while its collector was offline
+    /// (or under a superseded assignment view) is fenced by the values
+    /// Core actually delivered — never by stale queue-time stamps.
+    /// Fails (returns false) when the job already reached a terminal
+    /// state or was completed — idempotent re-delivery only updates the
+    /// stamps and attempt count.
     #[allow(clippy::too_many_arguments)]
     pub fn mark_yang_discovery_job_dispatched(
         &self,
         job_id: &str,
         session_generation: i64,
+        authority_epoch: i64,
+        assignment_generation: i64,
+        device_revision: i64,
         now_ns: i64,
     ) -> Result<bool> {
         let db = self.db.lock().unwrap();
@@ -2654,15 +2687,229 @@ impl SqliteStore {
             "UPDATE yang_discovery_jobs
              SET state = 'dispatched',
                  collector_session_generation = ?2,
-                 dispatched_at_ns = COALESCE(dispatched_at_ns, ?3),
+                 authority_epoch = ?3,
+                 assignment_generation = ?4,
+                 device_revision = ?5,
+                 dispatched_at_ns = COALESCE(dispatched_at_ns, ?6),
                  attempt_count = attempt_count + 1,
-                 updated_at_ns = ?3
+                 updated_at_ns = ?6
              WHERE job_id = ?1
                AND state IN ('queued','dispatched')
-               AND deadline_ns > ?3",
-            params![job_id, session_generation, now_ns],
+               AND deadline_ns > ?6",
+            params![
+                job_id,
+                session_generation,
+                authority_epoch,
+                assignment_generation,
+                device_revision,
+                now_ns
+            ],
         )?;
         Ok(changed == 1)
+    }
+
+    /// Single-winner admission claim (M6E hardening): atomically move a
+    /// dispatched job to `admitting` under a fresh claim token. Exactly
+    /// one concurrent submission can win; losers observe the job already
+    /// claimed/terminal and must not persist evidence.
+    pub fn claim_yang_discovery_job_admission(
+        &self,
+        job_id: &str,
+        admission_token: &str,
+        now_ns: i64,
+    ) -> Result<bool> {
+        let db = self.db.lock().unwrap();
+        let changed = db.execute(
+            "UPDATE yang_discovery_jobs
+             SET state = 'admitting',
+                 admission_token = ?2,
+                 updated_at_ns = ?3
+             WHERE job_id = ?1
+               AND state = 'dispatched'
+               AND deadline_ns > ?3",
+            params![job_id, admission_token, now_ns],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Release an admission claim back to dispatchable state after an
+    /// internal (non-evidence) failure — the job may be re-executed and
+    /// resubmitted within its deadline. Fenced on the claim token so a
+    /// superseded claimant can never reopen a job another owner
+    /// finished. The session stamp is cleared so the next poll
+    /// redispatches under the current session.
+    pub fn release_yang_discovery_job_admission(
+        &self,
+        job_id: &str,
+        admission_token: &str,
+        now_ns: i64,
+    ) -> Result<bool> {
+        let db = self.db.lock().unwrap();
+        let changed = db.execute(
+            "UPDATE yang_discovery_jobs
+             SET state = 'dispatched',
+                 collector_session_generation = NULL,
+                 admission_token = NULL,
+                 updated_at_ns = ?3
+             WHERE job_id = ?1
+               AND state = 'admitting'
+               AND admission_token = ?2",
+            params![job_id, admission_token, now_ns],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Atomic admission commit (M6E hardening): persist the resolved
+    /// applicability snapshot AND mark the job completed in ONE
+    /// transaction, fenced on the admission claim token. Inside the
+    /// transaction the out-of-order fence is re-evaluated: a newer
+    /// completed job for the same device can never be superseded by
+    /// this older in-flight admission — in that case the job is marked
+    /// `superseded` and NO snapshot is written.
+    ///
+    /// Returns [`YangAdmissionCommit::ClaimLost`] when the claim was
+    /// lost (job finished/cancelled/re-claimed concurrently); the
+    /// transaction is rolled back so no authoritative snapshot can
+    /// diverge from job state.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_yang_discovery_admission(
+        &self,
+        job_id: &str,
+        device_key: &str,
+        admission_token: &str,
+        snapshot: &YangApplicabilitySnapshotRow,
+        result_digest: &str,
+        diagnostics_json: Option<&str>,
+        now_ns: i64,
+    ) -> Result<YangAdmissionCommit> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+
+        // Recheck currency inside the commit: the newest COMPLETED job
+        // for this device must not be overtaken by this older admission.
+        let job_row_id: i64 = tx.query_row(
+            "SELECT id FROM yang_discovery_jobs WHERE job_id = ?1",
+            [job_id],
+            |row| row.get(0),
+        )?;
+        let latest_completed: Option<i64> = match tx.query_row(
+            "SELECT id FROM yang_discovery_jobs
+             WHERE device_key = ?1 AND state = 'completed'
+             ORDER BY id DESC LIMIT 1",
+            [device_key],
+            |row| row.get(0),
+        ) {
+            Ok(id) => Some(id),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e).context("latest completed discovery job"),
+        };
+        if latest_completed.is_some_and(|latest| latest > job_row_id) {
+            let changed = tx.execute(
+                "UPDATE yang_discovery_jobs
+                 SET state = 'superseded',
+                     result_classification = 'superseded_by_newer_job',
+                     reason_code = 'superseded_by_newer_job',
+                     admission_token = NULL,
+                     finished_at_ns = ?2,
+                     updated_at_ns = ?2
+                 WHERE job_id = ?1
+                   AND state = 'admitting'
+                   AND admission_token = ?3",
+                params![job_id, now_ns, admission_token],
+            )?;
+            tx.commit()?;
+            return Ok(if changed == 1 {
+                YangAdmissionCommit::Superseded
+            } else {
+                YangAdmissionCommit::ClaimLost
+            });
+        }
+
+        // Snapshot insert — identical column set to
+        // save_yang_applicability_snapshot, inside THIS transaction.
+        tx.execute(
+            "INSERT INTO yang_applicability_snapshots (
+                device_key, device_address, collector_id, schema_id,
+                content_id, datastore, overall_status, outcome,
+                result_json, capabilities_json, yang_library_json,
+                evidence_fingerprint, observed_at_ns, evaluated_at_ns,
+                error, created_at_ns, executor, observing_collector_id,
+                discovery_job_id, collector_session_generation,
+                authority_epoch, evidence_received_at_ns
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,
+                       ?17,?18,?19,?20,?21,?22)",
+            params![
+                snapshot.device_key,
+                snapshot.device_address,
+                snapshot.collector_id,
+                snapshot.schema_id,
+                snapshot.content_id,
+                snapshot.datastore,
+                snapshot.overall_status,
+                snapshot.outcome,
+                snapshot.result_json,
+                snapshot.capabilities_json,
+                snapshot.yang_library_json,
+                snapshot.evidence_fingerprint,
+                snapshot.observed_at_ns,
+                snapshot.evaluated_at_ns,
+                snapshot.error,
+                snapshot.created_at_ns,
+                snapshot.executor,
+                snapshot.observing_collector_id,
+                snapshot.discovery_job_id,
+                snapshot.collector_session_generation,
+                snapshot.authority_epoch,
+                snapshot.evidence_received_at_ns,
+            ],
+        )
+        .context("insert yang applicability snapshot (admission commit)")?;
+        let snapshot_id = tx.last_insert_rowid();
+        tx.execute(
+            "DELETE FROM yang_applicability_snapshots
+             WHERE device_key = ?1 AND id NOT IN (
+                 SELECT id FROM yang_applicability_snapshots
+                 WHERE device_key = ?1
+                 ORDER BY evaluated_at_ns DESC, id DESC
+                 LIMIT ?2
+             )",
+            params![snapshot.device_key, YANG_APPLICABILITY_HISTORY],
+        )
+        .context("prune yang applicability history (admission commit)")?;
+
+        let changed = tx.execute(
+            "UPDATE yang_discovery_jobs
+             SET state = 'completed',
+                 result_classification = 'completed',
+                 reason_code = NULL,
+                 snapshot_id = ?2,
+                 evidence_fingerprint = ?3,
+                 result_digest = ?4,
+                 diagnostics_json = COALESCE(?5, diagnostics_json),
+                 admission_token = NULL,
+                 finished_at_ns = ?6,
+                 updated_at_ns = ?6
+             WHERE job_id = ?1
+               AND state = 'admitting'
+               AND admission_token = ?7",
+            params![
+                job_id,
+                snapshot_id,
+                snapshot.evidence_fingerprint,
+                result_digest,
+                diagnostics_json,
+                now_ns,
+                admission_token,
+            ],
+        )?;
+        if changed != 1 {
+            // Claim lost mid-commit: roll back so the snapshot insert
+            // cannot diverge from job state.
+            drop(tx);
+            return Ok(YangAdmissionCommit::ClaimLost);
+        }
+        tx.commit()?;
+        Ok(YangAdmissionCommit::Completed { snapshot_id })
     }
 
     /// Terminal transition with result classification. Guarded: only a
@@ -2691,10 +2938,11 @@ impl SqliteStore {
                  evidence_fingerprint = ?6,
                  result_digest = COALESCE(?7, result_digest),
                  diagnostics_json = COALESCE(?8, diagnostics_json),
+                 admission_token = NULL,
                  finished_at_ns = ?9,
                  updated_at_ns = ?9
              WHERE job_id = ?1
-               AND state IN ('queued','dispatched')",
+               AND state IN ('queued','dispatched','admitting')",
             params![
                 job_id,
                 state,
@@ -2741,7 +2989,8 @@ impl SqliteStore {
                     created_at_ns, deadline_ns, dispatched_at_ns,
                     finished_at_ns, attempt_count, result_classification,
                     reason_code, snapshot_id, evidence_fingerprint,
-                    result_digest, diagnostics_json, created_by, updated_at_ns
+                    result_digest, diagnostics_json, created_by, updated_at_ns,
+                    device_revision, admission_token
              FROM yang_discovery_jobs
              WHERE device_key = ?1
              ORDER BY id DESC LIMIT ?2",
@@ -2767,17 +3016,36 @@ impl SqliteStore {
             "UPDATE yang_discovery_jobs
              SET state = 'timed_out', reason_code = 'deadline_exceeded',
                  finished_at_ns = ?1, updated_at_ns = ?1
-             WHERE state IN ('queued','dispatched') AND deadline_ns <= ?1",
+             WHERE state IN ('queued','dispatched','admitting') AND deadline_ns <= ?1",
             params![now_ns],
         )?;
         let stale = db.execute(
             "UPDATE yang_discovery_jobs
              SET state = 'stale_authority', reason_code = 'authority_epoch_superseded',
                  finished_at_ns = ?1, updated_at_ns = ?1
-             WHERE state IN ('queued','dispatched')
+             WHERE state IN ('queued','dispatched','admitting')
                AND authority_epoch != ?2",
             params![now_ns, current_authority_epoch],
         )?;
+        // Interrupted admissions are honest: the snapshot+completion
+        // commit is one transaction, so a job still 'admitting' after a
+        // restart provably persisted NO authoritative snapshot. Return
+        // it to dispatchable state (session stamp cleared) so a fresh
+        // authenticated poll can re-issue it inside the deadline —
+        // never silently completed, never left wedged.
+        let recovered = db.execute(
+            "UPDATE yang_discovery_jobs
+             SET state = 'dispatched', collector_session_generation = NULL,
+                 admission_token = NULL, updated_at_ns = ?1
+             WHERE state = 'admitting'",
+            params![now_ns],
+        )?;
+        if recovered > 0 {
+            tracing::info!(
+                recovered,
+                "recovered interrupted discovery admissions on boot"
+            );
+        }
         Ok((expired, stale))
     }
 }
@@ -2858,6 +3126,19 @@ pub struct YangApplicabilitySnapshotRow {
     pub evidence_received_at_ns: Option<i64>,
 }
 
+/// Outcome of the atomic discovery-admission commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YangAdmissionCommit {
+    /// Snapshot persisted and job completed in one transaction.
+    Completed { snapshot_id: i64 },
+    /// A newer completed job exists for the device — this admission was
+    /// marked superseded and wrote no snapshot.
+    Superseded,
+    /// The admission claim was lost to a concurrent transition; nothing
+    /// was persisted.
+    ClaimLost,
+}
+
 /// Durable M6E remote-discovery job row. Contains NO credentials, tokens,
 /// private keys or passwords — connection material stays in the secure
 /// assignment-delivery path on the collector.
@@ -2889,6 +3170,16 @@ pub struct YangDiscoveryJobRow {
     pub diagnostics_json: Option<String>,
     pub created_by: Option<String>,
     pub updated_at_ns: i64,
+    /// Device configuration revision (`TargetConfig.updated_at_ns`) the
+    /// job was dispatched against. Evidence admitted for a job whose
+    /// recorded revision no longer matches the live device config is
+    /// rejected — it may have been gathered with obsolete connection
+    /// settings (M6E hardening).
+    pub device_revision: i64,
+    /// Single-winner admission claim token (M6E hardening). Set while
+    /// state='admitting'; the commit is fenced on it so exactly one
+    /// submission can persist the authoritative snapshot.
+    pub admission_claim: Option<String>,
 }
 
 /// Bounded per-device snapshot history retained in SQLite.
@@ -2981,6 +3272,8 @@ fn discovery_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<YangDiscoveryJ
         diagnostics_json: row.get(21)?,
         created_by: row.get(22)?,
         updated_at_ns: row.get(23)?,
+        device_revision: row.get(24)?,
+        admission_claim: row.get(25)?,
     })
 }
 

@@ -56,6 +56,9 @@ pub const JOB_FAILED: &str = "failed";
 pub const JOB_CANCELLED: &str = "cancelled";
 pub const JOB_STALE_AUTHORITY: &str = "stale_authority";
 pub const JOB_SUPERSEDED: &str = "superseded";
+/// In-flight single-winner admission (M6E hardening): exactly one
+/// submission owns the snapshot+completion commit.
+pub const JOB_ADMITTING: &str = "admitting";
 
 /// Evidence executor classifications persisted on snapshots (M6E-G).
 pub const EXECUTOR_CORE_DIRECT: &str = "core_direct";
@@ -195,6 +198,8 @@ pub fn request_remote_discovery(
         diagnostics_json: None,
         created_by: Some(actor.to_string()),
         updated_at_ns: now,
+        device_revision: target.updated_at_ns,
+        admission_claim: None,
     };
     store
         .create_yang_discovery_job(&row)
@@ -228,21 +233,38 @@ fn job_to_proto(job: &YangDiscoveryJobRow) -> pb::YangDiscoveryJob {
     }
 }
 
-/// Whether the job's device binding is still valid for this collector:
-/// device exists, enabled, still assigned to this collector, same
-/// identity key, and the stamped assignment authority still validates.
-fn job_device_binding_valid(
+/// Registry-side device binding for a discovery job: device exists,
+/// enabled, still assigned to the job's collector, same identity key.
+/// Returns the live target on success — callers needing the
+/// configuration revision use it directly.
+fn job_device_binding_current(
     registry: &ApiRegistry,
-    manager: &CollectorManager,
     job: &YangDiscoveryJobRow,
-) -> Result<bool> {
+) -> Result<Option<crate::config::TargetConfig>> {
     let Some(target) = registry.get_device(&job.device_address)? else {
-        return Ok(false);
+        return Ok(None);
     };
     if !target.enabled
         || target.collector_id.as_deref() != Some(job.collector_id.as_str())
         || registry::device_identity_key(&target) != job.device_key
     {
+        return Ok(None);
+    }
+    Ok(Some(target))
+}
+
+/// Whether the job's device binding AND stamped assignment authority
+/// are still valid for this collector. Used for jobs that have already
+/// been dispatched — their stamps were fixed at dispatch time.
+/// QUEUED jobs must NOT be fenced on queue-time stamps: a job queued
+/// while its collector was offline carries generation 0 and is stamped
+/// with current authority at dispatch instead.
+fn job_device_binding_valid(
+    registry: &ApiRegistry,
+    manager: &CollectorManager,
+    job: &YangDiscoveryJobRow,
+) -> Result<bool> {
+    if job_device_binding_current(registry, job)?.is_none() {
         return Ok(false);
     }
     Ok(manager.validate_discovery_assignment(
@@ -308,32 +330,40 @@ pub fn poll_discovery_jobs(
             cancelled.push(job.job_id);
             continue;
         }
-        match job_device_binding_valid(registry, manager, &job) {
-            Ok(true) => {}
-            Ok(false) => {
-                let device_gone = registry
-                    .get_device(&job.device_address)?
-                    .map(|t| !t.enabled)
-                    .unwrap_or(true);
-                let (state, reason) = if device_gone {
-                    (JOB_CANCELLED, "device_removed")
-                } else {
-                    (JOB_STALE_AUTHORITY, "device_binding_changed")
-                };
-                store.finish_yang_discovery_job(
-                    &job.job_id,
-                    state,
-                    Some(reason),
-                    Some(reason),
-                    None,
-                    None,
-                    None,
-                    None,
-                    now,
-                )?;
-                cancelled.push(job.job_id);
-            }
-            Err(_) => {}
+        // QUEUED jobs are fenced on the live device binding only —
+        // their authority stamps are re-issued at dispatch. Dispatched
+        // or in-flight admissions are fenced on the stamps they were
+        // actually dispatched under.
+        let binding_ok = match if job.state == JOB_QUEUED {
+            job_device_binding_current(registry, &job).map(|t| t.is_some())
+        } else {
+            job_device_binding_valid(registry, manager, &job)
+        } {
+            Ok(ok) => ok,
+            Err(_) => continue,
+        };
+        if !binding_ok {
+            let device_gone = registry
+                .get_device(&job.device_address)?
+                .map(|t| !t.enabled)
+                .unwrap_or(true);
+            let (state, reason) = if device_gone {
+                (JOB_CANCELLED, "device_removed")
+            } else {
+                (JOB_STALE_AUTHORITY, "device_binding_changed")
+            };
+            store.finish_yang_discovery_job(
+                &job.job_id,
+                state,
+                Some(reason),
+                Some(reason),
+                None,
+                None,
+                None,
+                None,
+                now,
+            )?;
+            cancelled.push(job.job_id);
         }
     }
 
@@ -349,14 +379,38 @@ pub fn poll_discovery_jobs(
     )?;
     let mut jobs = Vec::new();
     for mut job in pending {
-        if !job_device_binding_valid(registry, manager, &job)? {
+        // Dispatch stamps CURRENT authority: epoch, latest assignment
+        // generation and the live device configuration revision. A job
+        // queued while its collector was offline (generation 0) is
+        // safely dispatched once the collector registers and receives
+        // its first full sync — the stamp is issued here, never
+        // trusted from queue time.
+        let Some(target) = job_device_binding_current(registry, &job)? else {
+            continue;
+        };
+        let authority_epoch = manager.authority_epoch() as i64;
+        let assignment_generation = manager.latest_assignment_generation(&job.collector_id) as i64;
+        if assignment_generation <= 0 {
+            // No assignment sync has ever been delivered to this
+            // collector — dispatching now would stamp generation 0,
+            // which is never authority. Leave queued; the next poll
+            // after the first full sync dispatches it.
             continue;
         }
-        if store.mark_yang_discovery_job_dispatched(&job.job_id, sgen as i64, now)? {
-            // The durable row now carries this session's generation;
-            // reflect it on the wire copy (the pending row predates
-            // the dispatch stamp).
+        if store.mark_yang_discovery_job_dispatched(
+            &job.job_id,
+            sgen as i64,
+            authority_epoch,
+            assignment_generation,
+            target.updated_at_ns,
+            now,
+        )? {
+            // The durable row now carries this session's generation
+            // and current assignment authority; reflect them on the
+            // wire copy (the pending row predates the dispatch stamp).
             job.collector_session_generation = Some(sgen as i64);
+            job.authority_epoch = authority_epoch;
+            job.assignment_generation = assignment_generation;
             jobs.push(job_to_proto(&job));
         }
     }
@@ -412,69 +466,42 @@ fn bound_diagnostics(raw: &[String]) -> Option<String> {
     let kept: Vec<String> = raw
         .iter()
         .take(YANG_DISCOVERY_MAX_DIAGNOSTICS)
-        .map(|d| {
-            let truncated: String = d.chars().take(MAX_DIAGNOSTIC_ENTRY_CHARS).collect();
-            truncated
-        })
+        .map(|d| d.chars().take(MAX_DIAGNOSTIC_ENTRY_CHARS).collect())
         .collect();
     serde_json::to_string(&kept).ok()
 }
 
-/// Validate and admit one collector-submitted discovery result.
-/// `authenticated_collector_id` is the transport-attested,
-/// credential-bound identity — payload claims are never trusted.
-///
-/// Every rejection is explicit and bounded; a valid-looking payload
-/// from an unauthorized collector is never evidence authority.
+/// Diagnostics bounded BEFORE they reach resolution/persistence —
+/// count AND per-entry length, never silently unbounded.
+fn bounded_diagnostics(raw: &[String]) -> Vec<String> {
+    raw.iter()
+        .take(YANG_DISCOVERY_MAX_DIAGNOSTICS)
+        .map(|d| d.chars().take(MAX_DIAGNOSTIC_ENTRY_CHARS).collect())
+        .collect()
+}
+
+/// Result of the admission currency check: either the live device
+/// target the job is bound to, or the terminal admission outcome
+/// (which may already have finished the job durably).
+enum AdmissionCurrency {
+    Current(crate::config::TargetConfig),
+    Rejected(AdmitResult),
+}
+
+/// Currency fences evaluated at admission AND re-evaluated at commit
+/// time: deadline, active session generation, authority epoch, device
+/// binding (including the claimed device address), device configuration
+/// revision, and assignment authority. Every failure is explicit — a
+/// job is only finished when the rejection itself is terminal.
 #[allow(clippy::too_many_arguments)]
-pub async fn admit_discovery_result(
+fn check_admission_currency(
     store: &SqliteStore,
     registry: &ApiRegistry,
     manager: &CollectorManager,
-    yang_roots: Option<&(String, String, String)>,
-    authenticated_collector_id: &str,
-    result: &pb::YangDiscoveryResult,
+    job: &YangDiscoveryJobRow,
+    claimed_device_address: &str,
     now: i64,
-) -> Result<AdmitResult> {
-    if result.job_id.is_empty() {
-        return Ok(reject("missing_job_id", None));
-    }
-    let Some(job) = store.get_yang_discovery_job(&result.job_id)? else {
-        return Ok(reject("unknown_job", None));
-    };
-
-    // ── Job state / idempotent replay ────────────────────────────────
-    match job.state.as_str() {
-        JOB_COMPLETED => {
-            // Idempotent duplicate: identical evidence digest → accept;
-            // different payload for a completed job → conflict.
-            let digest = result_digest(result);
-            if job.result_digest.as_deref() == Some(digest.as_str()) {
-                metrics::counter!("bonsai_yang_discovery_jobs_duplicate_total").increment(1);
-                return Ok(AdmitResult::Accepted {
-                    snapshot_id: job.snapshot_id.unwrap_or(0),
-                    duplicate: true,
-                });
-            }
-            return Ok(reject("conflicting_duplicate", None));
-        }
-        JOB_QUEUED | JOB_DISPATCHED => {}
-        other => {
-            return Ok(reject(format!("job_terminal:{other}"), None));
-        }
-    }
-    if job.state != JOB_DISPATCHED {
-        return Ok(reject("job_not_dispatched", None));
-    }
-
-    // ── Collector binding: authenticated principal AND payload claim
-    //    must both equal the job's assigned collector. ────────────────
-    if authenticated_collector_id != job.collector_id || result.collector_id != job.collector_id {
-        metrics::counter!("bonsai_yang_discovery_jobs_rejected_total", "reason" => "wrong_collector")
-            .increment(1);
-        return Ok(reject("wrong_collector", None));
-    }
-
+) -> Result<AdmissionCurrency> {
     // ── Deadline ─────────────────────────────────────────────────────
     if now > job.deadline_ns {
         store.finish_yang_discovery_job(
@@ -488,7 +515,10 @@ pub async fn admit_discovery_result(
             None,
             now,
         )?;
-        return Ok(reject("deadline_exceeded", Some(JOB_TIMED_OUT)));
+        return Ok(AdmissionCurrency::Rejected(reject(
+            "deadline_exceeded",
+            Some(JOB_TIMED_OUT),
+        )));
     }
 
     // ── Session + authority fencing ──────────────────────────────────
@@ -500,16 +530,7 @@ pub async fn admit_discovery_result(
         // The job itself stays dispatchable under the new session.
         metrics::counter!("bonsai_yang_discovery_jobs_rejected_total", "reason" => "stale_session")
             .increment(1);
-        return Ok(reject("stale_session", None));
-    }
-    // The result's echoed session generation must match the job's
-    // CURRENT dispatch stamp — a result produced under a superseded
-    // session can never ride a newer dispatch to authority.
-    if result.collector_session_generation as i64 != job.collector_session_generation.unwrap_or(-1)
-    {
-        metrics::counter!("bonsai_yang_discovery_jobs_rejected_total", "reason" => "stale_session")
-            .increment(1);
-        return Ok(reject("stale_session", None));
+        return Ok(AdmissionCurrency::Rejected(reject("stale_session", None)));
     }
     if manager.authority_epoch() as i64 != job.authority_epoch {
         store.finish_yang_discovery_job(
@@ -523,17 +544,25 @@ pub async fn admit_discovery_result(
             None,
             now,
         )?;
-        return Ok(reject("stale_authority", Some(JOB_STALE_AUTHORITY)));
+        return Ok(AdmissionCurrency::Rejected(reject(
+            "stale_authority",
+            Some(JOB_STALE_AUTHORITY),
+        )));
     }
 
-    // ── Device binding: canonical identity + current assignment ──────
+    // ── Device binding: canonical identity + current assignment +
+    //    configuration revision. The revision fence rejects evidence
+    //    gathered under obsolete connection settings: any device
+    //    mutation (credentials, reassignment, enable/disable) bumps
+    //    `updated_at_ns`, so a job dispatched against revision N can
+    //    never admit evidence after the device moved to revision M.
     let device_ok = match registry.get_device(&job.device_address)? {
         Some(target) => {
             target.enabled
                 && target.collector_id.as_deref() == Some(job.collector_id.as_str())
                 && registry::device_identity_key(&target) == job.device_key
-                && !result.device_address.is_empty()
-                && canonical_equal(&result.device_address, &job.device_address)
+                && !claimed_device_address.is_empty()
+                && canonical_equal(claimed_device_address, &job.device_address)
         }
         None => false,
     };
@@ -560,7 +589,29 @@ pub async fn admit_discovery_result(
         )?;
         metrics::counter!("bonsai_yang_discovery_jobs_rejected_total", "reason" => reason)
             .increment(1);
-        return Ok(reject(reason, Some(state)));
+        return Ok(AdmissionCurrency::Rejected(reject(reason, Some(state))));
+    }
+    let target = registry
+        .get_device(&job.device_address)?
+        .context("device disappeared during admission")?;
+    if target.updated_at_ns != job.device_revision {
+        store.finish_yang_discovery_job(
+            &job.job_id,
+            JOB_STALE_AUTHORITY,
+            Some("device_config_changed"),
+            Some("device_config_changed"),
+            None,
+            None,
+            None,
+            None,
+            now,
+        )?;
+        metrics::counter!("bonsai_yang_discovery_jobs_rejected_total", "reason" => "device_config_changed")
+            .increment(1);
+        return Ok(AdmissionCurrency::Rejected(reject(
+            "device_config_changed",
+            Some(JOB_STALE_AUTHORITY),
+        )));
     }
     if !manager.validate_discovery_assignment(
         &job.collector_id,
@@ -578,11 +629,121 @@ pub async fn admit_discovery_result(
             None,
             now,
         )?;
-        return Ok(reject(
+        return Ok(AdmissionCurrency::Rejected(reject(
             "assignment_authority_lost",
             Some(JOB_STALE_AUTHORITY),
-        ));
+        )));
     }
+    Ok(AdmissionCurrency::Current(target))
+}
+
+/// Validate and admit one collector-submitted discovery result.
+/// `authenticated_collector_id` is the transport-attested,
+/// credential-bound identity — payload claims are never trusted.
+///
+/// Every rejection is explicit and bounded; a valid-looking payload
+/// from an unauthorized collector is never evidence authority.
+#[allow(clippy::too_many_arguments)]
+pub async fn admit_discovery_result(
+    store: &SqliteStore,
+    registry: &ApiRegistry,
+    manager: &CollectorManager,
+    yang_roots: Option<&(String, String, String)>,
+    authenticated_collector_id: &str,
+    result: &pb::YangDiscoveryResult,
+    now: i64,
+) -> Result<AdmitResult> {
+    if result.job_id.is_empty() {
+        return Ok(reject("missing_job_id", None));
+    }
+    let Some(job) = store.get_yang_discovery_job(&result.job_id)? else {
+        return Ok(reject("unknown_job", None));
+    };
+
+    // ── Collector binding BEFORE any acknowledgement (M6E hardening):
+    //    a completed job must never reveal its snapshot id to any
+    //    collector other than the authenticated authorized assignee.
+    if authenticated_collector_id != job.collector_id || result.collector_id != job.collector_id {
+        metrics::counter!("bonsai_yang_discovery_jobs_rejected_total", "reason" => "wrong_collector")
+            .increment(1);
+        return Ok(reject("wrong_collector", None));
+    }
+
+    // ── Authority stamp verification: the result must echo the exact
+    //    Core-issued job stamps. Missing, zero, foreign or superseded
+    //    stamps are never authority — rejected without finishing the
+    //    job so legitimate redispatch can still succeed.
+    if result.authority_epoch == 0 {
+        return Ok(reject("missing_authority_epoch", None));
+    }
+    if result.authority_epoch as i64 != job.authority_epoch {
+        metrics::counter!("bonsai_yang_discovery_jobs_rejected_total", "reason" => "authority_epoch_mismatch")
+            .increment(1);
+        return Ok(reject("authority_epoch_mismatch", None));
+    }
+    if result.assignment_generation == 0 {
+        return Ok(reject("missing_assignment_generation", None));
+    }
+    if result.assignment_generation as i64 != job.assignment_generation {
+        metrics::counter!("bonsai_yang_discovery_jobs_rejected_total", "reason" => "assignment_generation_mismatch")
+            .increment(1);
+        return Ok(reject("assignment_generation_mismatch", None));
+    }
+    if result.collector_session_generation == 0 {
+        return Ok(reject("missing_session_generation", None));
+    }
+    // The result's echoed session generation must match the job's
+    // CURRENT dispatch stamp — a result produced under a superseded
+    // session can never ride a newer dispatch to authority.
+    if result.collector_session_generation as i64 != job.collector_session_generation.unwrap_or(-1)
+    {
+        metrics::counter!("bonsai_yang_discovery_jobs_rejected_total", "reason" => "session_generation_mismatch")
+            .increment(1);
+        return Ok(reject("session_generation_mismatch", None));
+    }
+
+    // ── Job state / idempotent replay ────────────────────────────────
+    match job.state.as_str() {
+        JOB_COMPLETED => {
+            // Idempotent duplicate: identical evidence digest → accept;
+            // different payload for a completed job → conflict.
+            let digest = result_digest(result);
+            if job.result_digest.as_deref() == Some(digest.as_str()) {
+                metrics::counter!("bonsai_yang_discovery_jobs_duplicate_total").increment(1);
+                return Ok(AdmitResult::Accepted {
+                    snapshot_id: job.snapshot_id.unwrap_or(0),
+                    duplicate: true,
+                });
+            }
+            return Ok(reject("conflicting_duplicate", None));
+        }
+        JOB_ADMITTING => {
+            // A concurrent submission owns the admission — never a
+            // second snapshot, never divergent job state.
+            return Ok(reject("admission_in_progress", None));
+        }
+        JOB_QUEUED | JOB_DISPATCHED => {}
+        other => {
+            return Ok(reject(format!("job_terminal:{other}"), None));
+        }
+    }
+    if job.state != JOB_DISPATCHED {
+        return Ok(reject("job_not_dispatched", None));
+    }
+
+    // ── Currency fences (deadline/session/epoch/device/revision/
+    //    assignment) — evaluated now and AGAIN at commit time. ────────
+    let target = match check_admission_currency(
+        store,
+        registry,
+        manager,
+        &job,
+        &result.device_address,
+        now,
+    )? {
+        AdmissionCurrency::Current(t) => t,
+        AdmissionCurrency::Rejected(outcome) => return Ok(outcome),
+    };
 
     // ── Protocol compatibility (fail closed) ─────────────────────────
     if result.protocol_version > 0
@@ -608,6 +769,28 @@ pub async fn admit_discovery_result(
         return Ok(reject("protocol_incompatible", Some(JOB_UNSUPPORTED)));
     }
 
+    // ── Result observation timestamp bounds (M6E hardening): the
+    //    result-level observed_at_ns must agree with the documented
+    //    clock-skew policy — a missing or out-of-window timestamp is
+    //    malformed evidence for ANY outcome, success or failure.
+    if result.observed_at_ns <= 0
+        || result.observed_at_ns < job.created_at_ns - OBSERVATION_SKEW_NS
+        || result.observed_at_ns > now + OBSERVATION_FUTURE_NS
+    {
+        store.finish_yang_discovery_job(
+            &job.job_id,
+            JOB_FAILED,
+            Some("evidence_time_out_of_bounds"),
+            Some("evidence_time_out_of_bounds"),
+            None,
+            None,
+            None,
+            None,
+            now,
+        )?;
+        return Ok(reject("evidence_time_out_of_bounds", Some(JOB_FAILED)));
+    }
+
     // ── Job-level failure outcomes: explicit, never fabricated ───────
     if result.outcome != "completed" {
         let state = match result.outcome.as_str() {
@@ -618,16 +801,24 @@ pub async fn admit_discovery_result(
             "stale_authority" => JOB_STALE_AUTHORITY,
             _ => JOB_FAILED,
         };
-        let classification = if result.outcome_detail.is_empty() {
-            result.outcome.clone()
+        // Outcome detail is bounded BEFORE it is classified or stored —
+        // oversized failure payloads are never persisted raw.
+        let outcome: String = result.outcome.chars().take(64).collect();
+        let detail: String = result
+            .outcome_detail
+            .chars()
+            .take(MAX_DIAGNOSTIC_ENTRY_CHARS)
+            .collect();
+        let classification = if detail.is_empty() {
+            outcome.clone()
         } else {
-            format!("{}:{}", result.outcome, result.outcome_detail)
+            format!("{outcome}:{detail}")
         };
         store.finish_yang_discovery_job(
             &job.job_id,
             state,
             Some(&classification),
-            Some(&result.outcome),
+            Some(&outcome),
             None,
             None,
             None,
@@ -740,8 +931,10 @@ pub async fn admit_discovery_result(
         }
     }
 
-    // ── Out-of-order fencing: an older job must never supersede
-    //    evidence accepted from a newer job for the same device. ──────
+    // ── Out-of-order fencing (early check): an older job must never
+    //    supersede evidence accepted from a newer job for the same
+    //    device. Re-evaluated INSIDE the atomic commit below — this
+    //    pre-check only avoids wasted resolution.
     if let Some(latest_id) = store.latest_completed_yang_discovery_job_id(&job.device_key)?
         && latest_id > job.id
     {
@@ -762,10 +955,105 @@ pub async fn admit_discovery_result(
         });
     }
 
-    // ── Core-side resolution + persistence (same path as direct) ─────
-    let target = registry
-        .get_device(&job.device_address)?
-        .context("device disappeared during admission")?;
+    // ── Single-winner admission (M6E hardening): claim the job BEFORE
+    //    resolution so exactly one submission owns the snapshot +
+    //    completion commit. A lost claim reports the winner's durable
+    //    outcome — identical evidence replays as a duplicate, anything
+    //    else is an explicit conflict.
+    let digest = result_digest(result);
+    let admission_token = uuid::Uuid::new_v4().to_string();
+    if !store.claim_yang_discovery_job_admission(&job.job_id, &admission_token, now)? {
+        return Ok(match store.get_yang_discovery_job(&result.job_id)? {
+            Some(current) if current.state == JOB_COMPLETED => {
+                if current.result_digest.as_deref() == Some(digest.as_str()) {
+                    metrics::counter!("bonsai_yang_discovery_jobs_duplicate_total").increment(1);
+                    AdmitResult::Accepted {
+                        snapshot_id: current.snapshot_id.unwrap_or(0),
+                        duplicate: true,
+                    }
+                } else {
+                    reject("conflicting_duplicate", None)
+                }
+            }
+            _ => reject("admission_in_progress", None),
+        });
+    }
+
+    // From here the job is 'admitting' under our token. Internal
+    // failures release the claim so the job returns to dispatchable
+    // state — never wedged, never half-committed.
+    match finish_admission(
+        store,
+        registry,
+        manager,
+        &job,
+        &target,
+        authenticated_collector_id,
+        capabilities,
+        yang_library,
+        bounded_diagnostics(&result.diagnostics),
+        result,
+        &digest,
+        &admission_token,
+        yang_roots,
+    )
+    .await
+    {
+        Ok(outcome) => Ok(outcome),
+        Err(e) => {
+            let _ = store.release_yang_discovery_job_admission(&job.job_id, &admission_token, now);
+            Err(e)
+        }
+    }
+}
+
+/// Resolve claimed evidence and commit it atomically. Runs the Core-
+/// side YANG resolution BEFORE the short durable commit; currency and
+/// authorization are rechecked at commit time. Any `Err` propagates to
+/// the caller, which releases the admission claim.
+#[allow(clippy::too_many_arguments)]
+async fn finish_admission(
+    store: &SqliteStore,
+    registry: &ApiRegistry,
+    manager: &CollectorManager,
+    job: &YangDiscoveryJobRow,
+    target: &crate::config::TargetConfig,
+    authenticated_collector_id: &str,
+    capabilities: Option<CapabilityEvidence>,
+    yang_library: YangLibraryOutcome,
+    diagnostics: Vec<String>,
+    result: &pb::YangDiscoveryResult,
+    digest: &str,
+    admission_token: &str,
+    yang_roots: Option<&(String, String, String)>,
+) -> Result<AdmitResult> {
+    // Commit-time currency recheck with a FRESH clock: authority,
+    // session, device binding and assignment may have moved while
+    // resolution ran. A fence failure either finished the job
+    // terminally (release is then a no-op) or returns our still-held
+    // claim to dispatchable state.
+    let commit_now = now_ns();
+    match check_admission_currency(
+        store,
+        registry,
+        manager,
+        job,
+        &result.device_address,
+        commit_now,
+    )? {
+        AdmissionCurrency::Current(_) => {}
+        AdmissionCurrency::Rejected(outcome) => {
+            let _ = store.release_yang_discovery_job_admission(
+                &job.job_id,
+                admission_token,
+                commit_now,
+            );
+            return Ok(outcome);
+        }
+    }
+
+    // Identity ambiguity is evaluated against CURRENT registry state at
+    // commit time — never cached from admission start.
     let identity_ambiguous = registry
         .list_all_targets()?
         .iter()
@@ -778,13 +1066,6 @@ pub async fn admit_discovery_result(
         })
         .count()
         > 0;
-    let digest = result_digest(result);
-    let diagnostics: Vec<String> = result
-        .diagnostics
-        .iter()
-        .take(YANG_DISCOVERY_MAX_DIAGNOSTICS)
-        .cloned()
-        .collect();
 
     let Some((lib_root, cache_root, key_env)) = yang_roots else {
         store.finish_yang_discovery_job(
@@ -796,7 +1077,7 @@ pub async fn admit_discovery_result(
             None,
             None,
             None,
-            now,
+            commit_now,
         )?;
         return Ok(reject("catalogue_unavailable", Some(JOB_FAILED)));
     };
@@ -810,8 +1091,8 @@ pub async fn admit_discovery_result(
     .context("yang library open task")?
     .context("open yang library")?;
 
-    // persist_resolved_snapshot does not use discovery_input — pass a
-    // minimal placeholder; no device I/O happens on this path.
+    // resolve_applicability_snapshot does not use discovery_input —
+    // pass a minimal placeholder; no device I/O happens on this path.
     let placeholder_input = DiscoveryInput {
         address: target.address.clone(),
         username: None,
@@ -833,11 +1114,11 @@ pub async fn admit_discovery_result(
         discovery_job_id: Some(job.job_id.clone()),
         collector_session_generation: job.collector_session_generation,
         authority_epoch: Some(job.authority_epoch),
-        evidence_received_at_ns: Some(now),
+        evidence_received_at_ns: Some(commit_now),
     };
-    let snapshot = crate::yang_applicability::persist_resolved_snapshot(
+    let snapshot = crate::yang_applicability::resolve_applicability_snapshot(
         &crate::yang_applicability::RefreshInput {
-            target: &target,
+            target,
             library: &library,
             discovery_input: &placeholder_input,
             identity_ambiguous,
@@ -850,40 +1131,74 @@ pub async fn admit_discovery_result(
         provenance,
     )
     .await
-    .context("persist remote discovery snapshot")?;
+    .context("resolve remote discovery snapshot")?;
+    let snapshot_row = crate::yang_applicability::snapshot_to_row(&snapshot, 0)?;
 
-    // Same invalidation policy as direct refresh — evaluated at the
-    // registry mutation boundary against CURRENT binding state.
-    let invalidation = crate::schema_binding::revoke_binding_superseded_by_evidence(
-        registry,
-        &target.address,
-        snapshot.snapshot_id,
-        &snapshot.evidence_fingerprint,
-        &format!("collector:{authenticated_collector_id}"),
-        "yang_remote_discovery",
-    )?;
-    if let crate::schema_binding::EvidenceInvalidation::Revoked(updated) = invalidation
-        && let Some(cid) = updated.collector_id.as_deref()
-    {
-        manager.resync_collector(cid).await;
-    }
-
-    store.finish_yang_discovery_job(
+    // ── Atomic commit: snapshot insert + job completion +
+    //    out-of-order recheck in ONE transaction, fenced on the claim
+    //    token. A lost claim or a newer completed job can never leave
+    //    an authoritative snapshot diverged from job state.
+    match store.commit_yang_discovery_admission(
         &job.job_id,
-        JOB_COMPLETED,
-        Some("completed"),
-        None,
-        Some(snapshot.snapshot_id),
-        Some(&snapshot.evidence_fingerprint),
-        Some(&digest),
-        None,
-        now,
-    )?;
-    metrics::counter!("bonsai_yang_discovery_jobs_completed_total").increment(1);
-    Ok(AdmitResult::Accepted {
-        snapshot_id: snapshot.snapshot_id,
-        duplicate: false,
-    })
+        &job.device_key,
+        admission_token,
+        &snapshot_row,
+        digest,
+        bound_diagnostics(&result.diagnostics).as_deref(),
+        commit_now,
+    )? {
+        crate::sqlite_store::YangAdmissionCommit::Completed { snapshot_id } => {
+            // Same invalidation policy as direct refresh — evaluated
+            // at the registry mutation boundary against CURRENT
+            // binding state. Post-commit and best-effort: the
+            // committed snapshot+job state is already consistent; a
+            // failure here is logged, never allowed to diverge them.
+            match crate::schema_binding::revoke_binding_superseded_by_evidence(
+                registry,
+                &target.address,
+                snapshot_id,
+                &snapshot.evidence_fingerprint,
+                &format!("collector:{authenticated_collector_id}"),
+                "yang_remote_discovery",
+            ) {
+                Ok(crate::schema_binding::EvidenceInvalidation::Revoked(updated)) => {
+                    if let Some(cid) = updated.collector_id.as_deref() {
+                        manager.resync_collector(cid).await;
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(%e, job_id = %job.job_id, "schema-binding invalidation failed after admission commit");
+                }
+            }
+            metrics::counter!("bonsai_yang_discovery_jobs_completed_total").increment(1);
+            Ok(AdmitResult::Accepted {
+                snapshot_id,
+                duplicate: false,
+            })
+        }
+        crate::sqlite_store::YangAdmissionCommit::Superseded => Ok(AdmitResult::Finished {
+            state: JOB_SUPERSEDED.to_string(),
+            classification: "superseded_by_newer_job".to_string(),
+        }),
+        crate::sqlite_store::YangAdmissionCommit::ClaimLost => {
+            Ok(match store.get_yang_discovery_job(&job.job_id)? {
+                Some(current) if current.state == JOB_COMPLETED => {
+                    if current.result_digest.as_deref() == Some(digest) {
+                        metrics::counter!("bonsai_yang_discovery_jobs_duplicate_total")
+                            .increment(1);
+                        AdmitResult::Accepted {
+                            snapshot_id: current.snapshot_id.unwrap_or(0),
+                            duplicate: true,
+                        }
+                    } else {
+                        reject("conflicting_duplicate", None)
+                    }
+                }
+                _ => reject("admission_in_progress", None),
+            })
+        }
+    }
 }
 
 fn result_digest(result: &pb::YangDiscoveryResult) -> String {
