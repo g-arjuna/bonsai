@@ -1,0 +1,11 @@
+name: m6f-srlinux
+mgmt:
+  network: m6f-srlinux-mgmt
+  ipv4-subnet: 172.100.102.0/24
+topology:
+  nodes:
+    srlinux:
+      kind: nokia_srlinux
+      image: "ghcr.io/nokia/srlinux@sha256:ad3d4a533674cf2e2e7321fef38806a6c66e3d56a3e8693c45fc2b4206078dd6"
+      startup-config: srlinux-startup.cfg
+      mgmt-ipv4: 172.100.102.11

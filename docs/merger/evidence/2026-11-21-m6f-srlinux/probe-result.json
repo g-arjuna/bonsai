@@ -1,0 +1,31 @@
+{
+  "vendor": "srlinux",
+  "addr": "172.100.102.11:57400",
+  "utc": "2026-11-21T17:41:58.058326+00:00",
+  "checks": {
+    "capabilities": "PASS",
+    "yang_library_rfc8525": "PASS",
+    "yang_library_legacy": "PASS",
+    "subscribe_once": "PASS",
+    "sample_path": "/interface[name=*]/statistics"
+  },
+  "gnmi_version": "0.10.0",
+  "supported_encodings": [
+    "JSON_IETF",
+    "PROTO",
+    "ASCII",
+    "UNKNOWN(52)",
+    "UNKNOWN(42)",
+    "UNKNOWN(43)",
+    "UNKNOWN(45)",
+    "UNKNOWN(44)",
+    "UNKNOWN(46)",
+    "UNKNOWN(47)",
+    "UNKNOWN(48)",
+    "UNKNOWN(49)",
+    "UNKNOWN(50)",
+    "UNKNOWN(53)"
+  ],
+  "supported_models_count": 362,
+  "overall": "PASS"
+}

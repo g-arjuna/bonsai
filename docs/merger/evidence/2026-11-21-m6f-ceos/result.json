@@ -1,0 +1,7 @@
+{
+  "vendor": "ceos",
+  "date": "2026-11-21",
+  "checks": {},
+  "overall": "NOT_EXECUTED",
+  "reason": "preflight passed; deploy/probe not executed in this action"
+}
