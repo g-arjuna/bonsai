@@ -69,6 +69,18 @@ prior parallel build OOM-killed the desktop session. Rules:
   `--lbug-native` dirs are content-verified (`lbug-native-prepare.sh
   --verify`) before use, and `scripts/ci/build_lane_selftest.sh` covers
   the negative cases.
+- **Daily tests use `--profile ci` on the lane** (BN-019): dev-profile test
+  executables are ~1 GB each vs ~50 MB under ci; the ci lane is what the
+  canonical gates already warm. `cargo check`/debugging stays on dev.
+  Documented workflow: `docs/DEVELOPMENT.md` "Standard development
+  workflow (BN-019)".
+- **Lane hygiene:** `scripts/ci/build-lane-gc.sh report` inventories the
+  shared lane; `clean` is dry-run by default and `--apply` deletes only
+  provably-safe artifact classes under the lane flock (`--stale-units`
+  requires a Cargo probe and refuses the container-shared ci/ dir).
+  `scripts/ci/build-benchmark.sh` is the safe warm-build measurement tool —
+  `scripts/build_bench.sh` is a deprecated forwarding wrapper (the old
+  `cargo clean`/`docker --no-cache` behavior is gone).
 - sccache is the configured `rustc-wrapper` (`.cargo/config.toml`) and its
   server persists across sessions — sccache is MANDATORY, not optional. Never
   prefix cargo with `RUSTC_WRAPPER=` and never bypass the wrapper: if sccache
