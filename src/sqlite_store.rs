@@ -723,13 +723,23 @@ impl SqliteStore {
         // winner result admission: exactly one submission owns the
         // snapshot+completion commit.
         if user_version < 13 {
-            db.execute_batch(
-                "ALTER TABLE yang_discovery_jobs
-                    ADD COLUMN device_revision INTEGER NOT NULL DEFAULT 0;
-                 ALTER TABLE yang_discovery_jobs
-                    ADD COLUMN admission_token TEXT;",
-            )
-            .context("schema v13 discovery-job admission migration failed")?;
+            // Per-column ALTERs tolerate duplicate-column errors: a
+            // rewound user_version can re-run this step against a
+            // table that already carries the columns (same convention
+            // as the v12 provenance columns above).
+            for ddl in [
+                "ALTER TABLE yang_discovery_jobs ADD COLUMN device_revision INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE yang_discovery_jobs ADD COLUMN admission_token TEXT",
+            ] {
+                match db.execute(ddl, []) {
+                    Ok(_) => {}
+                    Err(e) if is_duplicate_column_error(&e) => {}
+                    Err(e) => {
+                        return Err(e)
+                            .context("schema v13 discovery-job admission migration failed");
+                    }
+                }
+            }
             db.execute("PRAGMA user_version=13", [])
                 .context("failed to set schema version")?;
         }
