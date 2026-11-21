@@ -5,7 +5,7 @@
 //! evidence. This module never performs I/O and never mutates registry,
 //! collector, or subscription state.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -120,6 +120,11 @@ pub struct SchemaPlanEvaluation {
     pub plan_id: String,
     pub binding_fingerprint: String,
     pub activation_permitted: bool,
+    /// Registry configuration revision (`TargetConfig::updated_at_ns`)
+    /// this evaluation was computed against. Activation must present the
+    /// same revision as `expected_config_revision`; a device update
+    /// between preview and activation changes it and fails closed.
+    pub config_revision: i64,
     pub estimated_initial_collection: Estimate,
     pub estimated_ongoing_collection: Estimate,
 }
@@ -319,8 +324,14 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
     let mut rejection_reasons = Vec::new();
     let mut warnings = Vec::new();
     let mut entries: Vec<(String, String, String, u64)> = Vec::new();
+    // Selection identity is the FULL canonical instantiated gNMI identity:
+    // origin + element names + list-key names AND values (canonical_key),
+    // plus mode and sample interval. Two selections that differ only in
+    // list-key VALUES are distinct concrete paths and must both be
+    // allowed; the same concrete path with different subscription
+    // parameters is a conflict, never a silent merge.
     let mut seen_exact = BTreeSet::new();
-    let mut seen_template = BTreeMap::<String, usize>::new();
+    let mut seen_concrete = BTreeSet::new();
 
     let catalogue_ok = input.catalogue.status == "complete"
         && !input.catalogue.schema_id.is_empty()
@@ -402,6 +413,18 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
         rejection_reasons.push("selection_budget_exceeded".to_string());
     }
 
+    // Optimistic concurrency: when the caller pins the configuration
+    // revision it previewed, the CURRENT device revision must match.
+    // Any intervening device update (identity, collector, acquisition
+    // mode, paths, transport security, credentials, …) bumps
+    // `updated_at_ns` and makes the preview stale — never silently
+    // activate a different effective configuration.
+    if let Some(expected) = input.expected_config_revision
+        && expected != target.updated_at_ns
+    {
+        rejection_reasons.push("config_revision_mismatch".to_string());
+    }
+
     for (index, selected) in input.selected_paths.iter().enumerate() {
         let parsed = gnmi_path::parse_path(&selected.origin, &selected.path);
         let Ok(path) = parsed else {
@@ -432,8 +455,14 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
             rejection_reasons.push(format!("path[{index}]:invalid_mode_interval"));
             continue;
         }
-        let exact_key = gnmi_path::canonical_key(&path);
-        if !seen_exact.insert(exact_key.clone()) {
+        let mode = selected.mode.trim().to_ascii_uppercase();
+        let exact_key = format!(
+            "{}\x1f{}\x1f{}",
+            gnmi_path::canonical_key(&path),
+            mode,
+            selected.sample_interval_ns
+        );
+        if !seen_exact.insert(exact_key) {
             decisions.push(decision(
                 index,
                 selected,
@@ -447,23 +476,12 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
             rejection_reasons.push(format!("path[{index}]:duplicate_path"));
             continue;
         }
-        let template_key = {
-            let mut key = selected.origin.clone();
-            for elem in &path.elem {
-                key.push('/');
-                key.push_str(&elem.name);
-                let mut names: Vec<_> = elem.key.keys().collect();
-                names.sort();
-                for name in names {
-                    key.push('[');
-                    key.push_str(name);
-                    key.push(']');
-                }
-            }
-            key
-        };
-        if let Some(first) = seen_template.insert(template_key.clone(), index) {
-            let _ = first;
+        // The concrete-path identity preserves every list-key value, so
+        // distinct instances of one schema template never collapse. A
+        // second selection of the SAME concrete path with different mode
+        // or interval is a conflicting duplicate.
+        let concrete_key = gnmi_path::canonical_key(&path);
+        if !seen_concrete.insert(concrete_key) {
             decisions.push(decision(
                 index,
                 selected,
@@ -617,7 +635,6 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
             rejection_reasons.push(format!("path[{index}]:module_revision_mismatch"));
             continue;
         }
-        let mode = selected.mode.trim().to_ascii_uppercase();
         let interval = selected.sample_interval_ns;
         entries.push((
             path.origin.clone(),
@@ -698,6 +715,7 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
         plan_id,
         binding_fingerprint,
         activation_permitted,
+        config_revision: target.updated_at_ns,
         estimated_initial_collection: estimate(
             "subscription_entries",
             eligible_count,
@@ -948,6 +966,173 @@ mod tests {
             eval.decisions[0].kind,
             PathDecisionKind::ConfigurationDataExcluded
         );
+    }
+
+    fn plan_input<'a>(
+        cat: &'a CompiledCatalogue,
+        snap: &'a ApplicabilitySnapshot,
+        tgt: &'a TargetConfig,
+        sel: &'a [SelectedSubscriptionPath],
+    ) -> SchemaPlanInput<'a> {
+        SchemaPlanInput {
+            catalogue: cat,
+            snapshot: Some(snap),
+            freshness: Some(SnapshotFreshness::Fresh),
+            freshness_reasons: &[],
+            target: tgt,
+            selected_paths: sel,
+            datastore: Some("ietf-datastores:operational"),
+            collector_id: Some("collector-a"),
+            expected_config_revision: None,
+            now_ns: 20,
+        }
+    }
+
+    fn iface_selected(path: &str, mode: &str, interval: u64) -> SelectedSubscriptionPath {
+        SelectedSubscriptionPath {
+            path: path.to_string(),
+            origin: "oc-if".to_string(),
+            provenance: String::new(),
+            mode: mode.to_string(),
+            sample_interval_ns: interval,
+            rationale: "test".to_string(),
+            optional: false,
+        }
+    }
+
+    #[test]
+    fn two_distinct_list_instances_are_eligible() {
+        // M6D-A1: distinct list-key VALUES are distinct concrete paths —
+        // the same schema template must not collapse them into a
+        // duplicate.
+        let cat = catalogue();
+        let snap = snapshot();
+        let tgt = target();
+        let sel = vec![
+            iface_selected(
+                "/interfaces/interface[name=Ethernet1]/state/counters/in-octets",
+                "SAMPLE",
+                30_000_000_000,
+            ),
+            iface_selected(
+                "/interfaces/interface[name=Ethernet2]/state/counters/in-octets",
+                "SAMPLE",
+                30_000_000_000,
+            ),
+        ];
+        let eval = evaluate_schema_plan(&plan_input(&cat, &snap, &tgt, &sel));
+        assert!(eval.activation_permitted, "{:?}", eval.rejection_reasons);
+        assert_eq!(eval.proposed_subscriptions.len(), 2);
+        assert!(
+            eval.decisions
+                .iter()
+                .all(|d| d.kind == PathDecisionKind::Eligible)
+        );
+        // Key ordering inside one segment must not create false identity.
+        let sel_reordered = vec![
+            iface_selected(
+                "/interfaces/interface[name=Ethernet1]/state/counters/in-octets",
+                "SAMPLE",
+                30_000_000_000,
+            ),
+            iface_selected(
+                "/interfaces/interface[name=Ethernet2]/state/counters/in-octets",
+                "SAMPLE",
+                30_000_000_000,
+            ),
+        ];
+        let eval2 = evaluate_schema_plan(&plan_input(&cat, &snap, &tgt, &sel_reordered));
+        assert_eq!(eval.plan_id, eval2.plan_id);
+    }
+
+    #[test]
+    fn duplicate_concrete_path_rejected() {
+        let cat = catalogue();
+        let snap = snapshot();
+        let tgt = target();
+        // Exact duplicate (same path, mode, interval) → duplicate_path.
+        let exact = vec![
+            iface_selected(
+                "/interfaces/interface[name=Ethernet1]/state/counters/in-octets",
+                "SAMPLE",
+                30_000_000_000,
+            ),
+            iface_selected(
+                "/interfaces/interface[name=Ethernet1]/state/counters/in-octets",
+                "SAMPLE",
+                30_000_000_000,
+            ),
+        ];
+        let eval = evaluate_schema_plan(&plan_input(&cat, &snap, &tgt, &exact));
+        assert!(!eval.activation_permitted);
+        assert!(
+            eval.decisions
+                .iter()
+                .any(|d| d.kind == PathDecisionKind::DuplicateConflict
+                    && d.reasons.iter().any(|r| r == "duplicate_path"))
+        );
+        // Same concrete path, different interval → conflicting duplicate.
+        let conflict = vec![
+            iface_selected(
+                "/interfaces/interface[name=Ethernet1]/state/counters/in-octets",
+                "SAMPLE",
+                30_000_000_000,
+            ),
+            iface_selected(
+                "/interfaces/interface[name=Ethernet1]/state/counters/in-octets",
+                "SAMPLE",
+                60_000_000_000,
+            ),
+        ];
+        let eval = evaluate_schema_plan(&plan_input(&cat, &snap, &tgt, &conflict));
+        assert!(!eval.activation_permitted);
+        assert!(
+            eval.decisions
+                .iter()
+                .any(|d| d.kind == PathDecisionKind::DuplicateConflict
+                    && d.reasons.iter().any(|r| r == "conflicting_duplicate_path"))
+        );
+        // Same concrete path, different mode → conflicting duplicate.
+        let mode_conflict = vec![
+            iface_selected(
+                "/interfaces/interface[name=Ethernet1]/state/counters/in-octets",
+                "SAMPLE",
+                30_000_000_000,
+            ),
+            iface_selected(
+                "/interfaces/interface[name=Ethernet1]/state/counters/in-octets",
+                "ON_CHANGE",
+                0,
+            ),
+        ];
+        let eval = evaluate_schema_plan(&plan_input(&cat, &snap, &tgt, &mode_conflict));
+        assert!(!eval.activation_permitted);
+        assert!(
+            eval.decisions
+                .iter()
+                .any(|d| d.kind == PathDecisionKind::DuplicateConflict)
+        );
+    }
+
+    #[test]
+    fn stale_config_revision_rejects_evaluation() {
+        // A2: an evaluation pinned to a stale configuration revision is
+        // never activation-permitted.
+        let cat = catalogue();
+        let snap = snapshot();
+        let tgt = target();
+        let sel = selected();
+        let mut input = plan_input(&cat, &snap, &tgt, &sel);
+        input.expected_config_revision = Some(tgt.updated_at_ns + 1);
+        let eval = evaluate_schema_plan(&input);
+        assert!(!eval.activation_permitted);
+        assert!(
+            eval.rejection_reasons
+                .iter()
+                .any(|r| r == "config_revision_mismatch")
+        );
+        // The exposed config_revision is the CURRENT device revision.
+        assert_eq!(eval.config_revision, tgt.updated_at_ns);
     }
 
     #[test]

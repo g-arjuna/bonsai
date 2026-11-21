@@ -1,26 +1,51 @@
 # Bonsai current state
 
-20 November update — **M6C-2 schema-bound acquisition implemented** (branch `feat/bn015-m6c2-schema-bound-acquisition`, pending merge).
-Bonsai now enforces an approved, schema-bound acquisition manifest
-end to end: deterministic evaluator over the verified compiled
-catalogue plus freshest persisted M6C-1 applicability evidence;
-durable approval (`schema_bindings` + `devices.schema_binding_json`,
-schema v11); additive wire fields carrying the exact binding;
-collector-side fail-closed enforcement (pre-v5 collectors never
-receive bound assignments, no capability fallback); Core-side
-lifecycle verification that recomputes manifest identity and requires
-exact approved-manifest equality; and two-layer time-driven expiry —
-every execution/lifecycle decision rejects evidence older than the
-24 h validity window while a bounded 60 s reconciler revokes stale
-approvals and withdraws assignments through the established
-mechanism. Wire-level proof: `tests/yang_schema_bound_acquisition.rs`
-(6/6) drives activate → assignment → actual gNMI SubscribeRequest →
-lifecycle → coverage → revoke/expiry withdrawal over real production
-boundaries. Evidence:
-`docs/merger/evidence/2026-11-20-m6c2-schema-bound-acquisition/`.
-Remaining on this line: M6D UI schema browser + collection-plan
-preview; authenticated remote-collector discovery is a separate
-dependency.
+21 November update — **M6D device-effective YANG browser and
+schema-bound collection workspace implemented** (branch
+`feat/bn015-m6d-schema-workspace`).
+Operators can now move through the full schema-bound workflow in the
+existing UI: open a device, inspect the compiled-catalogue and
+tri-state applicability evidence with freshness, browse/filter/paginate
+schema paths server-side, instantiate list keys explicitly, choose
+SAMPLE/ON_CHANGE modes and intervals, keep a persistent draft across
+navigation, preview the exact server-evaluated plan (read-only,
+Viewer-accessible), and — as Admin — activate with the previewed plan
+id, binding fingerprint and `expected_config_revision`, or revoke the
+binding with a recorded reason. The workspace renders staged truth —
+desired → approved → assigned → submitted → synchronized → observed —
+and never presents intended or authorized paths as received telemetry.
+It is mounted as the device drawer's schema tab and reused from the
+Devices, Profiles and Onboarding surfaces via one
+`SchemaCollectionWorkspace.svelte`; `/api/auth/me` drives role-aware
+controls while the backend remains the authorization boundary.
+Four integration defects were corrected alongside: distinct instantiated
+list instances no longer collapse under template-level dedup
+(structured canonical identity preserves origin, key names/values, mode
+and interval; same-path parameter conflicts still reject), activation
+enforces optimistic concurrency on the device configuration revision
+(`expected_config_revision` required; `config_revision_mismatch` 409;
+atomic registry commit), gNMI wire origin is separated from selection
+provenance end-to-end, and schema-binding preview is Viewer-readable
+while activate/revoke/refresh require Admin. Evidence:
+`docs/merger/evidence/2026-11-21-m6d-schema-workspace/`.
+Remaining on this line: authenticated remote-collector discovery and
+real-NOS interoperability acceptance (mock-gNMI only so far).
+
+Earlier merged milestones on this line: **M6C-2 schema-bound
+acquisition merged** (PR #42 @ 183da07 — deterministic evaluator over
+the verified compiled catalogue plus freshest persisted M6C-1
+applicability evidence; durable approval (`schema_bindings` +
+`devices.schema_binding_json`, schema v11); additive wire fields;
+collector-side fail-closed enforcement; Core-side lifecycle
+verification; two-layer 24 h evidence expiry with a 60 s reconciler;
+wire-level proof `tests/yang_schema_bound_acquisition.rs` 6/6;
+evidence `docs/merger/evidence/2026-11-20-m6c2-schema-bound-acquisition/`),
+**M6C-1 device-effective YANG applicability merged**
+(`GET /api/devices/{address}/yang-applicability` + Admin refresh,
+tri-state resolver, durable snapshots; evidence
+`docs/merger/evidence/2026-11-20-m6c1-device-applicability/`),
+M6A/M6B effective YANG catalogue (PR #40 @ e7cb22c), BN-022 protected
+auth storage (PR #17), selective gNMI acquisition contract M5.1–M5.2B.
 
 **20 November research intake (no implementation):** [Enterprise knowledge, dark-site assurance and diagnostic-runner design](architecture/ENTERPRISE_KNOWLEDGE_OUTAGE_AND_DIAGNOSTIC_RUNNERS_2026-11-20.md) is recorded as [BN-028](../BONSAI_BACKLOG.md#bn-028--enterprise-knowledge-and-dark-site-assurance-20-november-2026). The proposed enterprise-document facts, circuit/power/OOB map, site outage engine and optional read-only diagnostic runner are **not shipped**. This does not change the M6C-1/M6C-2 verified status or production gate claims.
 

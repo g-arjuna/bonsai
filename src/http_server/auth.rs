@@ -1167,6 +1167,31 @@ fn session_cookie_value(jwt: &str, tls: bool) -> String {
     format!("bonsai_token={jwt}; Path=/; SameSite=Lax; HttpOnly{secure}")
 }
 
+/// GET /api/auth/me — return the authenticated subject and effective role
+/// for the current request. Read-only identity probe so the UI can render
+/// role-appropriate controls; the middleware remains the authorization
+/// boundary and re-checks every request.
+#[derive(Serialize)]
+pub(super) struct MeResponse {
+    pub username: String,
+    pub role: String,
+}
+
+pub(super) async fn me_handler(
+    role: Option<axum::Extension<Role>>,
+    subject: Option<axum::Extension<AuthenticatedSubject>>,
+) -> Json<MeResponse> {
+    Json(MeResponse {
+        username: subject
+            .map(|axum::Extension(s)| s.0)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_default(),
+        role: role
+            .map(|axum::Extension(r)| r.as_str().to_string())
+            .unwrap_or_else(|| Role::ApiReadonly.as_str().to_string()),
+    })
+}
+
 /// POST /api/auth/logout — revoke the JWT by persisting its `jti` as a denylist entry.
 /// The JWT is stateless but we maintain a denylist for explicit logout support.
 pub(super) async fn logout_handler(
@@ -1367,6 +1392,13 @@ fn required_role(method: &str, path: &str) -> Role {
         || path.starts_with("/api/routing/") && method != "GET"
     {
         return Role::Operator;
+    }
+    // M6D: schema-plan preview is a read-only evaluation — it performs no
+    // mutation, no device RPC and no subscription change, so it is
+    // Viewer-accessible like the GET catalogue/applicability endpoints.
+    // Activation and revocation remain Admin-only (pinned above).
+    if path.ends_with("/schema-binding/preview") {
+        return Role::Viewer;
     }
     // Read-only routing and general GET endpoints allow Viewer or scoped ApiReadonly
     if method == "GET" || method == "HEAD" || method == "OPTIONS" {
@@ -2540,6 +2572,46 @@ mod rbac_tests {
         // Other methods on the refresh path must not silently downgrade
         // below Admin via the generic GET rule — only GET/HEAD/OPTIONS
         // are viewer-readable, POST is pinned to Admin above.
+        assert!(Role::Viewer < Role::Admin);
+        assert!(Role::Operator < Role::Admin);
+    }
+
+    #[test]
+    fn schema_preview_viewer_allowed() {
+        // M6D: plan preview is read-only evaluation — Viewer may POST it.
+        assert_eq!(
+            required_role("POST", "/api/devices/10.0.0.1/schema-binding/preview"),
+            Role::Viewer
+        );
+        assert_eq!(
+            required_role("POST", "/api/devices/router-1/schema-binding/preview"),
+            Role::Viewer
+        );
+        // Viewer minimum admits Operator/Admin but not ApiReadonly.
+        assert!(Role::Operator >= Role::Viewer);
+        assert!(Role::Admin >= Role::Viewer);
+        assert!(Role::ApiReadonly < Role::Viewer);
+    }
+
+    #[test]
+    fn schema_activate_viewer_denied() {
+        // Activation mutates durable acquisition authority — Admin only;
+        // Viewer (and Operator) must not satisfy it.
+        assert_eq!(
+            required_role("POST", "/api/devices/10.0.0.1/schema-binding/activate"),
+            Role::Admin
+        );
+        assert!(Role::Viewer < Role::Admin);
+        assert!(Role::Operator < Role::Admin);
+        assert!(Role::ApiReadonly < Role::Admin);
+    }
+
+    #[test]
+    fn schema_revoke_viewer_denied() {
+        assert_eq!(
+            required_role("POST", "/api/devices/10.0.0.1/schema-binding/revoke"),
+            Role::Admin
+        );
         assert!(Role::Viewer < Role::Admin);
         assert!(Role::Operator < Role::Admin);
     }

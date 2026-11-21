@@ -387,6 +387,7 @@ impl ApiRegistry {
         target: TargetConfig,
         record: crate::sqlite_store::SchemaBindingRecord,
         expected_revision: i64,
+        expected_config_revision: i64,
         actor: &str,
         action: &str,
     ) -> Result<TargetConfig> {
@@ -410,6 +411,20 @@ impl ApiRegistry {
         let Some(existing) = state.targets.get(&address).cloned() else {
             bail!("device '{address}' does not exist");
         };
+        // Optimistic concurrency on the DEVICE configuration, distinct
+        // from the schema-binding approval revision: the plan was
+        // evaluated against `expected_config_revision`; any intervening
+        // device update (identity, collector, acquisition mode, paths,
+        // transport security, credentials, …) bumps `updated_at_ns` and
+        // must reject the commit rather than silently overwrite newer
+        // registry state with the stale evaluated target.
+        if existing.updated_at_ns != expected_config_revision {
+            bail!(
+                "device '{address}' configuration changed since schema plan preview \
+                 (expected revision {expected_config_revision}, found {})",
+                existing.updated_at_ns
+            );
+        }
         if target.external_id.is_none() {
             target.external_id = existing.external_id.clone();
         }

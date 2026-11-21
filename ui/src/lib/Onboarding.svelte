@@ -1532,6 +1532,13 @@
             <p class="eyebrow">{first_run ? 'Step 9 of 10' : 'Step 3'}</p>
             <h3>Profile and path selection</h3>
             <p class="muted">Required paths stay armed. Optional paths can be removed if the lab image advertises them but you do not want that stream yet.</p>
+            <p class="muted">
+              Profiles are <strong>recommendations, not device schema proof</strong> — a selected
+              profile supplies draft paths that still require device-specific applicability
+              evaluation. Schema-bound approval (preview → admin activation → revoke) is managed
+              per device in the device drawer’s <strong>schema</strong> tab; saving here keeps the
+              legacy explicit acquisition plan and never bypasses that approval.
+            </p>
           </div>
 
           {#if discovery?.recommended_profiles?.length}
@@ -1951,6 +1958,7 @@
                 </div>
                 <div class="device-actions">
                   <button class="ghost" onclick={() => editDevice(device)}>Edit in wizard</button>
+                  <button class="ghost" onclick={() => navigate('/devices/' + encodeURIComponent(device.address) + '/schema')} title="Open the schema-bound collection workspace">Schema</button>
                   <button class="danger" onclick={() => removeDevice(device.address)}>Remove</button>
                 </div>
               </header>

@@ -71,7 +71,7 @@ mod test_endpoints;
 use auth::{
     create_api_key_handler, create_user_handler, delete_api_key_handler, delete_user_handler,
     ldap_config_handler, ldap_test_handler, list_api_keys_handler, list_users_handler,
-    login_handler, logout_handler, rotate_api_key_handler,
+    login_handler, logout_handler, me_handler, rotate_api_key_handler,
 };
 use ddos::{
     ddos_baselines_handler, ddos_config_handler, ddos_events_handler, ddos_scope_add_handler,
@@ -516,6 +516,15 @@ pub(super) struct ManagedDeviceJson {
     inventory_status: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     inventory_tenant: String,
+    /// Durable schema-bound approval summary (M6C-2/M6D). Present only
+    /// while an approved schema-bound acquisition authority exists on
+    /// the device — lets the inventory list distinguish approval-managed
+    /// devices from legacy acquisition without a second authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_binding: Option<crate::config::SchemaBindingConfig>,
+    /// Device configuration revision (`updated_at_ns`) — the optimistic
+    /// concurrency token previews must echo back on activation.
+    updated_at_ns: i64,
 }
 
 #[derive(Serialize, Clone)]
@@ -2134,6 +2143,7 @@ fn adapter_and_schema_routes() -> Router<AppState> {
         // D4-3 T2: RBAC — login/logout, user management
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/logout", post(logout_handler))
+        .route("/api/auth/me", get(me_handler))
         .route(
             "/api/auth/users",
             get(list_users_handler).post(create_user_handler),

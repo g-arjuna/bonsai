@@ -97,6 +97,12 @@
   <div class="workspace-header">
     <h1>Profiles</h1>
     <p class="muted">Path profiles loaded at startup. Add plugins to <code>config/path_profiles/plugins/</code>.</p>
+    <p class="muted">
+      Profiles are <strong>recommendations, not authoritative device schemas</strong>. A profile
+      supplies candidate paths; each device still needs its own applicability evidence and a
+      schema-bound preview/activation in the device drawer’s <strong>schema</strong> tab
+      (<code>/devices/&lt;address&gt;/schema</code>).
+    </p>
   </div>
 
   {#if loadErrors.length > 0}

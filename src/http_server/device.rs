@@ -58,6 +58,15 @@ pub(super) struct DeviceDetailResponse {
     selected_paths: Vec<SelectedSubscriptionPath>,
     subscription_statuses: Vec<SubscriptionStatusJson>,
     resolution_audit: Vec<String>,
+    /// Acquisition intent ("automatic" | "explicit" | "disabled") and the
+    /// durable schema-bound approval summary — the workspace needs both
+    /// to distinguish desired vs approved vs observed collection.
+    acquisition: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_binding: Option<crate::config::SchemaBindingConfig>,
+    inventory_only: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    external_id: String,
     created_at_ns: i64,
     updated_at_ns: i64,
     created_by: String,
@@ -393,6 +402,10 @@ pub(super) async fn device_detail_handler(
         selected_paths: target.selected_paths.clone(),
         subscription_statuses,
         resolution_audit: audit,
+        acquisition: target.acquisition.as_str().to_string(),
+        schema_binding: target.schema_binding.clone(),
+        inventory_only: target.inventory_only,
+        external_id: target.external_id.clone().unwrap_or_default(),
         created_at_ns: target.created_at_ns,
         updated_at_ns: target.updated_at_ns,
         created_by: target.created_by,
@@ -1137,6 +1150,12 @@ pub(super) struct YangApplicabilityParams {
     module: Option<String>,
     /// Restrict to one schema kind (container|list|leaf|...).
     kind: Option<String>,
+    /// Substring search over canonical path, module, namespace and type.
+    q: Option<String>,
+    /// "true" = configuration data only, "false" = state data only.
+    config: Option<String>,
+    /// Restrict to paths declaring this required feature.
+    feature: Option<String>,
     /// Page size for path results (default 500, max 5000).
     limit: Option<usize>,
     /// Page offset for path results.
@@ -1226,6 +1245,18 @@ pub(super) async fn device_yang_applicability_handler(
                 active_schema_id: v.active_schema_id.clone(),
                 catalogue_state: v.catalogue_state,
             };
+            let config_filter = match params.config.as_deref() {
+                Some("true") => Some(true),
+                Some("false") => Some(false),
+                _ => None,
+            };
+            let q = params
+                .q
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .to_lowercase();
+            let feature = params.feature.as_deref().map(str::trim).unwrap_or("");
             let mut filtered: Vec<_> = v
                 .snapshot
                 .result
@@ -1238,6 +1269,20 @@ pub(super) async fn device_yang_applicability_handler(
                         .is_none_or(|s| p.status.as_str() == s)
                         && params.module.as_deref().is_none_or(|m| p.module == m)
                         && params.kind.as_deref().is_none_or(|k| p.kind == k)
+                        && config_filter.is_none_or(|c| p.config == c)
+                        && (feature.is_empty()
+                            || p.required_features
+                                .iter()
+                                .any(|rf| rf == feature || rf.ends_with(&format!(":{feature}"))))
+                        && (q.is_empty()
+                            || p.path.to_lowercase().contains(&q)
+                            || p.module.to_lowercase().contains(&q)
+                            || p.namespace.to_lowercase().contains(&q)
+                            || p.type_name
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_lowercase()
+                                .contains(&q))
                 })
                 .cloned()
                 .collect();
@@ -1512,12 +1557,14 @@ pub(super) async fn schema_binding_activate_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??
     };
     let expected_revision = activation.record.approval_revision - 1;
+    let expected_config_revision = activation.evaluation.config_revision;
     let updated = state
         .registry
         .activate_schema_binding(
             activation.device,
             activation.record.clone(),
             expected_revision,
+            expected_config_revision,
             &actor,
             "api_schema_binding_activate",
         )
