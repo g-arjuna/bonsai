@@ -254,3 +254,39 @@ devices are not discoverable from Core (explicit
 `collector_discovery_required`-class limitation recorded for M6C-2).
 Enforcing applicability into acquisition planning is M6C-2; the UI
 schema browser and plan preview is M6D.
+
+## Schema-bound acquisition workspace (M6D)
+
+The M6D workspace (`ui/src/lib/SchemaCollectionWorkspace.svelte`,
+mounted as the device drawer's schema tab and reused from Devices,
+Profiles and Onboarding) consumes the M6C-1/M6C-2 surfaces above; it
+introduces no second planner or schema authority.
+
+- **Selection identity** is structured end to end: gNMI wire `origin`
+  is a model origin (simple identifier), selection `provenance`
+  records how the path was chosen (`manual_override`, profile
+  recommendation, approved binding). Backend dedup uses
+  `gnmi_path::canonical_key` — origin + ordered elements + sorted
+  key/value pairs + mode + interval — so distinct list instances
+  (`interface[name=Ethernet1]` vs `Ethernet2`) never collapse while
+  exact duplicates and same-path parameter conflicts still reject.
+- **Preview → activation concurrency**: preview returns
+  `config_revision` (the device `updated_at_ns` the evaluation ran
+  against); activation requires `expected_config_revision` and the
+  registry commit atomically rejects any intervening device update
+  with `config_revision_mismatch` (HTTP 409).
+- **RBAC**: preview is Viewer-readable (read-only evaluation, no
+  mutation, no device RPC); activate, revoke and applicability
+  refresh require Admin plus an authenticated subject. `/api/auth/me`
+  exposes the caller role to the UI, which disables — never merely
+  hides — unauthorized controls.
+- **Applicability filters**: `GET /api/devices/{address}/yang-applicability`
+  accepts `status`, `module`, `kind`, `config` (`true`/`false`),
+  `feature`, `q` (substring over path/module/namespace/type),
+  `limit` and `offset`; `paths_matching` reports the truthful filtered
+  total and the embedded snapshot never serializes the unpaginated
+  path list.
+- **Execution truth**: the UI renders desired → approved → assigned →
+  submitted → synchronized → observed as separate stages from
+  assignment/subscription-status data; approval alone never displays
+  as observed telemetry.
