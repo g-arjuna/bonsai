@@ -1,0 +1,110 @@
+# M6F multi-vendor gNMI/YANG interoperability manifest.
+#
+# Operator-maintained. This file contains NO passwords, private keys or
+# tokens. Credentials are referenced by environment variable NAME only;
+# the harness resolves them at run time and never writes them to evidence.
+#
+# Status values used in results: PASS / FAIL / UNSUPPORTED / NOT_EXECUTED.
+# A vendor whose image is not resolvable is NOT_EXECUTED — never green.
+#
+# `image` may be:
+#   * a docker image reference (tag or digest), already imported locally
+#   * a path to a local archive under an operator-chosen directory
+#     (resolved via the `image_archive` field, e.g. ~/Desktop/clab-images)
+# The harness NEVER pulls proprietary images and NEVER retags owner images;
+# archives are loaded with `docker load` into their recorded reference.
+
+version: 1
+
+vendors:
+  srlinux:
+    nos_family: nokia_srlinux
+    containerlab_kind: nokia_srlinux
+    image: ghcr.io/nokia/srlinux@sha256:ad3d4a533674cf2e2e7321fef38806a6c66e3d56a3e8693c45fc2b4206078dd6
+    image_archive: null
+    mgmt_ipv4: 172.100.102.11
+    gnmi:
+      port: 57400
+      tls: clab_ca            # clab-generated CA; certs under <lab>/.clab-*/ or clab certs dir
+      tls_server_name: srl1
+      username_env: M6F_SRL_USER
+      password_env: M6F_SRL_PASS
+      datastore: CONFIG     # also test RUNNING
+    startup_config: configs/srlinux.cfg
+    notes: >-
+      Public pinned image (same digest family as lab/acceptance/bn006-srl,
+      26.3.1-410). clab nokia_srlinux kind provisions the gNMI server on
+      57400 with clab-profile TLS. Auth credentials are lab-local; set the
+      env vars before running. If the image is absent the harness reports
+      NOT_EXECUTED and does not pull implicitly (pass --allow-pull to
+      permit the public ghcr image only).
+
+  xrd:
+    nos_family: cisco_xrd
+    containerlab_kind: cisco_xrd
+    # Owner-supplied. Populate `image` (or image_archive basename) once the
+    # owner-provided image is imported. Example observed archive names:
+    #   xrd-control-plane-container-x86.24.4.2.tgz
+    #   xrd-control-plane-container-x86.25.1.1.tgz
+    #   xrd-control-plane-container-x86.7.11.2.tgz
+    #   xrd-control-plane-container-x64.dockerv1.tgz
+    image: null
+    # operator selects one archive present under ~/Desktop/clab-images/
+    image_archive: xrd-control-plane-container-x86.24.4.2.tgz
+    mgmt_ipv4: 172.100.102.21
+    gnmi:
+      port: 5739
+      tls: insecure         # XRd lab gNMI is typically plaintext or self-signed
+      tls_server_name: null
+      username_env: M6F_XRD_USER
+      password_env: M6F_XRD_PASS
+      datastore: RUNNING
+    startup_config: null
+    notes: >-
+      Pending owner image. cisco_xrd kind expects a .cfg-style startup
+      config; gNMI service enablement is version-dependent and must be
+      confirmed from live evidence, not assumed.
+
+  junos:
+    nos_family: juniper_junos
+    containerlab_kind: juniper_junos_evolved   # cJunos Evolved container
+    # Owner-supplied cJunosEvolved image, e.g.
+    #   cJunosEvolved-26.2R1.7-EVO.tar.gz
+    image: null
+    # operator selects the archive present under ~/Desktop/clab-images/
+    image_archive: cJunosEvolved-26.2R1.7-EVO.tar.gz
+    mgmt_ipv4: 172.100.102.31
+    gnmi:
+      port: 57400
+      tls: insecure
+      tls_server_name: null
+      username_env: M6F_JUNOS_USER
+      password_env: M6F_JUNOS_PASS
+      datastore: RUNNING
+    startup_config: null
+    notes: >-
+      Pending owner image. Junos gNMI (openconfig/juniper) typically uses
+      TCP/57400 with TLS; auth mode depends on image configuration.
+      proto/tcp-service/gNMI stanza must exist in the image config.
+
+  ceos:
+    nos_family: arista_ceos
+    containerlab_kind: arista_ceos
+    # Owner-supplied cEOS lab image, e.g.
+    #   cEOS64-lab-4.36.0F.tar.xz
+    #   cEOS64-lab-4.37.0F.tar.xz
+    image: null
+    # operator selects the archive present under ~/Desktop/clab-images/
+    image_archive: cEOS64-lab-4.37.0F.tar.xz
+    mgmt_ipv4: 172.100.102.41
+    gnmi:
+      port: 443             # cEOS gNMI typically shares the EOS gNMI TLS port
+      tls: insecure
+      tls_server_name: null
+      username_env: M6F_CEOS_USER
+      password_env: M6F_CEOS_PASS
+      datastore: RUNNING
+    startup_config: null
+    notes: >-
+      Pending owner image. cEOS gNMI requires `management api gnmi` enabled
+      in the device config; port and TLS mode must be confirmed live.
