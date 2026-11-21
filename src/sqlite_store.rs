@@ -3135,7 +3135,10 @@ mod tests {
     fn fresh_database_reaches_v8_with_inventory_columns_and_index() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_at(&dir).expect("open");
-        assert_eq!(store.schema_version().expect("version"), CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            store.schema_version().expect("version"),
+            CURRENT_SCHEMA_VERSION
+        );
 
         let db = store.db.lock().unwrap();
         let mut stmt = db
@@ -3193,7 +3196,10 @@ mod tests {
         }
 
         let store = SqliteStore::open_file(&db_path).expect("migrate v5->v8");
-        assert_eq!(store.schema_version().expect("version"), CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            store.schema_version().expect("version"),
+            CURRENT_SCHEMA_VERSION
+        );
 
         let devices = store.list_devices().expect("list");
         assert_eq!(devices.len(), 1);
@@ -3245,7 +3251,10 @@ mod tests {
         }
 
         let store = SqliteStore::open_file(&db_path).expect("migrate partial v6");
-        assert_eq!(store.schema_version().expect("version"), CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            store.schema_version().expect("version"),
+            CURRENT_SCHEMA_VERSION
+        );
         let devices = store.list_devices().expect("list");
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].address, "10.0.0.2");
