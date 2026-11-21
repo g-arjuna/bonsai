@@ -31,7 +31,7 @@ def test_evidence_result_is_structured(evdir):
     result = json.loads((evdir / "result.json").read_text())
     assert result["vendor"]
     assert result["overall"] in {
-        "PASS", "FAIL", "UNSUPPORTED", "NOT_EXECUTED"}
+        "PASS", "PARTIAL", "FAIL", "UNSUPPORTED", "NOT_EXECUTED"}
     # an unavailable vendor must never appear green
     if result["overall"] == "PASS":
         assert result["checks"], "PASS without executed checks"

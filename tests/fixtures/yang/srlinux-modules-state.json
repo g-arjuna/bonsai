@@ -1,0 +1,43 @@
+{
+ "module-set-id": "1lg3lmex1lg3ln8{d1",
+ "module": [
+  {
+   "name": "iana-if-type",
+   "revision": "2014-05-08",
+   "namespace": "urn:ietf:params:xml:ns:yang:iana-if-type",
+   "conformance-type": "import"
+  },
+  {
+   "name": "ietf-interfaces",
+   "revision": "2014-05-08",
+   "namespace": "urn:ietf:params:xml:ns:yang:ietf-interfaces",
+   "conformance-type": "import"
+  },
+  {
+   "name": "ietf-netconf",
+   "revision": "2011-06-01",
+   "namespace": "urn:ietf:params:xml:ns:netconf:base:1.0",
+   "conformance-type": "implement",
+   "feature": [
+    "candidate",
+    "confirmed-commit",
+    "rollback-on-error",
+    "validate",
+    "startup",
+    "url"
+   ],
+   "deviation": [
+    {
+     "name": "ietf-srl-deviations",
+     "revision": "2024-06-24"
+    }
+   ]
+  },
+  {
+   "name": "ietf-yang-library",
+   "revision": "2019-01-04",
+   "namespace": "urn:ietf:params:xml:ns:yang:ietf-yang-library",
+   "conformance-type": "implement"
+  }
+ ]
+}

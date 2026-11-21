@@ -41,8 +41,11 @@ const MAX_UPDATES: usize = 100_000;
 const MAX_JSON_VALUE_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum modules (implemented + import-only) across the effective set.
 const MAX_MODULES: usize = 4_096;
-/// Maximum feature entries per module.
-const MAX_FEATURES_PER_MODULE: usize = 256;
+/// Maximum feature entries per module. Live SR Linux evidence: the
+/// `srl_nokia-features` module legitimately advertises 620 features, so
+/// the bound must exceed real vendor catalogs while still capping
+/// per-module memory.
+const MAX_FEATURES_PER_MODULE: usize = 2_048;
 /// Maximum deviation entries per module.
 const MAX_DEVIATIONS_PER_MODULE: usize = 128;
 /// Maximum submodule entries per module.
@@ -52,19 +55,26 @@ const MAX_LIST_ENTRIES: usize = 4_096;
 /// serde_json's default recursion limit is 128; stay well under it.
 const MAX_JSON_DEPTH: usize = 48;
 
-/// Ordered NMDA `/yang-library` candidates. Devices disagree on whether
-/// the first element carries the `yang` module prefix; each is tried in
-/// order until one returns data. `ietf` origin is tried before the
-/// empty origin for each candidate.
+/// Ordered NMDA `/yang-library` candidates. The canonical RFC 8525
+/// module-qualified name `ietf-yang-library:yang-library` is tried
+/// first — it is the only form guaranteed correct on strict devices
+/// (live SR Linux evidence rejects the `yang:`/`yang-library:` prefix
+/// aliases with INVALID_ARGUMENT). The remaining aliases and the bare
+/// name are kept as compatibility fallbacks for implementations that
+/// only accept those forms. `ietf` origin is tried before the empty
+/// origin for each candidate.
 const NMDA_CANDIDATES: &[&str] = &[
+    "ietf-yang-library:yang-library",
     "yang:yang-library",
     "yang-library:yang-library",
     "yang-library",
 ];
-/// Ordered legacy RFC 7895 `/modules-state` candidates.
+/// Ordered legacy RFC 7895 `/modules-state` candidates — canonical
+/// `ietf-yang-library` module name first, aliases and bare name as
+/// fallbacks (same live-evidence rationale as NMDA above).
 const LEGACY_CANDIDATES: &[&str] = &[
-    "yang:modules-state",
     "ietf-yang-library:modules-state",
+    "yang:modules-state",
     "modules-state:modules-state",
     "modules-state",
 ];
@@ -734,6 +744,14 @@ fn leaf_string(v: Option<&Value>) -> Option<String> {
     }
 }
 
+/// Name of one YANG-library list entry. RFC 8525 `feature`/`deviation`
+/// arrive as leaf-list strings (live SR Linux evidence), while legacy
+/// `modules-state` deviations and `submodule` entries are objects
+/// carrying a `name` leaf — accept both forms.
+fn entry_name(item: &Value) -> Option<String> {
+    leaf_string(Some(item)).or_else(|| leaf_string(child(item, "name")))
+}
+
 /// Parse one module entry (implemented or import-only) from JSON.
 fn parse_module_entry(
     entry: &Value,
@@ -754,7 +772,7 @@ fn parse_module_entry(
         if features.len() >= MAX_FEATURES_PER_MODULE {
             return Err(format!("feature count exceeds {MAX_FEATURES_PER_MODULE}"));
         }
-        if let Some(fname) = leaf_string(child(f, "name")) {
+        if let Some(fname) = entry_name(f) {
             features.insert(fname);
         }
     }
@@ -766,7 +784,7 @@ fn parse_module_entry(
                 "deviation count exceeds {MAX_DEVIATIONS_PER_MODULE}"
             ));
         }
-        if let Some(dname) = leaf_string(child(d, "name")) {
+        if let Some(dname) = entry_name(d) {
             deviations.push(dname);
         }
     }
@@ -779,7 +797,7 @@ fn parse_module_entry(
                     "submodule count exceeds {MAX_SUBMODULES_PER_MODULE}"
                 ));
             }
-            if let Some(sname) = leaf_string(child(s, "name")) {
+            if let Some(sname) = entry_name(s) {
                 submodules.push(sname);
             }
         }
