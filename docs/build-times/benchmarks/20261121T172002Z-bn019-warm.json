@@ -1,0 +1,331 @@
+{
+  "tool": "build-benchmark.sh",
+  "label": "bn019-warm",
+  "utc": "20261121T172002Z",
+  "toolchain": {
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14);binary: rustc;commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860;commit-date: 2026-04-14;host: x86_64-unknown-linux-gnu;release: 1.95.0;LLVM version: 22.1.2;",
+    "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+    "host": "Linux 7.0.0-43-generic x86_64 GNU/Linux",
+    "cpus": 8,
+    "mem": "47804MB total 38249MB avail"
+  },
+  "profile": "ci",
+  "cargo_profile_subdir": "ci",
+  "target_mode": "lane",
+  "lane": "/home/arjuna/.cache/bonsai-ci/build-lane",
+  "isolated_target": "",
+  "lbug": {
+    "mode": "prebuilt",
+    "bundle_id": "2b38794b29bd4307f5945da07637e9a9866944ebf3a06b0c74633b60cae58031"
+  },
+  "disk": {
+    "before": "49G avail on /",
+    "after": "46G avail on /"
+  },
+  "sccache": {
+    "before": "Compile requests                     962|Compile requests executed            857|Cache hits                           431|Cache hits (Assembler)               117|Cache hits (C/C++)                   312|Cache hits (Rust)                      2|Cache misses                         422|Cache misses (C/C++)                   2|Cache misses (Rust)                  420|Cache hits rate                    50.53 %|Cache hits rate (Assembler)       100.00 %|Cache hits rate (C/C++)            99.36 %|Cache hits rate (Rust)              0.47 %|Cache size                            10 GiB|",
+    "after": "Compile requests                    1321|Compile requests executed           1189|Cache hits                           431|Cache hits (Assembler)               117|Cache hits (C/C++)                   312|Cache hits (Rust)                      2|Cache misses                         754|Cache misses (C/C++)                   2|Cache misses (Rust)                  752|Cache hits rate                    36.37 %|Cache hits rate (Assembler)       100.00 %|Cache hits rate (C/C++)            99.36 %|Cache hits rate (Rust)              0.27 %|Cache size                            10 GiB|"
+  },
+  "lane_size_bytes": 125749425940,
+  "wall_total_seconds": 2568,
+  "phases": [
+    {
+      "phase": "env",
+      "scope": "workspace",
+      "wall_seconds": 0.06,
+      "peak_tree_rss_kib": 0,
+      "result": "pass",
+      "notes": "snapshot only; mode=lane profile=ci"
+    },
+    {
+      "phase": "check",
+      "scope": "bonsai --lib (ci)",
+      "wall_seconds": 246.0,
+      "peak_tree_rss_kib": 272240,
+      "result": "pass",
+      "notes": "typecheck"
+    },
+    {
+      "phase": "libbuild",
+      "scope": "bonsai --lib test (ci)",
+      "wall_seconds": 319.81,
+      "peak_tree_rss_kib": 5455644,
+      "result": "pass",
+      "notes": "compile+link"
+    },
+    {
+      "phase": "libtest",
+      "scope": "bonsai --lib tests (ci)",
+      "wall_seconds": 471.98,
+      "peak_tree_rss_kib": 7157576,
+      "result": "pass",
+      "notes": "execution"
+    },
+    {
+      "phase": "itbuild",
+      "scope": "bonsai --test bmp_rfc_contract (ci)",
+      "wall_seconds": 482.64,
+      "peak_tree_rss_kib": 7106360,
+      "result": "pass",
+      "notes": "compile+link"
+    },
+    {
+      "phase": "itest",
+      "scope": "bonsai --test bmp_rfc_contract (ci)",
+      "wall_seconds": 529.75,
+      "peak_tree_rss_kib": 6004804,
+      "result": "pass",
+      "notes": "execution"
+    },
+    {
+      "phase": "itedit",
+      "scope": "bonsai --test bmp_rfc_contract edit-loop (ci)",
+      "wall_seconds": 517.57,
+      "peak_tree_rss_kib": 8057656,
+      "result": "pass",
+      "notes": "test-file-only recompile+link"
+    }
+  ],
+  "executables": [
+    {
+      "name": "a03_investigation_terminal_states-670826c804e02bf8",
+      "bytes": 3893456
+    },
+    {
+      "name": "a04_a09_b22_prefix_investigator-506f8a50488ddaa5",
+      "bytes": 11304512
+    },
+    {
+      "name": "a10_a11_a12_operator_and_scenario_pack-eda80d4195b00ad1",
+      "bytes": 13263024
+    },
+    {
+      "name": "a13_a20_change_assurance_and_executor-d08ad5258add6b59",
+      "bytes": 36902680
+    },
+    {
+      "name": "b07_vendor_registry-327333f705a04cf6",
+      "bytes": 3850688
+    },
+    {
+      "name": "b08_feature_gating-762653a6b2597817",
+      "bytes": 8525416
+    },
+    {
+      "name": "b09_peer_and_correlation-56f6281d581b7ede",
+      "bytes": 29025312
+    },
+    {
+      "name": "b11_b12_b13_routing_workflow-f01ae425a74917b5",
+      "bytes": 43422080
+    },
+    {
+      "name": "b16_b17_b18_b19_m3_release_gates-c77d9f60944eb1c2",
+      "bytes": 33303848
+    },
+    {
+      "name": "bmp_rfc_contract-6c465cf0a1f0d63f",
+      "bytes": 2681216
+    },
+    {
+      "name": "bmp_rfc_contract-ed4439457eb1b35a",
+      "bytes": 3785200
+    },
+    {
+      "name": "bn001_executor_crash_recovery-7d51701e52e8c964",
+      "bytes": 4581784
+    },
+    {
+      "name": "bn002_key_lifecycle_and_provenance-132f0a7903f0fe00",
+      "bytes": 4503192
+    },
+    {
+      "name": "bn004_production_investigator_wiring-b2b9f60640e9869d",
+      "bytes": 42931896
+    },
+    {
+      "name": "bn005_closeout-e369e807298b9c8d",
+      "bytes": 41490872
+    },
+    {
+      "name": "bn005_deployment_and_scope_hardening-921bf77fd7de87bb",
+      "bytes": 79682440
+    },
+    {
+      "name": "bn006_epoch_resync-222c7cc7f5ab895d",
+      "bytes": 5617112
+    },
+    {
+      "name": "bn006_native_nos_adapter-6c5488c8a0057736",
+      "bytes": 4127240
+    },
+    {
+      "name": "bn006_reconnect_projection-84a03f5e72828269",
+      "bytes": 41127424
+    },
+    {
+      "name": "bn015_u1_inventory_browser-a2bcfd2f8d40ba34",
+      "bytes": 76288912
+    },
+    {
+      "name": "bn016_u1_topology_browser-c451c7009f4422e8",
+      "bytes": 76234272
+    },
+    {
+      "name": "bn021b_trusted_identity-80fd3aab836eb8fb",
+      "bytes": 6536040
+    },
+    {
+      "name": "bn021c_exporter_isolation-dcea5af124794763",
+      "bytes": 21679232
+    },
+    {
+      "name": "bn021d_flow_exporter_isolation-77e25a5ac8436cf5",
+      "bytes": 29725176
+    },
+    {
+      "name": "bn021e_otlp_source_identity-39bda2eca2fc96e8",
+      "bytes": 37613320
+    },
+    {
+      "name": "bn021e_sflow_exporter_isolation-3330b4ce424c6c12",
+      "bytes": 29512784
+    },
+    {
+      "name": "bn021e_snmp_source_identity-3c0af8664232a8d6",
+      "bytes": 30174896
+    },
+    {
+      "name": "bn021e_syslog_source_identity-9ca08752b32be24d",
+      "bytes": 33159296
+    },
+    {
+      "name": "bn021f_authenticated_ingress-29c787e4b53b4715",
+      "bytes": 15228168
+    },
+    {
+      "name": "bn021f_hardening-74996004da8f91ae",
+      "bytes": 15206472
+    },
+    {
+      "name": "bn021g_collector_trust_foundation-ed2a08c58b452658",
+      "bytes": 46769112
+    },
+    {
+      "name": "bn022_auth_closure-733f7432170c7a84",
+      "bytes": 76985440
+    },
+    {
+      "name": "bn022_auth_storage-40472fd380325c39",
+      "bytes": 76398080
+    },
+    {
+      "name": "bn022_graph_read_boundary-eb0f975b2fc6f89d",
+      "bytes": 76253272
+    },
+    {
+      "name": "bn022_sec19_sec20-0440a0cc8f6f7746",
+      "bytes": 77181816
+    },
+    {
+      "name": "bonsai-4825c5dfb4a92e3a",
+      "bytes": 105407400
+    },
+    {
+      "name": "bonsai-c021b751fbb196ae",
+      "bytes": 91910504
+    },
+    {
+      "name": "bonsai_migrate-a4276b3d1692fc16",
+      "bytes": 2811056
+    },
+    {
+      "name": "bonsai_query-9e9a895edc63253e",
+      "bytes": 20938304
+    },
+    {
+      "name": "bonsai_routing-16e0de5dfa44d81f",
+      "bytes": 18809800
+    },
+    {
+      "name": "config_example-ce88665d65d3c4f4",
+      "bytes": 6589392
+    },
+    {
+      "name": "gnmi_assignment_lifecycle-bb428f2d318e85e4",
+      "bytes": 14855896
+    },
+    {
+      "name": "gnmi_security_connectivity-d7cf01ce96e93f61",
+      "bytes": 20507472
+    },
+    {
+      "name": "gnmi_selective_acquisition-cc784a241b89c56a",
+      "bytes": 37819080
+    },
+    {
+      "name": "healthcheck-3bd11a93a95055fc",
+      "bytes": 507744
+    },
+    {
+      "name": "integration-ab48692c0802660c",
+      "bytes": 2491896
+    },
+    {
+      "name": "m3_syslog_tcp_availability-7f726ab1d1a98518",
+      "bytes": 8965144
+    },
+    {
+      "name": "ownership_compatibility-4ec16cb0826147a3",
+      "bytes": 79001344
+    },
+    {
+      "name": "ownership_mapping-8b9ebe338e350b06",
+      "bytes": 76229160
+    },
+    {
+      "name": "r01_r04_routing_history_recovery-53dd36bc430bd19d",
+      "bytes": 10719624
+    },
+    {
+      "name": "r05_r06_runtime_wiring_and_scope-c8786e71ba8d2f11",
+      "bytes": 44954552
+    },
+    {
+      "name": "rbmp_core-70068c2aecea4865",
+      "bytes": 2446824
+    },
+    {
+      "name": "rbmp_rib-172acdbbb6fa1520",
+      "bytes": 4283696
+    },
+    {
+      "name": "rbmp_store-b37e187095c0ad90",
+      "bytes": 4665528
+    },
+    {
+      "name": "vault_rekey-22e2f5ec12297d8a",
+      "bytes": 3826288
+    },
+    {
+      "name": "wp65a_embedding_lifecycle-300dca60c6fea42c",
+      "bytes": 76474896
+    },
+    {
+      "name": "yang_catalogue-35f032ad9239a6b4",
+      "bytes": 6473728
+    },
+    {
+      "name": "yang_device_applicability-5638687b2579d352",
+      "bytes": 17199520
+    },
+    {
+      "name": "yang_remote_collector_discovery-ab7e1c5647e50d30",
+      "bytes": 47584888
+    },
+    {
+      "name": "yang_schema_bound_acquisition-8d08e2ba680ca863",
+      "bytes": 48248000
+    }
+  ]
+}

@@ -87,9 +87,62 @@ cargo build --release --bin bonsai-routing --locked
 ```
 
 Do not blindly invoke `make build-time` in the shared checkout: that target
-calls `cargo clean`. Do not treat `make test-all` as a trustworthy hard
-gate: it currently has `|| true` paths masking failures. The playbook
+calls `cargo clean`. `scripts/build_bench.sh` is deprecated — it used to run
+`cargo clean`, touch tracked sources and `docker build --no-cache`; it is now
+a forwarding wrapper to `scripts/ci/build-benchmark.sh`, which is
+non-destructive by default. Do not treat `make test-all` as a trustworthy
+hard gate: it currently has `|| true` paths masking failures. The playbook
 documents the planned BN-019 fixes and safer measurement procedure.
+
+### Standard development workflow (BN-019)
+
+One documented lane, warm artifacts, smallest truthful command:
+
+```bash
+# Fast edit/check — dev profile, incremental, shared lane.
+scripts/ci/build-lane.sh --lbug-native ~/.cache/bonsai-ci/lbug-native -- \
+  cargo check -p bonsai --lib --offline
+
+# Focused test — ci profile. Test executables are ~10x smaller than dev
+# (~50 MB vs ~900 MB each), links are faster and the ci/ lane stays compact;
+# incremental=false costs a full-crate recompile per bonsai edit
+# (measured 5–9 min, see docs/build-times/bn019-results.md),
+# which is the accepted trade for disk and link memory.
+scripts/ci/build-lane.sh --lbug-native ~/.cache/bonsai-ci/lbug-native -- \
+  cargo test -p bonsai --profile ci --test <target> --offline
+
+# Related regressions — ONE cargo invocation, multiple --test args.
+scripts/ci/build-lane.sh --lbug-native ~/.cache/bonsai-ci/lbug-native -- \
+  cargo test -p bonsai --profile ci --offline \
+    --test yang_catalogue --test yang_device_applicability \
+    --test yang_schema_bound_acquisition --test yang_remote_collector_discovery
+
+# Canonical acceptance — unchanged trusted runner (never a second CI system).
+scripts/ci/run-local.sh --trusted --shared-target l0 l1 l2 l3
+```
+
+Preserve mold, sccache, the verified prebuilt Ladybug bundle, lane locking,
+cache-compatibility checks and CI profile integrity. Never hide Cargo
+failures behind pipelines lacking `pipefail`.
+
+**Measurement:** `scripts/ci/build-benchmark.sh` records warm-build timings
+(check / libtest compile+link / integration compile+link / execution /
+test-file-only edit loop), peak process-tree RSS, sccache stats, disk
+before/after and artifact sizes to `docs/build-times/benchmarks/*.json` plus
+one row per phase in `docs/build-times/runs.csv`. It never runs `cargo
+clean`, touches tracked sources (the edit-loop phase is an mtime-only
+`touch`) or builds Docker images. Cold builds require explicit
+`--cold --isolated-target DIR` and are refused below a 40 GB free-space
+floor.
+
+**Retention:** `scripts/ci/build-lane-gc.sh report` inventories the shared
+lane (per-profile sizes, artifact classes, top consumers). `clean` is
+dry-run by default; `--apply` deletes only provably-safe classes
+(`--intermediates` post-link objects/hardlink temps, `--dwp` packed debug
+info, `--incremental` cache, `--stale-units` artifacts+fingerprints absent
+from a Cargo probe's current unit set) under the lane's exclusive flock,
+with ci/ protected unless `--include-ci`. Selftest:
+`scripts/ci/build_lane_gc_selftest.sh`.
 
 ## Canonical Validation Gates (BN-019-B6)
 
