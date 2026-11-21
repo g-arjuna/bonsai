@@ -708,6 +708,7 @@ async fn authorized_collector_ingests_and_impersonation_is_rejected() {
             hostname: "collector-a".to_string(),
             protocol_version: PROTOCOL_VERSION,
             auth_token: String::new(),
+            features: vec![],
         }))
         .await
         .expect("register_collector should be authorized");
@@ -1478,6 +1479,7 @@ async fn assignment_stream_revocation_stops_credential_delivery() {
             hostname: "collector-a".to_string(),
             protocol_version: PROTOCOL_VERSION,
             auth_token: String::new(),
+            features: vec![],
         }))
         .await
         .expect("register");
@@ -1537,6 +1539,7 @@ async fn reconnect_generation_fencing_preserves_new_session() {
             hostname: "collector-a".to_string(),
             protocol_version: PROTOCOL_VERSION,
             auth_token: String::new(),
+            features: vec![],
         })
     };
 
@@ -1806,6 +1809,7 @@ async fn registration_audit_records_real_certificate_fingerprint() {
             hostname: "collector-a".to_string(),
             protocol_version: PROTOCOL_VERSION,
             auth_token: String::new(),
+            features: vec![],
         }))
         .await
         .expect("register");
@@ -2431,6 +2435,7 @@ async fn assignment_stream_disconnect_still_cleans_up_session() {
             hostname: "collector-a".to_string(),
             protocol_version: PROTOCOL_VERSION,
             auth_token: String::new(),
+            features: vec![],
         }))
         .await
         .expect("register")
@@ -3150,6 +3155,7 @@ async fn plaintext_psk_only_cannot_receive_device_credentials() {
             // A shared PSK is authentication evidence only — it is not
             // encryption and not collector-specific authorization.
             auth_token: "shared-psk-value".to_string(),
+            features: vec![],
         }))
         .await
         .expect("dev-compat registration")

@@ -759,6 +759,7 @@ fn t9_snapshot_persistence_restart_and_staleness() {
         evaluated_at_ns: 10_000,
         error: None,
         created_at_ns: 10_000,
+        provenance: Default::default(),
     };
     let row = yang_applicability::snapshot_to_row(&snap, 0).unwrap();
     let id = store.save_yang_applicability_snapshot(&row).unwrap();
@@ -1190,6 +1191,7 @@ fn t10_snapshot_payload_contains_no_secret_material() {
         evaluated_at_ns: 2,
         error: None,
         created_at_ns: 2,
+        provenance: Default::default(),
     };
     let json = serde_json::to_string(&snap).unwrap();
     for forbidden in ["password", "secret", "token", "private_key", "credential"] {

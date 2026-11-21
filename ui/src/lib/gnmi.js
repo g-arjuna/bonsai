@@ -73,27 +73,49 @@ export function escapeKeyValue(value) {
   return String(value).replace(/[\\\[\]=]/g, (ch) => '\\' + ch);
 }
 
+/// Segment-qualified key identity (M6E-A2): repeated key names in
+/// nested lists (e.g. `/a/list[name]/b/list[name]`) are INDEPENDENT
+/// placeholders — state must be keyed by position, not name alone.
+export function keyId(segmentIndex, key) {
+  return `${segmentIndex}:${key}`;
+}
+
+/// Look up a key value: segment-qualified id first, bare name as a
+/// legacy fallback for callers that have not migrated.
+function keyValueFor(keyValues, segmentIndex, key) {
+  const qualified = keyValues[keyId(segmentIndex, key)];
+  if (qualified !== undefined && qualified !== null && qualified !== '') return qualified;
+  const bare = keyValues[key];
+  return bare === undefined || bare === null || bare === '' ? undefined : bare;
+}
+
 /// Instantiate a template path: replace every `[key]` placeholder with
-/// `[key=value]` using the provided keyValues map {keyName: value}.
-/// Returns { ok, path, missing } — `missing` lists keys with no value.
-/// Values are used verbatim (no trimming) like the backend parser.
+/// `[key=value]` using the provided keyValues map. Keys are looked up by
+/// segment-qualified id (`"{segmentIndex}:{key}"`) so repeated key names
+/// in nested lists instantiate independently; a bare `{key: value}`
+/// entry remains a fallback for single-occurrence templates.
+/// Returns { ok, path, missing } — `missing` lists qualified key ids
+/// with no value. Values are used verbatim (no trimming) like the
+/// backend parser.
 export function instantiateTemplate(templatePath, keyValues) {
   const missing = [];
   const keys = templateKeys(templatePath);
-  for (const { key } of keys) {
-    const v = keyValues[key];
-    if (v === undefined || v === null || v === '') missing.push(key);
+  for (const { segmentIndex, key } of keys) {
+    if (keyValueFor(keyValues, segmentIndex, key) === undefined) {
+      missing.push(keyId(segmentIndex, key));
+    }
   }
   if (missing.length > 0) {
     return { ok: false, path: templatePath, missing };
   }
   // Replace bare [key] placeholders segment by segment. Segments may
-  // contain several placeholders; replace each.
-  const segs = splitSegments(templatePath).map((seg) => {
+  // contain several placeholders; replace each — scoped to THIS
+  // segment's qualified ids so nested repeats never collide.
+  const segs = splitSegments(templatePath).map((seg, idx) => {
     return seg.replace(/\[([^\]]*)\]/g, (whole, inner) => {
       if (inner.includes('=')) return whole; // already instantiated
-      const v = keyValues[inner];
-      if (v === undefined || v === null || v === '') return whole;
+      const v = keyValueFor(keyValues, idx, inner);
+      if (v === undefined) return whole;
       return `[${inner}=${escapeKeyValue(v)}]`;
     });
   });

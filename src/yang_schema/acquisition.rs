@@ -844,6 +844,7 @@ mod tests {
             evaluated_at_ns: 10,
             error: None,
             created_at_ns: 10,
+            provenance: Default::default(),
         }
     }
 

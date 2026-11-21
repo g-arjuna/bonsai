@@ -24,7 +24,7 @@ const DB_FILE: &str = CONFIG_DB_FILE_NAME;
 /// Schema version the management service migrates to. Read-only
 /// consumers (routing service) compare against this and fail closed
 /// when the database is older.
-pub const CURRENT_SCHEMA_VERSION: i64 = 11;
+pub const CURRENT_SCHEMA_VERSION: i64 = 12;
 
 /// True when an `ALTER TABLE ... ADD COLUMN` failed only because the
 /// column already exists (i.e. a previous migration attempt partially
@@ -650,6 +650,68 @@ impl SqliteStore {
             verify_device_columns(&db, &["schema_binding_json"])
                 .context("schema v11 verification failed")?;
             db.execute("PRAGMA user_version=11", [])
+                .context("failed to set schema version")?;
+        }
+
+        // Version 12: M6E authenticated remote-collector YANG discovery.
+        // Durable bounded job metadata (never credentials, tokens or
+        // private keys) plus explicit evidence-provenance columns on
+        // applicability snapshots so collector-observed and Core-observed
+        // evidence are never conflated. Existing snapshot rows read back
+        // as executor='legacy_unknown' — old unknown evidence is never
+        // silently reclassified as collector-attested.
+        if user_version < 12 {
+            db.execute_batch(
+                "CREATE TABLE IF NOT EXISTS yang_discovery_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL UNIQUE,
+                    device_key TEXT NOT NULL,
+                    device_address TEXT NOT NULL,
+                    collector_id TEXT NOT NULL,
+                    datastore TEXT,
+                    operation TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    authority_epoch INTEGER NOT NULL,
+                    assignment_generation INTEGER NOT NULL,
+                    collector_session_generation INTEGER,
+                    created_at_ns INTEGER NOT NULL,
+                    deadline_ns INTEGER NOT NULL,
+                    dispatched_at_ns INTEGER,
+                    finished_at_ns INTEGER,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    result_classification TEXT,
+                    reason_code TEXT,
+                    snapshot_id INTEGER,
+                    evidence_fingerprint TEXT,
+                    result_digest TEXT,
+                    diagnostics_json TEXT,
+                    created_by TEXT,
+                    updated_at_ns INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_ydj_device
+                    ON yang_discovery_jobs(device_key, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_ydj_state
+                    ON yang_discovery_jobs(state, deadline_ns);",
+            )
+            .context("schema v12 discovery-jobs migration failed")?;
+            for column in [
+                "executor TEXT",
+                "observing_collector_id TEXT",
+                "discovery_job_id TEXT",
+                "collector_session_generation INTEGER",
+                "authority_epoch INTEGER",
+                "evidence_received_at_ns INTEGER",
+            ] {
+                let ddl = format!("ALTER TABLE yang_applicability_snapshots ADD COLUMN {column}");
+                match db.execute(&ddl, []) {
+                    Ok(_) => {}
+                    Err(e) if is_duplicate_column_error(&e) => {}
+                    Err(e) => {
+                        return Err(e).context("schema v12 snapshot provenance migration failed");
+                    }
+                }
+            }
+            db.execute("PRAGMA user_version=12", [])
                 .context("failed to set schema version")?;
         }
 
@@ -2259,8 +2321,11 @@ impl SqliteStore {
                 content_id, datastore, overall_status, outcome,
                 result_json, capabilities_json, yang_library_json,
                 evidence_fingerprint, observed_at_ns, evaluated_at_ns,
-                error, created_at_ns
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                error, created_at_ns, executor, observing_collector_id,
+                discovery_job_id, collector_session_generation,
+                authority_epoch, evidence_received_at_ns
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,
+                       ?17,?18,?19,?20,?21,?22)",
             params![
                 snap.device_key,
                 snap.device_address,
@@ -2278,6 +2343,12 @@ impl SqliteStore {
                 snap.evaluated_at_ns,
                 snap.error,
                 snap.created_at_ns,
+                snap.executor,
+                snap.observing_collector_id,
+                snap.discovery_job_id,
+                snap.collector_session_generation,
+                snap.authority_epoch,
+                snap.evidence_received_at_ns,
             ],
         )
         .context("insert yang applicability snapshot")?;
@@ -2305,15 +2376,9 @@ impl SqliteStore {
         id: i64,
     ) -> Result<Option<YangApplicabilitySnapshotRow>> {
         let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare(
-            "SELECT id, device_key, device_address, collector_id, schema_id,
-                    content_id, datastore, overall_status, outcome,
-                    result_json, capabilities_json, yang_library_json,
-                    evidence_fingerprint, observed_at_ns, evaluated_at_ns,
-                    error, created_at_ns
-             FROM yang_applicability_snapshots
-             WHERE id = ?1",
-        )?;
+        let mut stmt = db.prepare(&format!(
+            "SELECT {SNAPSHOT_COLS} FROM yang_applicability_snapshots WHERE id = ?1"
+        ))?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
             Some(row) => Ok(Some(snapshot_row(row)?)),
@@ -2327,17 +2392,12 @@ impl SqliteStore {
         device_key: &str,
     ) -> Result<Option<YangApplicabilitySnapshotRow>> {
         let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare(
-            "SELECT id, device_key, device_address, collector_id, schema_id,
-                    content_id, datastore, overall_status, outcome,
-                    result_json, capabilities_json, yang_library_json,
-                    evidence_fingerprint, observed_at_ns, evaluated_at_ns,
-                    error, created_at_ns
-             FROM yang_applicability_snapshots
+        let mut stmt = db.prepare(&format!(
+            "SELECT {SNAPSHOT_COLS} FROM yang_applicability_snapshots
              WHERE device_key = ?1
              ORDER BY evaluated_at_ns DESC, id DESC
-             LIMIT 1",
-        )?;
+             LIMIT 1"
+        ))?;
         let mut rows = stmt.query([device_key])?;
         match rows.next()? {
             Some(row) => Ok(Some(snapshot_row(row)?)),
@@ -2352,23 +2412,373 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<YangApplicabilitySnapshotRow>> {
         let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare(
-            "SELECT id, device_key, device_address, collector_id, schema_id,
-                    content_id, datastore, overall_status, outcome,
-                    result_json, capabilities_json, yang_library_json,
-                    evidence_fingerprint, observed_at_ns, evaluated_at_ns,
-                    error, created_at_ns
-             FROM yang_applicability_snapshots
+        let mut stmt = db.prepare(&format!(
+            "SELECT {SNAPSHOT_COLS} FROM yang_applicability_snapshots
              WHERE device_key = ?1
              ORDER BY evaluated_at_ns DESC, id DESC
-             LIMIT ?2",
-        )?;
+             LIMIT ?2"
+        ))?;
         let mut rows = stmt.query(params![device_key, limit as i64])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(snapshot_row(row)?);
         }
         Ok(out)
+    }
+
+    // ── M6E durable remote-discovery jobs ────────────────────────────
+
+    /// Persist a new queued discovery job. Returns the row id.
+    pub fn create_yang_discovery_job(&self, job: &YangDiscoveryJobRow) -> Result<i64> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO yang_discovery_jobs (
+                job_id, device_key, device_address, collector_id, datastore,
+                operation, state, authority_epoch, assignment_generation,
+                collector_session_generation, created_at_ns, deadline_ns,
+                dispatched_at_ns, finished_at_ns, attempt_count,
+                result_classification, reason_code, snapshot_id,
+                evidence_fingerprint, result_digest, diagnostics_json,
+                created_by, updated_at_ns
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,
+                       ?16,?17,?18,?19,?20,?21,?22,?23)",
+            params![
+                job.job_id,
+                job.device_key,
+                job.device_address,
+                job.collector_id,
+                job.datastore,
+                job.operation,
+                job.state,
+                job.authority_epoch,
+                job.assignment_generation,
+                job.collector_session_generation,
+                job.created_at_ns,
+                job.deadline_ns,
+                job.dispatched_at_ns,
+                job.finished_at_ns,
+                job.attempt_count,
+                job.result_classification,
+                job.reason_code,
+                job.snapshot_id,
+                job.evidence_fingerprint,
+                job.result_digest,
+                job.diagnostics_json,
+                job.created_by,
+                job.updated_at_ns,
+            ],
+        )
+        .context("insert yang discovery job")?;
+        let id = db.last_insert_rowid();
+        self.prune_yang_discovery_jobs_locked(&db)?;
+        Ok(id)
+    }
+
+    fn prune_yang_discovery_jobs_locked(&self, db: &Connection) -> Result<()> {
+        db.execute(
+            "DELETE FROM yang_discovery_jobs WHERE id NOT IN (
+                SELECT id FROM yang_discovery_jobs ORDER BY id DESC
+                LIMIT ?1
+             )",
+            params![YANG_DISCOVERY_JOB_HISTORY],
+        )
+        .context("prune yang discovery job history")?;
+        Ok(())
+    }
+
+    pub fn get_yang_discovery_job(&self, job_id: &str) -> Result<Option<YangDiscoveryJobRow>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id, job_id, device_key, device_address, collector_id,
+                    datastore, operation, state, authority_epoch,
+                    assignment_generation, collector_session_generation,
+                    created_at_ns, deadline_ns, dispatched_at_ns,
+                    finished_at_ns, attempt_count, result_classification,
+                    reason_code, snapshot_id, evidence_fingerprint,
+                    result_digest, diagnostics_json, created_by, updated_at_ns
+             FROM yang_discovery_jobs WHERE job_id = ?1",
+        )?;
+        let mut rows = stmt.query([job_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(discovery_job_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Active (non-terminal) jobs for one device, newest first.
+    pub fn active_yang_discovery_jobs_for_device(
+        &self,
+        device_key: &str,
+    ) -> Result<Vec<YangDiscoveryJobRow>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id, job_id, device_key, device_address, collector_id,
+                    datastore, operation, state, authority_epoch,
+                    assignment_generation, collector_session_generation,
+                    created_at_ns, deadline_ns, dispatched_at_ns,
+                    finished_at_ns, attempt_count, result_classification,
+                    reason_code, snapshot_id, evidence_fingerprint,
+                    result_digest, diagnostics_json, created_by, updated_at_ns
+             FROM yang_discovery_jobs
+             WHERE device_key = ?1
+               AND state IN ('queued','dispatched')
+             ORDER BY id DESC",
+        )?;
+        let mut rows = stmt.query([device_key])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(discovery_job_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// Active (non-terminal) jobs for one collector, oldest first.
+    pub fn active_yang_discovery_jobs_for_collector(
+        &self,
+        collector_id: &str,
+    ) -> Result<Vec<YangDiscoveryJobRow>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id, job_id, device_key, device_address, collector_id,
+                    datastore, operation, state, authority_epoch,
+                    assignment_generation, collector_session_generation,
+                    created_at_ns, deadline_ns, dispatched_at_ns,
+                    finished_at_ns, attempt_count, result_classification,
+                    reason_code, snapshot_id, evidence_fingerprint,
+                    result_digest, diagnostics_json, created_by, updated_at_ns
+             FROM yang_discovery_jobs
+             WHERE collector_id = ?1
+               AND state IN ('queued','dispatched')
+             ORDER BY id ASC",
+        )?;
+        let mut rows = stmt.query([collector_id])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(discovery_job_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// Count of active jobs for a collector / device / globally.
+    pub fn count_active_yang_discovery_jobs(
+        &self,
+        collector_id: Option<&str>,
+        device_key: Option<&str>,
+    ) -> Result<i64> {
+        let db = self.db.lock().unwrap();
+        let (sql, args): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            match (collector_id, device_key) {
+                (Some(c), Some(d)) => (
+                    "SELECT COUNT(*) FROM yang_discovery_jobs
+                 WHERE state IN ('queued','dispatched')
+                   AND collector_id = ?1 AND device_key = ?2",
+                    vec![Box::new(c.to_string()), Box::new(d.to_string())],
+                ),
+                (Some(c), None) => (
+                    "SELECT COUNT(*) FROM yang_discovery_jobs
+                 WHERE state IN ('queued','dispatched') AND collector_id = ?1",
+                    vec![Box::new(c.to_string())],
+                ),
+                (None, Some(d)) => (
+                    "SELECT COUNT(*) FROM yang_discovery_jobs
+                 WHERE state IN ('queued','dispatched') AND device_key = ?1",
+                    vec![Box::new(d.to_string())],
+                ),
+                (None, None) => (
+                    "SELECT COUNT(*) FROM yang_discovery_jobs
+                 WHERE state IN ('queued','dispatched')",
+                    vec![],
+                ),
+            };
+        let mut stmt = db.prepare(sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> = args.iter().map(|a| a.as_ref()).collect();
+        let count: i64 = stmt.query_row(params.as_slice(), |r| r.get(0))?;
+        Ok(count)
+    }
+
+    /// Dispatchable jobs for a collector: queued, or previously
+    /// dispatched under a stale session generation (re-delivery after
+    /// reconnect), still within deadline. Newest first, bounded.
+    pub fn dispatchable_yang_discovery_jobs(
+        &self,
+        collector_id: &str,
+        current_session_generation: i64,
+        now_ns: i64,
+        limit: usize,
+    ) -> Result<Vec<YangDiscoveryJobRow>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id, job_id, device_key, device_address, collector_id,
+                    datastore, operation, state, authority_epoch,
+                    assignment_generation, collector_session_generation,
+                    created_at_ns, deadline_ns, dispatched_at_ns,
+                    finished_at_ns, attempt_count, result_classification,
+                    reason_code, snapshot_id, evidence_fingerprint,
+                    result_digest, diagnostics_json, created_by, updated_at_ns
+             FROM yang_discovery_jobs
+             WHERE collector_id = ?1
+               AND state IN ('queued','dispatched')
+               AND deadline_ns > ?2
+               AND (state = 'queued'
+                    OR collector_session_generation IS NULL
+                    OR collector_session_generation < ?3)
+             ORDER BY id ASC
+             LIMIT ?4",
+        )?;
+        let mut rows = stmt.query(params![
+            collector_id,
+            now_ns,
+            current_session_generation,
+            limit as i64
+        ])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(discovery_job_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// Atomically transition a job to `dispatched` under the given
+    /// collector session generation. Fails (returns false) when the job
+    /// already reached a terminal state or was completed — idempotent
+    /// re-delivery only updates the session stamp and attempt count.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mark_yang_discovery_job_dispatched(
+        &self,
+        job_id: &str,
+        session_generation: i64,
+        now_ns: i64,
+    ) -> Result<bool> {
+        let db = self.db.lock().unwrap();
+        let changed = db.execute(
+            "UPDATE yang_discovery_jobs
+             SET state = 'dispatched',
+                 collector_session_generation = ?2,
+                 dispatched_at_ns = COALESCE(dispatched_at_ns, ?3),
+                 attempt_count = attempt_count + 1,
+                 updated_at_ns = ?3
+             WHERE job_id = ?1
+               AND state IN ('queued','dispatched')
+               AND deadline_ns > ?3",
+            params![job_id, session_generation, now_ns],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Terminal transition with result classification. Guarded: only a
+    /// pending job may finish; an already-terminal job is never
+    /// overwritten (idempotent / out-of-order safety).
+    #[allow(clippy::too_many_arguments)]
+    pub fn finish_yang_discovery_job(
+        &self,
+        job_id: &str,
+        state: &str,
+        result_classification: Option<&str>,
+        reason_code: Option<&str>,
+        snapshot_id: Option<i64>,
+        evidence_fingerprint: Option<&str>,
+        result_digest: Option<&str>,
+        diagnostics_json: Option<&str>,
+        now_ns: i64,
+    ) -> Result<bool> {
+        let db = self.db.lock().unwrap();
+        let changed = db.execute(
+            "UPDATE yang_discovery_jobs
+             SET state = ?2,
+                 result_classification = ?3,
+                 reason_code = ?4,
+                 snapshot_id = ?5,
+                 evidence_fingerprint = ?6,
+                 result_digest = COALESCE(?7, result_digest),
+                 diagnostics_json = COALESCE(?8, diagnostics_json),
+                 finished_at_ns = ?9,
+                 updated_at_ns = ?9
+             WHERE job_id = ?1
+               AND state IN ('queued','dispatched')",
+            params![
+                job_id,
+                state,
+                result_classification,
+                reason_code,
+                snapshot_id,
+                evidence_fingerprint,
+                result_digest,
+                diagnostics_json,
+                now_ns,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Id of the newest COMPLETED discovery job for a device — used to
+    /// fence out-of-order results: an older job completing after a newer
+    /// one must not supersede current evidence.
+    pub fn latest_completed_yang_discovery_job_id(&self, device_key: &str) -> Result<Option<i64>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id FROM yang_discovery_jobs
+             WHERE device_key = ?1 AND state = 'completed'
+             ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query([device_key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Bounded job history for one device (newest first).
+    pub fn list_yang_discovery_jobs(
+        &self,
+        device_key: &str,
+        limit: usize,
+    ) -> Result<Vec<YangDiscoveryJobRow>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id, job_id, device_key, device_address, collector_id,
+                    datastore, operation, state, authority_epoch,
+                    assignment_generation, collector_session_generation,
+                    created_at_ns, deadline_ns, dispatched_at_ns,
+                    finished_at_ns, attempt_count, result_classification,
+                    reason_code, snapshot_id, evidence_fingerprint,
+                    result_digest, diagnostics_json, created_by, updated_at_ns
+             FROM yang_discovery_jobs
+             WHERE device_key = ?1
+             ORDER BY id DESC LIMIT ?2",
+        )?;
+        let mut rows = stmt.query(params![device_key, limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(discovery_job_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// Restart reconciliation: expire every non-terminal job whose
+    /// deadline passed, and cancel jobs whose recorded authority epoch
+    /// no longer matches Core's current epoch. Returns counts.
+    pub fn reconcile_yang_discovery_jobs_on_boot(
+        &self,
+        current_authority_epoch: i64,
+        now_ns: i64,
+    ) -> Result<(usize, usize)> {
+        let db = self.db.lock().unwrap();
+        let expired = db.execute(
+            "UPDATE yang_discovery_jobs
+             SET state = 'timed_out', reason_code = 'deadline_exceeded',
+                 finished_at_ns = ?1, updated_at_ns = ?1
+             WHERE state IN ('queued','dispatched') AND deadline_ns <= ?1",
+            params![now_ns],
+        )?;
+        let stale = db.execute(
+            "UPDATE yang_discovery_jobs
+             SET state = 'stale_authority', reason_code = 'authority_epoch_superseded',
+                 finished_at_ns = ?1, updated_at_ns = ?1
+             WHERE state IN ('queued','dispatched')
+               AND authority_epoch != ?2",
+            params![now_ns, current_authority_epoch],
+        )?;
+        Ok((expired, stale))
     }
 }
 
@@ -2435,10 +2845,87 @@ pub struct YangApplicabilitySnapshotRow {
     pub evaluated_at_ns: i64,
     pub error: Option<String>,
     pub created_at_ns: i64,
+    /// M6E-G evidence provenance: "core_direct" | "authenticated_collector"
+    /// | "legacy_unknown" (pre-M6E rows). Never silently upgraded.
+    pub executor: Option<String>,
+    /// Authenticated collector identity that performed discovery
+    /// (collector-origin evidence only — never the merely-assigned id).
+    pub observing_collector_id: Option<String>,
+    pub discovery_job_id: Option<String>,
+    pub collector_session_generation: Option<i64>,
+    pub authority_epoch: Option<i64>,
+    /// Core receipt timestamp for collector-submitted evidence.
+    pub evidence_received_at_ns: Option<i64>,
+}
+
+/// Durable M6E remote-discovery job row. Contains NO credentials, tokens,
+/// private keys or passwords — connection material stays in the secure
+/// assignment-delivery path on the collector.
+#[derive(Clone, Debug)]
+pub struct YangDiscoveryJobRow {
+    pub id: i64,
+    pub job_id: String,
+    pub device_key: String,
+    pub device_address: String,
+    pub collector_id: String,
+    pub datastore: Option<String>,
+    pub operation: String,
+    pub state: String,
+    pub authority_epoch: i64,
+    pub assignment_generation: i64,
+    pub collector_session_generation: Option<i64>,
+    pub created_at_ns: i64,
+    pub deadline_ns: i64,
+    pub dispatched_at_ns: Option<i64>,
+    pub finished_at_ns: Option<i64>,
+    pub attempt_count: i64,
+    pub result_classification: Option<String>,
+    pub reason_code: Option<String>,
+    pub snapshot_id: Option<i64>,
+    pub evidence_fingerprint: Option<String>,
+    /// sha256 over the canonical submitted evidence — idempotent
+    /// duplicate detection without storing the payload twice.
+    pub result_digest: Option<String>,
+    pub diagnostics_json: Option<String>,
+    pub created_by: Option<String>,
+    pub updated_at_ns: i64,
 }
 
 /// Bounded per-device snapshot history retained in SQLite.
 pub const YANG_APPLICABILITY_HISTORY: i64 = 16;
+/// Bounded retained discovery-job history (diagnostics only).
+pub const YANG_DISCOVERY_JOB_HISTORY: i64 = 512;
+/// Maximum pending (non-terminal) discovery jobs per collector.
+pub const YANG_DISCOVERY_MAX_ACTIVE_PER_COLLECTOR: i64 = 8;
+/// Maximum pending discovery jobs per device (dedup bound).
+pub const YANG_DISCOVERY_MAX_ACTIVE_PER_DEVICE: i64 = 2;
+/// Global bound on the queued+dispatched job set.
+pub const YANG_DISCOVERY_MAX_ACTIVE_TOTAL: i64 = 256;
+/// Default job deadline (ns) — discovery is a bounded control-plane op.
+pub const YANG_DISCOVERY_DEFAULT_DEADLINE_NS: i64 = 120 * 1_000_000_000;
+/// Hard cap on a single job deadline.
+pub const YANG_DISCOVERY_MAX_DEADLINE_NS: i64 = 600 * 1_000_000_000;
+/// Maximum serialized evidence payload per direction (bytes).
+pub const YANG_DISCOVERY_MAX_EVIDENCE_BYTES: usize = 4 * 1024 * 1024;
+
+/// Upper bound on one serialized `YangDiscoveryResult` gRPC message:
+/// both evidence payloads at their individual caps plus diagnostics
+/// and scalar fields. tonic's default 4 MiB decode limit would reject
+/// legitimate maximum-size submissions before admission bounds run.
+pub const YANG_DISCOVERY_MAX_RESULT_MESSAGE_BYTES: usize =
+    2 * YANG_DISCOVERY_MAX_EVIDENCE_BYTES + 1024 * 1024;
+/// Maximum diagnostics entries retained per job.
+pub const YANG_DISCOVERY_MAX_DIAGNOSTICS: usize = 64;
+/// Maximum jobs returned by one collector poll.
+pub const YANG_DISCOVERY_MAX_POLL_BATCH: usize = 8;
+
+const SNAPSHOT_COLS: &str = "id, device_key, device_address, collector_id, schema_id,
+        content_id, datastore, overall_status, outcome,
+        result_json, capabilities_json, yang_library_json,
+        evidence_fingerprint, observed_at_ns, evaluated_at_ns,
+        error, created_at_ns, executor, observing_collector_id,
+        discovery_job_id, collector_session_generation, authority_epoch,
+        evidence_received_at_ns";
 
 fn snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<YangApplicabilitySnapshotRow> {
     Ok(YangApplicabilitySnapshotRow {
@@ -2459,6 +2946,41 @@ fn snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<YangApplicabilitySn
         evaluated_at_ns: row.get(14)?,
         error: row.get(15)?,
         created_at_ns: row.get(16)?,
+        executor: row.get(17)?,
+        observing_collector_id: row.get(18)?,
+        discovery_job_id: row.get(19)?,
+        collector_session_generation: row.get(20)?,
+        authority_epoch: row.get(21)?,
+        evidence_received_at_ns: row.get(22)?,
+    })
+}
+
+fn discovery_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<YangDiscoveryJobRow> {
+    Ok(YangDiscoveryJobRow {
+        id: row.get(0)?,
+        job_id: row.get(1)?,
+        device_key: row.get(2)?,
+        device_address: row.get(3)?,
+        collector_id: row.get(4)?,
+        datastore: row.get(5)?,
+        operation: row.get(6)?,
+        state: row.get(7)?,
+        authority_epoch: row.get(8)?,
+        assignment_generation: row.get(9)?,
+        collector_session_generation: row.get(10)?,
+        created_at_ns: row.get(11)?,
+        deadline_ns: row.get(12)?,
+        dispatched_at_ns: row.get(13)?,
+        finished_at_ns: row.get(14)?,
+        attempt_count: row.get(15)?,
+        result_classification: row.get(16)?,
+        reason_code: row.get(17)?,
+        snapshot_id: row.get(18)?,
+        evidence_fingerprint: row.get(19)?,
+        result_digest: row.get(20)?,
+        diagnostics_json: row.get(21)?,
+        created_by: row.get(22)?,
+        updated_at_ns: row.get(23)?,
     })
 }
 
@@ -2613,7 +3135,10 @@ mod tests {
     fn fresh_database_reaches_v8_with_inventory_columns_and_index() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_at(&dir).expect("open");
-        assert_eq!(store.schema_version().expect("version"), 11);
+        assert_eq!(
+            store.schema_version().expect("version"),
+            CURRENT_SCHEMA_VERSION
+        );
 
         let db = store.db.lock().unwrap();
         let mut stmt = db
@@ -2671,7 +3196,10 @@ mod tests {
         }
 
         let store = SqliteStore::open_file(&db_path).expect("migrate v5->v8");
-        assert_eq!(store.schema_version().expect("version"), 11);
+        assert_eq!(
+            store.schema_version().expect("version"),
+            CURRENT_SCHEMA_VERSION
+        );
 
         let devices = store.list_devices().expect("list");
         assert_eq!(devices.len(), 1);
@@ -2723,7 +3251,10 @@ mod tests {
         }
 
         let store = SqliteStore::open_file(&db_path).expect("migrate partial v6");
-        assert_eq!(store.schema_version().expect("version"), 11);
+        assert_eq!(
+            store.schema_version().expect("version"),
+            CURRENT_SCHEMA_VERSION
+        );
         let devices = store.list_devices().expect("list");
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].address, "10.0.0.2");

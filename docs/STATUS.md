@@ -1,5 +1,35 @@
 # Bonsai current state
 
+M6E update — **authenticated remote-collector YANG discovery
+implemented** (branch `feat/bn015-m6e-remote-yang-discovery`).
+An Admin can now request applicability refresh for a device Core
+cannot reach directly: Core validates the device and its assigned
+collector, queues a durable bounded discovery job (schema v12,
+`yang_discovery_jobs`), the collector picks it up over the existing
+authenticated registration channel (`PollYangDiscoveryJobs`, gated on
+protocol ≥ 6 + the `yang_discovery_v1` feature), executes read-only
+gNMI Capabilities + RFC 8525 YANG Library Get in an isolated bounded
+worker, and submits bounded evidence (`SubmitYangDiscoveryResult`).
+Core independently re-validates principal, job, session generation,
+authority epoch, assignment generation, device identity, datastore,
+payload bounds and observation times, then resolves applicability
+through the same M6C-1 resolver and persists through the same snapshot
+path — the collector never approves plans or declares paths
+authoritative. Snapshots carry explicit evidence provenance
+(`core_direct` / `authenticated_collector` / `legacy_unknown` plus
+observing collector, job id, session and epoch references). Refresh
+offers `core_direct` (synchronous), `assigned_collector` (202 +
+job-status polling) and documented `auto` selection; the schema
+workspace shows executor, live job state, failure reasons and
+provenance, preserves drafts across async responses, and confirms
+before refreshing a schema-bound device. M6D corrections landed with
+it: fingerprint+recency-guarded approval invalidation at the registry
+mutation boundary, segment-qualified nested-list keys, async response
+fencing and truthful revocation messaging. Integration proof:
+`tests/yang_remote_collector_discovery.rs` (T1–T16 wire-level
+scenarios) plus M6E Playwright coverage in
+`tests/ui_driver/yang_schema_workspace.spec.js`.
+
 21 November update — **M6D device-effective YANG browser and
 schema-bound collection workspace implemented** (branch
 `feat/bn015-m6d-schema-workspace`).

@@ -18,8 +18,9 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity
 use tracing::{info, warn};
 
 use crate::api::pb::{
-    AssignmentUpdate, CollectorIdentity, CollectorStats, InterfaceSummary,
-    TelemetryIngestUpdate as ProtoTelemetryIngestUpdate, bonsai_graph_client::BonsaiGraphClient,
+    AssignmentUpdate, CollectorIdentity, CollectorStats, DeviceAssignment, InterfaceSummary,
+    PollYangDiscoveryJobsRequest, TelemetryIngestUpdate as ProtoTelemetryIngestUpdate,
+    bonsai_graph_client::BonsaiGraphClient,
 };
 use crate::config::{
     BackpressureConfig, CollectorConfig, CollectorFilterConfig, CollectorQueueConfig,
@@ -1966,6 +1967,24 @@ mod tests {
         {
             Err(tonic::Status::unimplemented("heartbeat"))
         }
+        async fn poll_yang_discovery_jobs(
+            &self,
+            _r: tonic::Request<crate::api::pb::PollYangDiscoveryJobsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::PollYangDiscoveryJobsResponse>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("poll_yang_discovery_jobs"))
+        }
+        async fn submit_yang_discovery_result(
+            &self,
+            _r: tonic::Request<crate::api::pb::YangDiscoveryResult>,
+        ) -> std::result::Result<
+            tonic::Response<crate::api::pb::YangDiscoveryResultAck>,
+            tonic::Status,
+        > {
+            Err(tonic::Status::unimplemented("submit_yang_discovery_result"))
+        }
         async fn query(
             &self,
             _r: tonic::Request<crate::api::pb::QueryRequest>,
@@ -2489,6 +2508,12 @@ pub async fn run_collector_manager(
     // sync — a bare TCP/gRPC connection or registration never renews
     // stale assignment authority.
     let mut disconnected_since: Option<Instant> = None;
+    // M6E: current assignment view for remote-discovery execution.
+    // address → TargetConfig with Core-resolved credentials, updated
+    // from every accepted assignment stream message. Secrets live only
+    // in this process memory — never in job rows, evidence or logs.
+    let discovery_targets: Arc<Mutex<HashMap<String, crate::config::TargetConfig>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     loop {
         let mut client = match create_ingest_client(&cfg).await {
@@ -2517,6 +2542,10 @@ pub async fn run_collector_manager(
             hostname: hostname.clone(),
             protocol_version: crate::api::PROTOCOL_VERSION,
             auth_token: std::env::var("BONSAI_COLLECTOR_TOKEN").unwrap_or_default(),
+            // M6E explicit capability: this build executes bounded
+            // read-only remote discovery jobs. Pre-contract cores simply
+            // never dispatch any.
+            features: vec![crate::yang_discovery::YANG_DISCOVERY_FEATURE.to_string()],
         };
 
         let mut stream = match client.register_collector(req).await {
@@ -2546,6 +2575,18 @@ pub async fn run_collector_manager(
             disconnected_since = Some(Instant::now());
         }
 
+        // M6E: spawn the bounded discovery poller for this connection.
+        // It shares the assignment client channel (cloned) and the
+        // assignment-derived target map; device I/O runs in isolated
+        // workers so a hung gNMI device can never block heartbeats,
+        // assignment updates or shutdown.
+        let mut discovery_task = Some(tokio::spawn(run_discovery_poller(
+            client.clone(),
+            collector_id.clone(),
+            Arc::clone(&discovery_targets),
+            shutdown.clone(),
+        )));
+
         let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
         // Independent lease enforcement inside the connected loop: a
         // half-open or nonresponsive assignment channel must not renew
@@ -2557,11 +2598,15 @@ pub async fn run_collector_manager(
                 _ = shutdown.changed() => {
                     info!("collector manager shutting down");
                     crate::subscriber::stop_all_subscribers(&mut subscribers).await;
+                    if let Some(t) = discovery_task.take() {
+                        t.abort();
+                    }
                     return Ok(());
                 }
                 msg = stream.message() => {
                     match msg {
                         Ok(Some(update)) => {
+                            update_discovery_targets(&discovery_targets, &update);
                             let renewed = handle_assignment_update(
                                 update,
                                 &bus,
@@ -2582,12 +2627,18 @@ pub async fn run_collector_manager(
                             if disconnected_since.is_none() {
                                 disconnected_since = Some(Instant::now());
                             }
+                            if let Some(t) = discovery_task.take() {
+                                t.abort();
+                            }
                             break;
                         }
                         Err(error) => {
                             warn!(%error, "assignment stream error; reconnecting");
                             if disconnected_since.is_none() {
                                 disconnected_since = Some(Instant::now());
+                            }
+                            if let Some(t) = discovery_task.take() {
+                                t.abort();
                             }
                             break;
                         }
@@ -3263,4 +3314,160 @@ async fn create_ingest_client(
 
     let channel = endpoint.connect().await?;
     Ok(BonsaiGraphClient::new(channel))
+}
+
+// ── M6E authenticated remote-collector YANG discovery ────────────────────────
+
+/// How often the collector polls Core for pending discovery jobs.
+const DISCOVERY_POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// Bounded concurrent device-discovery workers — a hung gNMI device can
+/// never starve heartbeats, assignment updates or other jobs.
+const DISCOVERY_MAX_CONCURRENT_JOBS: usize = 2;
+
+/// Mirror the assignment stream into the discovery target map. Only
+/// non-rejected, convertible assignments produce targets; rejected or
+/// unconvertible devices are removed so stale credentials can never be
+/// used for discovery.
+fn update_discovery_targets(
+    targets: &Arc<Mutex<HashMap<String, crate::config::TargetConfig>>>,
+    update: &AssignmentUpdate,
+) {
+    let mut map = targets.lock().unwrap();
+    if update.is_full_sync {
+        map.clear();
+    }
+    for assignment in &update.assignments {
+        let address = assignment
+            .device
+            .as_ref()
+            .map(|d| d.address.clone())
+            .unwrap_or_default();
+        if assignment.rejected || address.is_empty() {
+            map.remove(&address);
+            continue;
+        }
+        match discovery_target_from_assignment(assignment) {
+            Some(target) => {
+                map.insert(target.address.clone(), target);
+            }
+            None => {
+                map.remove(&address);
+            }
+        }
+    }
+}
+
+/// Same conversion `handle_assignment_update` performs — Core-resolved
+/// credentials arrive on the assignment, never from job payloads.
+fn discovery_target_from_assignment(
+    assignment: &DeviceAssignment,
+) -> Option<crate::config::TargetConfig> {
+    let device = assignment.device.clone()?;
+    let mut target = crate::api::target_from_managed_device(Some(device)).ok()?;
+    target.username = Some(assignment.username.clone());
+    target.password = Some(assignment.password.clone());
+    Some(target)
+}
+
+/// Bounded poller: obtains Core-issued discovery jobs over the existing
+/// authenticated collector channel and executes them in isolated
+/// workers. Never blocks the assignment stream, heartbeats or shutdown.
+async fn run_discovery_poller(
+    mut client: BonsaiGraphClient<Channel>,
+    collector_id: String,
+    targets: Arc<Mutex<HashMap<String, crate::config::TargetConfig>>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let sem = Arc::new(tokio::sync::Semaphore::new(DISCOVERY_MAX_CONCURRENT_JOBS));
+    let mut interval = tokio::time::interval(DISCOVERY_POLL_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => return,
+            _ = interval.tick() => {}
+        }
+        let req = PollYangDiscoveryJobsRequest {
+            collector_id: collector_id.clone(),
+            protocol_version: crate::api::PROTOCOL_VERSION,
+        };
+        let resp = match client.poll_yang_discovery_jobs(req).await {
+            Ok(r) => r.into_inner(),
+            Err(error) => {
+                tracing::debug!(%error, %collector_id, "yang discovery poll failed");
+                continue;
+            }
+        };
+        // A pre-contract core/session gets an explicit unsupported
+        // signal and zero executable jobs.
+        if !resp.discovery_supported {
+            continue;
+        }
+        // cancelled_job_ids need no local action: in-flight workers
+        // fail submission and Core revalidates every result anyway.
+        for job in resp.jobs {
+            // Resolve the device strictly from the local assignment
+            // view — a job can only run against a currently assigned,
+            // credential-bearing target. Unknown devices are skipped;
+            // the durable deadline bounds the wait.
+            let target = {
+                let map = targets.lock().unwrap();
+                map.get(&job.device_address).cloned().or_else(|| {
+                    let canonical = crate::registry::canonical_device_key(&job.device_address);
+                    map.values()
+                        .find(|t| crate::registry::canonical_device_key(&t.address) == canonical)
+                        .cloned()
+                })
+            };
+            let Some(target) = target else {
+                continue;
+            };
+            let datastore = if job.datastore.is_empty() {
+                None
+            } else {
+                Some(job.datastore.clone())
+            };
+            let sem = Arc::clone(&sem);
+            let mut worker_client = client.clone();
+            let worker_id = collector_id.clone();
+            let worker_shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                // Bound concurrency: excess jobs wait here rather than
+                // being dropped — the durable deadline still applies.
+                let Ok(_permit) = sem.acquire_owned().await else {
+                    return;
+                };
+                let submission = crate::yang_discovery::execute_discovery_job(
+                    &target,
+                    datastore.as_deref(),
+                    job.deadline_ns,
+                )
+                .await;
+                let result = crate::yang_discovery::submission_to_result(
+                    &job,
+                    &worker_id,
+                    submission,
+                    crate::api::PROTOCOL_VERSION,
+                );
+                // A failed submit leaves the job dispatched until its
+                // deadline or a fresh session redispatches it — Core
+                // remains the authority on acceptance.
+                match worker_client.submit_yang_discovery_result(result).await {
+                    Ok(ack) => {
+                        let ack = ack.into_inner();
+                        if !ack.accepted {
+                            tracing::debug!(
+                                job_id = %job.job_id,
+                                reason = %ack.reason,
+                                "core rejected discovery result"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, job_id = %job.job_id, "discovery result submit failed");
+                    }
+                }
+                drop(worker_shutdown);
+            });
+        }
+    }
 }

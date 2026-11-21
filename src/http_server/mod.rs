@@ -84,12 +84,13 @@ use device::{
     device_gnmi_readiness_handler, device_optics_handler, device_recommendations_handler,
     device_reparse_handler, device_sensors_handler, device_streaming_readiness_handler,
     device_yang_applicability_handler, device_yang_applicability_refresh_handler,
-    enrichment_audit_handler, enrichment_list_handler, enrichment_remove_handler,
-    enrichment_run_handler, enrichment_test_handler, enrichment_upsert_handler,
-    netbox_import_handler, profiles_handler, save_custom_profile_handler,
-    schema_binding_activate_handler, schema_binding_preview_handler, schema_binding_revoke_handler,
-    yang_activate_handler, yang_compile_handler, yang_compiled_handler, yang_modules_handler,
-    yang_paths_handler, yang_search_handler, yang_sources_handler,
+    device_yang_discovery_jobs_handler, enrichment_audit_handler, enrichment_list_handler,
+    enrichment_remove_handler, enrichment_run_handler, enrichment_test_handler,
+    enrichment_upsert_handler, netbox_import_handler, profiles_handler,
+    save_custom_profile_handler, schema_binding_activate_handler, schema_binding_preview_handler,
+    schema_binding_revoke_handler, yang_activate_handler, yang_compile_handler,
+    yang_compiled_handler, yang_modules_handler, yang_paths_handler, yang_search_handler,
+    yang_sources_handler,
 };
 use governance::{
     assign_site_environment_handler, assignment_override_handler, assignment_rules_handler,
@@ -1880,6 +1881,10 @@ fn device_routes() -> Router<AppState> {
         .route(
             "/api/devices/{address}/yang-applicability/refresh",
             post(device_yang_applicability_refresh_handler),
+        )
+        .route(
+            "/api/devices/{address}/yang-discovery/jobs",
+            get(device_yang_discovery_jobs_handler),
         )
         .route(
             "/api/devices/{address}/schema-binding/preview",

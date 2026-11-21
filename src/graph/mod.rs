@@ -4698,9 +4698,8 @@ impl GraphStore {
         let id = id.to_string();
         tokio::task::spawn_blocking(move || {
             let conn = Connection::new(&db).context("config item identity connection")?;
-            let mut stmt = conn.prepare(
-                "MATCH (c:ConfigItem {id: $id}) RETURN c.name, c.config_class",
-            )?;
+            let mut stmt =
+                conn.prepare("MATCH (c:ConfigItem {id: $id}) RETURN c.name, c.config_class")?;
             Ok(conn
                 .execute(&mut stmt, vec![("id", Value::String(id))])?
                 .next()

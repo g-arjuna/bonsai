@@ -220,6 +220,7 @@ L2_INTEGRATION_TESTS="
   yang_catalogue
   yang_device_applicability
   yang_schema_bound_acquisition
+  yang_remote_collector_discovery
 "
 
 gate_l2() {
