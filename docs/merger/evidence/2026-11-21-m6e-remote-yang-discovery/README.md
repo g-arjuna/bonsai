@@ -71,8 +71,14 @@ Branch `feat/bn015-m6e-remote-yang-discovery` from `origin/main`
   (incl. M6E-T17 remote job status/completion/provenance and
   M6E-T17b failure reason; real built `ui/dist` on :4173, chromium
   headless shell, API fixtures).
-- Canonical L0–L3: see `gates-*.log` / runs.csv (recorded below after
-  the gate run on the tested SHA).
+- Canonical L0–L3 on tested SHA `92c6c998221b53cc5165a845b8b16945aed5ee1f`
+  (PR head; merge `c1be72e`):
+  `CARGO_BUILD_JOBS=2 scripts/ci/run-local.sh --trusted
+  --shared-target-dir ~/.cache/bonsai-ci/build-lane
+  --lbug-native ~/.cache/bonsai-ci/lbug-native l0 l1 l2 l3` —
+  **L0/L1/L2/L3 ALL PASS** (~40 min wall). L2: 34 integration targets
+  incl. `yang_remote_collector_discovery` 14/14 in-gate;
+  L3: 13 targets + pytest 259 passed / 3 skipped.
 
 ## Zero device writes
 
