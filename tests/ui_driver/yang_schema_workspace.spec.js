@@ -244,6 +244,50 @@ async function installFixtures(page, state) {
   await page.route(`**/api/devices/${ENC_ADDR}/yang-applicability**`, (route) => {
     if (route.request().method() === 'POST') {
       state.requests.refresh++;
+      let body = {};
+      try { body = route.request().postDataJSON() || {}; } catch { /* empty */ }
+      // M6E: the assigned-collector executor is asynchronous — Core
+      // returns 202 + a durable job id; the UI polls job status.
+      if (body.executor === 'assigned_collector') {
+        state.jobPolls = 0;
+        state.job = {
+          job_id: 'job-remote-discovery-1',
+          state: 'queued',
+          device_key: 'edge-1',
+          device_address: DEVICE_ADDR,
+          collector_id: 'col-1',
+          datastore: body.datastore || null,
+          operation: 'yang_applicability',
+          authority_epoch: 7,
+          assignment_generation: 3,
+          collector_session_generation: 11,
+          created_at_ns: Date.now() * 1e6,
+          deadline_ns: (Date.now() + 120_000) * 1e6,
+          dispatched_at_ns: null,
+          finished_at_ns: null,
+          attempt_count: 0,
+          result_classification: null,
+          reason_code: null,
+          snapshot_id: null,
+          evidence_fingerprint: null,
+          created_by: 'op',
+        };
+        return route.fulfill({
+          status: 202,
+          json: {
+            job_id: state.job.job_id,
+            state: state.job.state,
+            device_key: state.job.device_key,
+            device_address: DEVICE_ADDR,
+            collector_id: 'col-1',
+            datastore: state.job.datastore,
+            operation: 'yang_applicability',
+            created_at_ns: state.job.created_at_ns,
+            deadline_ns: state.job.deadline_ns,
+            status_url: `/api/devices/${DEVICE_ADDR}/yang-discovery/jobs`,
+          },
+        });
+      }
       return route.fulfill({
         json: {
           snapshot_id: 43,
@@ -263,6 +307,17 @@ async function installFixtures(page, state) {
       });
     }
     return route.fulfill({ json: state.applicability });
+  });
+  await page.route(`**/api/devices/${ENC_ADDR}/yang-discovery/jobs**`, (route) => {
+    state.requests.jobs = (state.requests.jobs || 0) + 1;
+    // First polls report queued/dispatched; once the fixture flips the
+    // job to completed the UI must surface the terminal state.
+    const job = state.job
+      ? { ...state.job, state: state.jobTerminal || state.job.state }
+      : null;
+    return route.fulfill({
+      json: { device_key: 'edge-1', jobs: job ? [job] : [] },
+    });
   });
   await page.route(`**/api/devices/${ENC_ADDR}/schema-binding/preview`, (route) => {
     state.requests.preview++;
@@ -588,7 +643,7 @@ test.describe('M6D schema collection workspace', () => {
     await page.locator('[data-testid="revoke-reason"]').fill('maintenance window');
     await page.locator('[data-testid="confirm-revoke"]').click();
     await expect(page.locator('[data-testid="revoke-message"]')).toContainText('revoked');
-    await expect(page.locator('[data-testid="revoke-message"]')).toContainText('does not restore');
+    await expect(page.locator('[data-testid="revoke-message"]')).toContainText('NOT restored');
     expect(state.requests.revoke).toBe(1);
     // Binding panel disappears once device state refreshes.
     await expect(page.locator('[data-testid="binding-panel"]')).toHaveCount(0);
@@ -693,5 +748,70 @@ test.describe('M6D schema collection workspace', () => {
     // ARIA: search input has a label; status regions exist.
     await expect(page.locator('[data-testid="path-search"]')).toHaveAttribute('aria-label', /Search schema paths/);
     expect(errors).toHaveLength(0);
+  });
+
+  test('M6E-T17: remote discovery job status, completion and provenance', async ({ page }) => {
+    const state = {};
+    await installFixtures(page, state);
+    await openSchemaWorkspace(page);
+
+    // Choose the assigned-collector executor and request refresh.
+    await page.getByLabel('Discovery executor').selectOption('assigned_collector');
+    await page.getByTestId('refresh-applicability').click();
+
+    // 202 path: queued message + live job card, no sync snapshot claim.
+    await expect(page.getByTestId('refresh-message')).toContainText('Remote discovery queued');
+    const jobCard = page.getByTestId('remote-job');
+    await expect(jobCard).toBeVisible();
+    await expect(jobCard).toContainText('queued');
+    await expect(jobCard).toContainText('col-1');
+
+    // First status poll still shows the job in flight, then Core marks
+    // it completed with a snapshot reference.
+    state.jobTerminal = 'dispatched';
+    state.job = { ...state.job, state: 'dispatched', dispatched_at_ns: Date.now() * 1e6, attempt_count: 1 };
+    await expect(jobCard).toContainText('dispatched', { timeout: 10_000 });
+
+    state.jobTerminal = 'completed';
+    state.job = {
+      ...state.job,
+      state: 'completed',
+      finished_at_ns: Date.now() * 1e6,
+      snapshot_id: 77,
+      result_classification: 'completed',
+    };
+    await expect(page.getByTestId('refresh-message')).toContainText(
+      'Remote discovery completed via collector col-1',
+      { timeout: 15_000 }
+    );
+    await expect(page.getByTestId('refresh-message')).toContainText('snapshot #77');
+    // The completed job card keeps the terminal state visible.
+    await expect(jobCard).toContainText('completed');
+    await expect(jobCard).toContainText('snapshot #77');
+  });
+
+  test('M6E-T17b: remote discovery failure surfaces explicit reason', async ({ page }) => {
+    const state = {};
+    await installFixtures(page, state);
+    await openSchemaWorkspace(page);
+
+    await page.getByLabel('Discovery executor').selectOption('assigned_collector');
+    await page.getByTestId('refresh-applicability').click();
+    await expect(page.getByTestId('remote-job')).toBeVisible();
+
+    state.jobTerminal = 'timed_out';
+    state.job = {
+      ...state.job,
+      state: 'timed_out',
+      finished_at_ns: Date.now() * 1e6,
+      reason_code: 'deadline_exceeded',
+    };
+    await expect(page.getByTestId('refresh-message')).toContainText(
+      'Remote discovery finished: timed_out',
+      { timeout: 15_000 }
+    );
+    await expect(page.getByTestId('refresh-message')).toContainText('deadline_exceeded');
+    // A failed remote job must NOT claim a snapshot or applicable evidence.
+    await expect(page.getByTestId('refresh-message')).not.toContainText('snapshot #');
   });
 });

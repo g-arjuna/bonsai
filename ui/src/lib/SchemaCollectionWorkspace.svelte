@@ -11,11 +11,19 @@
   import { relativeTime, absoluteTime } from '$lib/timeutil.js';
   import { selectionKey } from '$lib/pathkey.js';
   import {
-    templateKeys, instantiateTemplate, hasPlaceholders,
+    templateKeys, instantiateTemplate, hasPlaceholders, keyId,
     validOrigin, secondsToNs, nsToSeconds, formatInterval
   } from '$lib/gnmi.js';
 
   let { device, onchanged } = $props();
+
+  // M6E-A4: unsaved drafts survive schema-tab navigation, scoped by
+  // stable device identity. Module-scoped only — never browser storage,
+  // never secrets or approval authority.
+  const draftStore = new Map();
+  function deviceDraftKey(d) {
+    return d?.external_id || d?.address || '';
+  }
 
   const PAGE_SIZE = 100;
   const STATUSES = ['applicable', 'candidate', 'unknown', 'not_applicable', 'stale', 'conflicted'];
@@ -32,6 +40,15 @@
   let filters = $state({ q: '', status: '', module: '', kind: '', config: '', feature: '' });
   let pathOffset = $state(0);
   let qTimer = null;
+  // M6E-A3: request-generation fencing — a slow response for a previous
+  // device/filter/page can never overwrite current UI state.
+  let appGen = 0;
+
+  // ── M6E remote discovery job state ───────────────────────────────────
+  let executor = $state('auto'); // auto|core_direct|assigned_collector
+  let remoteJob = $state(null); // {job_id,state,collector_id,reason,...}
+  let jobPollTimer = null;
+  let confirmRefresh = $state(false);
 
   // ── Draft selection ──────────────────────────────────────────────────
   // Each entry: { id, template, path, origin, mode, sample_interval_ns,
@@ -80,6 +97,7 @@
   });
 
   async function loadApplicability(addr, f, off) {
+    const gen = ++appGen;
     appState = 'loading';
     appError = '';
     try {
@@ -95,25 +113,47 @@
       const r = await fetch(
         '/api/devices/' + encodeURIComponent(addr) + '/yang-applicability?' + params
       );
-      if (!r.ok) throw new Error(await r.text() || ('HTTP ' + r.status));
-      applicability = await r.json();
+      const payload = await r.json().catch(() => null);
+      // Fencing: device/filter/page changed or a newer request started
+      // while this one was in flight — discard entirely.
+      if (gen !== appGen || addr !== address) return;
+      if (!r.ok) throw new Error(payload?.error || payload?.message || ('HTTP ' + r.status));
+      applicability = payload;
       appState = 'ready';
       if (!datastore && applicability?.snapshot?.datastore) {
         datastore = applicability.snapshot.datastore;
       }
-      // Seed the draft once per device from the APPROVED selection —
-      // never silently from the newest recommended profile.
-      if (draftLoadedFor !== addr && device) {
-        draftLoadedFor = addr;
-        const approved = Array.isArray(device.selected_paths) ? device.selected_paths : [];
-        draft = dedupe(approved.map(normalizeDraftEntry));
+      // Restore or seed the draft once per device. A preserved draft
+      // always wins over re-seeding from the approved selection; new
+      // evidence never silently deletes it — preview eligibility is
+      // fenced separately by previewStale.
+      const dkey = deviceDraftKey(device);
+      if (draftLoadedFor !== dkey && device) {
+        draftLoadedFor = dkey;
+        const stored = draftStore.get(dkey);
+        if (Array.isArray(stored) && stored.length > 0) {
+          draft = dedupe(stored.map(normalizeDraftEntry));
+          draft.forEach(refreshEntryPath);
+        } else {
+          const approved = Array.isArray(device.selected_paths) ? device.selected_paths : [];
+          draft = dedupe(approved.map(normalizeDraftEntry));
+        }
         invalidatePreview();
       }
     } catch (e) {
+      if (gen !== appGen || addr !== address) return;
       appError = e.message || 'Failed to load applicability';
       appState = 'error';
     }
   }
+
+  // Persist the working draft whenever it changes (draft entries are
+  // $state proxies — this tracks deep mutations too).
+  $effect(() => {
+    const dkey = deviceDraftKey(device);
+    if (!dkey || draftLoadedFor !== dkey) return;
+    draftStore.set(dkey, draft.map((e) => ({ ...e, keyValues: { ...e.keyValues } })));
+  });
 
   function onFilter(key, value) {
     filters = { ...filters, [key]: value };
@@ -265,12 +305,16 @@
   }
 
   // A preview is stale when the draft signature, datastore, device
-  // configuration revision or collector no longer match what was
-  // evaluated — activation from an obsolete preview is impossible.
+  // configuration revision, evidence fingerprint or collector no
+  // longer match what was evaluated — activation from an obsolete
+  // preview is impossible. Changed/expired evidence invalidates preview
+  // ELIGIBILITY only; the draft itself is preserved.
   const previewStale = $derived(
     !!preview && (
       preview._signature !== draftSignature() ||
       preview._datastore !== (datastore || null) ||
+      (preview._evidence_fp !== undefined &&
+        preview._evidence_fp !== (snapshot?.evidence_fingerprint ?? null)) ||
       (preview.config_revision != null && device?.updated_at_ns != null &&
         preview.config_revision !== device.updated_at_ns)
     )
@@ -315,6 +359,7 @@
       preview = payload;
       preview._signature = signature;
       preview._datastore = datastore || null;
+      preview._evidence_fp = applicability?.snapshot?.evidence_fingerprint ?? null;
     } catch (e) {
       if (gen === previewGen) {
         preview = null;
@@ -326,24 +371,40 @@
   }
 
   // ── Diff: approved/current selection vs proposed ─────────────────────
+  // M6E-A5: subscription IDENTITY (exact path + origin) is separated
+  // from PARAMETERS (mode, interval). A mode or interval change on the
+  // same path is reported as a parameter change — never as a
+  // remove+add — and the backend manifest identity is untouched.
   function diffProposed() {
     if (!preview?.evaluation?.proposed_subscriptions) {
       return { added: [], removed: [], changed: [] };
     }
     const current = Array.isArray(device?.selected_paths) ? device.selected_paths : [];
-    const keyOf = (p) => selectionKey({
-      path: p.path, origin: p.origin || '', mode: p.mode || 'SAMPLE',
-      sample_interval_ns: Number(p.sample_interval_ns || 0)
+    const identityOf = (p) => (p.path || '') + '|' + (p.origin || '');
+    const paramsOf = (p) => ({
+      mode: p.mode || 'SAMPLE',
+      interval: Number(p.sample_interval_ns || 0)
     });
     const proposed = preview.evaluation.proposed_subscriptions;
-    const curKeys = new Map(current.map((p) => [keyOf(p), p]));
-    const propKeys = new Map(proposed.map((p) => [keyOf(p), p]));
-    const added = proposed.filter((p) => !curKeys.has(keyOf(p)));
-    const removed = current.filter((p) => !propKeys.has(keyOf(p)));
-    const changed = proposed.filter((p) => {
-      const c = curKeys.get(keyOf(p));
-      return c && Number(c.sample_interval_ns || 0) !== Number(p.sample_interval_ns || 0);
-    });
+    const curById = new Map(current.map((p) => [identityOf(p), p]));
+    const propById = new Map(proposed.map((p) => [identityOf(p), p]));
+    const added = proposed.filter((p) => !curById.has(identityOf(p)));
+    const removed = current.filter((p) => !propById.has(identityOf(p)));
+    const changed = [];
+    for (const p of proposed) {
+      const c = curById.get(identityOf(p));
+      if (!c) continue;
+      const cp = paramsOf(c);
+      const pp = paramsOf(p);
+      const diffs = [];
+      if (cp.mode !== pp.mode) diffs.push(`mode ${cp.mode}→${pp.mode}`);
+      if (cp.interval !== pp.interval) {
+        diffs.push(`interval ${formatInterval(cp.interval)}→${formatInterval(pp.interval)}`);
+      }
+      if (diffs.length > 0) {
+        changed.push({ path: p.path, origin: p.origin || '', changes: diffs.join(', ') });
+      }
+    }
     return { added, removed, changed };
   }
 
@@ -428,8 +489,8 @@
         revokeMessage = payload.error || payload.message || ('Revocation failed (HTTP ' + r.status + ')');
         return;
       }
-      revokeMessage = 'Schema-bound approval revoked. The device no longer has an active ' +
-        'schema-bound acquisition authority; it does not restore a previous plan.';
+      revokeMessage = 'Schema-bound approval revoked — acquisition is disabled and the ' +
+        'previous plan is NOT restored. Re-preview and re-activate to approve a new plan.';
       confirmRevoke = false;
       revokeReason = '';
       if (onchanged) onchanged();
@@ -441,23 +502,87 @@
     }
   }
 
+  // M6E: poll remote discovery job status until terminal, then reload
+  // the authoritative snapshot. Bounded attempts — the durable job
+  // deadline is the outer bound.
+  async function pollDiscoveryJob(jobId) {
+    if (jobPollTimer) clearTimeout(jobPollTimer);
+    let attempts = 0;
+    const tick = async () => {
+      attempts++;
+      try {
+        const r = await fetch(
+          '/api/devices/' + encodeURIComponent(address) + '/yang-discovery/jobs'
+        );
+        if (r.ok) {
+          const payload = await r.json().catch(() => ({}));
+          const jobs = payload.jobs || [];
+          const job = jobs.find((j) => j.job_id === jobId) || jobs[0] || null;
+          if (job && address === device?.address) {
+            remoteJob = job;
+            if (['completed', 'unsupported', 'denied', 'timed_out', 'failed',
+                 'cancelled', 'stale_authority', 'superseded'].includes(job.state)) {
+              refreshBusy = false;
+              if (job.state === 'completed') {
+                refreshMessage = 'Remote discovery completed via collector ' +
+                  (job.collector_id || '—') + ' — snapshot #' + (job.snapshot_id ?? '—') + '.';
+                invalidatePreview();
+                if (onchanged) onchanged();
+                await loadApplicability(address, filters, pathOffset);
+              } else {
+                refreshMessage = 'Remote discovery finished: ' + job.state +
+                  (job.reason_code ? ' (' + job.reason_code + ')' : '') +
+                  (job.result_classification ? ' — ' + job.result_classification : '');
+              }
+              return;
+            }
+          }
+        }
+      } catch { /* transient — keep polling */ }
+      if (attempts < 90) { // ~3 min at 2s intervals
+        jobPollTimer = setTimeout(tick, 2000);
+      } else {
+        refreshBusy = false;
+        refreshMessage = 'Remote discovery job still pending — check job status later.';
+      }
+    };
+    jobPollTimer = setTimeout(tick, 500);
+  }
+
   async function runRefresh() {
     if (refreshBusy || !address) return;
+    // M6E-A6: refreshing an active schema-bound device can invalidate
+    // its approval — require explicit confirmation first.
+    if (binding && !confirmRefresh) {
+      confirmRefresh = true;
+      return;
+    }
+    confirmRefresh = false;
     refreshBusy = true;
     refreshMessage = '';
     notice = '';
+    remoteJob = null;
     try {
       const r = await fetch(
         '/api/devices/' + encodeURIComponent(address) + '/yang-applicability/refresh',
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({})
+          body: JSON.stringify({ executor, datastore: datastore || null })
         }
       );
       const payload = await r.json().catch(() => ({}));
       if (r.status === 403) {
         refreshMessage = 'Forbidden: applicability refresh requires an admin role.';
+        return;
+      }
+      if (r.status === 202) {
+        // Remote discovery accepted — poll the durable job.
+        refreshMessage = 'Remote discovery queued on collector ' +
+          (payload.collector_id || '—') + ' (job ' + (payload.job_id || '').slice(0, 8) + '…)';
+        remoteJob = { job_id: payload.job_id, state: payload.state || 'queued',
+                      collector_id: payload.collector_id, reason_code: null };
+        pollDiscoveryJob(payload.job_id);
         return;
       }
       if (!r.ok) {
@@ -578,6 +703,15 @@
         {#if me && !isAdmin}
           <span class="muted" data-testid="role-note">Signed in as {me.role} — refresh/activate/revoke require admin.</span>
         {/if}
+        {#if device?.collector_id}
+          <label class="muted" data-testid="executor-select">Discovery
+            <select bind:value={executor} aria-label="Discovery executor">
+              <option value="auto">auto</option>
+              <option value="core_direct">core direct</option>
+              <option value="assigned_collector">assigned collector</option>
+            </select>
+          </label>
+        {/if}
         <button
           class="ghost"
           disabled={refreshBusy}
@@ -587,6 +721,31 @@
         >{refreshBusy ? 'Refreshing…' : 'Refresh discovery'}</button>
       </div>
     </div>
+    {#if confirmRefresh}
+      <div class="notice warn confirm" data-testid="refresh-confirm">
+        <p>
+          <strong>Refresh discovery on a schema-bound device?</strong><br/>
+          New evidence may not match the approved binding — the active
+          schema-bound approval can be REVOKED and acquisition disabled.
+          The previous plan is not restored; re-preview and re-activate
+          to approve again.
+        </p>
+        <div class="head-actions">
+          <button class="primary" disabled={refreshBusy} onclick={runRefresh} data-testid="confirm-refresh">Refresh anyway</button>
+          <button class="ghost" onclick={() => { confirmRefresh = false; }} data-testid="cancel-refresh">Cancel</button>
+        </div>
+      </div>
+    {/if}
+    {#if remoteJob}
+      <div class="notice info" data-testid="remote-job" role="status">
+        Remote discovery job <span class="mono-sm">{remoteJob.job_id?.slice(0, 8)}…</span> —
+        <strong>{remoteJob.state}</strong>
+        {#if remoteJob.collector_id}via collector {remoteJob.collector_id}{/if}
+        {#if remoteJob.reason_code}· {remoteJob.reason_code}{/if}
+        {#if remoteJob.result_classification}· {remoteJob.result_classification}{/if}
+        {#if remoteJob.snapshot_id}· snapshot #{remoteJob.snapshot_id}{/if}
+      </div>
+    {/if}
     {#if refreshMessage}
       <div class="notice {refreshMessage.startsWith('Forbidden') ? 'error' : ''}" data-testid="refresh-message" role="status">{refreshMessage}</div>
     {/if}
@@ -597,8 +756,8 @@
     {:else if !snapshot}
       <p class="muted" data-testid="no-discovery">
         No applicability discovery has run for this device. An admin can run
-        “Refresh discovery” to collect capabilities and YANG Library evidence.
-        Remote-only collectors may require a different discovery path.
+        “Refresh discovery” — Core-direct, or via the assigned authenticated
+        collector when the device is only reachable remotely.
       </p>
     {:else}
       <div class="evidence-grid">
@@ -610,6 +769,13 @@
         <div><span class="muted">Datastore</span><strong>{snapshot.datastore || '—'}</strong></div>
         <div><span class="muted">Content-ID</span><strong title={snapshot.content_id || ''}>{snapshot.content_id || '—'}</strong></div>
         <div><span class="muted">Outcome</span><strong>{snapshot.outcome}</strong></div>
+        <div><span class="muted">Executor</span><strong data-testid="evidence-executor">{snapshot.provenance?.executor || 'legacy unknown'}</strong></div>
+        {#if snapshot.provenance?.observing_collector_id}
+          <div><span class="muted">Observed by</span><strong>{snapshot.provenance.observing_collector_id}</strong></div>
+        {/if}
+        {#if snapshot.provenance?.discovery_job_id}
+          <div><span class="muted">Job</span><strong class="mono-sm" title={snapshot.provenance.discovery_job_id}>{snapshot.provenance.discovery_job_id.slice(0, 8)}…</strong></div>
+        {/if}
         <div><span class="muted">Catalogue</span><strong>{snapshot.catalogue_state ? snapshot.catalogue_state.replace(/_/g, ' ') : 'verified complete'}</strong></div>
       </div>
       {#if snapshot.freshness !== 'fresh' || (snapshot.freshness_reasons || []).length > 0}
@@ -826,15 +992,15 @@
                 <td>
                   {#if templateKeys(entry.template).length > 0}
                     <div class="key-inputs">
-                      {#each templateKeys(entry.template) as k}
-                        <label class="key-field">
-                          <span class="muted">{k.key}</span>
+                      {#each templateKeys(entry.template) as k (keyId(k.segmentIndex, k.key))}
+                        <label class="key-field" title={k.segment}>
+                          <span class="muted">{k.key}{templateKeys(entry.template).filter((o) => o.key === k.key).length > 1 ? ' §' + (k.segmentIndex + 1) : ''}</span>
                           <input
-                            value={entry.keyValues[k.key] || ''}
+                            value={entry.keyValues[keyId(k.segmentIndex, k.key)] || ''}
                             placeholder={k.key}
-                            aria-label="List key {k.key} for {entry.template}"
+                            aria-label="List key {k.key} (segment {k.segmentIndex + 1}) for {entry.template}"
                             oninput={(e) => {
-                              entry.keyValues = { ...entry.keyValues, [k.key]: e.currentTarget.value };
+                              entry.keyValues = { ...entry.keyValues, [keyId(k.segmentIndex, k.key)]: e.currentTarget.value };
                               updateEntry(entry, { keyValues: entry.keyValues });
                             }}
                             data-testid="draft-key"
@@ -922,13 +1088,13 @@
         <h5>Current → proposed</h5>
         <p class="muted">
           +{diff.added.length} added · −{diff.removed.length} removed ·
-          {diff.changed.length} interval-changed · {eval_?.proposed_subscriptions?.length ?? 0} proposed subscriptions
+          {diff.changed.length} modified · {eval_?.proposed_subscriptions?.length ?? 0} proposed subscriptions
         </p>
         {#if diff.added.length + diff.removed.length + diff.changed.length > 0}
           <ul class="diff-list">
             {#each diff.added as p}<li class="add">+ {p.path} <span class="muted">({p.mode}{p.sample_interval_ns ? ' ' + formatInterval(p.sample_interval_ns) : ''})</span></li>{/each}
             {#each diff.removed as p}<li class="del">− {p.path} <span class="muted">({p.mode}{p.sample_interval_ns ? ' ' + formatInterval(p.sample_interval_ns) : ''})</span></li>{/each}
-            {#each diff.changed as p}<li class="chg">~ {p.path} interval → {formatInterval(p.sample_interval_ns)}</li>{/each}
+            {#each diff.changed as p}<li class="chg">~ {p.path} {p.changes}</li>{/each}
           </ul>
         {/if}
       </div>
@@ -1176,5 +1342,5 @@
   button.ghost:disabled { opacity: 0.45; cursor: not-allowed; }
   button.ghost.sm { padding: 2px 8px; font-size: var(--text-xs); }
   button.ghost.danger:hover:not(:disabled) { color: var(--state-failed); border-color: var(--state-failed-border); }
-  select.cell-input, .filters select { min-width: 120px; }
+  .filters select { min-width: 120px; }
 </style>

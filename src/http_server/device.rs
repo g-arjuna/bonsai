@@ -206,6 +206,7 @@ use axum::{
     Json,
     extract::{Path, Query, State},
     http::StatusCode,
+    response::IntoResponse,
 };
 use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
@@ -1320,16 +1321,77 @@ pub(super) struct YangApplicabilityRefreshBody {
     /// Datastore to evaluate (e.g. "ietf-datastores:running" or
     /// "operational"); defaults to the unambiguous device default.
     datastore: Option<String>,
+    /// Discovery execution path (M6E):
+    /// - "auto" (default): use the assigned collector when it is
+    ///   connected and advertises the discovery contract; otherwise
+    ///   Core-direct. Documented deterministic policy — never a silent
+    ///   downgrade of an explicitly requested path.
+    /// - "core_direct": synchronous Core-executed discovery.
+    /// - "assigned_collector": asynchronous remote discovery via the
+    ///   assigned authenticated collector (HTTP 202 + job polling).
+    executor: Option<String>,
 }
 
-/// POST — bounded refresh: capabilities + RFC 8525 probe + resolve +
-/// persist. Uses existing credential resolution and transport security;
-/// never writes to the device and never touches acquisition intent.
+/// Async job view returned for remote discovery requests (202).
+#[derive(Serialize)]
+pub(super) struct YangDiscoveryJobAccepted {
+    job_id: String,
+    state: String,
+    device_key: String,
+    device_address: String,
+    collector_id: String,
+    datastore: Option<String>,
+    operation: String,
+    created_at_ns: i64,
+    deadline_ns: i64,
+    /// Poll `GET /api/devices/{address}/yang-discovery/jobs` for status;
+    /// the completed snapshot appears via the applicability endpoint.
+    status_url: String,
+}
+
+fn request_error_status(e: crate::yang_discovery::RequestError) -> (StatusCode, String) {
+    use crate::yang_discovery::RequestError::*;
+    match e {
+        NoCollector => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "device has no assigned collector for remote discovery".to_string(),
+        ),
+        CollectorUnsupported => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "assigned collector does not support remote yang discovery".to_string(),
+        ),
+        QueueFull(which) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("discovery queue full: {which}"),
+        ),
+        Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+    }
+}
+
+/// POST — bounded refresh. `executor` selects the discovery path:
+/// Core-direct stays synchronous; the assigned-collector path is
+/// asynchronous (202 + durable job). Uses existing credential
+/// resolution and transport security; never writes to the device and
+/// never touches acquisition intent.
 pub(super) async fn device_yang_applicability_refresh_handler(
     State(state): State<AppState>,
     Path(address): Path<String>,
     body: Option<Json<YangApplicabilityRefreshBody>>,
-) -> Result<Json<YangApplicabilityRefreshResponse>, (StatusCode, String)> {
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    let body = body.map(|b| b.0);
+    let executor = body
+        .as_ref()
+        .and_then(|b| b.executor.clone())
+        .unwrap_or_else(|| "auto".to_string());
+    if !matches!(
+        executor.as_str(),
+        "auto" | "core_direct" | "assigned_collector"
+    ) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("unknown discovery executor '{executor}'"),
+        ));
+    }
     let target = state
         .registry
         .get_device(&address)
@@ -1340,6 +1402,65 @@ pub(super) async fn device_yang_applicability_refresh_handler(
                 format!("device '{address}' not found"),
             )
         })?;
+    let datastore = body.and_then(|b| b.datastore);
+
+    // ── Remote (assigned-collector) path ─────────────────────────────
+    // Auto policy: remote only when the device is assigned to a
+    // collector whose ACTIVE session advertises the discovery contract.
+    // An explicit "assigned_collector" request never silently falls
+    // back to Core-direct — it queues (or fails) honestly.
+    let remote = match executor.as_str() {
+        "assigned_collector" => true,
+        "core_direct" => false,
+        _ => {
+            target.collector_id.is_some()
+                && state
+                    .collector_manager
+                    .as_ref()
+                    .and_then(|m| m.collector_discovery_support(target.collector_id.as_deref()?))
+                    .unwrap_or(false)
+        }
+    };
+    if remote {
+        let store = state.registry.sqlite_store().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "applicability store unavailable".to_string(),
+        ))?;
+        let manager = state.collector_manager.as_ref().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "collector manager unavailable".to_string(),
+        ))?;
+        let job = crate::yang_discovery::request_remote_discovery(
+            state.registry.as_ref(),
+            &store,
+            manager.as_ref(),
+            &target,
+            datastore,
+            "admin",
+        )
+        .map_err(request_error_status)?;
+        return Ok(axum::response::Response::builder()
+            .status(StatusCode::ACCEPTED)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_string(&YangDiscoveryJobAccepted {
+                    job_id: job.job_id.clone(),
+                    state: job.state.clone(),
+                    device_key: job.device_key.clone(),
+                    device_address: job.device_address.clone(),
+                    collector_id: job.collector_id.clone(),
+                    datastore: job.datastore.clone(),
+                    operation: job.operation.clone(),
+                    created_at_ns: job.created_at_ns,
+                    deadline_ns: job.deadline_ns,
+                    status_url: format!("/api/devices/{address}/yang-discovery/jobs"),
+                })
+                .unwrap_or_default(),
+            ))
+            .unwrap());
+    }
+
+    // ── Core-direct synchronous path ─────────────────────────────────
     let store = state.registry.sqlite_store().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "applicability store unavailable".to_string(),
@@ -1378,36 +1499,39 @@ pub(super) async fn device_yang_applicability_refresh_handler(
             library: &library,
             discovery_input: &discovery_input,
             identity_ambiguous,
-            requested_datastore: body.and_then(|b| b.0.datastore),
+            requested_datastore: datastore,
             store: &store,
         },
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // A persisted applicability snapshot supersedes the evidence an active
-    // schema-bound approval was derived from. Revoke fail-closed so the
-    // exact approved manifest cannot keep executing against stale or
-    // changed device evidence; re-approval requires a fresh preview.
-    let schema_binding_revoked = if target.schema_binding.is_some() {
-        let revoked = state
-            .registry
-            .revoke_schema_binding(
-                &target.address,
-                "system",
-                "applicability_evidence_superseded",
-                "yang_applicability_refresh",
-            )
-            .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
-        if let Some(updated) = revoked
-            && let Some(cid) = updated.collector_id.as_deref()
-            && let Some(manager) = state.collector_manager.as_ref()
-        {
-            manager.resync_collector(cid).await;
+    // A persisted applicability snapshot supersedes the evidence an
+    // active schema-bound approval was derived from — but ONLY an
+    // approval that is not itself derived from the new evidence. The
+    // check runs at the registry mutation boundary against the CURRENT
+    // binding (never the pre-refresh `target` snapshot): a newer approval
+    // committed while discovery was in flight is preserved, and the
+    // revocation is fingerprint-guarded against concurrent activation.
+    let invalidation = crate::schema_binding::revoke_binding_superseded_by_evidence(
+        state.registry.as_ref(),
+        &target.address,
+        snapshot.snapshot_id,
+        &snapshot.evidence_fingerprint,
+        "system",
+        "yang_applicability_refresh",
+    )
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    let schema_binding_revoked = match invalidation {
+        crate::schema_binding::EvidenceInvalidation::Revoked(updated) => {
+            if let Some(cid) = updated.collector_id.as_deref()
+                && let Some(manager) = state.collector_manager.as_ref()
+            {
+                manager.resync_collector(cid).await;
+            }
+            true
         }
-        true
-    } else {
-        false
+        _ => false,
     };
 
     Ok(Json(YangApplicabilityRefreshResponse {
@@ -1424,7 +1548,94 @@ pub(super) async fn device_yang_applicability_refresh_handler(
         evaluated_at_ns: snapshot.evaluated_at_ns,
         error: snapshot.error,
         schema_binding_revoked,
-    }))
+    })
+    .into_response())
+}
+
+/// Bounded discovery-job view for status polling (M6E). Read-only —
+/// Viewer-accessible like the applicability GET. Never exposes
+/// credentials, tokens or evidence payloads.
+#[derive(Serialize)]
+pub(super) struct YangDiscoveryJobView {
+    job_id: String,
+    state: String,
+    device_key: String,
+    device_address: String,
+    collector_id: String,
+    datastore: Option<String>,
+    operation: String,
+    authority_epoch: i64,
+    assignment_generation: i64,
+    collector_session_generation: Option<i64>,
+    created_at_ns: i64,
+    deadline_ns: i64,
+    dispatched_at_ns: Option<i64>,
+    finished_at_ns: Option<i64>,
+    attempt_count: i64,
+    result_classification: Option<String>,
+    reason_code: Option<String>,
+    snapshot_id: Option<i64>,
+    evidence_fingerprint: Option<String>,
+    created_by: Option<String>,
+}
+
+fn job_view(job: &crate::sqlite_store::YangDiscoveryJobRow) -> YangDiscoveryJobView {
+    YangDiscoveryJobView {
+        job_id: job.job_id.clone(),
+        state: job.state.clone(),
+        device_key: job.device_key.clone(),
+        device_address: job.device_address.clone(),
+        collector_id: job.collector_id.clone(),
+        datastore: job.datastore.clone(),
+        operation: job.operation.clone(),
+        authority_epoch: job.authority_epoch,
+        assignment_generation: job.assignment_generation,
+        collector_session_generation: job.collector_session_generation,
+        created_at_ns: job.created_at_ns,
+        deadline_ns: job.deadline_ns,
+        dispatched_at_ns: job.dispatched_at_ns,
+        finished_at_ns: job.finished_at_ns,
+        attempt_count: job.attempt_count,
+        result_classification: job.result_classification.clone(),
+        reason_code: job.reason_code.clone(),
+        snapshot_id: job.snapshot_id,
+        evidence_fingerprint: job.evidence_fingerprint.clone(),
+        created_by: job.created_by.clone(),
+    }
+}
+
+/// GET /api/devices/{address}/yang-discovery/jobs — bounded recent job
+/// history for one device (newest first). Status polling for async
+/// remote discovery; the completed snapshot is read via the
+/// applicability endpoint.
+pub(super) async fn device_yang_discovery_jobs_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    Query(params): Query<YangApplicabilityParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+    let store = state.registry.sqlite_store().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "applicability store unavailable".to_string(),
+    ))?;
+    let device_key = crate::registry::device_identity_key(&target);
+    let limit = params.limit.unwrap_or(16).min(64);
+    let jobs = store
+        .list_yang_discovery_jobs(&device_key, limit)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "device_key": device_key,
+        "jobs": jobs.iter().map(job_view).collect::<Vec<_>>(),
+    })))
 }
 
 // ── M6C-2 schema-bound acquisition authority ────────────────────────

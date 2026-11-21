@@ -478,6 +478,11 @@ message CollectorIdentity {
   string hostname         = 2;
   uint32 protocol_version = 3;
   string auth_token       = 4; // PSK token for registration (BONSAI_COLLECTOR_TOKEN)
+  // M6E explicit capability advertisement. Collectors that understand the
+  // remote YANG discovery contract advertise "yang_discovery_v1". Core
+  // never dispatches executable discovery jobs to sessions lacking both
+  // the contract protocol version AND this feature flag.
+  repeated string features = 5;
 }
 
 message DeviceAssignment {
@@ -567,6 +572,92 @@ message HeartbeatAck {
   string error = 1;
 }
 
+// ── M6E authenticated remote-collector YANG discovery ────────────────────────
+// Core remains the authority: it issues bounded jobs, the assigned
+// authenticated collector executes read-only gNMI evidence acquisition,
+// and Core independently validates collector/session/job/device binding
+// before resolving applicability. No gNMI Set, no subscription changes,
+// no device-configuration writes, no credentials in jobs or evidence.
+
+/// One Core-issued discovery job. `device_address`/`device_key` are the
+/// canonical registry identity — never a collector-supplied target.
+message YangDiscoveryJob {
+  string job_id            = 1;
+  string device_address    = 2;
+  string device_key        = 3;
+  /// Requested datastore identity (e.g. "ietf-datastores:operational");
+  /// empty = resolver default.
+  string datastore         = 4;
+  /// Discovery operation; currently only "yang_applicability".
+  string operation         = 5;
+  /// Authority context stamped at dispatch: the collector must echo it
+  /// back; Core revalidates against durable state — echoes are advisory.
+  uint64 authority_epoch              = 6;
+  uint64 assignment_generation        = 7;
+  uint64 collector_session_generation = 8;
+  int64  created_at_ns      = 9;
+  int64  deadline_ns        = 10;
+  uint32 protocol_version   = 11;
+}
+
+message PollYangDiscoveryJobsRequest {
+  string collector_id     = 1;
+  uint32 protocol_version = 2;
+}
+
+message PollYangDiscoveryJobsResponse {
+  repeated YangDiscoveryJob jobs = 1;
+  /// Job ids the collector must abandon (cancelled, expired, stale
+  /// authority, device reassigned/removed). Best-effort hint — Core
+  /// revalidates every submission regardless.
+  repeated string cancelled_job_ids = 2;
+  /// False when this collector session predates the discovery contract
+  /// or lacks the feature flag — it must never expect executable jobs.
+  bool discovery_supported = 3;
+}
+
+/// Job-level outcome when no usable evidence was produced. Mirrors the
+/// bounded failure taxonomy — never a fabricated success.
+/// "completed" | "timeout" | "permission_denied" | "unsupported" |
+/// "transport_failure" | "malformed" | "unsupported_encoding" |
+/// "cancelled" | "stale_authority"
+message YangDiscoveryResult {
+  string job_id         = 1;
+  /// Claimed collector identity — must equal the authenticated
+  /// principal's authorized collector binding and the job's assignee.
+  string collector_id   = 2;
+  /// Claimed device address — validated against the job row, never
+  /// trusted as authority.
+  string device_address = 3;
+  string outcome        = 4;
+  /// Bounded operator-visible detail; never contains secrets.
+  string outcome_detail = 5;
+  /// Bounded JSON serialization of `CapabilityEvidence` (serde). Empty
+  /// when the capabilities probe failed.
+  string capabilities_json = 6;
+  /// Bounded JSON serialization of `YangLibraryOutcome` (serde).
+  string yang_library_json = 7;
+  /// Evidence observation timestamp (device-side), ns.
+  int64  observed_at_ns = 8;
+  repeated string diagnostics = 9;
+  /// Authority echoes (advisory; Core validates against the job row).
+  uint64 authority_epoch              = 10;
+  uint64 assignment_generation        = 11;
+  uint64 collector_session_generation = 12;
+  uint32 protocol_version             = 13;
+}
+
+message YangDiscoveryResultAck {
+  bool   accepted = 1;
+  /// Machine-readable reason code when rejected ("" on accept).
+  string reason   = 2;
+  /// Persisted applicability snapshot id on successful admission.
+  int64  snapshot_id = 3;
+  /// True when the job was already completed with identical evidence —
+  /// idempotent duplicate delivery, not a new snapshot.
+  bool   duplicate = 4;
+}
+
 // ── CV7 T4-2: Sidecar registry ─────────────────────────────────────────────────
 // A "sidecar" is a Python (or future Rust/other) process bound to bonsai over
 // gRPC that owns a piece of detection/ML/AIOps work. The rules sidecar
@@ -621,6 +712,19 @@ service BonsaiGraph {
 
   // Unary: periodic heartbeat from collector to core.
   rpc Heartbeat(CollectorStats) returns (HeartbeatAck);
+
+  // M6E: collector-initiated bounded polling for authenticated remote
+  // YANG discovery jobs. Jobs are only delivered to sessions that
+  // negotiated the discovery contract; pre-contract collectors receive
+  // discovery_supported=false and no executable work.
+  rpc PollYangDiscoveryJobs(PollYangDiscoveryJobsRequest) returns (PollYangDiscoveryJobsResponse);
+
+  // M6E: authenticated submission of bounded discovery evidence. Core
+  // validates collector principal, job identity/state/deadline,
+  // collector/session/authority binding, device assignment and payload
+  // bounds before resolving applicability — the collector never
+  // approves plans or declares paths authoritative.
+  rpc SubmitYangDiscoveryResult(YangDiscoveryResult) returns (YangDiscoveryResultAck);
 
   // Execute a read-only Cypher query.
   rpc Query(QueryRequest) returns (QueryResponse);

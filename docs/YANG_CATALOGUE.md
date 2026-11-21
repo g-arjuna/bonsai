@@ -290,3 +290,66 @@ introduces no second planner or schema authority.
   submitted → synchronized → observed as separate stages from
   assignment/subscription-status data; approval alone never displays
   as observed telemetry.
+
+## Authenticated remote-collector discovery (M6E)
+
+When Core cannot reach a device directly, an Admin may request
+applicability refresh through the device's **assigned authenticated
+collector** (`executor=assigned_collector`, or `auto` when the
+collector's live session advertises the contract). The flow:
+
+1. `POST /api/devices/{address}/yang-applicability/refresh` validates
+   the device and queues a **durable, bounded** discovery job
+   (`yang_discovery_jobs`, schema v12) — returning `202 Accepted` with
+   a job id, never blocking on device I/O.
+2. The collector polls `PollYangDiscoveryJobs` on the existing
+   authenticated registration channel (sessions advertising
+   `yang_discovery_v1` at contract version ≥ 6). Jobs are dispatched
+   stamped with the current session generation; pre-contract sessions
+   receive `discovery_supported=false` and zero work.
+3. The collector executes **read-only** gNMI Capabilities + RFC 8525
+   YANG Library Get in an isolated bounded worker (never inside the
+   assignment/heartbeat loop), then submits bounded evidence through
+   `SubmitYangDiscoveryResult`.
+4. Core independently validates the transport-attested collector
+   principal, job identity/state/deadline, collector binding, session
+   generation, authority epoch, assignment generation, canonical
+   device identity, datastore, payload bounds and observation times —
+   then resolves applicability through the **same** M6C-1 resolver and
+   persists through the **same** snapshot path as Core-direct refresh.
+
+Trust boundary: the collector gathers evidence only. It cannot approve
+plans, declare authoritative paths, request arbitrary targets, or
+submit for another collector. Device credentials travel only through
+the existing secure assignment-delivery path — never inside job rows,
+evidence or logs.
+
+Job lifecycle states: `queued`, `dispatched`, `completed`,
+`unsupported`, `denied`, `timed_out`, `failed`, `cancelled`,
+`stale_authority`, `superseded`. Reassignment, deletion, reconnect,
+deadline expiry, replay and out-of-order completion are all fenced;
+restart reconciliation expires dead jobs and stale authority epochs.
+Per-collector/per-device/global queue bounds apply.
+
+**Evidence provenance (M6E-G):** snapshots record `provenance.executor`
+(`core_direct` | `authenticated_collector` | `legacy_unknown`),
+`observing_collector_id`, `discovery_job_id`,
+`collector_session_generation`, `authority_epoch` and
+`evidence_received_at_ns`. `collector_id` on a snapshot remains the
+device's *assigned* collector — assignment alone never proves who
+observed the device. Pre-M6E rows read as `legacy_unknown` and are
+never silently upgraded.
+
+**Authority invalidation (M6E-A1):** after any new snapshot persists,
+`revoke_binding_superseded_by_evidence` re-reads the CURRENT binding at
+the registry mutation boundary: an approval derived from the new
+evidence is kept (`Current`), an approval derived from newer evidence
+than the triggering snapshot is preserved (`NewerApproval` — stale
+completions cannot revoke newer approvals), an older incompatible
+approval is revoked through the fingerprint-guarded registry path, and
+a concurrent binding change yields `ConcurrentlyReplaced`.
+
+UI: the schema workspace exposes the executor selector, live job card
+(state/collector/reason/snapshot), bounded status polling and the
+resulting snapshot's provenance; refresh on a schema-bound device
+requires explicit confirmation because it can invalidate the approval.

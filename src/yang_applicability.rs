@@ -44,6 +44,37 @@ pub struct RefreshInput<'a> {
     pub store: &'a SqliteStore,
 }
 
+/// Who actually executed the device evidence acquisition (M6E-G).
+/// `collector_id` on a snapshot remains the device's ASSIGNED collector;
+/// these fields record the ACTUAL executor and its authenticated
+/// session — assignment alone never proves collector observation.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EvidenceProvenance {
+    /// "core_direct" | "authenticated_collector" | "legacy_unknown".
+    /// Pre-M6E rows read back as `legacy_unknown` — never silently
+    /// upgraded to collector-attested.
+    #[serde(default = "default_executor_legacy")]
+    pub executor: String,
+    /// Authenticated collector identity that performed discovery.
+    /// Set ONLY for `authenticated_collector` — derived from the
+    /// transport-attested principal, never a payload claim.
+    #[serde(default)]
+    pub observing_collector_id: Option<String>,
+    #[serde(default)]
+    pub discovery_job_id: Option<String>,
+    #[serde(default)]
+    pub collector_session_generation: Option<i64>,
+    #[serde(default)]
+    pub authority_epoch: Option<i64>,
+    /// Core receipt timestamp for collector-submitted evidence.
+    #[serde(default)]
+    pub evidence_received_at_ns: Option<i64>,
+}
+
+fn default_executor_legacy() -> String {
+    "legacy_unknown".to_string()
+}
+
 /// Persisted snapshot envelope (row metadata + typed payloads).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicabilitySnapshot {
@@ -70,6 +101,10 @@ pub struct ApplicabilitySnapshot {
     #[serde(default)]
     pub error: Option<String>,
     pub created_at_ns: i64,
+    /// M6E-G: who executed the acquisition. `legacy_unknown` for rows
+    /// predating the provenance contract.
+    #[serde(default)]
+    pub provenance: EvidenceProvenance,
 }
 
 /// Read-side freshness classification computed at request time — the
@@ -112,28 +147,8 @@ pub struct ApplicabilitySnapshotView {
 pub async fn refresh_device_applicability(
     input: &RefreshInput<'_>,
 ) -> Result<ApplicabilitySnapshot> {
-    let now_ns = crate::graph::common::now_ns();
-    let target = input.target;
-    let canonical = canonical_device_key(&target.address);
-    let device = DeviceBinding {
-        address: target.address.clone(),
-        canonical_address: canonical.clone(),
-        external_id: target.external_id.clone(),
-        collector_id: target.collector_id.clone(),
-        identity_ambiguous: input.identity_ambiguous,
-    };
-    let device_key = device.identity_key();
-
-    // ── Catalogue (verified, fail-closed) ─────────────────────────────
-    let catalogue_state = active_catalogue_state(input.library);
-    let catalogue_diagnostics = catalogue_state
-        .reason_code()
-        .map(|rc| vec![format!("active catalogue state: {}", rc.as_str())])
-        .unwrap_or_default();
-    let catalogue = catalogue_state.catalogue().cloned();
-
     // ── Capabilities evidence ─────────────────────────────────────────
-    let mut diagnostics = catalogue_diagnostics.clone();
+    let mut diagnostics = Vec::new();
     let capabilities = match discovery::discover_device(input.discovery_input.clone()).await {
         Ok(report) => {
             diagnostics.extend(report.warnings.iter().cloned());
@@ -150,10 +165,59 @@ pub async fn refresh_device_applicability(
     diagnostics.extend(probe.attempts.iter().cloned());
     let yang_library = probe.outcome;
 
-    // ── Resolve ───────────────────────────────────────────────────────
+    // ── Persist ───────────────────────────────────────────────────────
+    let provenance = EvidenceProvenance {
+        executor: "core_direct".to_string(),
+        ..Default::default()
+    };
+    persist_resolved_snapshot(
+        input,
+        capabilities,
+        Some(yang_library),
+        diagnostics,
+        provenance,
+    )
+    .await
+}
+
+/// Shared resolve+persist stage: given already-acquired evidence
+/// (Core-executed or collector-submitted), resolve effective
+/// applicability against the verified active catalogue and persist the
+/// snapshot. This is the ONLY persistence path — remote evidence goes
+/// through exactly the same resolver as direct evidence.
+pub async fn persist_resolved_snapshot(
+    input: &RefreshInput<'_>,
+    capabilities: Option<CapabilityEvidence>,
+    yang_library: Option<YangLibraryOutcome>,
+    diagnostics: Vec<String>,
+    provenance: EvidenceProvenance,
+) -> Result<ApplicabilitySnapshot> {
+    let now_ns = crate::graph::common::now_ns();
+    let target = input.target;
+    let canonical = canonical_device_key(&target.address);
+    let device = DeviceBinding {
+        address: target.address.clone(),
+        canonical_address: canonical.clone(),
+        external_id: target.external_id.clone(),
+        collector_id: target.collector_id.clone(),
+        identity_ambiguous: input.identity_ambiguous,
+    };
+    let device_key = device.identity_key();
+
+    // ── Catalogue (verified, fail-closed) ─────────────────────────────
+    let catalogue_state = active_catalogue_state(input.library);
+    let mut diagnostics = diagnostics;
+    diagnostics.extend(
+        catalogue_state
+            .reason_code()
+            .map(|rc| vec![format!("active catalogue state: {}", rc.as_str())])
+            .unwrap_or_default(),
+    );
+    let catalogue = catalogue_state.catalogue().cloned();
+
     let catalogue_ref = catalogue.as_ref();
     let capabilities_ref = capabilities.as_ref();
-    let yang_library_ref = Some(&yang_library);
+    let yang_library_ref = yang_library.as_ref();
     let result = applicability::resolve_applicability(&applicability::ApplicabilityInput {
         catalogue: catalogue_ref,
         catalogue_diagnostics: diagnostics.clone(),
@@ -165,7 +229,6 @@ pub async fn refresh_device_applicability(
         now_ns,
     });
 
-    // ── Persist ───────────────────────────────────────────────────────
     let observed_at_ns = result.evidence_observed_at_ns;
     let snapshot = ApplicabilitySnapshot {
         snapshot_id: 0,
@@ -184,7 +247,8 @@ pub async fn refresh_device_applicability(
         created_at_ns: now_ns,
         result,
         capabilities,
-        yang_library: Some(yang_library),
+        yang_library,
+        provenance,
     };
 
     let row = snapshot_to_row(&snapshot, snapshot_id_placeholder())?;
@@ -237,6 +301,12 @@ pub fn snapshot_to_row(
         evaluated_at_ns: snap.evaluated_at_ns,
         error: snap.error.clone(),
         created_at_ns: snap.created_at_ns,
+        executor: Some(snap.provenance.executor.clone()),
+        observing_collector_id: snap.provenance.observing_collector_id.clone(),
+        discovery_job_id: snap.provenance.discovery_job_id.clone(),
+        collector_session_generation: snap.provenance.collector_session_generation,
+        authority_epoch: snap.provenance.authority_epoch,
+        evidence_received_at_ns: snap.provenance.evidence_received_at_ns,
     })
 }
 
@@ -275,6 +345,14 @@ pub fn snapshot_from_row(row: &YangApplicabilitySnapshotRow) -> Result<Applicabi
         evaluated_at_ns: row.evaluated_at_ns,
         error: row.error.clone(),
         created_at_ns: row.created_at_ns,
+        provenance: EvidenceProvenance {
+            executor: row.executor.clone().unwrap_or_else(default_executor_legacy),
+            observing_collector_id: row.observing_collector_id.clone(),
+            discovery_job_id: row.discovery_job_id.clone(),
+            collector_session_generation: row.collector_session_generation,
+            authority_epoch: row.authority_epoch,
+            evidence_received_at_ns: row.evidence_received_at_ns,
+        },
     })
 }
 
@@ -370,6 +448,14 @@ pub fn load_snapshot_view(
                 evaluated_at_ns: row.evaluated_at_ns,
                 error: Some(format!("{e:#}")),
                 created_at_ns: row.created_at_ns,
+                provenance: EvidenceProvenance {
+                    executor: row.executor.clone().unwrap_or_else(default_executor_legacy),
+                    observing_collector_id: row.observing_collector_id.clone(),
+                    discovery_job_id: row.discovery_job_id.clone(),
+                    collector_session_generation: row.collector_session_generation,
+                    authority_epoch: row.authority_epoch,
+                    evidence_received_at_ns: row.evidence_received_at_ns,
+                },
             };
             let state = active_catalogue_state(library);
             let active_schema_id = state.schema_id().map(str::to_string);

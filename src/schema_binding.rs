@@ -288,6 +288,86 @@ pub fn revoke_bindings_for_schema_change(
     Ok(revoked)
 }
 
+/// Outcome of evidence-supersession invalidation after a new
+/// applicability snapshot is persisted (M6E-A1).
+#[derive(Debug)]
+pub enum EvidenceInvalidation {
+    /// The device carries no schema-bound approval.
+    NotBound,
+    /// The current approval is already derived from this exact evidence —
+    /// it remains valid and is never revoked by this evidence.
+    Current,
+    /// An older/incompatible approval was revoked at the mutation
+    /// boundary. Carries the updated device target for collector resync.
+    Revoked(TargetConfig),
+    /// The binding was approved against NEWER persisted evidence than the
+    /// snapshot that triggered this invalidation (an out-of-order or
+    /// superseded refresh completed late). The newer authority stands.
+    NewerApproval,
+    /// The binding changed between the evidence check and the guarded
+    /// revocation (concurrent activation/revocation won). The newer
+    /// authority stands; nothing was revoked by this call.
+    ConcurrentlyReplaced,
+}
+
+/// Invalidate a schema-bound approval whose approved evidence is NOT the
+/// newly persisted snapshot's evidence. This is the authoritative
+/// mutation boundary for refresh-driven invalidation: the CURRENT
+/// binding is re-read here (never the pre-refresh snapshot), the
+/// approval is kept when it is already derived from the new evidence,
+/// and the revocation itself is fingerprint-guarded so a newer approval
+/// committed concurrently can never be clobbered.
+///
+/// Deterministic outcomes:
+/// - approval A (older evidence) + refresh completes → A revoked;
+/// - approval B created after the refresh began and derived from the new
+///   evidence → B kept (`Current`);
+/// - approval derived from NEWER persisted evidence than the triggering
+///   snapshot (a stale refresh completing late) → kept (`NewerApproval`);
+/// - approval based on older evidence committed while no binding existed
+///   at refresh start → revoked (`Revoked`);
+/// - concurrent binding mutation between check and revoke →
+///   `ConcurrentlyReplaced`, the newer authority stands.
+pub fn revoke_binding_superseded_by_evidence(
+    registry: &ApiRegistry,
+    address: &str,
+    new_snapshot_id: i64,
+    evidence_fingerprint: &str,
+    actor: &str,
+    action: &str,
+) -> Result<EvidenceInvalidation> {
+    let Some(target) = registry.get_device(address)? else {
+        return Ok(EvidenceInvalidation::NotBound);
+    };
+    let Some(binding) = target.schema_binding.clone() else {
+        return Ok(EvidenceInvalidation::NotBound);
+    };
+    if binding.mode != "schema_bound" {
+        return Ok(EvidenceInvalidation::NotBound);
+    }
+    // The approval is derived from exactly this evidence — it is the
+    // authority the new snapshot confirms, not supersedes.
+    if binding.evidence_fingerprint == evidence_fingerprint {
+        return Ok(EvidenceInvalidation::Current);
+    }
+    // The approval was derived from NEWER persisted evidence than the
+    // snapshot that triggered this invalidation — a stale refresh or a
+    // superseded discovery job completing late must never revoke it.
+    if binding.snapshot_id > new_snapshot_id {
+        return Ok(EvidenceInvalidation::NewerApproval);
+    }
+    match registry.revoke_schema_binding_if_current(
+        address,
+        actor,
+        "applicability_evidence_superseded",
+        action,
+        &binding.binding_fingerprint,
+    )? {
+        Some(updated) => Ok(EvidenceInvalidation::Revoked(updated)),
+        None => Ok(EvidenceInvalidation::ConcurrentlyReplaced),
+    }
+}
+
 /// Convenience for handlers that only need the durable record state.
 pub fn binding_record_state(record: Option<&SchemaBindingRecord>) -> &'static str {
     match record {
@@ -567,6 +647,12 @@ mod tests {
             evaluated_at_ns: NOW,
             error: None,
             created_at_ns: NOW,
+            executor: Some("core_direct".to_string()),
+            observing_collector_id: None,
+            discovery_job_id: None,
+            collector_session_generation: None,
+            authority_epoch: None,
+            evidence_received_at_ns: None,
         }
     }
 

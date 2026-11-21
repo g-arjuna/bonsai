@@ -35,6 +35,10 @@ struct CollectorSession {
     /// NOT authentication — an unauthenticated dev-compat session gets
     /// rejected assignments instead of device credentials.
     credential_delivery: bool,
+    /// Explicit capability flags advertised in CollectorIdentity
+    /// (M6E). Remote YANG discovery requires BOTH the contract protocol
+    /// version AND the `yang_discovery_v1` feature — never inferred.
+    features: Vec<String>,
     /// Held only for channel liveness: dropping the session (on
     /// unregister/supersede) closes the receiver and ends the stream.
     #[allow(dead_code)]
@@ -356,6 +360,26 @@ impl CollectorManager {
         .is_some()
     }
 
+    /// Whether a stamped (epoch, assignment_generation) pair still
+    /// describes assignment authority a collector could hold for remote
+    /// YANG discovery (M6E). Unlike `validate_session_authority` this
+    /// does NOT require live ACQUISITION authority — discovery is
+    /// pre-plan evidence gathering and must work for devices whose
+    /// acquisition is Disabled or Explicit-empty. It still fences
+    /// superseded authority epochs and forged/future assignment
+    /// generations; device→collector assignment currency is enforced
+    /// separately against the registry at admission time.
+    pub fn validate_discovery_assignment(
+        &self,
+        collector_id: &str,
+        authority_epoch: u64,
+        assignment_generation: u64,
+    ) -> bool {
+        authority_epoch == self.authority_epoch
+            && assignment_generation > 0
+            && assignment_generation <= self.latest_assignment_generation(collector_id)
+    }
+
     /// Core-issued authority-instance ordinal for the device's CURRENT
     /// authority window (M5.2B execution fencing). `None` when the
     /// (epoch, generation) stamp does not validate — callers must treat
@@ -490,6 +514,25 @@ impl CollectorManager {
         protocol_version: u32,
         credential_delivery: bool,
     ) -> Result<(mpsc::Receiver<AssignmentUpdate>, u64)> {
+        self.register_collector_with_features(
+            collector_id,
+            protocol_version,
+            credential_delivery,
+            &[],
+        )
+        .await
+    }
+
+    /// Register a collector session with its advertised capability
+    /// features (M6E). Pre-contract collectors register with an empty
+    /// feature set and are never dispatched discovery jobs.
+    pub async fn register_collector_with_features(
+        &self,
+        collector_id: String,
+        protocol_version: u32,
+        credential_delivery: bool,
+        features: &[String],
+    ) -> Result<(mpsc::Receiver<AssignmentUpdate>, u64)> {
         // G6: Emit metric for collector connection
         metrics::gauge!("bonsai_collector_connected_total").increment(1);
 
@@ -530,6 +573,7 @@ impl CollectorManager {
                     generation,
                     protocol_version,
                     credential_delivery,
+                    features: features.to_vec(),
                     tx: tx.clone(),
                 },
             );
@@ -1134,6 +1178,21 @@ impl CollectorManager {
     /// Whether the named collector session can enforce this target's
     /// acquisition intent. Unknown/offline collectors return true — the
     /// delivery-time filter in `build_assignments` is the enforcement point.
+    /// Whether the collector's ACTIVE session may execute remote YANG
+    /// discovery jobs (M6E): contract protocol version AND the explicit
+    /// `yang_discovery_v1` feature flag. `None` when no session exists —
+    /// an offline collector's capability is unknown, not denied.
+    pub fn collector_discovery_support(&self, collector_id: &str) -> Option<bool> {
+        let collectors = self.active_collectors.lock().unwrap();
+        collectors.get(collector_id).map(|session| {
+            session.protocol_version >= crate::yang_discovery::YANG_DISCOVERY_CONTRACT_VERSION
+                && session
+                    .features
+                    .iter()
+                    .any(|f| f == crate::yang_discovery::YANG_DISCOVERY_FEATURE)
+        })
+    }
+
     pub fn collector_supports_acquisition(
         &self,
         collector_id: &str,

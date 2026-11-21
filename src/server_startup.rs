@@ -1039,6 +1039,21 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         None
     };
 
+    // M6E restart reconciliation: durable discovery jobs stamped under a
+    // superseded authority epoch or past their deadline are closed
+    // deterministically — a Core restart never revives stale authority.
+    if let Some(ref manager) = collector_manager
+        && let Some(store) = registry.sqlite_store()
+    {
+        match bonsai::yang_discovery::reconcile_jobs_on_boot(store.as_ref(), manager.as_ref()) {
+            Ok((expired, stale)) if expired + stale > 0 => {
+                info!(expired, stale, "reconciled discovery jobs on boot");
+            }
+            Ok(_) => {}
+            Err(e) => warn!(%e, "discovery job boot reconciliation failed"),
+        }
+    }
+
     if credentials.is_unlocked()? {
         info!(
             path = %cfg.credentials.path,
@@ -1542,6 +1557,11 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
             info!(%api_addr, ingest_compression = "zstd", mtls = false, "gRPC API and telemetry ingest server listening");
         }
 
+        // Hoist the YANG catalogue roots out of `cfg` — the gRPC spawn
+        // and the HTTP spawn below each need their own owned copies.
+        let yang_library_root = cfg.yang.library_root.clone();
+        let yang_cache_root = cfg.yang.cache_root.clone();
+        let yang_bundle_key_env = cfg.yang.bundle_key_env.clone();
         tokio::spawn(async move {
             match store_for_api {
                 Store::Core(s) => {
@@ -1561,9 +1581,20 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                         .with_auth_policy(auth_policy)
                         .with_dev_open_credential_assignments(dev_open_cred_assignments)
                         .with_session_registry(std::sync::Arc::clone(&session_registry))
-                        .with_subscription_plan_tx(subscription_plan_tx_for_api),
+                        .with_subscription_plan_tx(subscription_plan_tx_for_api)
+                        .with_yang_library_roots(
+                            yang_library_root,
+                            yang_cache_root,
+                            yang_bundle_key_env,
+                        ),
                     )
-                    .accept_compressed(CompressionEncoding::Zstd);
+                    .accept_compressed(CompressionEncoding::Zstd)
+                    // M6E: a maximum-size discovery result carries two
+                    // bounded evidence payloads — above tonic's default
+                    // 4 MiB decode limit. Admission bounds still apply.
+                    .max_decoding_message_size(
+                        bonsai::sqlite_store::YANG_DISCOVERY_MAX_RESULT_MESSAGE_BYTES,
+                    );
                     if let Err(error) = server.add_service(svc).serve(api_addr).await {
                         warn!(%error, "gRPC core server error");
                     }

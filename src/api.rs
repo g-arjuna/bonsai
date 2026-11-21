@@ -24,7 +24,11 @@ use crate::store::BonsaiStore;
 use crate::telemetry_identity::VerifiedIngressPrincipal;
 use crate::write_coordinator::{PriorityWriteRequest, WriteCoordinator};
 
-pub const PROTOCOL_VERSION_CURRENT: u32 = 5;
+/// M6E bumped the wire contract for authenticated remote-collector YANG
+/// discovery (PollYangDiscoveryJobs / SubmitYangDiscoveryResult). v5
+/// collectors remain MinorSkew-compatible for all pre-existing RPCs but
+/// are never dispatched executable discovery jobs.
+pub const PROTOCOL_VERSION_CURRENT: u32 = 6;
 pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_CURRENT;
 
 /// Minimum collector protocol version that understands the acquisition
@@ -132,6 +136,10 @@ pub struct BonsaiService<S: BonsaiStore> {
     /// the lifecycle boundary (M6C-2). Production uses the system clock;
     /// tests inject a controllable source.
     schema_binding_clock: crate::schema_binding::SchemaBindingClock,
+    /// (library_root, cache_root, bundle_key_env) for Core-side YANG
+    /// Library resolution of collector-submitted discovery evidence
+    /// (M6E). `None` disables remote admission — jobs finish failed.
+    yang_roots: Option<(String, String, String)>,
 }
 
 impl<S: BonsaiStore> BonsaiService<S> {
@@ -169,7 +177,21 @@ impl<S: BonsaiStore> BonsaiService<S> {
             ),
             subscription_plan_tx: None,
             schema_binding_clock: crate::schema_binding::SchemaBindingClock::system(),
+            yang_roots: None,
         }
+    }
+
+    /// Wire the YANG library roots used to resolve collector-submitted
+    /// discovery evidence into applicability snapshots (M6E). Only the
+    /// Core service needs this; the collector never resolves schemas.
+    pub fn with_yang_library_roots(
+        mut self,
+        library_root: String,
+        cache_root: String,
+        bundle_key_env: String,
+    ) -> Self {
+        self.yang_roots = Some((library_root, cache_root, bundle_key_env));
+        self
     }
 
     /// Wire the subscription verifier's plan channel so authenticated
@@ -1223,7 +1245,12 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                 && self.dev_open_credential_assignments);
 
         let (mut rx, generation) = manager
-            .register_collector(collector_id.clone(), collector_version, credential_delivery)
+            .register_collector_with_features(
+                collector_id.clone(),
+                collector_version,
+                credential_delivery,
+                &identity.features,
+            )
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -1338,6 +1365,134 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         Ok(Response::new(pb::HeartbeatAck {
             error: String::new(),
         }))
+    }
+
+    /// M6E: bounded collector-initiated poll for remote YANG discovery
+    /// jobs. Requires a transport-attested, credential-bound collector
+    /// principal — a shared PSK or payload claim never authorizes
+    /// credential-bearing remote discovery. Sessions that predate the
+    /// discovery contract get `discovery_supported=false` and no work.
+    async fn poll_yang_discovery_jobs(
+        &self,
+        req: Request<pb::PollYangDiscoveryJobsRequest>,
+    ) -> Result<Response<pb::PollYangDiscoveryJobsResponse>, Status> {
+        let principal = self.require_principal(&req)?.ok_or_else(|| {
+            Status::permission_denied(
+                "remote yang discovery requires an authenticated collector principal",
+            )
+        })?;
+        let req_inner = req.into_inner();
+        let grant = self
+            .collector_authz
+            .authorize_collector(&principal, &req_inner.collector_id)?;
+        let manager = self
+            .collector_manager
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("collector manager not enabled"))?;
+        let store = self
+            .sqlite_store
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("durable store not enabled"))?;
+        let outcome = tokio::task::spawn_blocking({
+            let manager = Arc::clone(manager);
+            let store = Arc::clone(store);
+            let registry = Arc::clone(&self.registry);
+            let collector_id = grant.collector_id().to_string();
+            move || {
+                crate::yang_discovery::poll_discovery_jobs(
+                    store.as_ref(),
+                    registry.as_ref(),
+                    manager.as_ref(),
+                    &collector_id,
+                    crate::graph::common::now_ns(),
+                )
+            }
+        })
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?
+        .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(pb::PollYangDiscoveryJobsResponse {
+            jobs: outcome.jobs,
+            cancelled_job_ids: outcome.cancelled_job_ids,
+            discovery_supported: outcome.discovery_supported,
+        }))
+    }
+
+    /// M6E: authenticated submission of bounded discovery evidence. Core
+    /// independently validates the collector principal, job identity,
+    /// session/authority/assignment fencing, device binding, payload
+    /// bounds and observation times before resolving applicability —
+    /// the collector never approves plans or declares paths authoritative.
+    async fn submit_yang_discovery_result(
+        &self,
+        req: Request<pb::YangDiscoveryResult>,
+    ) -> Result<Response<pb::YangDiscoveryResultAck>, Status> {
+        let principal = self.require_principal(&req)?.ok_or_else(|| {
+            Status::permission_denied(
+                "remote yang discovery requires an authenticated collector principal",
+            )
+        })?;
+        let result = req.into_inner();
+        // Authorize against the CLAIMED collector id first — the grant
+        // then pins the authenticated identity used for every binding
+        // check below. A valid certificate for collector A cannot submit
+        // for collector B.
+        let grant = self
+            .collector_authz
+            .authorize_collector(&principal, &result.collector_id)?;
+        let manager = self
+            .collector_manager
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("collector manager not enabled"))?;
+        let store = self
+            .sqlite_store
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("durable store not enabled"))?;
+        let registry = Arc::clone(&self.registry);
+        let manager = Arc::clone(manager);
+        let store = Arc::clone(store);
+        let yang_roots = self.yang_roots.clone();
+        let collector_id = grant.collector_id().to_string();
+        let admitted = crate::yang_discovery::admit_discovery_result(
+            store.as_ref(),
+            registry.as_ref(),
+            manager.as_ref(),
+            yang_roots.as_ref(),
+            &collector_id,
+            &result,
+            crate::graph::common::now_ns(),
+        )
+        .await
+        .map_err(|e| Status::internal(format!("{e:#}")))?;
+        let ack = match admitted {
+            crate::yang_discovery::AdmitResult::Accepted {
+                snapshot_id,
+                duplicate,
+            } => pb::YangDiscoveryResultAck {
+                accepted: true,
+                reason: String::new(),
+                snapshot_id,
+                duplicate,
+            },
+            crate::yang_discovery::AdmitResult::Finished {
+                state: _,
+                classification,
+            } => pb::YangDiscoveryResultAck {
+                accepted: true,
+                reason: classification,
+                snapshot_id: 0,
+                duplicate: false,
+            },
+            crate::yang_discovery::AdmitResult::Rejected { reason, .. } => {
+                pb::YangDiscoveryResultAck {
+                    accepted: false,
+                    reason,
+                    snapshot_id: 0,
+                    duplicate: false,
+                }
+            }
+        };
+        Ok(Response::new(ack))
     }
 
     async fn query(&self, req: Request<QueryRequest>) -> Result<Response<QueryResponse>, Status> {
