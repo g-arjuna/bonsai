@@ -195,6 +195,11 @@ struct MockGnmi {
     get_responses: Arc<Mutex<Vec<GetResponse>>>,
     subscribe_calls: Arc<AtomicUsize>,
     set_calls: Arc<AtomicUsize>,
+    get_calls: Arc<AtomicUsize>,
+    /// When set, Get blocks until `get_release` fires — used to prove
+    /// discovery-worker cancellation against a deliberately hung read.
+    get_block: Arc<AtomicUsize>,
+    get_release: Arc<tokio::sync::Notify>,
 }
 
 #[tonic::async_trait]
@@ -207,6 +212,10 @@ impl GNmi for MockGnmi {
     }
 
     async fn get(&self, _request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
+        self.get_calls.fetch_add(1, Ordering::SeqCst);
+        if self.get_block.load(Ordering::SeqCst) > 0 {
+            self.get_release.notified().await;
+        }
         let mut responses = self.get_responses.lock().await;
         if responses.is_empty() {
             return Ok(Response::new(GetResponse::default()));
@@ -245,6 +254,9 @@ struct DeviceLab {
     addr: String,
     subscribe_calls: Arc<AtomicUsize>,
     set_calls: Arc<AtomicUsize>,
+    get_calls: Arc<AtomicUsize>,
+    get_block: Arc<AtomicUsize>,
+    get_release: Arc<tokio::sync::Notify>,
     _shutdown: watch::Sender<bool>,
     _handle: tokio::task::JoinHandle<()>,
 }
@@ -303,6 +315,9 @@ async fn start_device() -> DeviceLab {
     )]));
     let subscribe_calls = Arc::new(AtomicUsize::new(0));
     let set_calls = Arc::new(AtomicUsize::new(0));
+    let get_calls = Arc::new(AtomicUsize::new(0));
+    let get_block = Arc::new(AtomicUsize::new(0));
+    let get_release = Arc::new(tokio::sync::Notify::new());
     let svc = MockGnmi {
         caps: CapabilityResponse {
             supported_models: vec![
@@ -324,6 +339,9 @@ async fn start_device() -> DeviceLab {
         get_responses,
         subscribe_calls: Arc::clone(&subscribe_calls),
         set_calls: Arc::clone(&set_calls),
+        get_calls: Arc::clone(&get_calls),
+        get_block: Arc::clone(&get_block),
+        get_release: Arc::clone(&get_release),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -344,6 +362,9 @@ async fn start_device() -> DeviceLab {
         addr,
         subscribe_calls,
         set_calls,
+        get_calls,
+        get_block,
+        get_release,
         _shutdown: shutdown_tx,
         _handle: handle,
     }
@@ -963,7 +984,19 @@ async fn t5_stale_session_result_rejected_and_redispatched() {
         .expect("submit stale")
         .into_inner();
     assert!(!ack.accepted);
-    assert_eq!(ack.reason, "stale_session");
+    // M6E hardening: stamp verification runs before session-currency
+    // checks, so a stale result is rejected at the first mismatched
+    // authority stamp (reassignment bumped the assignment generation).
+    assert!(
+        [
+            "assignment_generation_mismatch",
+            "session_generation_mismatch",
+            "stale_session",
+        ]
+        .contains(&ack.reason.as_str()),
+        "unexpected rejection reason: {}",
+        ack.reason
+    );
     let job = fx
         .lab
         .sqlite
@@ -1146,6 +1179,7 @@ async fn t9_out_of_order_completion_cannot_supersede() {
     let now = bonsai::graph::common::now_ns();
     let epoch = fx.lab.manager.authority_epoch() as i64;
     let assignment_gen = fx.lab.manager.latest_assignment_generation("col-a") as i64;
+    let device_revision = target.updated_at_ns;
     let mk = |n: i64| YangDiscoveryJobRow {
         id: 0,
         job_id: format!("job-{n}"),
@@ -1171,6 +1205,8 @@ async fn t9_out_of_order_completion_cannot_supersede() {
         diagnostics_json: None,
         created_by: Some("test".to_string()),
         updated_at_ns: now,
+        device_revision,
+        admission_claim: None,
     };
     fx.lab.sqlite.create_yang_discovery_job(&mk(1)).unwrap();
     fx.lab.sqlite.create_yang_discovery_job(&mk(2)).unwrap();
@@ -1185,7 +1221,14 @@ async fn t9_out_of_order_completion_cannot_supersede() {
         assert!(
             fx.lab
                 .sqlite
-                .mark_yang_discovery_job_dispatched(jid, live_gen, now)
+                .mark_yang_discovery_job_dispatched(
+                    jid,
+                    live_gen,
+                    epoch,
+                    assignment_gen,
+                    device_revision,
+                    now
+                )
                 .unwrap()
         );
     }
@@ -1812,4 +1855,1189 @@ async fn t16_evidence_invalidation_preserves_newer_approval() {
         .unwrap(),
         schema_binding::EvidenceInvalidation::NotBound
     ));
+}
+
+// ── M6E hardening: A1 assignment-path discovery fencing ─────────────────────
+
+use bonsai::api::managed_device_from_target;
+use bonsai::api::pb::DeviceAssignment;
+use bonsai::ingest::handle_fenced_assignment_update;
+use bonsai::subscriber::SubscriberHandleMap;
+
+struct FenceRig {
+    bus: Arc<InProcessBus>,
+    subscribers: SubscriberHandleMap,
+    targets: Arc<std::sync::Mutex<std::collections::HashMap<String, TargetConfig>>>,
+    last_epoch: u64,
+    last_gen: u64,
+}
+
+impl FenceRig {
+    fn new() -> Self {
+        Self {
+            bus: InProcessBus::new(64),
+            subscribers: SubscriberHandleMap::new(),
+            targets: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            last_epoch: 0,
+            last_gen: 0,
+        }
+    }
+
+    /// Returns true only when the fence ACCEPTED the update — derived
+    /// from authority-state advancement, since the public wrapper's
+    /// bool reports lease renewal (accepted full syncs only). An
+    /// accepted update always advances (epoch, generation); a rejected
+    /// one leaves both untouched.
+    async fn apply(&mut self, update: AssignmentUpdate) -> bool {
+        let before = (self.last_epoch, self.last_gen);
+        handle_fenced_assignment_update(
+            update,
+            &self.bus,
+            &None,
+            &mut self.subscribers,
+            &mut self.last_epoch,
+            &mut self.last_gen,
+            &None,
+            &self.targets,
+        )
+        .await;
+        (self.last_epoch, self.last_gen) != before
+    }
+
+    fn target_addrs(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.targets.lock().unwrap().keys().cloned().collect();
+        v.sort();
+        v
+    }
+}
+
+fn fence_assignment(
+    target: &TargetConfig,
+    username: &str,
+    password: &str,
+    rejected: bool,
+) -> DeviceAssignment {
+    DeviceAssignment {
+        device: Some(managed_device_from_target(target)),
+        username: username.to_string(),
+        password: password.to_string(),
+        rejected,
+        reject_reason: if rejected {
+            "denied".to_string()
+        } else {
+            String::new()
+        },
+    }
+}
+
+fn fence_update(
+    epoch: u64,
+    generation: u64,
+    full_sync: bool,
+    assignments: Vec<DeviceAssignment>,
+) -> AssignmentUpdate {
+    AssignmentUpdate {
+        assignments,
+        is_full_sync: full_sync,
+        generation,
+        authority_epoch: epoch,
+        collector_session_generation: 0,
+    }
+}
+
+fn fence_target(addr: &str) -> TargetConfig {
+    TargetConfig {
+        address: addr.to_string(),
+        enabled: true,
+        security: Some(GnmiSecurityMode::Plaintext),
+        collector_id: Some("col-a".to_string()),
+        ..Default::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_assignment_cannot_update_discovery_targets() {
+    let mut rig = FenceRig::new();
+    let dev_a = fence_target("192.0.2.1:443");
+    let dev_b = fence_target("192.0.2.2:443");
+    // Accepted full sync epoch=5 gen=1 establishes authority + target A.
+    assert!(
+        rig.apply(fence_update(
+            5,
+            1,
+            true,
+            vec![fence_assignment(&dev_a, "u1", "p1", false)]
+        ))
+        .await
+    );
+    assert_eq!(rig.target_addrs(), vec!["192.0.2.1:443".to_string()]);
+    // Stale epoch full sync attempting to add B and clear A: rejected —
+    // discovery targets must be untouched.
+    assert!(
+        !rig.apply(fence_update(
+            4,
+            99,
+            true,
+            vec![fence_assignment(&dev_b, "u2", "p2", false)]
+        ))
+        .await
+    );
+    assert_eq!(rig.target_addrs(), vec!["192.0.2.1:443".to_string()]);
+    // Stale same-epoch generation: rejected as well.
+    assert!(
+        !rig.apply(fence_update(
+            5,
+            1,
+            false,
+            vec![fence_assignment(&dev_b, "u2", "p2", false)]
+        ))
+        .await
+    );
+    assert_eq!(rig.target_addrs(), vec!["192.0.2.1:443".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn older_epoch_cannot_restore_discovery_credentials() {
+    let mut rig = FenceRig::new();
+    let dev = fence_target("192.0.2.10:443");
+    assert!(
+        rig.apply(fence_update(
+            7,
+            1,
+            true,
+            vec![fence_assignment(&dev, "new-user", "new-pass", false)]
+        ))
+        .await
+    );
+    // A delayed previous-epoch update tries to restore OLD credentials.
+    assert!(
+        !rig.apply(fence_update(
+            6,
+            50,
+            true,
+            vec![fence_assignment(&dev, "old-user", "old-pass", false)]
+        ))
+        .await
+    );
+    let map = rig.targets.lock().unwrap();
+    let t = map.get("192.0.2.10:443").expect("target retained");
+    assert_eq!(t.username.as_deref(), Some("new-user"));
+    assert_eq!(t.password.as_deref(), Some("new-pass"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_assignment_removes_discovery_target() {
+    let mut rig = FenceRig::new();
+    let dev = fence_target("192.0.2.20:443");
+    assert!(
+        rig.apply(fence_update(
+            3,
+            1,
+            true,
+            vec![fence_assignment(&dev, "u", "p", false)]
+        ))
+        .await
+    );
+    assert_eq!(rig.target_addrs().len(), 1);
+    // Core rejects the assignment in a NEWER accepted update — the
+    // discovery credential must be withdrawn, not retained.
+    assert!(
+        rig.apply(fence_update(
+            3,
+            2,
+            false,
+            vec![fence_assignment(&dev, "", "", true)]
+        ))
+        .await
+    );
+    assert!(rig.target_addrs().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accepted_full_sync_replaces_discovery_targets() {
+    let mut rig = FenceRig::new();
+    let dev_a = fence_target("192.0.2.30:443");
+    let dev_b = fence_target("192.0.2.31:443");
+    assert!(
+        rig.apply(fence_update(
+            2,
+            1,
+            true,
+            vec![fence_assignment(&dev_a, "u", "p", false)]
+        ))
+        .await
+    );
+    assert!(
+        rig.apply(fence_update(
+            2,
+            2,
+            true,
+            vec![fence_assignment(&dev_b, "u", "p", false)]
+        ))
+        .await
+    );
+    // Full sync replaces the whole view: A is gone, only B remains.
+    assert_eq!(rig.target_addrs(), vec!["192.0.2.31:443".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_incremental_update_preserves_current_assignment() {
+    let mut rig = FenceRig::new();
+    let dev = fence_target("192.0.2.40:443");
+    assert!(
+        rig.apply(fence_update(
+            9,
+            1,
+            true,
+            vec![fence_assignment(&dev, "v1", "p1", false)]
+        ))
+        .await
+    );
+    // Accepted incremental rotates credentials.
+    assert!(
+        rig.apply(fence_update(
+            9,
+            2,
+            false,
+            vec![fence_assignment(&dev, "v2", "p2", false)]
+        ))
+        .await
+    );
+    // Replay of the older generation must not roll credentials back.
+    assert!(
+        !rig.apply(fence_update(
+            9,
+            1,
+            false,
+            vec![fence_assignment(&dev, "v1", "p1", false)]
+        ))
+        .await
+    );
+    let map = rig.targets.lock().unwrap();
+    let t = map.get("192.0.2.40:443").expect("target retained");
+    assert_eq!(t.password.as_deref(), Some("p2"));
+}
+
+// ── M6E hardening: A2 result authority stamps ────────────────────────────────
+
+async fn dispatched_job(fx: &mut Fixture) -> PbJob {
+    fx.queue_job(None);
+    fx.poll_job().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wrong_epoch_stamp_cannot_submit() {
+    let mut fx = start_fixture().await;
+    let pb_job = dispatched_job(&mut fx).await;
+    let target = fx
+        .lab
+        .registry
+        .get_device(&fx.device_addr)
+        .unwrap()
+        .unwrap();
+    let submission = yang_discovery::execute_discovery_job(&target, None, pb_job.deadline_ns).await;
+    let mut result = yang_discovery::submission_to_result(
+        &pb_job,
+        "col-a",
+        submission,
+        PROTOCOL_VERSION_CURRENT,
+    );
+    result.authority_epoch = pb_job.authority_epoch.wrapping_add(1);
+    let ack = fx
+        .client
+        .clone()
+        .submit_yang_discovery_result(Request::new(result))
+        .await
+        .expect("submit")
+        .into_inner();
+    assert!(!ack.accepted);
+    assert_eq!(ack.reason, "authority_epoch_mismatch");
+    let job = fx
+        .lab
+        .sqlite
+        .get_yang_discovery_job(&pb_job.job_id)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(job.state.as_str(), "queued" | "dispatched"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wrong_assignment_generation_cannot_submit() {
+    let mut fx = start_fixture().await;
+    let pb_job = dispatched_job(&mut fx).await;
+    let target = fx
+        .lab
+        .registry
+        .get_device(&fx.device_addr)
+        .unwrap()
+        .unwrap();
+    let submission = yang_discovery::execute_discovery_job(&target, None, pb_job.deadline_ns).await;
+    let mut result = yang_discovery::submission_to_result(
+        &pb_job,
+        "col-a",
+        submission,
+        PROTOCOL_VERSION_CURRENT,
+    );
+    result.assignment_generation = pb_job.assignment_generation + 1;
+    let ack = fx
+        .client
+        .clone()
+        .submit_yang_discovery_result(Request::new(result))
+        .await
+        .expect("submit")
+        .into_inner();
+    assert!(!ack.accepted);
+    assert_eq!(ack.reason, "assignment_generation_mismatch");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zero_and_foreign_session_stamps_cannot_submit() {
+    let mut fx = start_fixture().await;
+    let pb_job = dispatched_job(&mut fx).await;
+    let target = fx
+        .lab
+        .registry
+        .get_device(&fx.device_addr)
+        .unwrap()
+        .unwrap();
+    let submission = yang_discovery::execute_discovery_job(&target, None, pb_job.deadline_ns).await;
+    let base = yang_discovery::submission_to_result(
+        &pb_job,
+        "col-a",
+        submission,
+        PROTOCOL_VERSION_CURRENT,
+    );
+    for (label, session_gen, want_reason) in [
+        ("zero", 0u64, "missing_session_generation"),
+        (
+            "foreign",
+            pb_job.collector_session_generation + 7,
+            "session_generation_mismatch",
+        ),
+    ] {
+        let mut result = base.clone();
+        result.collector_session_generation = session_gen;
+        let ack = fx
+            .client
+            .clone()
+            .submit_yang_discovery_result(Request::new(result))
+            .await
+            .expect("submit")
+            .into_inner();
+        assert!(!ack.accepted, "{label} session stamp accepted");
+        assert_eq!(ack.reason, want_reason, "{label}");
+    }
+    // The correctly-stamped result is still accepted afterwards.
+    let ack = fx
+        .client
+        .clone()
+        .submit_yang_discovery_result(Request::new(base))
+        .await
+        .expect("submit")
+        .into_inner();
+    assert!(ack.accepted, "valid result must still pass: {}", ack.reason);
+}
+
+// ── M6E hardening: A4 authenticate before duplicate acknowledgement ──────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_job_never_acks_snapshot_to_other_collector() {
+    let mut fx = start_fixture().await;
+    let pb_job = dispatched_job(&mut fx).await;
+    // The completed job's accepted payload, reused for replay probes.
+    let target = fx
+        .lab
+        .registry
+        .get_device(&fx.device_addr)
+        .unwrap()
+        .unwrap();
+    let submission = yang_discovery::execute_discovery_job(&target, None, pb_job.deadline_ns).await;
+    let accepted_result = yang_discovery::submission_to_result(
+        &pb_job,
+        "col-a",
+        submission,
+        PROTOCOL_VERSION_CURRENT,
+    );
+    let ack1 = fx
+        .client
+        .clone()
+        .submit_yang_discovery_result(Request::new(accepted_result.clone()))
+        .await
+        .expect("submit")
+        .into_inner();
+    assert!(ack1.accepted && !ack1.duplicate);
+
+    // col-b is legitimately bound+registered but is NOT the assignee.
+    let leaf_b = issue_leaf(&fx.pki, "col-b");
+    bind_collector(&fx.lab.sqlite, "col-b", &leaf_b.fingerprint);
+    let mut client_b = connect_client(&fx.pki, &leaf_b, fx.lab.addr).await;
+    let _b_stream = client_b
+        .clone()
+        .register_collector(Request::new(CollectorIdentity {
+            collector_id: "col-b".to_string(),
+            hostname: "collector-b".to_string(),
+            protocol_version: PROTOCOL_VERSION_CURRENT,
+            auth_token: String::new(),
+            features: vec![yang_discovery::YANG_DISCOVERY_FEATURE.to_string()],
+        }))
+        .await
+        .expect("register col-b")
+        .into_inner();
+
+    // Byte-identical payload (claims col-a) → transport authorization
+    // denies before admission.
+    let err = client_b
+        .clone()
+        .submit_yang_discovery_result(Request::new(accepted_result.clone()))
+        .await
+        .expect_err("col-b cert cannot claim col-a");
+    assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+    // Same job + same evidence but collector_id="col-b": reaches
+    // admission, must be rejected BEFORE the duplicate ack path —
+    // snapshot_id must never be disclosed.
+    let mut forged = accepted_result.clone();
+    forged.collector_id = "col-b".to_string();
+    let ack = client_b
+        .submit_yang_discovery_result(Request::new(forged))
+        .await
+        .expect("submit as col-b")
+        .into_inner();
+    assert!(!ack.accepted);
+    assert_eq!(ack.reason, "wrong_collector");
+    assert_eq!(ack.snapshot_id, 0, "snapshot id must not leak");
+
+    // Legitimate idempotent retry by the assignee: byte-identical
+    // resubmission returns the SAME accepted snapshot as a duplicate.
+    let ack = fx
+        .client
+        .clone()
+        .submit_yang_discovery_result(Request::new(accepted_result))
+        .await
+        .expect("resubmit")
+        .into_inner();
+    assert!(ack.accepted && ack.duplicate);
+    assert_eq!(ack.snapshot_id, ack1.snapshot_id);
+}
+
+// ── M6E hardening: A6 offline-queue → register → dispatch → accept ──────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offline_queued_job_dispatches_after_collector_registers() {
+    let pki = make_pki();
+    let device = start_device().await;
+    let device_addr = device.addr.clone();
+    let target = device_target(&device_addr, "col-a");
+    let lab = start_core_lab(&pki, target.clone()).await;
+    lab.registry
+        .add_device_with_audit(target, "test", "test_add")
+        .unwrap();
+    lab.registry
+        .assign_device_with_audit(
+            &device_addr,
+            Some("col-a".to_string()),
+            "test",
+            "test_assign",
+        )
+        .unwrap();
+    let collector_leaf = issue_leaf(&pki, "col-a");
+    bind_collector(&lab.sqlite, "col-a", &collector_leaf.fingerprint);
+
+    // Admin queues discovery while the collector has NEVER registered —
+    // assignment generation is 0 at queue time and must not be treated
+    // as permanent authority failure.
+    let target = lab.registry.get_device(&device_addr).unwrap().unwrap();
+    let job = yang_discovery::request_remote_discovery(
+        &lab.registry,
+        &lab.sqlite,
+        &lab.manager,
+        &target,
+        None,
+        "test-admin",
+    )
+    .expect("queue while collector offline");
+    assert_eq!(job.assignment_generation, 0);
+
+    // Collector registers now: full sync establishes generation ≥1.
+    let mut client = connect_client(&pki, &collector_leaf, lab.addr).await;
+    let resp = client
+        .clone()
+        .register_collector(Request::new(CollectorIdentity {
+            collector_id: "col-a".to_string(),
+            hostname: "collector-a".to_string(),
+            protocol_version: PROTOCOL_VERSION_CURRENT,
+            auth_token: String::new(),
+            features: vec![yang_discovery::YANG_DISCOVERY_FEATURE.to_string()],
+        }))
+        .await
+        .expect("register");
+    let _assign_rx = resp.into_inner();
+
+    let poll = client
+        .clone()
+        .poll_yang_discovery_jobs(Request::new(PollYangDiscoveryJobsRequest {
+            collector_id: "col-a".to_string(),
+            protocol_version: PROTOCOL_VERSION_CURRENT,
+        }))
+        .await
+        .expect("poll")
+        .into_inner();
+    assert!(poll.discovery_supported);
+    assert_eq!(poll.jobs.len(), 1, "queued job must dispatch");
+    let pb_job = poll.jobs.into_iter().next().unwrap();
+    assert_eq!(pb_job.job_id, job.job_id);
+    assert!(
+        pb_job.assignment_generation > 0,
+        "dispatch restamps generation"
+    );
+    assert!(pb_job.authority_epoch > 0);
+
+    // Execute + submit through the real admission path.
+    let target = lab.registry.get_device(&device_addr).unwrap().unwrap();
+    let submission = yang_discovery::execute_discovery_job(&target, None, pb_job.deadline_ns).await;
+    assert_eq!(submission.outcome, "completed");
+    let result = yang_discovery::submission_to_result(
+        &pb_job,
+        "col-a",
+        submission,
+        PROTOCOL_VERSION_CURRENT,
+    );
+    let ack = client
+        .submit_yang_discovery_result(Request::new(result))
+        .await
+        .expect("submit")
+        .into_inner();
+    assert!(
+        ack.accepted,
+        "offline-queued job must complete: {}",
+        ack.reason
+    );
+    assert!(ack.snapshot_id > 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn device_config_revision_fences_stale_evidence() {
+    let mut fx = start_fixture().await;
+    let pb_job = dispatched_job(&mut fx).await;
+
+    // Any device mutation bumps updated_at_ns — here a credential
+    // update simulating rotated connection settings.
+    let mut target = fx
+        .lab
+        .registry
+        .get_device(&fx.device_addr)
+        .unwrap()
+        .unwrap();
+    target.password = Some("rotated-secret".to_string());
+    fx.lab
+        .registry
+        .update_device_with_audit(target, "test", "test_rotate")
+        .unwrap();
+
+    let target = fx
+        .lab
+        .registry
+        .get_device(&fx.device_addr)
+        .unwrap()
+        .unwrap();
+    let submission = yang_discovery::execute_discovery_job(&target, None, pb_job.deadline_ns).await;
+    let result = yang_discovery::submission_to_result(
+        &pb_job,
+        "col-a",
+        submission,
+        PROTOCOL_VERSION_CURRENT,
+    );
+    let ack = fx
+        .client
+        .clone()
+        .submit_yang_discovery_result(Request::new(result))
+        .await
+        .expect("submit")
+        .into_inner();
+    assert!(!ack.accepted);
+    assert_eq!(ack.reason, "device_config_changed");
+    let job = fx
+        .lab
+        .sqlite
+        .get_yang_discovery_job(&pb_job.job_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, "stale_authority");
+    assert!(
+        fx.lab
+            .sqlite
+            .latest_yang_applicability_snapshot(&job.device_key)
+            .unwrap()
+            .is_none()
+    );
+}
+
+// ── M6E hardening: A7 evidence bounds ────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn result_observed_at_must_be_within_skew_window() {
+    let mut fx = start_fixture().await;
+    for (label, observed) in [
+        ("zero", 0i64),
+        (
+            "ancient",
+            bonsai::graph::common::now_ns() - 30 * 24 * 3600 * 1_000_000_000,
+        ),
+        (
+            "future",
+            bonsai::graph::common::now_ns() + 3600 * 1_000_000_000_000,
+        ),
+    ] {
+        let row = fx.queue_job(None);
+        let pb = {
+            let p = fx.poll_job().await;
+            assert_eq!(p.job_id, row.job_id);
+            p
+        };
+        let result = YangDiscoveryResult {
+            job_id: pb.job_id.clone(),
+            collector_id: "col-a".to_string(),
+            device_address: pb.device_address.clone(),
+            outcome: "completed".to_string(),
+            outcome_detail: String::new(),
+            capabilities_json: String::new(),
+            yang_library_json: "{}".to_string(),
+            observed_at_ns: observed,
+            diagnostics: vec![],
+            authority_epoch: pb.authority_epoch,
+            assignment_generation: pb.assignment_generation,
+            collector_session_generation: pb.collector_session_generation,
+            protocol_version: PROTOCOL_VERSION_CURRENT,
+        };
+        let ack = fx
+            .client
+            .clone()
+            .submit_yang_discovery_result(Request::new(result))
+            .await
+            .expect("submit")
+            .into_inner();
+        assert!(!ack.accepted, "{label} observed_at accepted");
+        let job = fx
+            .lab
+            .sqlite
+            .get_yang_discovery_job(&pb.job_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.state, "failed", "{label}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_diagnostics_and_details_are_bounded() {
+    let mut fx = start_fixture().await;
+    let pb_job = dispatched_job(&mut fx).await;
+    let huge_diag = "d".repeat(5000);
+    let result = YangDiscoveryResult {
+        job_id: pb_job.job_id.clone(),
+        collector_id: "col-a".to_string(),
+        device_address: pb_job.device_address.clone(),
+        outcome: "transport_failure".to_string(),
+        outcome_detail: "x".repeat(100_000),
+        capabilities_json: String::new(),
+        yang_library_json: String::new(),
+        observed_at_ns: bonsai::graph::common::now_ns(),
+        diagnostics: vec![huge_diag.clone(); 500],
+        authority_epoch: pb_job.authority_epoch,
+        assignment_generation: pb_job.assignment_generation,
+        collector_session_generation: pb_job.collector_session_generation,
+        protocol_version: PROTOCOL_VERSION_CURRENT,
+    };
+    let ack = fx
+        .client
+        .clone()
+        .submit_yang_discovery_result(Request::new(result))
+        .await
+        .expect("submit")
+        .into_inner();
+    assert!(ack.accepted);
+    let job = fx
+        .lab
+        .sqlite
+        .get_yang_discovery_job(&pb_job.job_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, "failed");
+    // Stored classification + diagnostics are bounded — never the raw
+    // 100KB detail or 500×5KB entries.
+    let classification = job.result_classification.unwrap_or_default();
+    assert!(
+        classification.len() < 4096,
+        "classification unbounded: {}",
+        classification.len()
+    );
+    let diags = job.diagnostics_json.unwrap_or_default();
+    assert!(diags.len() < 1024 * 1024);
+    let parsed: Vec<String> = serde_json::from_str(&diags).unwrap_or_default();
+    assert!(parsed.len() <= bonsai::sqlite_store::YANG_DISCOVERY_MAX_DIAGNOSTICS as usize);
+    for d in &parsed {
+        assert!(d.chars().count() <= 512);
+    }
+}
+
+// ── M6E hardening: A3 single-winner admission ────────────────────────────────
+
+fn roots_for(fx: &Fixture) -> (String, String, String) {
+    let yang_dir = fx.lab._dir.path().join("yanglib");
+    (
+        yang_dir.join("lib").to_string_lossy().into_owned(),
+        yang_dir.join("cache").to_string_lossy().into_owned(),
+        "K".to_string(),
+    )
+}
+
+fn snapshot_count(fx: &Fixture, device_key: &str) -> usize {
+    fx.lab
+        .sqlite
+        .list_yang_applicability_snapshots(device_key, 64)
+        .unwrap()
+        .len()
+}
+
+async fn admit_direct(fx: &Fixture, result: &YangDiscoveryResult) -> yang_discovery::AdmitResult {
+    let roots = roots_for(fx);
+    yang_discovery::admit_discovery_result(
+        &fx.lab.sqlite,
+        &fx.lab.registry,
+        &fx.lab.manager,
+        Some(&roots),
+        "col-a",
+        result,
+        bonsai::graph::common::now_ns(),
+    )
+    .await
+    .expect("admit")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_identical_results_create_one_snapshot() {
+    let mut fx = start_fixture().await;
+    let pb_job = dispatched_job(&mut fx).await;
+    let target = fx
+        .lab
+        .registry
+        .get_device(&fx.device_addr)
+        .unwrap()
+        .unwrap();
+    let submission = yang_discovery::execute_discovery_job(&target, None, pb_job.deadline_ns).await;
+    let result = yang_discovery::submission_to_result(
+        &pb_job,
+        "col-a",
+        submission,
+        PROTOCOL_VERSION_CURRENT,
+    );
+    let device_key = pb_job.device_key.clone();
+
+    // Two truly concurrent admissions of the SAME payload.
+    let (a, b) = tokio::join!(admit_direct(&fx, &result), admit_direct(&fx, &result));
+    let accepted = [&a, &b]
+        .iter()
+        .filter(|o| {
+            matches!(
+                o,
+                yang_discovery::AdmitResult::Accepted {
+                    duplicate: false,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(accepted, 1, "exactly one winner: {a:?} {b:?}");
+    // The loser must never persist a second snapshot: it either
+    // replays as a duplicate of the winner or reports the in-flight
+    // claim / conflict explicitly. (Exactly one Accepted{duplicate:
+    // false} — the winner — was asserted above.)
+    for o in [&a, &b] {
+        match o {
+            yang_discovery::AdmitResult::Accepted { .. } => {}
+            yang_discovery::AdmitResult::Rejected { reason, .. } => {
+                assert!(
+                    reason == "admission_in_progress" || reason == "conflicting_duplicate",
+                    "unexpected loser outcome: {o:?}"
+                );
+            }
+            other => panic!("unexpected loser outcome: {other:?}"),
+        }
+    }
+    // Sequential replay AFTER the race resolves: identical evidence
+    // must return the winner's accepted result as a duplicate.
+    let replay = admit_direct(&fx, &result).await;
+    match replay {
+        yang_discovery::AdmitResult::Accepted {
+            duplicate,
+            snapshot_id,
+        } => {
+            assert!(duplicate);
+            assert!(snapshot_id > 0);
+        }
+        other => panic!("post-race replay must be accepted duplicate: {other:?}"),
+    }
+    assert_eq!(
+        snapshot_count(&fx, &device_key),
+        1,
+        "exactly one authoritative snapshot"
+    );
+    let job = fx
+        .lab
+        .sqlite
+        .get_yang_discovery_job(&pb_job.job_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, "completed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_conflicting_results_have_one_winner() {
+    let mut fx = start_fixture().await;
+    let pb_job = dispatched_job(&mut fx).await;
+    // Two DIFFERENT valid evidence payloads race for the same job.
+    // The mock seeds one YANG-library response, so the second payload
+    // reuses the first evidence with a whitespace variant of the
+    // library JSON — semantically identical, byte-distinct digest.
+    let target = fx
+        .lab
+        .registry
+        .get_device(&fx.device_addr)
+        .unwrap()
+        .unwrap();
+    let sub_a = yang_discovery::execute_discovery_job(&target, None, pb_job.deadline_ns).await;
+    let result_a =
+        yang_discovery::submission_to_result(&pb_job, "col-a", sub_a, PROTOCOL_VERSION_CURRENT);
+    let mut result_b = result_a.clone();
+    result_b.yang_library_json = format!("  {}", result_a.yang_library_json);
+    let device_key = pb_job.device_key.clone();
+    let (a, b) = tokio::join!(admit_direct(&fx, &result_a), admit_direct(&fx, &result_b));
+    let outcomes = [&a, &b];
+    let wins = outcomes
+        .iter()
+        .filter(|o| {
+            matches!(
+                o,
+                yang_discovery::AdmitResult::Accepted {
+                    duplicate: false,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(wins, 1, "exactly one winner: {a:?} {b:?}");
+    assert_eq!(snapshot_count(&fx, &device_key), 1);
+    let job = fx
+        .lab
+        .sqlite
+        .get_yang_discovery_job(&pb_job.job_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, "completed");
+}
+
+// ── M6E hardening: A5 worker cancellation against a blocking Get ─────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn poller_abort_cancels_blocked_discovery_worker() {
+    let fx = start_fixture().await;
+    fx.device.get_block.store(1, Ordering::SeqCst);
+    let queued = fx.queue_job(None);
+
+    // Run the REAL collector poller against the fixture's client.
+    let targets: Arc<std::sync::Mutex<std::collections::HashMap<String, TargetConfig>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let device_target_cfg = fx
+        .lab
+        .registry
+        .get_device(&fx.device_addr)
+        .unwrap()
+        .unwrap();
+    targets
+        .lock()
+        .unwrap()
+        .insert(fx.device_addr.clone(), device_target_cfg);
+    let (sd_tx, sd_rx) = watch::channel(false);
+    let poller = tokio::spawn(bonsai::ingest::run_discovery_poller(
+        fx.client.clone(),
+        "col-a".to_string(),
+        targets,
+        sd_rx,
+    ));
+
+    // Wait until the worker is inside the blocking Get.
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while fx.device.get_calls.load(Ordering::SeqCst) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never reached Get"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Abort the poller (assignment-stream disconnect analogue): the
+    // JoinSet must abort the in-flight worker.
+    poller.abort();
+    let _ = poller.await;
+    // Release the blocked Get — a still-alive worker would now submit
+    // and complete the job.
+    fx.device.get_release.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let job = fx
+        .lab
+        .sqlite
+        .get_yang_discovery_job(&queued.job_id)
+        .unwrap()
+        .expect("job row");
+    assert_ne!(
+        job.state, "completed",
+        "aborted worker must not complete the job"
+    );
+    drop(sd_tx);
+}
+
+// ── M6E hardening: A3 durable admission edge cases ───────────────────────────
+
+fn test_snapshot_row(
+    device_key: &str,
+    device_addr: &str,
+    job_id: &str,
+) -> bonsai::sqlite_store::YangApplicabilitySnapshotRow {
+    let now = bonsai::graph::common::now_ns();
+    bonsai::sqlite_store::YangApplicabilitySnapshotRow {
+        id: 0,
+        device_key: device_key.to_string(),
+        device_address: device_addr.to_string(),
+        collector_id: Some("col-a".to_string()),
+        schema_id: Some("s1".to_string()),
+        content_id: Some("fp".to_string()),
+        datastore: Some("ietf-datastores:operational".to_string()),
+        overall_status: "applicable".to_string(),
+        outcome: "completed".to_string(),
+        result_json: "{}".to_string(),
+        capabilities_json: None,
+        yang_library_json: None,
+        evidence_fingerprint: "fp".to_string(),
+        observed_at_ns: Some(now),
+        evaluated_at_ns: now,
+        error: None,
+        created_at_ns: now,
+        executor: Some("authenticated_collector".to_string()),
+        observing_collector_id: Some("col-a".to_string()),
+        discovery_job_id: Some(job_id.to_string()),
+        collector_session_generation: Some(1),
+        authority_epoch: Some(1),
+        evidence_received_at_ns: Some(now),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn older_inflight_admission_cannot_replace_newer_result() {
+    let mut fx = start_fixture().await;
+    let pb_job = dispatched_job(&mut fx).await;
+    let now = bonsai::graph::common::now_ns();
+    let store = &fx.lab.sqlite;
+
+    // Older job claims admission and is mid-flight (resolution/persist).
+    assert!(
+        store
+            .claim_yang_discovery_job_admission(&pb_job.job_id, "tok-old", now)
+            .unwrap()
+    );
+
+    // A NEWER job for the same device is created, dispatched and fully
+    // committed while the older admission is still in flight.
+    let device_key = pb_job.device_key.clone();
+    let job2_id = uuid::Uuid::new_v4().to_string();
+    // Clone the dispatched job1 row as a template for a second,
+    // independently identified job on the same device.
+    let mut row2 = store
+        .get_yang_discovery_job(&pb_job.job_id)
+        .unwrap()
+        .unwrap();
+    row2.id = 0;
+    row2.job_id = job2_id.clone();
+    row2.state = "queued".to_string();
+    row2.collector_session_generation = None;
+    row2.dispatched_at_ns = None;
+    row2.finished_at_ns = None;
+    row2.snapshot_id = None;
+    row2.evidence_fingerprint = None;
+    row2.result_digest = None;
+    row2.result_classification = None;
+    row2.reason_code = None;
+    row2.diagnostics_json = None;
+    row2.admission_claim = None;
+    row2.created_at_ns = now;
+    row2.deadline_ns = now + 60 * 1_000_000_000;
+    row2.updated_at_ns = now;
+    store.create_yang_discovery_job(&row2).unwrap();
+    // Dispatch it under the current session so it is admissible.
+    let row2 = store.get_yang_discovery_job(&job2_id).unwrap().unwrap();
+    assert!(
+        store
+            .mark_yang_discovery_job_dispatched(
+                &job2_id,
+                pb_job.collector_session_generation as i64,
+                pb_job.authority_epoch as i64,
+                pb_job.assignment_generation as i64,
+                row2.device_revision,
+                now,
+            )
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_yang_discovery_job_admission(&job2_id, "tok-new", now)
+            .unwrap()
+    );
+    let snap2 = test_snapshot_row(&device_key, &pb_job.device_address, &job2_id);
+    match store
+        .commit_yang_discovery_admission(
+            &job2_id,
+            &device_key,
+            "tok-new",
+            &snap2,
+            "digest-new",
+            None,
+            now,
+        )
+        .unwrap()
+    {
+        bonsai::sqlite_store::YangAdmissionCommit::Completed { snapshot_id } => {
+            assert!(snapshot_id > 0);
+        }
+        other => panic!("newer job must commit: {other:?}"),
+    }
+
+    // The older in-flight admission now commits: the currency fence
+    // inside the transaction must mark it superseded and write NO
+    // snapshot — the newer result stands alone.
+    let snap1 = test_snapshot_row(&device_key, &pb_job.device_address, &pb_job.job_id);
+    match store
+        .commit_yang_discovery_admission(
+            &pb_job.job_id,
+            &device_key,
+            "tok-old",
+            &snap1,
+            "digest-old",
+            None,
+            now,
+        )
+        .unwrap()
+    {
+        bonsai::sqlite_store::YangAdmissionCommit::Superseded => {}
+        other => panic!("older in-flight admission must be superseded: {other:?}"),
+    }
+    assert_eq!(
+        snapshot_count(&fx, &device_key),
+        1,
+        "only the newer snapshot"
+    );
+    let job1 = store
+        .get_yang_discovery_job(&pb_job.job_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job1.state, "superseded");
+    assert!(job1.snapshot_id.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_commit_does_not_expose_authoritative_snapshot() {
+    let mut fx = start_fixture().await;
+    let pb_job = dispatched_job(&mut fx).await;
+    let now = bonsai::graph::common::now_ns();
+    let store = &fx.lab.sqlite;
+    let device_key = pb_job.device_key.clone();
+
+    assert!(
+        store
+            .claim_yang_discovery_job_admission(&pb_job.job_id, "tok-real", now)
+            .unwrap()
+    );
+
+    // A competing/incorrect token can never commit.
+    let snap = test_snapshot_row(&device_key, &pb_job.device_address, &pb_job.job_id);
+    match store
+        .commit_yang_discovery_admission(
+            &pb_job.job_id,
+            &device_key,
+            "tok-wrong",
+            &snap,
+            "digest",
+            None,
+            now,
+        )
+        .unwrap()
+    {
+        bonsai::sqlite_store::YangAdmissionCommit::ClaimLost => {}
+        other => panic!("wrong token must lose the claim: {other:?}"),
+    }
+    // Rollback: no snapshot row, job still owned by the real claim.
+    assert_eq!(snapshot_count(&fx, &device_key), 0);
+    let job = store
+        .get_yang_discovery_job(&pb_job.job_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, "admitting");
+    assert_eq!(job.admission_claim.as_deref(), Some("tok-real"));
+
+    // Internal-failure release returns the job to dispatchable state —
+    // honest, never wedged, never half-committed.
+    assert!(
+        store
+            .release_yang_discovery_job_admission(&pb_job.job_id, "tok-real", now)
+            .unwrap()
+    );
+    let job = store
+        .get_yang_discovery_job(&pb_job.job_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, "dispatched");
+    assert!(job.admission_claim.is_none());
+    assert!(job.collector_session_generation.is_none());
+    assert_eq!(snapshot_count(&fx, &device_key), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restart_during_admission_recovers_safely() {
+    let mut fx = start_fixture().await;
+    let pb_job = dispatched_job(&mut fx).await;
+    let now = bonsai::graph::common::now_ns();
+    let store = &fx.lab.sqlite;
+    let device_key = pb_job.device_key.clone();
+
+    // Simulate crash mid-admission: claim held, snapshot+completion
+    // transaction never ran.
+    assert!(
+        store
+            .claim_yang_discovery_job_admission(&pb_job.job_id, "tok-lost", now)
+            .unwrap()
+    );
+
+    // Boot reconciliation must return the job to dispatchable state —
+    // provably no snapshot was persisted by the interrupted commit.
+    let (_expired, _stale) = store
+        .reconcile_yang_discovery_jobs_on_boot(pb_job.authority_epoch as i64, now)
+        .unwrap();
+    let job = store
+        .get_yang_discovery_job(&pb_job.job_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        job.state, "dispatched",
+        "interrupted admission must recover"
+    );
+    assert!(job.admission_claim.is_none());
+    assert!(job.collector_session_generation.is_none());
+    assert_eq!(snapshot_count(&fx, &device_key), 0);
+
+    // And the job remains completable: re-poll restamps the session
+    // generation, then the normal authenticated path admits it.
+    let pb_job2 = fx.poll_job().await;
+    assert_eq!(pb_job2.job_id, pb_job.job_id);
+    let ack = fx.execute_and_submit(&pb_job2).await;
+    assert!(
+        ack.accepted,
+        "recovered job must still admit: {}",
+        ack.reason
+    );
 }

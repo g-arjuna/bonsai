@@ -2606,8 +2606,11 @@ pub async fn run_collector_manager(
                 msg = stream.message() => {
                     match msg {
                         Ok(Some(update)) => {
-                            update_discovery_targets(&discovery_targets, &update);
-                            let renewed = handle_assignment_update(
+                            // M6E hardening: fence → discovery targets →
+                            // subscriber reconciliation is ONE path —
+                            // the discovery cache can never mirror an
+                            // update the executor rejected.
+                            let renewed = handle_fenced_assignment_update(
                                 update,
                                 &bus,
                                 &subscription_plan_tx,
@@ -2615,7 +2618,9 @@ pub async fn run_collector_manager(
                                 &mut last_authority_epoch,
                                 &mut last_applied_generation,
                                 &lifecycle_tx,
-                            ).await;
+                                &discovery_targets,
+                            )
+                            .await;
                             // Authority is renewed ONLY by an accepted
                             // full sync — never by connection alone.
                             if renewed {
@@ -3045,7 +3050,12 @@ pub async fn run_lifecycle_forwarder(
 /// indefinitely; recovery inside the lease preserves streams.
 pub const DISCONNECTED_ASSIGNMENT_LEASE: Duration = Duration::from_secs(90);
 
-/// Apply one assignment update to the local subscriber set.
+/// Authority fence evaluation for one assignment update — the SINGLE
+/// acceptance decision shared by subscription handling AND the
+/// discovery target cache (M6E hardening). Returns `Some(renewed)`
+/// when the update is accepted (`renewed` = authoritative full sync
+/// that renews the disconnect lease), `None` when rejected. A rejected
+/// update mutates NEITHER subscriber state NOR discovery targets.
 ///
 /// Authority fencing is (authority_epoch, generation) lexicographic:
 /// - `authority_epoch == 0` → legacy core: only strictly newer
@@ -3055,30 +3065,11 @@ pub const DISCONNECTED_ASSIGNMENT_LEASE: Duration = Duration::from_secs(90);
 ///   incremental or stale-epoch message); generation expectation resets.
 /// - Same epoch → only strictly newer generations apply.
 /// - Older epoch → always rejected (delayed previous-authority update).
-/// Returns true iff an authoritative full sync was accepted — the ONLY
-/// event that renews the disconnect lease.
-#[allow(clippy::too_many_arguments)]
-pub async fn handle_assignment_update(
-    update: AssignmentUpdate,
-    bus: &Arc<InProcessBus>,
-    subscription_plan_tx: &Option<mpsc::Sender<SubscriptionPlan>>,
-    subscribers: &mut crate::subscriber::SubscriberHandleMap,
+pub fn assignment_update_fence(
+    update: &AssignmentUpdate,
     last_authority_epoch: &mut u64,
     last_applied_generation: &mut u64,
-    lifecycle_tx: &Option<mpsc::Sender<SessionLifecycleEvent>>,
-) -> bool {
-    // Assignment authority stamped on every lifecycle transition this
-    // update produces: the (epoch, generation) the collector applied.
-    let authority_epoch = update.authority_epoch;
-    let assignment_generation = update.generation;
-    let lifecycle = lifecycle_tx
-        .as_ref()
-        .map(|tx| crate::subscriber::LifecycleHandle {
-            tx: tx.clone(),
-            authority_epoch,
-            assignment_generation,
-            collector_session_generation: update.collector_session_generation,
-        });
+) -> Option<bool> {
     let mut renewed = false;
     if update.authority_epoch == 0 {
         // Legacy core without epoch fencing.
@@ -3089,7 +3080,7 @@ pub async fn handle_assignment_update(
                     last_applied_generation = *last_applied_generation,
                     "stale or duplicate assignment generation ignored"
                 );
-                return false;
+                return None;
             }
             *last_applied_generation = update.generation;
         }
@@ -3099,7 +3090,7 @@ pub async fn handle_assignment_update(
             last_epoch = *last_authority_epoch,
             "stale authority epoch rejected"
         );
-        return false;
+        return None;
     } else if update.authority_epoch > *last_authority_epoch {
         // New authority epoch: only a full sync may establish it.
         if !update.is_full_sync {
@@ -3107,7 +3098,7 @@ pub async fn handle_assignment_update(
                 update_epoch = update.authority_epoch,
                 "incremental update for unseen authority epoch rejected"
             );
-            return false;
+            return None;
         }
         *last_authority_epoch = update.authority_epoch;
         *last_applied_generation = update.generation;
@@ -3120,13 +3111,89 @@ pub async fn handle_assignment_update(
                 last_applied_generation = *last_applied_generation,
                 "stale or duplicate assignment generation ignored"
             );
-            return false;
+            return None;
         }
         *last_applied_generation = update.generation;
         if update.is_full_sync {
             renewed = true;
         }
     }
+    Some(renewed)
+}
+
+/// Apply one assignment update to the local subscriber set.
+///
+/// The update is fenced by [`assignment_update_fence`] FIRST; only an
+/// accepted update reaches subscriber reconciliation — and only an
+/// accepted update may update the discovery target cache.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_assignment_update(
+    update: AssignmentUpdate,
+    bus: &Arc<InProcessBus>,
+    subscription_plan_tx: &Option<mpsc::Sender<SubscriptionPlan>>,
+    subscribers: &mut crate::subscriber::SubscriberHandleMap,
+    last_authority_epoch: &mut u64,
+    last_applied_generation: &mut u64,
+    lifecycle_tx: &Option<mpsc::Sender<SessionLifecycleEvent>>,
+) -> bool {
+    let Some(renewed) =
+        assignment_update_fence(&update, last_authority_epoch, last_applied_generation)
+    else {
+        return false;
+    };
+    apply_assignment_update(update, bus, subscription_plan_tx, subscribers, lifecycle_tx).await;
+    renewed
+}
+
+/// The REAL collector assignment path (M6E hardening): fence the
+/// update, mirror ACCEPTED assignments into the discovery target
+/// cache, then reconcile subscribers. A rejected update mutates
+/// neither — discovery credentials can never be restored or cleared
+/// by stale authority. Returns true iff an authoritative full sync
+/// renewed the disconnect lease.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_fenced_assignment_update(
+    update: AssignmentUpdate,
+    bus: &Arc<InProcessBus>,
+    subscription_plan_tx: &Option<mpsc::Sender<SubscriptionPlan>>,
+    subscribers: &mut crate::subscriber::SubscriberHandleMap,
+    last_authority_epoch: &mut u64,
+    last_applied_generation: &mut u64,
+    lifecycle_tx: &Option<mpsc::Sender<SessionLifecycleEvent>>,
+    discovery_targets: &Arc<Mutex<HashMap<String, crate::config::TargetConfig>>>,
+) -> bool {
+    let Some(renewed) =
+        assignment_update_fence(&update, last_authority_epoch, last_applied_generation)
+    else {
+        return false;
+    };
+    update_discovery_targets(discovery_targets, &update);
+    apply_assignment_update(update, bus, subscription_plan_tx, subscribers, lifecycle_tx).await;
+    renewed
+}
+
+/// Apply an ACCEPTED assignment update: reconcile subscribers and
+/// emit lifecycle events. Assumes the fence already admitted the
+/// update — call [`assignment_update_fence`] first.
+async fn apply_assignment_update(
+    update: AssignmentUpdate,
+    bus: &Arc<InProcessBus>,
+    subscription_plan_tx: &Option<mpsc::Sender<SubscriptionPlan>>,
+    subscribers: &mut crate::subscriber::SubscriberHandleMap,
+    lifecycle_tx: &Option<mpsc::Sender<SessionLifecycleEvent>>,
+) {
+    // Assignment authority stamped on every lifecycle transition this
+    // update produces: the (epoch, generation) the collector applied.
+    let authority_epoch = update.authority_epoch;
+    let assignment_generation = update.generation;
+    let lifecycle = lifecycle_tx
+        .as_ref()
+        .map(|tx| crate::subscriber::LifecycleHandle {
+            tx: tx.clone(),
+            authority_epoch,
+            assignment_generation,
+            collector_session_generation: update.collector_session_generation,
+        });
 
     if update.is_full_sync {
         info!(
@@ -3253,7 +3320,6 @@ pub async fn handle_assignment_update(
             }
         }
     }
-    renewed
 }
 
 /// Enforce the bounded disconnected-assignment lease: once the
@@ -3370,21 +3436,71 @@ fn discovery_target_from_assignment(
 }
 
 /// Bounded poller: obtains Core-issued discovery jobs over the existing
-/// authenticated collector channel and executes them in isolated
-/// workers. Never blocks the assignment stream, heartbeats or shutdown.
-async fn run_discovery_poller(
+/// authenticated collector channel and executes them in OWNED workers.
+/// Never blocks the assignment stream, heartbeats or shutdown.
+///
+/// Worker lifetime (M6E hardening): every spawned worker is tracked in a
+/// `JoinSet` owned by THIS poller generation plus a per-job cancel
+/// channel. Aborting the poller (assignment-stream disconnect or
+/// shutdown) drops the JoinSet, which aborts every in-flight device
+/// read — a blocked gNMI Get can never outlive its authority. Core
+/// `cancelled_job_ids` and devices leaving the accepted assignment
+/// view cancel the matching workers promptly; reconnects spawn a fresh
+/// poller+JoinSet so obsolete worker authority is never revived.
+pub async fn run_discovery_poller(
     mut client: BonsaiGraphClient<Channel>,
     collector_id: String,
     targets: Arc<Mutex<HashMap<String, crate::config::TargetConfig>>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let sem = Arc::new(tokio::sync::Semaphore::new(DISCOVERY_MAX_CONCURRENT_JOBS));
+    // job_id → (assigned target address, cancel sender). Bounded by
+    // Core's per-collector job caps; entries are removed as workers
+    // finish so reconnects cannot accumulate stale handles.
+    let mut workers: tokio::task::JoinSet<String> = tokio::task::JoinSet::new();
+    let mut worker_meta: HashMap<String, (String, watch::Sender<bool>)> = HashMap::new();
     let mut interval = tokio::time::interval(DISCOVERY_POLL_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
-            _ = shutdown.changed() => return,
+            _ = shutdown.changed() => {
+                // JoinSet drop aborts every tracked worker; explicit
+                // abort keeps teardown deterministic.
+                workers.abort_all();
+                return;
+            }
             _ = interval.tick() => {}
+        }
+        // Reap finished workers and forget their cancel handles.
+        while let Some(joined) = workers.try_join_next() {
+            match joined {
+                Ok(job_id) => {
+                    worker_meta.remove(&job_id);
+                }
+                Err(error) => {
+                    if !error.is_cancelled() {
+                        tracing::debug!(%error, "yang discovery worker failed");
+                    }
+                }
+            }
+        }
+        // Fence workers whose device lost its accepted assignment —
+        // reassignment/withdrawal must not let a worker keep using
+        // obsolete credentials. Core-side admission fences results
+        // regardless; this bounds the device I/O itself.
+        {
+            let map = targets.lock().unwrap();
+            let stale: Vec<String> = worker_meta
+                .iter()
+                .filter(|(_, (address, _))| !map.contains_key(address))
+                .map(|(job_id, _)| job_id.clone())
+                .collect();
+            drop(map);
+            for job_id in stale {
+                if let Some((_, cancel)) = worker_meta.remove(&job_id) {
+                    let _ = cancel.send(true);
+                }
+            }
         }
         let req = PollYangDiscoveryJobsRequest {
             collector_id: collector_id.clone(),
@@ -3402,8 +3518,14 @@ async fn run_discovery_poller(
         if !resp.discovery_supported {
             continue;
         }
-        // cancelled_job_ids need no local action: in-flight workers
-        // fail submission and Core revalidates every result anyway.
+        // Core-cancelled jobs: withdraw local execution authority now —
+        // the worker stops before submitting rather than finishing
+        // device I/O under a dead job.
+        for job_id in &resp.cancelled_job_ids {
+            if let Some((_, cancel)) = worker_meta.get(job_id) {
+                let _ = cancel.send(true);
+            }
+        }
         for job in resp.jobs {
             // Resolve the device strictly from the local assignment
             // view — a job can only run against a currently assigned,
@@ -3421,6 +3543,11 @@ async fn run_discovery_poller(
             let Some(target) = target else {
                 continue;
             };
+            // Never run the same durable job twice concurrently in
+            // this poller generation.
+            if worker_meta.contains_key(&job.job_id) {
+                continue;
+            }
             let datastore = if job.datastore.is_empty() {
                 None
             } else {
@@ -3429,19 +3556,31 @@ async fn run_discovery_poller(
             let sem = Arc::clone(&sem);
             let mut worker_client = client.clone();
             let worker_id = collector_id.clone();
-            let worker_shutdown = shutdown.clone();
-            tokio::spawn(async move {
-                // Bound concurrency: excess jobs wait here rather than
-                // being dropped — the durable deadline still applies.
-                let Ok(_permit) = sem.acquire_owned().await else {
-                    return;
+            let mut worker_shutdown = shutdown.clone();
+            let (cancel_tx, mut cancel_rx) = watch::channel(false);
+            worker_meta.insert(job.job_id.clone(), (target.address.clone(), cancel_tx));
+            let worker_job_id = job.job_id.clone();
+            workers.spawn(async move {
+                // Bound concurrency AND cancellation while waiting for
+                // a permit — a queued worker must not pin a slot past
+                // its authority.
+                let _permit = tokio::select! {
+                    _ = cancel_rx.changed() => return worker_job_id,
+                    _ = worker_shutdown.changed() => return worker_job_id,
+                    permit = sem.acquire_owned() => match permit {
+                        Ok(p) => p,
+                        Err(_) => return worker_job_id,
+                    },
                 };
-                let submission = crate::yang_discovery::execute_discovery_job(
-                    &target,
-                    datastore.as_deref(),
-                    job.deadline_ns,
-                )
-                .await;
+                let submission = tokio::select! {
+                    _ = cancel_rx.changed() => return worker_job_id,
+                    _ = worker_shutdown.changed() => return worker_job_id,
+                    submission = crate::yang_discovery::execute_discovery_job(
+                        &target,
+                        datastore.as_deref(),
+                        job.deadline_ns,
+                    ) => submission,
+                };
                 let result = crate::yang_discovery::submission_to_result(
                     &job,
                     &worker_id,
@@ -3466,7 +3605,7 @@ async fn run_discovery_poller(
                         tracing::debug!(%error, job_id = %job.job_id, "discovery result submit failed");
                     }
                 }
-                drop(worker_shutdown);
+                worker_job_id
             });
         }
     }
