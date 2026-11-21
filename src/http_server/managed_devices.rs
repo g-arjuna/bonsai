@@ -1258,6 +1258,8 @@ pub(super) fn managed_device_json(
         inventory_platform: target.inventory_platform.unwrap_or_default(),
         inventory_status: target.inventory_status.unwrap_or_default(),
         inventory_tenant: target.inventory_tenant.unwrap_or_default(),
+        schema_binding: target.schema_binding.clone(),
+        updated_at_ns: target.updated_at_ns,
     }
 }
 pub(super) fn target_from_request(

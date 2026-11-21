@@ -2,15 +2,20 @@
   import { onMount } from 'svelte';
   import { relativeTime, absoluteTime, shortTime } from '$lib/timeutil.js';
   import { navigate } from '$lib/router.svelte.js';
+  import { selectionKey } from '$lib/pathkey.js';
+  import SchemaCollectionWorkspace from './SchemaCollectionWorkspace.svelte';
 
   function displayAddr(a) { return a ? a.replace(/:\d+$/, '') : a; }
 
-  let { address, onclose } = $props();
+  let { address, initialTab = null, onclose } = $props();
 
   let device = $state(null);
   let loading = $state(true);
   let error = $state(null);
   let activeTab = $state('interfaces');
+  $effect(() => {
+    if (initialTab && TABS.includes(initialTab)) activeTab = initialTab;
+  });
 
   let enrichmentProps = $state([]);
   let enrichmentLoading = $state(false);
@@ -29,6 +34,7 @@
   let recommendationSaveBusy = $state(false);
   let recommendationSaveMessage = $state('');
   let customPath = $state('');
+  let customOrigin = $state('');
   let customMode = $state('SAMPLE');
   let customSampleSeconds = $state('10');
   let reparseBusy = $state(false);
@@ -39,7 +45,15 @@
   let flowsData = $state(null);
   let flowsLoading = $state(false);
 
-  const TABS = ['interfaces', 'peers', 'paths', 'recommendations', 'events', 'detections', 'readiness', 'config', 'enrichment', 'cmdb', 'telemetry', 'flows', 'audit'];
+  const TABS = ['interfaces', 'peers', 'paths', 'schema', 'recommendations', 'events', 'detections', 'readiness', 'config', 'enrichment', 'cmdb', 'telemetry', 'flows', 'audit'];
+
+  async function reloadDevice() {
+    if (!address) return;
+    try {
+      const r = await fetch('/api/devices/' + encodeURIComponent(address));
+      if (r.ok) device = await r.json();
+    } catch { /* keep stale device view */ }
+  }
 
   $effect(() => {
     if (address) {
@@ -57,6 +71,7 @@
       recommendationDirty = false;
       recommendationSaveMessage = '';
       customPath = '';
+      customOrigin = '';
       customMode = 'SAMPLE';
       customSampleSeconds = '10';
       reparseMessage = '';
@@ -204,8 +219,11 @@
     return (n / 1073741824).toFixed(2) + ' GB';
   }
 
+  // Canonical selection identity compatible with the backend's exact
+  // semantics: origin + mode + interval + instantiated path. Selections
+  // differing only in origin or interval must never collapse.
   function pathKey(path) {
-    return (path.path || '') + '::' + (path.mode || '');
+    return selectionKey(path);
   }
 
   function dedupeSelectedPaths(paths) {
@@ -215,6 +233,7 @@
       const normalized = {
         path: path.path || '',
         origin: path.origin || '',
+        provenance: path.provenance || '',
         mode: path.mode || 'SAMPLE',
         sample_interval_ns: Number(path.sample_interval_ns || 0),
         rationale: path.rationale || '',
@@ -241,6 +260,7 @@
         {
           path: path.path,
           origin: path.origin || '',
+          provenance: path.provenance || '',
           mode: path.mode || 'SAMPLE',
           sample_interval_ns: Number(path.sample_interval_ns || 0),
           rationale: path.rationale || '',
@@ -268,7 +288,11 @@
       ...recommendationDraft,
       {
         path: trimmed,
-        origin: 'manual_override',
+        // `origin` is the gNMI model origin only — an operator-specified
+        // value or empty (device default). How the path was selected is
+        // provenance, never the wire origin.
+        origin: customOrigin.trim(),
+        provenance: 'manual_override',
         mode: customMode,
         sample_interval_ns: Number(customSampleSeconds || '0') * 1_000_000_000,
         rationale: 'Added manually from recommendations panel.',
@@ -278,6 +302,7 @@
     recommendationDirty = true;
     recommendationSaveMessage = '';
     customPath = '';
+    customOrigin = '';
   }
 
   async function saveRecommendationDraft() {
@@ -446,6 +471,9 @@
           {/if}
         {/if}
 
+      {:else if activeTab === 'schema'}
+        <SchemaCollectionWorkspace {device} onchanged={reloadDevice} />
+
       {:else if activeTab === 'paths'}
         {#if device.acquisition}
           <div class="section">
@@ -597,6 +625,8 @@
               <div class="audit-grid">
                 <span class="muted">Path</span>
                 <input bind:value={customPath} placeholder="network-instances/network-instance/..." />
+                <span class="muted">gNMI origin</span>
+                <input bind:value={customOrigin} placeholder="openconfig (or blank for device default)" />
                 <span class="muted">Mode</span>
                 <select bind:value={customMode}>
                   <option value="SAMPLE">SAMPLE</option>

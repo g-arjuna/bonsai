@@ -32,6 +32,12 @@ pub struct SchemaPlanRequest {
     pub plan_id: Option<String>,
     #[serde(default)]
     pub binding_fingerprint: Option<String>,
+    /// Configuration revision (`TargetConfig::updated_at_ns`) the
+    /// operator previewed. Activation MUST present it: the server
+    /// re-evaluates against the current device and rejects with a
+    /// conflict when the device changed since the preview.
+    #[serde(default)]
+    pub expected_config_revision: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -46,6 +52,10 @@ pub struct SchemaPlanPreview {
     pub freshness_reasons: Vec<ReasonCode>,
     pub current_binding: Option<SchemaBindingConfig>,
     pub binding_state: String,
+    /// Device configuration revision this preview was evaluated against.
+    /// Clients must echo it back as `expected_config_revision` on
+    /// activation so a stale preview can never commit.
+    pub config_revision: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -96,7 +106,9 @@ pub fn evaluate_preview(
             selected_paths: &selected_paths,
             datastore,
             collector_id: target.collector_id.as_deref(),
-            expected_config_revision: Some(target.updated_at_ns),
+            expected_config_revision: request
+                .expected_config_revision
+                .or(Some(target.updated_at_ns)),
             now_ns,
         };
         evaluation = Some(acquisition::evaluate_schema_plan(&input));
@@ -123,6 +135,7 @@ pub fn evaluate_preview(
         freshness_reasons,
         current_binding: target.schema_binding.clone(),
         binding_state,
+        config_revision: target.updated_at_ns,
     })
 }
 
@@ -146,6 +159,15 @@ pub fn activate(
         .binding_fingerprint
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("schema-binding activation requires binding_fingerprint"))?;
+    // Activation must carry the configuration revision the administrator
+    // previewed — without it there is no way to prove the approved plan
+    // still describes the current device configuration.
+    let expected_config_revision = request.expected_config_revision.ok_or_else(|| {
+        anyhow::anyhow!("schema-binding activation requires expected_config_revision")
+    })?;
+    if expected_config_revision != target.updated_at_ns {
+        bail!("schema-bound activation rejected: config_revision_mismatch");
+    }
 
     let preview = evaluate_preview(library, store, target, request, now_ns)?;
     let evaluation = preview.evaluation.clone().ok_or_else(|| {
@@ -612,8 +634,16 @@ mod tests {
             .assign_device_with_audit(address, Some("c1".to_string()), "test", "test_assign")
             .unwrap();
         let record = activation_record(&target);
+        let config_revision = registry.get_device(address).unwrap().unwrap().updated_at_ns;
         registry
-            .activate_schema_binding(target.clone(), record, 0, "admin", "activate")
+            .activate_schema_binding(
+                target.clone(),
+                record,
+                0,
+                config_revision,
+                "admin",
+                "activate",
+            )
             .unwrap();
         (registry, store, target, snapshot_id)
     }
@@ -795,5 +825,111 @@ mod tests {
             .expect("record")
             .revoke_reason;
         assert_eq!(record_reason.as_deref(), Some("evidence_unverifiable"));
+    }
+
+    /// Registry + store + a plain (unbound) device for activation
+    /// concurrency tests.
+    async fn plain_device(
+        dir: &tempfile::TempDir,
+        address: &str,
+    ) -> (Arc<ApiRegistry>, TargetConfig) {
+        let registry =
+            Arc::new(ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap());
+        let mut target = bound_target(address);
+        target.schema_binding = None;
+        registry
+            .add_device_with_audit(target.clone(), "test", "test_add")
+            .unwrap();
+        let device = registry.get_device(address).unwrap().unwrap();
+        (registry, device)
+    }
+
+    /// Durable record for an unbound device — the concurrency checks under
+    /// test reject before the record's policy content is ever consulted.
+    fn plain_activation_record(device: &TargetConfig) -> SchemaBindingRecord {
+        SchemaBindingRecord {
+            device_key: crate::registry::device_identity_key(device),
+            device_address: device.address.clone(),
+            mode: "schema_bound".to_string(),
+            policy_json: "{}".to_string(),
+            approved_plan_json: Some("{}".to_string()),
+            approval_revision: 1,
+            approval_fingerprint: Some("fp".to_string()),
+            state: "active".to_string(),
+            approved_by: Some("admin".to_string()),
+            approved_at_ns: Some(42),
+            revoked_by: None,
+            revoked_at_ns: None,
+            revoke_reason: None,
+            created_at_ns: 1,
+            updated_at_ns: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_config_revision_rejects_activation() {
+        let dir = tempfile::tempdir().unwrap();
+        let address = "10.0.0.20";
+        let (registry, device) = plain_device(&dir, address).await;
+        let record = plain_activation_record(&device);
+        // A revision that does not match the current device configuration
+        // must fail closed before any durable mutation.
+        let err = registry
+            .activate_schema_binding(
+                device.clone(),
+                record,
+                0,
+                device.updated_at_ns + 1,
+                "admin",
+                "activate",
+            )
+            .expect_err("stale config revision must reject");
+        assert!(
+            err.to_string().contains("configuration changed"),
+            "unexpected error: {err}"
+        );
+        let after = registry.get_device(address).unwrap().unwrap();
+        assert!(after.schema_binding.is_none());
+        assert_eq!(after.acquisition, device.acquisition);
+        assert!(
+            registry
+                .sqlite_store()
+                .unwrap()
+                .get_schema_binding(&crate::registry::device_identity_key(&after))
+                .unwrap()
+                .is_none(),
+            "no durable binding record may be committed on stale activation"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_registry_update_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let address = "10.0.0.21";
+        let (registry, device) = plain_device(&dir, address).await;
+        let previewed_revision = device.updated_at_ns;
+        // A concurrent device update lands between preview and activation:
+        // reassignment bumps updated_at_ns.
+        registry
+            .assign_device_with_audit(address, Some("c2".to_string()), "test", "test_reassign")
+            .unwrap();
+        let record = plain_activation_record(&device);
+        let err = registry
+            .activate_schema_binding(
+                device.clone(),
+                record,
+                0,
+                previewed_revision,
+                "admin",
+                "activate",
+            )
+            .expect_err("activation against a superseded configuration must reject");
+        assert!(err.to_string().contains("configuration changed"));
+        // The newer registry state is preserved — the stale evaluated
+        // target was never committed over it.
+        let after = registry.get_device(address).unwrap().unwrap();
+        assert_eq!(after.collector_id.as_deref(), Some("c2"));
+        assert!(after.schema_binding.is_none());
+        assert_ne!(after.updated_at_ns, previewed_revision);
     }
 }

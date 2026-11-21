@@ -8,7 +8,7 @@
     navigate('/devices/new');
   }
 
-  let { selectedAddress = null } = $props();
+  let { selectedAddress = null, initialTab = null } = $props();
 
   let devices     = $state([]);
   let loading     = $state(true);
@@ -250,7 +250,7 @@
 </div>
 
 {#if selected}
-  <DeviceDrawer address={selected} onclose={closeDrawer} />
+  <DeviceDrawer address={selected} initialTab={initialTab} onclose={closeDrawer} />
 {/if}
 
 <style>

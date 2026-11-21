@@ -394,6 +394,10 @@ pub(super) fn openapi_schema() -> serde_json::Value {
                         { "name": "address", "in": "path", "required": true, "schema": { "type": "string" }},
                         { "name": "module", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Restrict path results to one YANG module name" },
                         { "name": "status", "in": "query", "required": false, "schema": { "type": "string", "enum": ["applicable", "candidate", "unknown", "not_applicable", "conflicted", "stale"] }, "description": "Restrict path results to one applicability status" },
+                        { "name": "kind", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Restrict to one schema kind (container, list, leaf, leaf-list, anyxml, anydata)" },
+                        { "name": "config", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true", "false"] }, "description": "\"true\" restricts to configuration data, \"false\" to state data" },
+                        { "name": "feature", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Restrict to paths declaring this required feature (matches feature name or module:feature)" },
+                        { "name": "q", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Case-insensitive substring search over canonical path, module, namespace and type name" },
                         { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 5000 }, "description": "Maximum path entries returned (bounded; default 500)" },
                         { "name": "offset", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 0 }, "description": "Path result offset for pagination" }
                     ],
@@ -443,17 +447,19 @@ pub(super) fn openapi_schema() -> serde_json::Value {
                                 "schema": {
                                     "type": "object",
                                     "properties": {
-                                        "selected_paths": { "type": "array", "description": "Operator-selected gNMI subscription paths; defaults to the device's current explicit selection", "items": { "type": "object" }},
+                                        "selected_paths": { "type": "array", "description": "Operator-selected gNMI subscription paths; defaults to the device's current explicit selection. Each entry carries a gNMI model 'origin' (never provenance) plus optional provenance, mode, sample_interval_ns and rationale.", "items": { "type": "object" }},
                                         "datastore": { "type": "string", "description": "Datastore to evaluate (e.g. 'ietf-datastores:operational'); defaults to the device selection" },
                                         "plan_id": { "type": "string", "description": "Expected plan id from a prior preview (verified server-side)" },
-                                        "binding_fingerprint": { "type": "string", "description": "Expected binding fingerprint from a prior preview (verified server-side)" }
+                                        "binding_fingerprint": { "type": "string", "description": "Expected binding fingerprint from a prior preview (verified server-side)" },
+                                        "expected_config_revision": { "type": "integer", "format": "int64", "description": "config_revision returned by the preview being approved; activation rejects mismatches with config_revision_mismatch" }
                                     }
                                 }
                             }
                         }
                     },
                     "responses": {
-                        "200": { "description": "Schema-bound plan preview", "content": { "application/json": { "schema": { "type": "object" } }}},
+                        "200": { "description": "Schema-bound plan preview; includes config_revision (the device configuration revision this evaluation was computed against)", "content": { "application/json": { "schema": { "type": "object" } }}},
+                        "403": { "description": "Insufficient role" },
                         "404": { "description": "Device not found in registry" }
                     }
                 }
@@ -474,7 +480,8 @@ pub(super) fn openapi_schema() -> serde_json::Value {
                                         "selected_paths": { "type": "array", "items": { "type": "object" }},
                                         "datastore": { "type": "string" },
                                         "plan_id": { "type": "string", "description": "plan_id from the approved preview; must match the fresh server evaluation" },
-                                        "binding_fingerprint": { "type": "string", "description": "binding_fingerprint from the approved preview; must match the fresh server evaluation" }
+                                        "binding_fingerprint": { "type": "string", "description": "binding_fingerprint from the approved preview; must match the fresh server evaluation" },
+                                        "expected_config_revision": { "type": "integer", "format": "int64", "description": "REQUIRED: config_revision from the approved preview. Activation fails with config_revision_mismatch when the device configuration changed since preview; the atomic commit re-checks the live registry revision." }
                                     }
                                 }
                             }

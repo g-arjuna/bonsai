@@ -145,6 +145,7 @@
 
   let traceParams  = $derived(matchRoute('/trace/:id', path()));
   let deviceParams = $derived(matchRoute('/devices/:address', path()));
+  let schemaParams = $derived(matchRoute('/devices/:address/schema', path()));
 </script>
 
 <a href="#main-content" class="skip-to-main">Skip to main content</a>
@@ -243,6 +244,8 @@
       <Lazy loader={loadOnboarding} />
     {:else if deviceParams}
       <Lazy loader={loadDevices} selectedAddress={deviceParams.address} />
+    {:else if schemaParams}
+      <Lazy loader={loadDevices} selectedAddress={schemaParams.address} initialTab="schema" />
     {:else if path() === '/devices'}
       <Lazy loader={loadDevices} />
     {:else if path() === '/collectors'}

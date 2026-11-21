@@ -1015,6 +1015,7 @@ async fn setup_bound_fixture() -> BoundFixture {
         datastore: None,
         plan_id: None,
         binding_fingerprint: None,
+        expected_config_revision: None,
     };
     let now = bonsai::graph::common::now_ns();
     let preview =
@@ -1030,6 +1031,7 @@ async fn setup_bound_fixture() -> BoundFixture {
         datastore: None,
         plan_id: Some(eval.plan_id.clone()),
         binding_fingerprint: Some(eval.binding_fingerprint.clone()),
+        expected_config_revision: Some(eval.config_revision),
     };
     let activation =
         schema_binding::activate(&library, &lab.sqlite, &target, &act_req, "admin", now)
@@ -1041,6 +1043,7 @@ async fn setup_bound_fixture() -> BoundFixture {
             activation.device.clone(),
             activation.record,
             approval_revision as i64 - 1,
+            eval.config_revision,
             "admin",
             "test_activate",
         )
@@ -1667,6 +1670,7 @@ async fn schema_bound_expiry_withdraws_active_execution() {
         datastore: None,
         plan_id: None,
         binding_fingerprint: None,
+        expected_config_revision: None,
     };
     let now = bonsai::graph::common::now_ns();
     let preview =
@@ -1676,6 +1680,7 @@ async fn schema_bound_expiry_withdraws_active_execution() {
     let act_req = schema_binding::SchemaPlanRequest {
         plan_id: Some(eval2.plan_id.clone()),
         binding_fingerprint: Some(eval2.binding_fingerprint.clone()),
+        expected_config_revision: Some(eval2.config_revision),
         ..req
     };
     let activation2 =
@@ -1688,6 +1693,7 @@ async fn schema_bound_expiry_withdraws_active_execution() {
             activation2.device,
             activation2.record,
             rev2 as i64 - 1,
+            eval2.config_revision,
             "admin",
             "test_reapprove",
         )
@@ -1767,6 +1773,7 @@ async fn schema_bound_expiry_disconnected_collector() {
         datastore: None,
         plan_id: None,
         binding_fingerprint: None,
+        expected_config_revision: None,
     };
     let now = bonsai::graph::common::now_ns();
     let preview =
@@ -1775,6 +1782,7 @@ async fn schema_bound_expiry_disconnected_collector() {
     let act_req = schema_binding::SchemaPlanRequest {
         plan_id: Some(eval.plan_id.clone()),
         binding_fingerprint: Some(eval.binding_fingerprint.clone()),
+        expected_config_revision: Some(eval.config_revision),
         ..req
     };
     let activation =
@@ -1785,6 +1793,7 @@ async fn schema_bound_expiry_disconnected_collector() {
             activation.device,
             activation.record,
             rev as i64 - 1,
+            eval.config_revision,
             "admin",
             "test_activate",
         )
@@ -1881,6 +1890,7 @@ async fn schema_bound_expired_evidence_blocks_activation_and_restart() {
         datastore: None,
         plan_id: None,
         binding_fingerprint: None,
+        expected_config_revision: None,
     };
     let now = bonsai::graph::common::now_ns();
     let preview =
@@ -1922,6 +1932,7 @@ async fn schema_bound_expired_evidence_blocks_activation_and_restart() {
     let act_req = schema_binding::SchemaPlanRequest {
         plan_id: Some(eval.plan_id.clone()),
         binding_fingerprint: Some(eval.binding_fingerprint.clone()),
+        expected_config_revision: Some(eval.config_revision),
         ..req
     };
     let activation =
@@ -1932,6 +1943,7 @@ async fn schema_bound_expired_evidence_blocks_activation_and_restart() {
             activation.device,
             activation.record,
             rev as i64 - 1,
+            eval.config_revision,
             "admin",
             "test_activate",
         )

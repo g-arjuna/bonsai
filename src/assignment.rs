@@ -1462,8 +1462,9 @@ mod tests {
             manager_with_custom_target(schema_bound_target("10.0.0.7")).await;
         let stored = registry.get_device("10.0.0.7").unwrap().unwrap();
         let (bound, record) = schema_bound_activation(&stored);
+        let config_revision = bound.updated_at_ns;
         registry
-            .activate_schema_binding(bound, record, 0, "admin", "activate")
+            .activate_schema_binding(bound, record, 0, config_revision, "admin", "activate")
             .unwrap();
 
         // v4 understands lifecycle/credential contracts but predates the
