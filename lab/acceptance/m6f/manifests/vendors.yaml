@@ -26,7 +26,7 @@ vendors:
     gnmi:
       port: 57400
       tls: clab_ca            # clab-generated CA; certs under <lab>/.clab-*/ or clab certs dir
-      tls_server_name: srl1
+      tls_server_name: srlinux   # SAN DNS:srlinux on the clab-issued cert
       username_env: M6F_SRL_USER
       password_env: M6F_SRL_PASS
       datastore: CONFIG     # also test RUNNING

@@ -98,6 +98,14 @@ d=yaml.safe_load(open(sys.argv[1]))["vendors"][sys.argv[2]]
 print(d["gnmi"].get("password_env",""))
 EOF
 )"
+TLS_SERVER_NAME="$("$PYTHON" - "$MANIFEST" "$VENDOR" <<'EOF'
+import sys,yaml
+d=yaml.safe_load(open(sys.argv[1]))["vendors"][sys.argv[2]]
+print(d["gnmi"].get("tls_server_name") or "")
+EOF
+)"
+IMAGE_SELECT="$(mfield image_select 2>/dev/null || true)"
+[ "$IMAGE_SELECT" = "None" ] && IMAGE_SELECT=""
 STARTUP_CFG="$(mfield startup_config)"
 ADDR="$MGMT_IP:$GNMI_PORT"
 
@@ -143,6 +151,19 @@ action_preflight() {
                 die "image archive not found: $arch_path (vendor NOT_EXECUTED)"
             fi
             log "image archive present: $arch_path ($(du -h "$arch_path" | cut -f1))"
+            # Validate the archive carries a resolvable docker image and
+            # record the archive-declared references — selection is NEVER
+            # based on a global newest-image listing.
+            if [ -f "$M6F_DIR/tools/m6f_image.py" ]; then
+                local inspect_json
+                inspect_json="$("$PYTHON" "$M6F_DIR/tools/m6f_image.py" inspect \
+                    --archive "$arch_path" --workdir "$WORKDIR/image-load" 2>/dev/null || true)"
+                echo "$inspect_json" > "$EVIDENCE_DIR/archive-inspect.json"
+                if ! "$PYTHON" -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ok") else 1)' <<<"$inspect_json" 2>/dev/null; then
+                    write_result NOT_EXECUTED "image archive is not a resolvable docker-save archive: $arch_path"
+                    die "image archive not resolvable (NOT_EXECUTED): see $EVIDENCE_DIR/archive-inspect.json"
+                fi
+            fi
         else
             write_result NOT_EXECUTED "no image configured in manifest for $VENDOR"
             die "no image configured for $VENDOR (NOT_EXECUTED)"
@@ -207,35 +228,68 @@ PYEOF
 
 action_deploy() {
     local topo; topo="$(gen_topology)"
-    # if image came from archive, load it now (docker load preserves refs)
+    # if image came from archive, resolve the EXACT archive-declared
+    # reference — never a globally-newest docker image
     if [ -z "$IMAGE" ] || [ "$IMAGE" = "None" ] || [ "$IMAGE" = "null" ]; then
         local arch="$ARCHIVE"
         [ -f "$arch" ] || arch="$HOME/Desktop/clab-images/$(basename "$ARCHIVE")"
-        log "loading image archive: $arch"
-        case "$arch" in
-            *.xz|*.tar.xz)
-                xz -dc "$arch" | docker load | tee "$EVIDENCE_DIR/docker-load.txt";;
+        [ -f "$arch" ] || { write_result NOT_EXECUTED "image archive not found: $arch"; die "image archive not found: $arch"; }
+        mkdir -p "$WORKDIR/image-load"
+        local resolve_json status
+        resolve_json="$("$PYBIN" "$M6F_DIR/tools/m6f_image.py" resolve \
+            --archive "$arch" ${IMAGE_SELECT:+--select "$IMAGE_SELECT"} \
+            --workdir "$WORKDIR/image-load" 2>&1)" || true
+        echo "$resolve_json" > "$EVIDENCE_DIR/image-resolve.json"
+        status="$("$PYTHON" -c 'import json,sys
+try: print(json.load(sys.stdin).get("status","error"))
+except Exception: print("error")' <<<"$resolve_json")"
+        local img_ref="" img_id=""
+        case "$status" in
+            present)
+                img_ref="$("$PYTHON" -c 'import json,sys;d=json.load(sys.stdin);
+print(d.get("canonical_ref") or (d.get("repo_tags") or [d["image_ref"]])[0])' <<<"$resolve_json")"
+                img_id="$("$PYTHON" -c 'import json,sys;print(json.load(sys.stdin).get("image_id") or "")' <<<"$resolve_json")"
+                log "compatible image already present ($img_ref id=$img_id) — skipping docker load"
+                ;;
+            needs_load)
+                local load_path
+                load_path="$("$PYTHON" -c 'import json,sys;print(json.load(sys.stdin)["load_path"])' <<<"$resolve_json")"
+                img_ref="$("$PYTHON" -c 'import json,sys;print(json.load(sys.stdin)["image_ref"])' <<<"$resolve_json")"
+                log "loading archive member: $load_path (selected ref: $img_ref)"
+                case "$load_path" in
+                    *.xz|*.tar.xz)
+                        xz -dc "$load_path" | docker load | tee "$EVIDENCE_DIR/docker-load.txt";;
+                    *)
+                        docker load -i "$load_path" | tee "$EVIDENCE_DIR/docker-load.txt";;
+                esac
+                local ident_json
+                ident_json="$("$PYBIN" "$M6F_DIR/tools/m6f_image.py" identify \
+                    --archive "$arch" --ref "$img_ref" 2>&1)" || true
+                echo "$ident_json" > "$EVIDENCE_DIR/image-identity.json"
+                img_id="$("$PYTHON" -c 'import json,sys;print(json.load(sys.stdin).get("image_id") or "")' <<<"$ident_json" 2>/dev/null || true)"
+                img_ref="$("$PYTHON" -c 'import json,sys;d=json.load(sys.stdin);print(d.get("canonical_ref") or d.get("image_ref") or "")' <<<"$ident_json" 2>/dev/null || echo "$img_ref")"
+                ;;
             *)
-                docker load -i "$arch" | tee "$EVIDENCE_DIR/docker-load.txt";;
+                local reason
+                reason="$("$PYTHON" -c 'import json,sys
+try: print(json.load(sys.stdin).get("reason","resolution failed"))
+except Exception: print("resolution failed")' <<<"$resolve_json")"
+                write_result NOT_EXECUTED "image archive resolution failed: $reason"
+                die "image archive resolution failed (NOT_EXECUTED): $reason"
+                ;;
         esac
-        # discover the loaded reference and patch topology
-        local loaded
-        loaded="$(docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | head -1)"
-        log "loaded image candidate: $loaded"
-        "$PYTHON" - "$topo" <<'PYEOF'
-import sys,re,subprocess,json
-topo=sys.argv[1]
-# pick the newest image by CreatedAt among candidates matching vendor hints
-imgs=subprocess.run(["docker","images","--format","{{.Repository}}:{{.Tag}}|{{.CreatedAt}}|{{.ID}}"],
-                    capture_output=True,text=True).stdout.strip().splitlines()
-cands=[l for l in imgs if l and "<none>" not in l]
-cands.sort(key=lambda l:l.split("|")[1],reverse=True)
-ref=cands[0].split("|")[0] if cands else None
-if not ref: sys.exit("no docker image found after load")
-s=open(topo).read().replace("      image: null  # resolved from archive at deploy time",
-                            f'      image: "{ref}"')
-open(topo,"w").write(s)
-print("resolved image:",ref)
+        [ -n "$img_ref" ] || { write_result NOT_EXECUTED "no image reference resolved from $arch"; die "no image reference resolved"; }
+        docker image inspect "$img_ref" --format 'ref={{.RepoTags}} id={{.Id}} digests={{json .RepoDigests}}' \
+            | tee "$EVIDENCE_DIR/image-identity.txt" 2>/dev/null || true
+        log "resolved image: $img_ref (id=$img_id)"
+        "$PYTHON" - "$topo" "$img_ref" <<'PYEOF'
+import sys
+topo, ref = sys.argv[1], sys.argv[2]
+s = open(topo).read()
+s = s.replace("      image: null  # resolved from archive at deploy time",
+              f'      image: "{ref}"')
+open(topo, "w").write(s)
+print("topology image:", ref)
 PYEOF
     fi
     cat "$topo" | tee "$EVIDENCE_DIR/topology.used.yml"
@@ -264,17 +318,32 @@ export M6F_GNMI_STUB_DIR="${TMPDIR:-/tmp}/m6f_gnmi_stubs"
 export M6F_PROTO_DIR="$PROTO_DIR"
 
 ca_args() {
-    # locate clab-generated CA for this lab
-    local ca
-    ca="$(find "$WORKDIR" "$ROOT/$LAB_NAME" /tmp -maxdepth 4 -name 'ca.crt' -o -name 'ca.pem' 2>/dev/null | head -1)"
-    if [ "$TLS_MODE" = "clab_ca" ] && [ -n "$ca" ]; then
-        printf -- '--ca %s --server-name %s' "$ca" "$VENDOR"
-    elif [ "$TLS_MODE" = "clab_ca" ]; then
-        log "WARN: clab CA not found; trying insecure"
-        printf -- '--insecure'
-    else
-        printf -- '--insecure'
+    # TLS arguments for m6f_gnmi.py. Verified TLS is the default; a lab
+    # CA is located ONLY under this run's workdir — never a global find
+    # across /tmp or unrelated labs. Missing trust material fails closed;
+    # there is no silent downgrade to plaintext.
+    if [ "$TLS_MODE" = "clab_ca" ]; then
+        local ca=""
+        for cand in \
+            "$WORKDIR/clab-$LAB_NAME/.tls/ca/ca.pem" \
+            "$WORKDIR/clab-$LAB_NAME/.tls/ca/ca.crt" \
+            "$WORKDIR/$LAB_NAME/.tls/ca/ca.pem" \
+            "$WORKDIR/$LAB_NAME/.tls/ca/ca.crt"; do
+            [ -f "$cand" ] && { ca="$cand"; break; }
+        done
+        [ -z "$ca" ] && ca="$(find "$WORKDIR" -maxdepth 6 \
+            \( -name 'ca.pem' -o -name 'ca.crt' \) 2>/dev/null | head -1)"
+        if [ -z "$ca" ]; then
+            log "ERROR: tls=clab_ca but no lab CA found under $WORKDIR — refusing to downgrade"
+            return 1
+        fi
+        printf -- '--ca %s' "$ca"
+        [ -n "$TLS_SERVER_NAME" ] && printf -- ' --server-name %s' "$TLS_SERVER_NAME"
+        return 0
     fi
+    # tls: insecure → explicit lab-only PLAINTEXT channel. This is not
+    # "skip certificate verification"; the client labels it accordingly.
+    printf -- '--tls-mode plaintext'
 }
 
 auth_args() {
@@ -285,8 +354,10 @@ auth_args() {
 }
 
 gnmi() { # subcommand extra-args... ; prints JSON to stdout
+    local tls_args
+    tls_args="$(ca_args)" || die "TLS argument resolution failed for $VENDOR"
     # shellcheck disable=SC2086
-    "$PYBIN" "$GNMI_PY" "$@" --addr "$ADDR" $(ca_args) $(auth_args) \
+    "$PYBIN" "$GNMI_PY" "$@" --addr "$ADDR" $tls_args $(auth_args) \
         --timeout "${M6F_TIMEOUT:-20}"
 }
 
@@ -326,15 +397,24 @@ res["checks"]["yang_library_legacy"]="PASS" if legacy.get("ok") else "UNSUPPORTE
 sub=load("subscribe-once.json")
 res["checks"]["subscribe_once"]="PASS" if sub.get("ok") else "FAIL"
 res["checks"]["sample_path"]=path
-# overall
+# overall — distinct outcome states: an unsupported or unexecuted
+# individual check can never masquerade as a complete PASS.
 fails=[k for k,v in res["checks"].items() if v=="FAIL"]
-res["overall"]="FAIL" if fails else "PASS"
+unresolved=[k for k,v in res["checks"].items() if v in ("UNSUPPORTED","NOT_EXECUTED")]
+if fails: res["overall"]="FAIL"
+elif unresolved: res["overall"]="PARTIAL"
+else: res["overall"]="PASS"
+res["outcome_states"]={"executed_pass":[k for k,v in res["checks"].items() if v=="PASS"],
+                       "unsupported":[k for k,v in res["checks"].items() if v=="UNSUPPORTED"],
+                       "not_executed":[k for k,v in res["checks"].items() if v=="NOT_EXECUTED"],
+                       "failed":fails}
 json.dump(res,open(os.path.join(ev,"probe-result.json"),"w"),indent=2)
 # merge into result.json
 rp=os.path.join(ev,"result.json")
 try: r=json.load(open(rp))
 except Exception: r={"vendor":vendor,"date":res["utc"][:10],"checks":{}}
 r.setdefault("checks",{}).update(res["checks"]); r["overall"]=res["overall"]
+r["outcome_states"]=res["outcome_states"]
 r.pop("reason",None)
 r["probe"]=res
 json.dump(r,open(rp,"w"),indent=2)

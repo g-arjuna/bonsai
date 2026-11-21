@@ -1053,8 +1053,10 @@ async fn t7b_probe_parses_nmda_and_legacy_over_mock_gnmi() {
                     "conformance-type": "implement"}]
     });
     // NMDA candidates return empty (default GetResponse), legacy returns data.
+    // NMDA now has 4 candidates × 2 origins = 8 requests before the
+    // legacy tree is probed.
     let mut responses = Vec::new();
-    for _ in 0..6 {
+    for _ in 0..8 {
         responses.push(GetResponse::default());
     }
     responses.push(json_get_response("modules-state", legacy_json));
@@ -1200,4 +1202,352 @@ fn t10_snapshot_payload_contains_no_secret_material() {
             "snapshot JSON must not contain '{forbidden}'"
         );
     }
+}
+
+// ── M6F-B: live SR Linux response regression ─────────────────────────────────
+//
+// Fixtures are sanitized excerpts of the real 2026-11-21 SR Linux capture
+// (docs/merger/evidence/2026-11-21-m6f-srlinux): the full module list was
+// pruned to representative entries, preserving the exact wire shapes —
+// RFC 8525 string leaf-lists for feature/deviation, object submodules,
+// module-set/schema/datastore references and content-id. The mock below
+// reproduces the observed device behavior: canonical
+// `ietf-yang-library:*` and bare container names return the subtree as
+// one json_ietf_val update; wrong-namespace aliases fail
+// INVALID_ARGUMENT; plain JSON encoding is UNIMPLEMENTED.
+
+const SRLINUX_NMDA_JSON: &str = include_str!("fixtures/yang/srlinux-ietf-yang-library.json");
+const SRLINUX_LEGACY_JSON: &str = include_str!("fixtures/yang/srlinux-modules-state.json");
+
+#[derive(Clone)]
+struct SrlinuxGnmi {
+    get_requests: Arc<Mutex<Vec<GetRequest>>>,
+}
+
+fn srlinux_get_response(update_elem: &str, fixture: &str) -> GetResponse {
+    GetResponse {
+        notification: vec![Notification {
+            timestamp: 0,
+            prefix: None,
+            update: vec![Update {
+                path: Some(GnmiPath {
+                    origin: String::new(),
+                    elem: vec![PathElem {
+                        name: update_elem.to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                val: Some(bonsai::proto::gnmi::TypedValue {
+                    value: Some(typed_value::Value::JsonIetfVal(fixture.as_bytes().to_vec())),
+                }),
+                ..Default::default()
+            }],
+            delete: vec![],
+            atomic: false,
+        }],
+        ..Default::default()
+    }
+}
+
+#[tonic::async_trait]
+impl GNmi for SrlinuxGnmi {
+    async fn capabilities(
+        &self,
+        _request: Request<CapabilityRequest>,
+    ) -> Result<Response<CapabilityResponse>, Status> {
+        Ok(Response::new(CapabilityResponse {
+            supported_models: vec![ModelData {
+                name: "ietf-yang-library".to_string(),
+                organization: "ietf".to_string(),
+                version: "2019-01-04".to_string(),
+            }],
+            supported_encodings: vec![Encoding::JsonIetf as i32],
+            g_nmi_version: "0.10.0".to_string(),
+            ..Default::default()
+        }))
+    }
+
+    async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
+        let req = request.into_inner();
+        self.get_requests.lock().await.push(req.clone());
+        let Some(path) = req.path.first() else {
+            return Ok(Response::new(GetResponse::default()));
+        };
+        let Some(elem) = path.elem.first() else {
+            return Ok(Response::new(GetResponse::default()));
+        };
+        let name = elem.name.as_str();
+        // Live SR Linux: wrong-namespace aliases are rejected before any
+        // encoding consideration.
+        let fixture = match name {
+            "ietf-yang-library:yang-library" | "yang-library" => {
+                Some((SRLINUX_NMDA_JSON, "ietf-yang-library:yang-library"))
+            }
+            "ietf-yang-library:modules-state" | "modules-state" => {
+                Some((SRLINUX_LEGACY_JSON, "ietf-yang-library:modules-state"))
+            }
+            "yang:yang-library"
+            | "yang-library:yang-library"
+            | "yang:modules-state"
+            | "modules-state:modules-state" => {
+                return Err(Status::invalid_argument(format!(
+                    "Namespace of '{name}' does not match module namespace \
+                     'ietf-yang-library'"
+                )));
+            }
+            _ => None,
+        };
+        let Some((fixture, update_elem)) = fixture else {
+            return Ok(Response::new(GetResponse::default()));
+        };
+        // SR Linux rejects plain JSON encoding on accepted paths.
+        if req.encoding == Encoding::Json as i32 {
+            return Err(Status::unimplemented(
+                "Only ASCII, PROTO/TYPED_VAL, JSON_IETF, JSON_IETF_FROM_ROOT, \
+                 PROTO_ANY, PROTO_JSON, PROTO_BYTES and CLI_FLAT encodings \
+                 are supported",
+            ));
+        }
+        Ok(Response::new(srlinux_get_response(update_elem, fixture)))
+    }
+
+    type SubscribeStream =
+        tokio_stream::wrappers::ReceiverStream<Result<SubscribeResponse, Status>>;
+
+    async fn subscribe(
+        &self,
+        _request: Request<Streaming<SubscribeRequest>>,
+    ) -> Result<Response<Self::SubscribeStream>, Status> {
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
+            rx,
+        )))
+    }
+
+    async fn set(
+        &self,
+        _request: Request<bonsai::proto::gnmi::SetRequest>,
+    ) -> Result<Response<bonsai::proto::gnmi::SetResponse>, Status> {
+        Err(Status::unimplemented("set"))
+    }
+}
+
+async fn start_srlinux_lab() -> (String, Arc<Mutex<Vec<GetRequest>>>, watch::Sender<bool>) {
+    let get_requests = Arc::new(Mutex::new(Vec::new()));
+    let svc = SrlinuxGnmi {
+        get_requests: Arc::clone(&get_requests),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(GNmiServer::new(svc))
+            .serve_with_incoming_shutdown(
+                tokio_stream::wrappers::TcpListenerStream::new(listener),
+                async move {
+                    let _ = shutdown_rx.changed().await;
+                },
+            )
+            .await
+            .unwrap();
+    });
+    (addr, get_requests, shutdown_tx)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m6fb_probe_parses_srlinux_nmda_library_over_mock_gnmi() {
+    let (addr, get_requests, _shutdown) = start_srlinux_lab().await;
+    let input = lab_discovery_input(&addr);
+    let probe = yang_library::probe_yang_library(&input).await;
+    match probe.outcome {
+        YangLibraryOutcome::Complete { evidence } => {
+            assert_eq!(evidence.tree, YangLibraryTree::Nmda);
+            assert_eq!(evidence.content_id.as_deref(), Some("1lg3lmex1lg3ln8{d1"));
+            assert_eq!(evidence.module_sets.len(), 1);
+            let ms = &evidence.module_sets[0];
+            assert_eq!(ms.name, "nokia");
+            // RFC 8525 string leaf-lists: features and deviations must
+            // survive parsing (live SR Linux encodes them as strings).
+            let netconf = ms
+                .modules
+                .iter()
+                .find(|m| m.name == "ietf-netconf")
+                .expect("ietf-netconf module");
+            assert_eq!(netconf.revision.as_deref(), Some("2011-06-01"));
+            for f in [
+                "candidate",
+                "confirmed-commit",
+                "rollback-on-error",
+                "validate",
+                "startup",
+                "url",
+            ] {
+                assert!(netconf.features.contains(f), "missing feature {f}");
+            }
+            assert!(
+                netconf
+                    .deviations
+                    .iter()
+                    .any(|d| d == "ietf-srl-deviations")
+            );
+            // Object-form submodules still parse.
+            let aaa = ms
+                .modules
+                .iter()
+                .find(|m| m.name == "openconfig-aaa")
+                .expect("openconfig-aaa module");
+            assert_eq!(aaa.submodules.len(), 2);
+            assert!(aaa.submodules.iter().any(|s| s == "openconfig-aaa-radius"));
+            // Import-only modules and datastore/schema references.
+            assert_eq!(ms.import_only_modules.len(), 3);
+            assert!(
+                ms.import_only_modules
+                    .iter()
+                    .any(|m| m.name == "ietf-datastores")
+            );
+            assert_eq!(evidence.schemas.len(), 1);
+            assert_eq!(evidence.schemas[0].name, "nokia");
+            assert_eq!(evidence.datastores.len(), 5);
+            assert!(
+                evidence
+                    .datastores
+                    .iter()
+                    .any(|d| d.name == "ietf-datastores:running" && d.schema == "nokia")
+            );
+        }
+        other => panic!("expected Complete, got {}", outcome_debug(&other)),
+    }
+
+    // The canonical RFC 8525 module-qualified path must be the FIRST
+    // Get attempted — not discovered only after alias failures.
+    let reqs = get_requests.lock().await;
+    assert!(!reqs.is_empty());
+    let first = &reqs[0];
+    assert_eq!(first.path[0].elem[0].name, "ietf-yang-library:yang-library");
+    assert_eq!(first.path[0].origin, "ietf");
+    assert_eq!(first.encoding, Encoding::JsonIetf as i32);
+    // No Set, no Subscribe RPCs are part of this probe at all.
+}
+
+#[test]
+fn m6fb_srlinux_fixtures_parse_directly() {
+    // NMDA fixture → evidence (parser-level, no transport).
+    let nmda: serde_json::Value = serde_json::from_str(SRLINUX_NMDA_JSON).expect("fixture JSON");
+    let ev = yang_library::parse_nmda_library(&nmda, 1).expect("nmda parses");
+    let netconf = ev.module_sets[0]
+        .modules
+        .iter()
+        .find(|m| m.name == "ietf-netconf")
+        .unwrap();
+    assert!(netconf.features.contains("url"));
+    assert!(
+        netconf
+            .deviations
+            .iter()
+            .any(|d| d == "ietf-srl-deviations")
+    );
+
+    // Legacy fixture: string features + object deviations (mixed forms).
+    let legacy: serde_json::Value =
+        serde_json::from_str(SRLINUX_LEGACY_JSON).expect("fixture JSON");
+    let lev = yang_library::parse_legacy_library(&legacy, 1).expect("legacy parses");
+    assert_eq!(lev.content_id.as_deref(), Some("1lg3lmex1lg3ln8{d1"));
+    let ms = &lev.module_sets[0];
+    let netconf = ms
+        .modules
+        .iter()
+        .find(|m| m.name == "ietf-netconf")
+        .expect("ietf-netconf");
+    assert!(netconf.features.contains("confirmed-commit"));
+    assert!(
+        netconf
+            .deviations
+            .iter()
+            .any(|d| d == "ietf-srl-deviations")
+    );
+    assert!(
+        ms.import_only_modules
+            .iter()
+            .any(|m| m.name == "iana-if-type")
+    );
+}
+
+/// Live SR Linux YANG Library probe — opt-in only, never runs in CI.
+///
+/// ```sh
+/// M6F_LIVE_GNMI_ADDR=172.100.102.11:57400 \
+/// M6F_LIVE_CA=/path/to/clab-m6f-srlinux/.tls/ca/ca.pem \
+/// M6F_LIVE_TLS_DOMAIN=srlinux \
+/// M6F_LIVE_USER=admin M6F_LIVE_PASS=... \
+/// cargo test -p bonsai --test yang_device_applicability \
+///   m6fb_srlinux_live_yang_library_probe -- --ignored --nocapture
+/// ```
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "live NOS probe; requires M6F_LIVE_* env vars"]
+async fn m6fb_srlinux_live_yang_library_probe() {
+    let addr = std::env::var("M6F_LIVE_GNMI_ADDR").expect("M6F_LIVE_GNMI_ADDR required");
+    let input = DiscoveryInput {
+        address: addr,
+        username: None,
+        password: None,
+        username_env: Some("M6F_LIVE_USER".to_string()),
+        password_env: Some("M6F_LIVE_PASS".to_string()),
+        ca_cert_path: std::env::var("M6F_LIVE_CA").ok(),
+        tls_domain: std::env::var("M6F_LIVE_TLS_DOMAIN").ok(),
+        security: Some(GnmiSecurityMode::TlsVerify),
+        client_cert_path: None,
+        client_key_path: None,
+        role_hint: None,
+        vault: None,
+        environment_archetype: None,
+    };
+    let probe = yang_library::probe_yang_library(&input).await;
+    eprintln!("attempts: {:#?}", probe.attempts);
+    match probe.outcome {
+        YangLibraryOutcome::Complete { evidence } => {
+            eprintln!(
+                "NMDA library: content_id={:?} module_sets={} schemas={} datastores={}",
+                evidence.content_id,
+                evidence.module_sets.len(),
+                evidence.schemas.len(),
+                evidence.datastores.len()
+            );
+            let total_modules: usize = evidence
+                .module_sets
+                .iter()
+                .map(|ms| ms.modules.len() + ms.import_only_modules.len())
+                .sum();
+            eprintln!("total modules: {total_modules}");
+            assert!(total_modules > 0);
+        }
+        other => panic!("expected Complete, got {}", outcome_debug(&other)),
+    }
+}
+
+#[test]
+fn m6fb_feature_bound_exceeds_live_srlinux_catalog() {
+    // Live SR Linux `srl_nokia-features` advertises 620 features; the
+    // parser bound must accept real vendor catalogs (regression for the
+    // 256 bound that rejected the live device).
+    let features: Vec<serde_json::Value> = (0..700)
+        .map(|i| serde_json::Value::String(format!("feat-{i}")))
+        .collect();
+    let tree = serde_json::json!({
+        "content-id": "cid-big",
+        "module-set": [{
+            "name": "ms1",
+            "module": [{
+                "name": "big-features",
+                "revision": "2025-01-01",
+                "namespace": "urn:example:big",
+                "feature": features
+            }]
+        }],
+        "schema": [{"name": "s1", "module-set": ["ms1"]}],
+        "datastore": [{"name": "ietf-datastores:running", "schema": "s1"}]
+    });
+    let ev = yang_library::parse_nmda_library(&tree, 1).expect("parses");
+    assert_eq!(ev.module_sets[0].modules[0].features.len(), 700);
 }
