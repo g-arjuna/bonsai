@@ -1,0 +1,22 @@
+{
+  "vendor": "ceos",
+  "date": "2026-11-22",
+  "image": "ceos:4.37.0F",
+  "addr": "172.100.104.11:6030",
+  "tls_mode": "plaintext",
+  "checks": {
+    "capabilities": "PASS",
+    "json_ietf_encoding": "PASS",
+    "sample_mode": "PASS",
+    "on_change_mode": "PARTIAL",
+    "list_key_handling": "PASS",
+    "initial_sync": "PASS",
+    "yang_library_rfc8525": "UNSUPPORTED",
+    "yang_library_legacy": "UNSUPPORTED",
+    "tls_authentication": "NOT_EXECUTED",
+    "delete_semantics": "NOT_EXECUTED",
+    "production_core_collector_e2e": "NOT_EXECUTED"
+  },
+  "overall": "PARTIAL",
+  "notes": "Probe-level only. EOS gNMI rejects all YANG Library variants and advertises no yang-library module, so Core remote discovery cannot obtain RFC 8525 evidence and the schema-bound production path is blocked at applicability. ON_CHANGE shows initial sync only; no change event generated. gNMI origin selects model set (openconfig/arista); element names unprefixed."
+}

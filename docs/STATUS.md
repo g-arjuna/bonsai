@@ -30,8 +30,16 @@ statistics at container granularity with module-prefixed element
 names, so leaf-level plan paths cannot be covered — the accepted
 plan selects the applicable container path. Evidence:
 `docs/merger/evidence/2026-11-22-m6fb-srlinux-r6/` and `-r7/`;
-matrix: `lab/acceptance/m6f/MATRIX.md`. XRd, Junos and cEOS remain
-NOT_EXECUTED pending owner-provided images.
+matrix: `lab/acceptance/m6f/MATRIX.md`. Vendor expansion (same
+branch): cEOS 4.37.0F probed live — Capabilities/SAMPLE/list-key/
+initial-sync PASS at probe level, but gNMI YANG Library is
+UNSUPPORTED so the production schema-bound path cannot reach
+applicability (evidence `2026-11-22-m6f-ceos-probe/`); Junos
+cJunosEVO 26.2R1.7-EVO boots but this cPTX image exposes no gNMI
+service (evidence `2026-11-22-m6f-junos-probe/`); XRd 24.4.2 image
+loads but the node aborts on host inotify limits pending an owner
+sysctl change. All three remain NOT_EXECUTED for the production
+path.
 
 M6E update — **authenticated remote-collector YANG discovery
 implemented** (branch `feat/bn015-m6e-remote-yang-discovery`).
