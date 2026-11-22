@@ -1,0 +1,87 @@
+{
+  "evidence_dir": "/tmp/bonsai-m6fb/docs/merger/evidence/2026-11-22-m6fb-srlinux-r7/api",
+  "overall": "PASS",
+  "stages": [
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "admin_login"
+    },
+    {
+      "detail": "http=200 device_id=dev-febb3a22-703b-4199-ac6a-042f683b2f8b",
+      "ok": true,
+      "stage": "identity_device"
+    },
+    {
+      "detail": "http=400",
+      "ok": true,
+      "stage": "collector_binding"
+    },
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "device_credential"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_register"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_assignment"
+    },
+    {
+      "detail": "assigned=1",
+      "ok": true,
+      "stage": "collector_registered"
+    },
+    {
+      "detail": "http=200 schema=ysc-d7254b6e840b0f0041c4b2458bb509a1 status=complete modules=11 paths=419 activated=True",
+      "ok": true,
+      "stage": "catalogue_compile"
+    },
+    {
+      "detail": "http=202 job=fdc72ed7-22fc-4cb1-916b-21adb9c30643",
+      "ok": true,
+      "stage": "discovery_job_queued"
+    },
+    {
+      "detail": "state=completed class=completed reason=None snapshot=8",
+      "ok": true,
+      "stage": "discovery_job_completed"
+    },
+    {
+      "detail": "http=200 status=applicable outcome=ok schema=ysc-d7254b6e840b0f0041c4b2458bb509a1 content_id=1lg3lmex1lg3ln8{d1 paths=419",
+      "ok": true,
+      "stage": "applicability_snapshot"
+    },
+    {
+      "detail": "http=200 permitted=True plan=53a64d7c6aebc133 reasons=[]",
+      "ok": true,
+      "stage": "plan_preview"
+    },
+    {
+      "detail": "http=200 plan=53a64d7c6aebc133 rev=5 state=active",
+      "ok": true,
+      "stage": "plan_activate"
+    },
+    {
+      "detail": "1 observed path(s), last_observed advancing (1795304398453725752 -> 1795304407650875170)",
+      "ok": true,
+      "stage": "telemetry_observed"
+    },
+    {
+      "detail": "http=200 state=revoked",
+      "ok": true,
+      "stage": "plan_revoke"
+    },
+    {
+      "detail": "observed telemetry ceased / statuses cleared after revoke",
+      "ok": true,
+      "stage": "withdrawal_verified"
+    }
+  ],
+  "utc": "2026-11-21T23:40:17Z"
+}

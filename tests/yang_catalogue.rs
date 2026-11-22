@@ -2203,3 +2203,38 @@ fn corrupt_active_pointer_fails_closed() {
     );
     assert!(bundle_file.exists(), "no bundle may be deleted");
 }
+
+#[test]
+fn nokia_dialect_fixture_parses_and_compiles() {
+    // M6F-B: Nokia SR Linux YANG dialect — unquoted revision dates,
+    // prefixed extension instances, string/bare `presence`, bare and
+    // '/'-bearing enum names, typedefs with concatenated patterns and
+    // error-message sub-blocks. Live evidence: 11-module SR Linux
+    // closure compiles to 419 paths with zero diagnostics.
+    let cat = compile_parsed(
+        vec![module_input("test-nokia")],
+        &CompileOptions::default(),
+    );
+    eprintln!("DBG status={} diags={:?} modules={:?} npaths={}",
+        cat.status, cat.diagnostics,
+        cat.modules.iter().map(|m| (m.name.clone(), m.node_count, m.resolution.clone())).collect::<Vec<_>>(),
+        cat.paths.len());
+    assert_eq!(
+        cat.status, "complete",
+        "diags={:?} modules={:?}",
+        cat.diagnostics,
+        cat.modules.iter().map(|m| (m.name.clone(), m.node_count, m.resolution.clone())).collect::<Vec<_>>()
+    );
+    for expected in [
+        "/system/hostname",
+        "/system/interface[name]/statistics/in-packets",
+        "/system/interface[name]/statistics/state",
+        "/system/checkpoint",
+    ] {
+        assert!(
+            cat.paths.iter().any(|p| p.path == expected),
+            "missing {expected}; paths={:?}",
+            cat.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>()
+        );
+    }
+}

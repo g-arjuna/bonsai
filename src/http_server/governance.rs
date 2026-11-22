@@ -442,16 +442,39 @@ pub(super) async fn assignment_override_handler(
     State(state): State<AppState>,
     Json(req): Json<AssignmentOverrideRequest>,
 ) -> Result<Json<AssignmentOverrideResponse>, (StatusCode, String)> {
+    // Capture the previous assignee so BOTH sides of a reassignment are
+    // resynced — the old collector must learn the withdrawal, the new
+    // one the grant. Without this an override is invisible to live
+    // collectors until their next reconnect/full sync.
+    let previous_collector = state
+        .registry
+        .get_device(&req.device_address)
+        .ok()
+        .flatten()
+        .and_then(|t| t.collector_id);
     match state.registry.assign_device_with_audit(
         &req.device_address,
-        req.collector_id,
+        req.collector_id.clone(),
         "api",
         "api_assignment_override",
     ) {
-        Ok(_) => Ok(Json(AssignmentOverrideResponse {
-            success: true,
-            error: String::new(),
-        })),
+        Ok(target) => {
+            if let Some(manager) = state.collector_manager.as_ref() {
+                let mut resynced = std::collections::HashSet::new();
+                for cid in [previous_collector, target.collector_id.clone()]
+                    .into_iter()
+                    .flatten()
+                {
+                    if resynced.insert(cid.clone()) {
+                        manager.resync_collector(&cid).await;
+                    }
+                }
+            }
+            Ok(Json(AssignmentOverrideResponse {
+                success: true,
+                error: String::new(),
+            }))
+        }
         Err(e) => Ok(Json(AssignmentOverrideResponse {
             success: false,
             error: format!("{e:#}"),

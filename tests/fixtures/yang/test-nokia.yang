@@ -1,0 +1,79 @@
+module test-nokia {
+  yang-version "1.1";
+  namespace "urn:nokia.com:test-nokia";
+  prefix "tn";
+  organization "Nokia";
+  contact "noc@example.com";
+  description "Synthetic fixture reproducing Nokia SR Linux YANG dialect constructs observed live (M6F-B).";
+  // Unquoted revision date — SR Linux modules use `revision 2026-03-31 {`.
+  revision 2026-03-31 {
+    description "unquoted date revision";
+  }
+  revision "2025-01-01" {
+    description "quoted revision";
+  }
+
+  // Prefixed extension statement — SR Linux writes
+  // `srl_nokia-ext:delivery-node-override "true";` inside containers.
+  extension delivery-node-override {
+    argument "value";
+  }
+
+  typedef checkpoint-name {
+    type string {
+      // Concatenated pattern literals and an error-message sub-block —
+      // both appear verbatim in srl_nokia-common.yang.
+      pattern '[A-Za-z0-9_]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9_])?' + '[A-Za-z0-9_]'
+        { error-message "invalid checkpoint name"; }
+      length "1..64";
+    }
+    description "checkpoint identifier";
+  }
+
+  typedef state-enum {
+    type enumeration {
+      // Bare enum statement without a value block.
+      enum up;
+      // Enum name containing '/' — the lexer splits it into
+      // Ident '/' Ident; SR Linux uses this form.
+      enum admin/shutdown {
+        value "admin/shutdown";
+      }
+      enum "quoted-name" {
+        value 2;
+      }
+    }
+  }
+
+  container system {
+    // Prefixed extension instance inside a container body.
+    tn:delivery-node-override "true";
+    // String-valued presence — Nokia writes `presence "...";`.
+    presence "system is present";
+    leaf hostname {
+      type string;
+    }
+    list interface {
+      key "name";
+      leaf name {
+        type string;
+      }
+      // Bare presence; — standard form also accepted.
+      presence;
+      container statistics {
+        // Integer-valued enum argument form.
+        leaf in-packets {
+          type uint64;
+        }
+        leaf state {
+          type state-enum;
+        }
+      }
+    }
+    leaf checkpoint {
+      type checkpoint-name;
+      // Refinement-style presence with a string argument.
+      presence "checkpoint is set";
+    }
+  }
+}

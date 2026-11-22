@@ -1,0 +1,27 @@
+{
+  "evidence_dir": "/tmp/bonsai-m6fb/docs/merger/evidence/2026-11-22-m6fb-srlinux/api",
+  "overall": "PASS",
+  "stages": [
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "admin_login"
+    },
+    {
+      "detail": "http=202 job=85896a6b-bc84-486e-99b8-f8d9a2f778aa",
+      "ok": true,
+      "stage": "discovery_job_queued"
+    },
+    {
+      "detail": "state=completed class=completed reason=None snapshot=2",
+      "ok": true,
+      "stage": "discovery_job_completed"
+    },
+    {
+      "detail": "http=200 status=unknown outcome=ok schema=ysc-699c1e99b9d7ff0eb58398ad86c92089 content_id=1lg3lmex1lg3ln8{d1 paths=15589",
+      "ok": true,
+      "stage": "applicability_snapshot"
+    }
+  ],
+  "utc": "2026-11-21T20:51:41Z"
+}

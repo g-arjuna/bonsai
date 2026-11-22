@@ -120,3 +120,41 @@ yields `FAIL`. Per-check outcome states are recorded under
 `outcome_states` in `result.json`/`probe-result.json`.
 
 See `MATRIX.md` for the per-vendor capability matrix.
+
+## Production Core/collector acceptance (M6F-B)
+
+`scripts/lab/m6f-bonsai-e2e.sh` runs the full production path against
+the deployed lab device — not the Python probe:
+
+```sh
+M6F_ADMIN_USER=… M6F_ADMIN_PASS=… \
+M6F_PLAN_FILE=/path/to/plan.json \
+scripts/lab/m6f-bonsai-e2e.sh --action all
+```
+
+Actions: `preflight`, `tls`, `configs`, `deploy`, `yang`, `isolation`,
+`drive`, `evidence`, `teardown`, `all`. The `drive` action runs
+`tools/m6f_e2e.py`, which executes the authenticated Admin API sequence:
+collector binding → device registration → assignment → YANG catalogue
+compile → Core-issued remote discovery job → applicability snapshot →
+schema-bound plan preview → explicit activation → telemetry observation
+poll → revocation → withdrawal verification. Every stage records an
+explicit PASS/FAIL; an incomplete stage cannot yield overall PASS.
+
+`M6F_PLAN_FILE` is a JSON document with `datastore` and
+`selected_paths` (path/origin/mode/sample_interval_ns/rationale). The
+selected paths must be *applicable schema paths at the granularity the
+device actually reports*: SR Linux emits notifications at container
+granularity with module-prefixed element names
+(`srl_nokia-interfaces:interface[name=mgmt0]/statistics`), so the
+accepted M6F-B plan selects `/interface[name=mgmt0]/statistics`
+(SAMPLE, 10 s) — leaf-level expectations under it are not covered by
+container-granular updates. A working example is committed at
+`docs/merger/evidence/2026-11-22-m6fb-srlinux-r7/plan.json`.
+
+Evidence lands in `docs/merger/evidence/<date>-m6fb-srlinux-rN/`:
+per-stage API JSON (`api/NN-*.json`), `collector.log`, `core.log`,
+`runtime-state.txt`, `stages.json`, `plan.json`. The collector log
+shows the exact SubscribeRequest parameters (`paths=N plan_id=…
+acquisition="explicit"`); no `Set` RPC exists anywhere in the
+collector code path.

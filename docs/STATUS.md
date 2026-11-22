@@ -1,5 +1,38 @@
 # Bonsai current state
 
+M6F-B update — **real Nokia SR Linux production-path
+interoperability validated** (branch `feat/m6fb-gnmi-interop`).
+The complete production chain ran against a live SR Linux 26.3.1
+device twice with identical results: an isolated Core+collector
+topology proved Core→device gNMI unreachability while the
+authenticated Rust collector (protocol 6, mTLS) reached both Core
+and the device; a Core-issued remote-discovery job retrieved live
+Capabilities + RFC 8525 YANG Library evidence; Core admitted and
+persisted applicability (snapshot `applicable`, schema
+`ysc-d7254b6e840b0f0041c4b2458bb509a1`, 11 modules / 419 paths);
+Admin previewed and explicitly activated an exact schema-bound
+SAMPLE plan (`/interface[name=mgmt0]/statistics`, 10 s interval);
+the collector submitted exactly the approved SubscribeRequest; real
+telemetry was received, bound to the current authenticated session
+and projected as `observed` coverage with advancing observation
+timestamps; revocation withdrew acquisition and telemetry ceased.
+No gNMI Set was issued. Production fixes landed alongside: canonical
+`ietf-yang-library:yang-library` discovery path, Nokia YANG dialect
+parsing (unquoted revision dates, prefixed extension
+statements/instances, string and bare `presence`, bare and
+`/`-bearing enum names, type arguments with `error-message` blocks,
+and a block-statement skip fix that previously swallowed sibling
+statements), module-prefixed notification element tolerance in
+coverage matching, deterministic archive image selection, explicit
+probe TLS modes, truthful matrix outcome states, and collector
+resync on assignment override. Live finding: SR Linux reports
+statistics at container granularity with module-prefixed element
+names, so leaf-level plan paths cannot be covered — the accepted
+plan selects the applicable container path. Evidence:
+`docs/merger/evidence/2026-11-22-m6fb-srlinux-r6/` and `-r7/`;
+matrix: `lab/acceptance/m6f/MATRIX.md`. XRd, Junos and cEOS remain
+NOT_EXECUTED pending owner-provided images.
+
 M6E update — **authenticated remote-collector YANG discovery
 implemented** (branch `feat/bn015-m6e-remote-yang-discovery`).
 An Admin can now request applicability refresh for a device Core
