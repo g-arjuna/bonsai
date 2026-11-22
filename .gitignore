@@ -60,6 +60,7 @@ lab/fast-iteration/p4-ca.pem
 __pycache__/
 *.py[cod]
 *.pyo
+.venv
 .venv/
 venv/
 
