@@ -112,9 +112,7 @@ fn elem_name_matches(expected: &str, observed: &str) -> bool {
         return false;
     }
     match observed.split_once(':') {
-        Some((prefix, local)) => {
-            !prefix.is_empty() && !local.contains(':') && local == expected
-        }
+        Some((prefix, local)) => !prefix.is_empty() && !local.contains(':') && local == expected,
         None => false,
     }
 }
@@ -571,11 +569,8 @@ mod tests {
         assert!(!delete_covers(&container, &sibling));
         // Module-prefixed delete names (SR Linux style) still invalidate
         // the bare-local-name expectation.
-        let prefixed = parse_path(
-            "",
-            "srl_nokia-interfaces:interface[name=mgmt0]/statistics",
-        )
-        .unwrap();
+        let prefixed =
+            parse_path("", "srl_nokia-interfaces:interface[name=mgmt0]/statistics").unwrap();
         let bare_exp = parse_path("", "interface[name=mgmt0]/statistics").unwrap();
         assert!(delete_covers(&bare_exp, &prefixed));
         // Wildcard expectation: ONE concrete instance delete must not

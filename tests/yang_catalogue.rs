@@ -2211,19 +2211,16 @@ fn nokia_dialect_fixture_parses_and_compiles() {
     // '/'-bearing enum names, typedefs with concatenated patterns and
     // error-message sub-blocks. Live evidence: 11-module SR Linux
     // closure compiles to 419 paths with zero diagnostics.
-    let cat = compile_parsed(
-        vec![module_input("test-nokia")],
-        &CompileOptions::default(),
-    );
-    eprintln!("DBG status={} diags={:?} modules={:?} npaths={}",
-        cat.status, cat.diagnostics,
-        cat.modules.iter().map(|m| (m.name.clone(), m.node_count, m.resolution.clone())).collect::<Vec<_>>(),
-        cat.paths.len());
+    let cat = compile_parsed(vec![module_input("test-nokia")], &CompileOptions::default());
     assert_eq!(
-        cat.status, "complete",
+        cat.status,
+        "complete",
         "diags={:?} modules={:?}",
         cat.diagnostics,
-        cat.modules.iter().map(|m| (m.name.clone(), m.node_count, m.resolution.clone())).collect::<Vec<_>>()
+        cat.modules
+            .iter()
+            .map(|m| (m.name.clone(), m.node_count, m.resolution.clone()))
+            .collect::<Vec<_>>()
     );
     for expected in [
         "/system/hostname",
