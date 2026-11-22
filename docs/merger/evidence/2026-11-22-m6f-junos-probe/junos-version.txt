@@ -1,0 +1,6 @@
+Hostname: HOSTNAME
+Model: ptx10001-36mr
+Junos: 26.2R1.7-EVO
+Yocto: 4.0.28
+Linux Kernel: 5.15.164-10.22.33.18-yocto-standard-juniper-19183-g14666b62b00b
+JUNOS-EVO OS 64-bit [junos-evo-install-ptx-fixed-x86-64-26.2R1.7-EVO]
