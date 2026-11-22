@@ -1,0 +1,17 @@
+2026-11-22 second probe attempt (fresh owner-supplied credentials,
+username arjuna04 via BONSAI_LAB_IOSXE_* env vars — values never
+stored):
+
+- DNS: devnetsandboxiosxec9k.cisco.com -> 131.226.217.162
+- TCP 22/443/830/9339: all accept connections (front proxy alive)
+- SSH 22: TCP open, NO banner within 12s (backend not responding)
+- TLS 443: handshake completes; cert CN=sandbox-iosxe-latest-1.cisco.com
+  (HydrantID issuer, expired); RESTCONF GET -> nginx 502 Bad Gateway
+- TLS 830: connection reset during handshake (errno 104)
+- gNMI 9339: TCP open, connection reset on gRPC/TLS (UNAVAILABLE)
+
+Conclusion: reservation front-end proxy is alive but the backend
+Catalyst 9000v instance is not running — no service can complete a
+handshake far enough to authenticate. Credential validity cannot be
+assessed; the reservation itself needs to be restarted/verified on
+the DevNet dashboard. Live gNMI acceptance remains NOT_EXECUTED.
