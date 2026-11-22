@@ -432,6 +432,16 @@ action_drive() {
         --device-ca "$DEVICE_CA_CONTAINER"
     )
     [ -n "${M6F_PLAN_FILE:-}" ] && extra_args+=(--plan-file "$M6F_PLAN_FILE")
+    # L4 provenance inputs (A3): both containers run the same mounted
+    # binary; image identity is the pinned runtime image.
+    extra_args+=(
+        --repo "$REPO_ROOT"
+        --core-binary "$WORKDIR/bonsai"
+        --collector-binary "$WORKDIR/bonsai"
+        --core-image "$RUNTIME_IMAGE"
+        --collector-image "$RUNTIME_IMAGE"
+        --nos-version "${M6F_NOS_VERSION:-NOT_PROVIDED}"
+    )
     "$PYTHON" "$E2E_PY" \
         --core "$core_url" \
         --evidence-dir "$ev" \
