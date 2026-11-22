@@ -1,0 +1,1 @@
+quay.io/frrouting/frr@sha256:89e5e1ec8b17c5dffaf57dbac58a29ebeb3731a84e5bc09dad1662adff2ba7f5 (image id sha256:2a26dc9b7886d245f26d0b7c71e82db185638923c6a092562cdd7b5e8ad505a2)

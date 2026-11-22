@@ -49,6 +49,21 @@ same PASS/FAIL/PARTIAL/UNSUPPORTED/NOT_EXECUTED discipline as the gNMI
 vendors. Credentials: none required (lab BMP is unauthenticated inside
 the task-owned bridge; mTLS variants are covered by bn021c/bn021f).
 
+Executed 2026-11-22 (`docs/merger/evidence/2026-11-22-m6f-frr/`):
+peer-up, route announce/withdraw/re-announce, peer-down
+(RemoteSystemClosed2) and BMP reconnect all PASS against the live
+`routing_service` listener; BGP-LS UNSUPPORTED on the 10.6.2 image
+build (no BGP-LS address-family); gNMI UNSUPPORTED.
+
+Operational caveats (learned live):
+
+- `docker restart` on a clab `linux` node removes the injected link
+  interfaces — use `containerlab destroy` + `deploy` for peer/node
+  restart scenarios.
+- Never run FRR `write memory` here: it rewrites the bind-mounted
+  `frr.conf` as container-root and clobbers the repo file. Use
+  `configure terminal` for ephemeral changes only.
+
 ## Prior executed evidence (same protocol path)
 
 - `docs/merger/evidence/2026-11-08-bn003-genuine-vrf-bmp/` — real FRR
