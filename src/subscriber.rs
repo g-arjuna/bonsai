@@ -14,6 +14,10 @@ const BACKOFF_INITIAL: Duration = Duration::from_secs(5);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 const BACKOFF_RESET_THRESHOLD: Duration = Duration::from_secs(60);
 const SAMPLE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Bounded grace for orderly shutdown lifecycle delivery. Long enough for
+/// the lifecycle consumer to make room under transient saturation, short
+/// enough that subscriber teardown cannot hang on a dead consumer.
+const LIFECYCLE_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_millis(500);
 /// Bounded deadline for the initial synchronization sequence after a
 /// Subscribe RPC is established. One sync_response=true per
 /// SubscriptionList (i.e. per Subscribe RPC stream) completes it; a
@@ -188,17 +192,23 @@ impl SessionEmitter {
         }
     }
 
-    /// Best-effort transition for shutdown/cancellation paths where
-    /// blocking could hang teardown.
-    fn emit_nowait(&mut self, state: &str, detail: impl Into<String>) {
+    /// Bounded transition for shutdown/cancellation paths. Teardown gets a
+    /// short, finite opportunity to enqueue terminal evidence; it never
+    /// waits indefinitely on a saturated or closed lifecycle channel.
+    async fn emit_shutdown(&mut self, state: &str, detail: impl Into<String>) {
         let Some(tx) = &self.tx else { return };
         self.seq += 1;
         let ev = self.event(state, self.seq, &detail.into());
-        if tx.try_send(ev).is_err() {
-            warn!(target = %self.target, "lifecycle channel full/closed — terminal transition dropped");
-            metrics::counter!("bonsai_subscription_lifecycle_dropped_total").increment(1);
-        } else if lifecycle_state_terminal(state) {
-            self.mark_terminated();
+        match tx.send_timeout(ev, LIFECYCLE_SHUTDOWN_SEND_TIMEOUT).await {
+            Ok(()) => {
+                if lifecycle_state_terminal(state) {
+                    self.mark_terminated();
+                }
+            }
+            Err(_) => {
+                warn!(target = %self.target, "lifecycle channel saturated/closed — shutdown terminal transition dropped");
+                metrics::counter!("bonsai_subscription_lifecycle_dropped_total").increment(1);
+            }
         }
     }
 
@@ -385,7 +395,7 @@ impl GnmiSubscriber {
             acquisition: String::new(),
             schema_binding: self.schema_binding.clone(),
         };
-        match tokio::time::timeout(Duration::from_secs(2), handle.tx.send(ev)).await {
+        match tokio::time::timeout(LIFECYCLE_SHUTDOWN_SEND_TIMEOUT, handle.tx.send(ev)).await {
             Ok(Ok(())) => {
                 active.terminated.store(true, Ordering::SeqCst);
             }
@@ -672,9 +682,8 @@ impl GnmiSubscriber {
                 (subscriptions, plan_paths, plan_id)
             }
         };
-        let enforce_idle_timeout = subscriptions
-            .iter()
-            .any(|sub| sub.mode == SubscriptionMode::Sample as i32);
+        let idle_timeout = sample_stream_idle_timeout(&subscriptions);
+        let enforce_idle_timeout = !idle_timeout.is_zero();
         info!(
             target = %target,
             vendor       = %caps.vendor_label,
@@ -693,7 +702,7 @@ impl GnmiSubscriber {
 
         let req = SubscribeRequest {
             request: Some(subscribe_request::Request::Subscribe(SubscriptionList {
-                subscription: subscriptions,
+                subscription: subscriptions.clone(),
                 mode: subscription_list::Mode::Stream as i32,
                 encoding: caps.encoding,
                 ..Default::default()
@@ -772,7 +781,7 @@ impl GnmiSubscriber {
                 tokio::select! {
                     _ = shutdown.changed() => {
                         info!(target = %target, "shutdown signal received during telemetry stream");
-                        emitter.emit_nowait("disconnected", "shutdown");
+                        emitter.emit_shutdown("disconnected", "shutdown").await;
                         return Ok(());
                     }
                     _ = &mut sync_sleep, if pending_sync > 0 => {
@@ -781,10 +790,10 @@ impl GnmiSubscriber {
                         emitter.emit("failed", "initial_sync_timeout").await;
                         break;
                     }
-                    _ = tokio::time::sleep(SAMPLE_STREAM_IDLE_TIMEOUT) => {
+                    _ = tokio::time::sleep(idle_timeout) => {
                         warn!(
                             target = %target,
-                            idle_secs = SAMPLE_STREAM_IDLE_TIMEOUT.as_secs(),
+                            idle_secs = idle_timeout.as_secs(),
                             "sample-based telemetry stream went idle; forcing reconnect"
                         );
                         emitter.emit("failed", "sample_stream_idle_timeout").await;
@@ -796,7 +805,7 @@ impl GnmiSubscriber {
                 tokio::select! {
                     _ = shutdown.changed() => {
                         info!(target = %target, "shutdown signal received during telemetry stream");
-                        emitter.emit_nowait("disconnected", "shutdown");
+                        emitter.emit_shutdown("disconnected", "shutdown").await;
                         return Ok(());
                     }
                     _ = &mut sync_sleep, if pending_sync > 0 => {
@@ -847,12 +856,15 @@ impl GnmiSubscriber {
                                     // Structured evidence path: notification
                                     // prefix elements followed by the update's
                                     // own elements (gNMI relative-path rule).
-                                    let gnmi_paths = resolve_notification_path(
-                                        notif.prefix.as_ref(),
-                                        update.path.as_ref(),
-                                    )
-                                    .into_iter()
-                                    .collect::<Vec<_>>();
+                                    let gnmi_paths = apply_session_origins(
+                                        resolve_notification_path(
+                                            notif.prefix.as_ref(),
+                                            update.path.as_ref(),
+                                        )
+                                        .into_iter()
+                                        .collect(),
+                                        &subscriptions,
+                                    );
                                     let val = update
                                         .val
                                         .as_ref()
@@ -925,12 +937,15 @@ impl GnmiSubscriber {
                                     if path.is_empty() {
                                         continue;
                                     }
-                                    let gnmi_paths = resolve_notification_path(
-                                        notif.prefix.as_ref(),
-                                        Some(delete),
-                                    )
-                                    .into_iter()
-                                    .collect::<Vec<_>>();
+                                    let gnmi_paths = apply_session_origins(
+                                        resolve_notification_path(
+                                            notif.prefix.as_ref(),
+                                            Some(delete),
+                                        )
+                                        .into_iter()
+                                        .collect(),
+                                        &subscriptions,
+                                    );
                                     let msg = TelemetryUpdate {
                                         plan_id: submitted_plan_id.clone(),
                                         session_id: session_id.clone(),
@@ -2011,6 +2026,29 @@ fn build_selected_subscriptions(selected_paths: &[SelectedSubscriptionPath]) -> 
         .collect()
 }
 
+/// Mode-aware SAMPLE idle watchdog. Pure ON_CHANGE streams have no cadence to
+/// violate, so they keep the previous no-app-timeout behavior; SAMPLE streams
+/// get a floor plus headroom scaled to the slowest requested interval so long
+/// sampling periods cannot be declared dead between legitimate updates.
+fn sample_stream_idle_timeout(subscriptions: &[Subscription]) -> Duration {
+    let max_interval_ns = subscriptions
+        .iter()
+        .filter(|sub| sub.mode == SubscriptionMode::Sample as i32)
+        .map(|sub| sub.sample_interval)
+        .max();
+    let Some(interval_ns) = max_interval_ns else {
+        return Duration::ZERO;
+    };
+    if interval_ns == 0 {
+        return SAMPLE_STREAM_IDLE_TIMEOUT;
+    }
+    let scaled_ns = (interval_ns as u128)
+        .saturating_mul(3)
+        .saturating_add(30_000_000_000)
+        .min(u64::MAX as u128) as u64;
+    Duration::from_nanos(scaled_ns).max(SAMPLE_STREAM_IDLE_TIMEOUT)
+}
+
 fn subscription_from_selected_path(
     selected: &SelectedSubscriptionPath,
 ) -> Result<(Subscription, String), String> {
@@ -2251,6 +2289,58 @@ fn resolve_notification_path(prefix: Option<&Path>, update: Option<&Path>) -> Op
                 ..Default::default()
             })
         }
+    }
+}
+
+/// Origin provenance for non-echoing NOS notifications (M6F-D). Some
+/// devices (verified: cEOS 4.37.0F) honor a requested subscription origin
+/// but omit `Path.origin` on streamed notifications. The effective
+/// subscription origin is trusted SESSION context — it is never read from
+/// the telemetry payload. An empty observed origin is filled ONLY when
+/// exactly one non-empty origin among this session's authorized
+/// subscriptions structurally covers the observed path; conflicting or
+/// absent coverage leaves the origin empty (fail closed). A non-empty
+/// observed origin is never overwritten.
+fn apply_session_origins(paths: Vec<Path>, subscriptions: &[Subscription]) -> Vec<Path> {
+    paths
+        .into_iter()
+        .map(|mut path| {
+            if path.origin.is_empty()
+                && let Some(origin) = unique_session_origin(&path, subscriptions)
+            {
+                path.origin = origin.to_string();
+            }
+            path
+        })
+        .collect()
+}
+
+fn unique_session_origin<'a>(
+    observation: &Path,
+    subscriptions: &'a [Subscription],
+) -> Option<&'a str> {
+    let mut origins = std::collections::BTreeSet::new();
+    for sub in subscriptions {
+        let Some(expected) = sub.path.as_ref() else {
+            continue;
+        };
+        if expected.origin.is_empty() {
+            continue;
+        }
+        // Reuse the exact coverage matcher with the candidate origin
+        // stamped onto a probe: element/key/wildcard semantics stay
+        // identical to coverage evaluation, only origin identity is
+        // being resolved here.
+        let mut probe = observation.clone();
+        probe.origin = expected.origin.clone();
+        if crate::gnmi_path::observation_covers(expected, &probe) {
+            origins.insert(expected.origin.as_str());
+        }
+    }
+    if origins.len() == 1 {
+        origins.into_iter().next()
+    } else {
+        None
     }
 }
 
@@ -2514,5 +2604,128 @@ mod tests {
         let other = map.exec_seq("10.0.0.2:9339");
         assert_eq!(other.load(Ordering::SeqCst), 0);
         assert!(!Arc::ptr_eq(&seq1, &other));
+    }
+
+    fn emitter_with_tx(tx: mpsc::Sender<SessionLifecycleEvent>) -> SessionEmitter {
+        let handle = LifecycleHandle {
+            tx,
+            authority_epoch: 1,
+            assignment_generation: 2,
+            collector_session_generation: 3,
+        };
+        SessionEmitter::new(Some(&handle), "dut", "plan", "sess", None)
+    }
+
+    #[tokio::test]
+    async fn shutdown_emit_waits_bounded_for_channel_capacity() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut emitter = emitter_with_tx(tx);
+        emitter.emit("submitted", "fill").await;
+
+        let started = std::time::Instant::now();
+        emitter.emit_shutdown("disconnected", "shutdown").await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(400) && elapsed < Duration::from_secs(2),
+            "bounded shutdown wait should use the configured grace, got {elapsed:?}"
+        );
+        assert_eq!(rx.recv().await.expect("queued event").state, "submitted");
+        assert!(
+            rx.try_recv().is_err(),
+            "timed-out shutdown event must not be queued"
+        );
+
+        emitter.emit_shutdown("disconnected", "shutdown").await;
+        let terminal = rx.recv().await.expect("terminal after drain");
+        assert_eq!(terminal.state, "disconnected");
+        assert_eq!(terminal.transition_seq, 3);
+    }
+
+    #[tokio::test]
+    async fn shutdown_emit_on_closed_channel_returns_promptly() {
+        let (tx, rx) = mpsc::channel::<SessionLifecycleEvent>(1);
+        drop(rx);
+        let mut emitter = emitter_with_tx(tx);
+        let started = std::time::Instant::now();
+        emitter.emit_shutdown("disconnected", "shutdown").await;
+        assert!(
+            started.elapsed() < LIFECYCLE_SHUTDOWN_SEND_TIMEOUT,
+            "closed channel must not consume the full shutdown grace"
+        );
+    }
+
+    #[test]
+    fn sample_idle_timeout_scales_with_slowest_sample_interval() {
+        let sample = |interval_ns: u64| Subscription {
+            mode: SubscriptionMode::Sample as i32,
+            sample_interval: interval_ns,
+            ..Default::default()
+        };
+        let on_change = Subscription {
+            mode: SubscriptionMode::OnChange as i32,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            sample_stream_idle_timeout(&[on_change.clone()]),
+            Duration::ZERO
+        );
+        assert_eq!(
+            sample_stream_idle_timeout(&[sample(10_000_000_000)]),
+            SAMPLE_STREAM_IDLE_TIMEOUT
+        );
+        assert_eq!(
+            sample_stream_idle_timeout(&[sample(60_000_000_000)]),
+            Duration::from_secs(210)
+        );
+        assert_eq!(
+            sample_stream_idle_timeout(&[sample(5_000_000_000), sample(120_000_000_000)]),
+            Duration::from_secs(390)
+        );
+        assert_eq!(
+            sample_stream_idle_timeout(&[sample(0)]),
+            SAMPLE_STREAM_IDLE_TIMEOUT
+        );
+    }
+
+    fn gnmi_sub(origin: &str, raw: &str) -> Subscription {
+        Subscription {
+            path: Some(crate::gnmi_path::parse_path(origin, raw).expect("sub path")),
+            mode: SubscriptionMode::Sample as i32,
+            sample_interval: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn session_origin_fills_only_unique_authorized_origin() {
+        let obs = crate::gnmi_path::parse_path(
+            "",
+            "interfaces/interface[name=Ethernet1]/state/counters/in-octets",
+        )
+        .unwrap();
+        let openconfig = gnmi_sub("openconfig", "interfaces/interface[name=Ethernet1]");
+        let ietf = gnmi_sub("ietf", "interfaces/interface[name=Ethernet1]");
+
+        // Unique authorized origin covering the observed path → filled.
+        let out = apply_session_origins(vec![obs.clone()], &[openconfig.clone()]);
+        assert_eq!(out[0].origin, "openconfig");
+
+        // Two different authorized origins cover the same path →
+        // ambiguous, stays empty (fail closed, never merged).
+        let out = apply_session_origins(vec![obs.clone()], &[openconfig.clone(), ietf]);
+        assert!(out[0].origin.is_empty());
+
+        // A non-empty observed origin is never overwritten by session
+        // context.
+        let mut echoed = obs.clone();
+        echoed.origin = "vendor-native".to_string();
+        let out = apply_session_origins(vec![echoed], &[openconfig.clone()]);
+        assert_eq!(out[0].origin, "vendor-native");
+
+        // No authorized subscription covers this path → stays empty.
+        let other = crate::gnmi_path::parse_path("", "system/state/hostname").unwrap();
+        let out = apply_session_origins(vec![other], &[openconfig]);
+        assert!(out[0].origin.is_empty());
     }
 }

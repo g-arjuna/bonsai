@@ -92,6 +92,7 @@ pub enum ReasonCode {
     ModuleMissingFromEffectiveSet,
     ModuleRevisionUnresolved,
     ModuleOrganizationConflict,
+    ModuleOrganizationMismatch,
     ModuleNamespaceConflict,
     CapabilitiesOnlyEvidence,
     DeviceLibraryUnavailable,
@@ -132,6 +133,7 @@ impl ReasonCode {
             Self::ModuleMissingFromEffectiveSet => "module_missing_from_effective_set",
             Self::ModuleRevisionUnresolved => "module_revision_unresolved",
             Self::ModuleOrganizationConflict => "module_organization_conflict",
+            Self::ModuleOrganizationMismatch => "module_organization_mismatch",
             Self::ModuleNamespaceConflict => "module_namespace_conflict",
             Self::CapabilitiesOnlyEvidence => "capabilities_only_evidence",
             Self::DeviceLibraryUnavailable => "device_library_unavailable",
@@ -1146,14 +1148,27 @@ fn evaluate_module(
     }
 
     // Organization identity (capabilities-sourced): both present and
-    // different → ambiguous, never silently the same module.
+    // different is ambiguous when capabilities are the ONLY identity
+    // evidence. When RFC 8525 YANG Library membership already proves the
+    // module's name+namespace+revision, the capabilities organization is
+    // descriptive provenance (gNMI ModelData has no independent revision
+    // authority), so the mismatch is recorded as a warning reason rather
+    // than a conflict. Namespace/revision/feature/deviation checks below
+    // remain authoritative and unchanged.
     if let Some(org) = &ev.organization
         && !org.is_empty()
         && !cm.organization.is_empty()
         && org != &cm.organization
     {
-        reasons.insert(ReasonCode::ModuleOrganizationConflict);
-        return (ApplicabilityStatus::Conflicted, reasons, classification);
+        if matches!(
+            ev.source,
+            ModuleEvidenceSource::YangLibrary | ModuleEvidenceSource::Both
+        ) {
+            reasons.insert(ReasonCode::ModuleOrganizationMismatch);
+        } else {
+            reasons.insert(ReasonCode::ModuleOrganizationConflict);
+            return (ApplicabilityStatus::Conflicted, reasons, classification);
+        }
     }
 
     // Revision resolution. Catalogue revision "unknown"/"" means the

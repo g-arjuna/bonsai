@@ -2779,7 +2779,10 @@ impl LifecycleResendIndex {
 
 #[cfg(test)]
 mod lifecycle_resend_tests {
-    use super::{LIFECYCLE_RESEND_INDEX_CAP, LifecycleResendIndex};
+    use super::{
+        LIFECYCLE_RESEND_INDEX_CAP, LIFECYCLE_SHUTDOWN_DRAIN_TIMEOUT, LifecycleResendIndex,
+        drain_lifecycle_shutdown_queue,
+    };
     use crate::subscription_sessions::SessionLifecycleEvent;
 
     fn ev(session_id: &str, seq: u64) -> SessionLifecycleEvent {
@@ -2841,6 +2844,46 @@ mod lifecycle_resend_tests {
         // never the refreshed live session.
         assert!(!drained.iter().any(|e| e.session_id == "flood-0"));
     }
+
+    #[tokio::test]
+    async fn shutdown_drain_waits_for_inflight_terminal_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<SessionLifecycleEvent>(1);
+        tx.send(ev("s1", 1)).await.unwrap();
+        let producer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            // Bounded shutdown emit lands after the forwarder already
+            // observed the shutdown signal.
+            tx.send(ev("s1", 2)).await.unwrap();
+        });
+
+        let mut idx = LifecycleResendIndex::default();
+        drain_lifecycle_shutdown_queue(&mut rx, &mut idx).await;
+        producer.await.unwrap();
+
+        let drained = idx.drain();
+        assert_eq!(drained.len(), 1, "latest per session wins");
+        assert_eq!(drained[0].session_id, "s1");
+        assert_eq!(drained[0].transition_seq, 2);
+    }
+
+    #[tokio::test]
+    async fn shutdown_drain_is_bounded_when_sender_stays_open() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<SessionLifecycleEvent>(1);
+        let mut idx = LifecycleResendIndex::default();
+        let started = std::time::Instant::now();
+        drain_lifecycle_shutdown_queue(&mut rx, &mut idx).await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= LIFECYCLE_SHUTDOWN_DRAIN_TIMEOUT,
+            "drain must wait out the bounded grace, got {elapsed:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "drain must stay bounded, got {elapsed:?}"
+        );
+        assert!(idx.drain().is_empty());
+        drop(tx);
+    }
 }
 
 #[cfg(test)]
@@ -2895,6 +2938,96 @@ mod schema_binding_proto_tests {
     }
 }
 
+const LIFECYCLE_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+const LIFECYCLE_SHUTDOWN_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+/// Grace for in-flight producers to finish bounded shutdown emits before
+/// the forwarder snapshots the resend index. Covers the subscriber-side
+/// `LIFECYCLE_SHUTDOWN_SEND_TIMEOUT` plus scheduling slack; still bounded.
+const LIFECYCLE_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_millis(750);
+
+/// Drain lifecycle evidence until producers disconnect or the bounded
+/// shutdown grace expires. `try_recv` alone races orderly teardown: the
+/// forwarder can observe shutdown before a subscriber's bounded
+/// `send_timeout` enqueues its terminal transition.
+async fn drain_lifecycle_shutdown_queue(
+    rx: &mut mpsc::Receiver<SessionLifecycleEvent>,
+    resend_index: &mut LifecycleResendIndex,
+) {
+    let deadline = tokio::time::Instant::now() + LIFECYCLE_SHUTDOWN_DRAIN_TIMEOUT;
+    loop {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Some(ev)) => resend_index.note(&ev),
+            Ok(None) | Err(_) => break,
+        }
+    }
+}
+
+/// Drain queued lifecycle evidence through the durable forwarding path on
+/// collector shutdown. Delivery stays bounded: one reconnect attempt plus a
+/// single streaming RPC deadline, never an unbounded wait.
+async fn flush_lifecycle_shutdown(
+    cfg: &Arc<RuntimeConfig>,
+    collector_id: &str,
+    resend_index: &mut LifecycleResendIndex,
+    resend: &mut std::collections::VecDeque<SessionLifecycleEvent>,
+    rx: &mut mpsc::Receiver<SessionLifecycleEvent>,
+) {
+    drain_lifecycle_shutdown_queue(rx, resend_index).await;
+    resend.clear();
+    let events = resend_index.drain();
+    if events.is_empty() {
+        return;
+    }
+    let mut client = match tokio::time::timeout(
+        LIFECYCLE_SHUTDOWN_CONNECT_TIMEOUT,
+        create_ingest_client(cfg),
+    )
+    .await
+    {
+        Ok(Ok(client)) => client,
+        Ok(Err(error)) => {
+            warn!(%error, "collector lifecycle shutdown flush could not connect to core");
+            return;
+        }
+        Err(_) => {
+            warn!("collector lifecycle shutdown flush timed out connecting to core");
+            return;
+        }
+    };
+    let protos = events
+        .into_iter()
+        .map(|ev| lifecycle_event_to_proto(collector_id, &ev))
+        .collect::<Vec<_>>();
+    match tokio::time::timeout(
+        LIFECYCLE_SHUTDOWN_FLUSH_TIMEOUT,
+        client.subscription_lifecycle(Request::new(tokio_stream::iter(protos))),
+    )
+    .await
+    {
+        Ok(Ok(response)) => {
+            let result = response.into_inner();
+            if result.rejected > 0 || !result.error.is_empty() {
+                warn!(
+                    accepted = result.accepted,
+                    rejected = result.rejected,
+                    error = %result.error,
+                    "collector lifecycle shutdown flush incomplete"
+                );
+            }
+            metrics::counter!("bonsai_subscription_lifecycle_forwarded_total")
+                .increment(result.accepted as u64);
+            metrics::counter!("bonsai_subscription_lifecycle_rejected_total")
+                .increment(result.rejected as u64);
+        }
+        Ok(Err(status)) => {
+            warn!(%status, "collector lifecycle shutdown flush rejected by core");
+        }
+        Err(_) => {
+            warn!("collector lifecycle shutdown flush timed out");
+        }
+    }
+}
+
 #[doc(hidden)]
 pub async fn run_lifecycle_forwarder(
     cfg: Arc<RuntimeConfig>,
@@ -2923,7 +3056,10 @@ pub async fn run_lifecycle_forwarder(
             Some(ev)
         } else {
             tokio::select! {
-                _ = shutdown.changed() => return Ok(()),
+                _ = shutdown.changed() => {
+                    flush_lifecycle_shutdown(&cfg, &collector_id, &mut resend_index, &mut resend, &mut rx).await;
+                    return Ok(());
+                }
                 ev = rx.recv() => ev,
             }
         };
@@ -2938,7 +3074,10 @@ pub async fn run_lifecycle_forwarder(
                 Err(error) => {
                     warn!(%error, %collector_id, "lifecycle forwarder: core connect failed; retrying in 5s");
                     tokio::select! {
-                        _ = shutdown.changed() => return Ok(()),
+                        _ = shutdown.changed() => {
+                            flush_lifecycle_shutdown(&cfg, &collector_id, &mut resend_index, &mut resend, &mut rx).await;
+                            return Ok(());
+                        }
                         _ = tokio::time::sleep(Duration::from_secs(5)) => {}
                     }
                 }
@@ -2996,13 +3135,21 @@ pub async fn run_lifecycle_forwarder(
                 Some(ev)
             } else {
                 tokio::select! {
-                    _ = shutdown.changed() => return Ok(()),
+                    _ = shutdown.changed() => {
+                        drop(req_tx);
+                        flush_lifecycle_shutdown(&cfg, &collector_id, &mut resend_index, &mut resend, &mut rx).await;
+                        return Ok(());
+                    }
                     _ = done_rx.recv() => {
                         warn!("subscription lifecycle RPC stream ended; reconnecting");
                         metrics::counter!("bonsai_subscription_lifecycle_stream_reconnects_total").increment(1);
                         // req_tx drops here → client stream closes → RPC ends.
                         tokio::select! {
-                            _ = shutdown.changed() => return Ok(()),
+                            _ = shutdown.changed() => {
+                                drop(req_tx);
+                                flush_lifecycle_shutdown(&cfg, &collector_id, &mut resend_index, &mut resend, &mut rx).await;
+                                return Ok(());
+                            }
                             _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                         }
                         // Heal: resend the newest event per session.
@@ -3020,12 +3167,20 @@ pub async fn run_lifecycle_forwarder(
                     resend_index.note(&ev);
                     let proto = lifecycle_event_to_proto(&collector_id, &ev);
                     let sent = tokio::select! {
-                        _ = shutdown.changed() => return Ok(()),
+                        _ = shutdown.changed() => {
+                            drop(req_tx);
+                            flush_lifecycle_shutdown(&cfg, &collector_id, &mut resend_index, &mut resend, &mut rx).await;
+                            return Ok(());
+                        }
                         _ = done_rx.recv() => {
                             warn!("subscription lifecycle RPC stream ended; reconnecting");
                             metrics::counter!("bonsai_subscription_lifecycle_stream_reconnects_total").increment(1);
                             tokio::select! {
-                                _ = shutdown.changed() => return Ok(()),
+                                _ = shutdown.changed() => {
+                                    drop(req_tx);
+                                    flush_lifecycle_shutdown(&cfg, &collector_id, &mut resend_index, &mut resend, &mut rx).await;
+                                    return Ok(());
+                                }
                                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                             }
                             resend.extend(resend_index.drain());
