@@ -1,0 +1,4 @@
+     Network          Next Hop            Metric LocPrf Weight Path
+ *>  10.99.10.0/24    10.100.110.1(frr-b)
+                                               0             0 65002 i
+

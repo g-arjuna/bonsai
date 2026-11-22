@@ -1,0 +1,5 @@
+     12 mtype=0
+     14 mtype=1
+      3 mtype=2
+      4 mtype=3
+      2 mtype=4

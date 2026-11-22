@@ -165,8 +165,10 @@ withdrawal PASS on executed evidence (FRR 10.6.x → Bonsai
 routing_service: `2026-11-08-bn003-genuine-vrf-bmp`,
 `2026-11-10-bn021c-nat-acceptance`, `2026-11-11-bn021f-authenticated-bmp`,
 peer-down investigations); reusable pinned topology
-`lab/acceptance/m6f-frr/` (FRR 10.6.2 digest-pinned); BGP-LS
-NOT_EXECUTED pending live capability verification.
+`lab/acceptance/m6f-frr/` (FRR 10.6.2 digest-pinned); fresh live run
+2026-11-22 PASS for peer-up/down, route announce/withdraw/re-announce
+and BMP reconnect (`docs/merger/evidence/2026-11-22-m6f-frr/`);
+BGP-LS UNSUPPORTED on the 10.6.2 image build (no BGP-LS AFI/SAFI).
 
 Update this matrix only from captured evidence in
 `docs/merger/evidence/*-m6f-*/`. Mock-gNMI suites and inferred

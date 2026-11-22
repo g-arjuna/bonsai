@@ -25,7 +25,7 @@ NOT_EXECUTED pending fresh reservation + refreshed credentials
 (`docs/merger/evidence/2026-11-22-m6f-iosxe/`). FRR: reusable
 version-pinned two-router topology under `lab/acceptance/m6f-frr/`;
 BMP peer/route/withdrawal evidence already exists
-(bn003/bn021c/bn021f); gNMI UNSUPPORTED, BGP-LS NOT_EXECUTED.
+(bn003/bn021c/bn021f); gNMI UNSUPPORTED; fresh live run 2026-11-22 PASS (peer/route/withdraw/BMP reconnect, `docs/merger/evidence/2026-11-22-m6f-frr/`), BGP-LS UNSUPPORTED on the 10.6.2 build.
 Matrix updated (`lab/acceptance/m6f/MATRIX.md`).
 
 M6F-C update — **merged: coverage integrity, XRd/cEOS lab evidence,

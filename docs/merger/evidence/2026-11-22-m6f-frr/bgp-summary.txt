@@ -1,0 +1,6 @@
+Peers 1, using 17 KiB of memory
+
+Neighbor            V         AS   MsgRcvd   MsgSent   TblVer  InQ OutQ  Up/Down State/PfxRcd   PfxSnt Desc
+frr-b(10.100.110.1) 4      65002        24        24        1    0    0 00:01:01            1        1 frr-b
+
+Total number of neighbors 1
