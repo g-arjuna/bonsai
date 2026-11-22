@@ -127,3 +127,42 @@ vendors:
       explicit bounded acquisition (operator-selected paths, no
       schema_binding) is eligible; see
       docs/merger/evidence/2026-11-23-m6fc-arista-yang-audit/.
+
+  iosxe:
+    nos_family: cisco_iosxe
+    containerlab_kind: null
+    # Remote hosted virtual NOS — Cisco DevNet Catalyst 9000v
+    # Always-On sandbox. NOT containerlab-managed: the harness must
+    # never deploy or destroy anything for this vendor. Read-only
+    # probing only (Capabilities / YANG Library Get / Subscribe
+    # ONCE|SAMPLE); no Set, no edits, no stress.
+    remote: true
+    evidence_class: remote_hosted_virtual_nos
+    endpoint_host: devnetsandboxiosxec9k.cisco.com
+    image: null
+    image_archive: null
+    mgmt_ipv4: null
+    gnmi:
+      # IANA-assigned gNMI TLS port published by the sandbox
+      # ("GNMI port: 9339" per the DevNet sandbox page). IOS XE
+      # `gnxi secure-server` presents its own trustpoint certificate;
+      # authentication is username/password metadata, not a client
+      # certificate unless the operator configures one.
+      port: 9339
+      tls: verified         # certificate-verified TLS only; no downgrade
+      tls_server_name: devnetsandboxiosxec9k.cisco.com
+      # Optional PEM CA bundle when the sandbox serves a private-CA
+      # certificate. Leave null for public trust roots. An expired or
+      # untrusted chain FAILS CLOSED — it is never bypassed silently.
+      ca: null
+      username_env: BONSAI_LAB_IOSXE_USERNAME
+      password_env: BONSAI_LAB_IOSXE_PASSWORD
+      datastore: RUNNING
+    startup_config: null
+    notes: >-
+      Time-limited shared reservation — never a CI dependency. The
+      reservation password was once exposed in a screenshot; only
+      refreshed credentials supplied via the env vars above may be
+      used. Evidence records platform/version/capabilities only,
+      never credential material. Physical Catalyst hardware, if ever
+      added, is a separate evidence class.
