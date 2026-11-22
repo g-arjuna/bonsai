@@ -125,6 +125,12 @@ pub struct CompiledCatalogue {
     pub modules: Vec<CompiledModule>,
     pub paths: Vec<SchemaPathEntry>,
     pub diagnostics: Vec<String>,
+    /// Operator-approved module-revision pins this bundle was compiled
+    /// under (M6F-F). Provenance only — deliberately excluded from
+    /// `schema_id`, which remains pure effective-content identity so
+    /// identical closures deduplicate to one bundle.
+    #[serde(default)]
+    pub module_selection: BTreeMap<String, String>,
 }
 
 fn unknown_status() -> String {
@@ -224,11 +230,21 @@ pub struct ModuleInput {
 pub struct CompileOptions {
     /// When true, modules whose trust != "trusted" are excluded.
     pub trusted_only: bool,
+    /// Explicit module-revision selection (M6F-F): module name -> exact
+    /// revision date the operator approved for this compilation. A pinned
+    /// name keeps ONLY inputs whose module declares that revision; a pin
+    /// with no matching input is an explicit diagnostic and the module is
+    /// absent — never silently substituted with a different revision.
+    /// Unpinned names keep the default newest-revision policy.
+    pub module_revisions: BTreeMap<String, String>,
 }
 
 impl Default for CompileOptions {
     fn default() -> Self {
-        Self { trusted_only: true }
+        Self {
+            trusted_only: true,
+            module_revisions: BTreeMap::new(),
+        }
     }
 }
 
@@ -272,10 +288,102 @@ fn compile_inner(
         kept.push(Some(input));
     }
 
-    // For duplicate module names keep only the newest revision.
+    // Explicit module-revision pins (M6F-F). A pinned name keeps ONLY
+    // inputs whose module declares exactly the pinned revision; pins are
+    // applied before the default newest-revision policy and never
+    // substitute a different revision — an unresolvable pin is an explicit
+    // diagnostic and the module is absent from the compiled set, so
+    // dependent imports surface as missing-import diagnostics and the
+    // catalogue stays non-authoritative.
+    let mut pinned_names: BTreeSet<String> = BTreeSet::new();
     let mut drop_idx = BTreeSet::new();
-    for idxs in by_name.values() {
-        if idxs.len() > 1 {
+    for (name, revision) in &options.module_revisions {
+        pinned_names.insert(name.clone());
+        if name.trim().is_empty() || revision.trim().is_empty() {
+            diagnostics.push(
+                "invalid module-revision pin: module name and revision must be non-empty"
+                    .to_string(),
+            );
+            continue;
+        }
+        let Some(idxs) = by_name.get(name) else {
+            diagnostics.push(format!(
+                "module '{}' pinned to revision '{}' is not present in the compiled set",
+                name, revision
+            ));
+            continue;
+        };
+        let matching: Vec<usize> = idxs
+            .iter()
+            .copied()
+            .filter(|i| {
+                kept[*i]
+                    .as_ref()
+                    .is_some_and(|input| input.module.latest_revision() == *revision)
+            })
+            .collect();
+        if matching.is_empty() {
+            let available = idxs
+                .iter()
+                .filter_map(|i| kept[*i].as_ref())
+                .map(|input| input.module.latest_revision())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ");
+            diagnostics.push(format!(
+                "module '{}' pinned to revision '{}' but the compiled set provides revision(s) [{}]",
+                name, revision, available
+            ));
+            for &idx in idxs {
+                drop_idx.insert(idx);
+            }
+            continue;
+        }
+        // Same name+revision content conflicts resolve deterministically:
+        // lowest checksum, then lowest source ref — independent of input
+        // order. Every other candidate is dropped with a diagnostic.
+        let mut sorted = matching;
+        sorted.sort_by(|a, b| {
+            let ia = kept[*a].as_ref().unwrap();
+            let ib = kept[*b].as_ref().unwrap();
+            ia.checksum_sha256
+                .cmp(&ib.checksum_sha256)
+                .then_with(|| ia.source_ref.cmp(&ib.source_ref))
+        });
+        for &idx in sorted.iter().skip(1) {
+            drop_idx.insert(idx);
+            diagnostics.push(format!(
+                "module '{}' has conflicting content for pinned revision '{}'; keeping checksum {}, dropped checksum {}",
+                name,
+                revision,
+                kept[sorted[0]].as_ref().unwrap().checksum_sha256,
+                kept[idx].as_ref().unwrap().checksum_sha256
+            ));
+        }
+        let kept_idx = sorted[0];
+        for &idx in idxs {
+            if idx != kept_idx {
+                drop_idx.insert(idx);
+                if !sorted.contains(&idx) {
+                    diagnostics.push(format!(
+                        "module '{}' has multiple revisions; pinned '{}', dropped '{}'",
+                        name,
+                        revision,
+                        kept[idx].as_ref().unwrap().module.latest_revision()
+                    ));
+                }
+            }
+        }
+    }
+
+    // For duplicate module names keep only the newest revision — except
+    // pinned names, already resolved above.
+    for (name, idxs) in &by_name {
+        if pinned_names.contains(name) || idxs.len() <= 1 {
+            continue;
+        }
+        {
             let mut sorted: Vec<usize> = idxs.clone();
             sorted.sort_by(|a, b| {
                 let ia = kept[*a].as_ref().unwrap();
@@ -560,6 +668,7 @@ fn compile_inner(
         modules: modules_out,
         paths,
         diagnostics,
+        module_selection: options.module_revisions.clone(),
     }
 }
 

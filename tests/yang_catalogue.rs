@@ -2235,3 +2235,301 @@ fn nokia_dialect_fixture_parses_and_compiles() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// M6F-F PR1 — explicit module-revision selection
+// ---------------------------------------------------------------------------
+
+fn rev_module(name: &str, revision: &str, extra_leaf: &str) -> String {
+    format!(
+        r#"module {name} {{
+  yang-version "1.1";
+  namespace "urn:example:{name}";
+  prefix "{name}";
+  organization "Example Org";
+  revision "{revision}" {{
+    description "rev";
+  }}
+  container state {{
+    leaf marker {{
+      type string;
+    }}
+    {extra_leaf}
+  }}
+}}"#
+    )
+}
+
+fn pinned_input(name: &str, yang: &str, tag: &str) -> ModuleInput {
+    let module = bonsai::yang_schema::parse_module(yang).expect("pin fixture parses");
+    ModuleInput {
+        module,
+        vendor_scope: "test".to_string(),
+        source_kind: "inline".to_string(),
+        source_ref: format!("{name}@{tag}"),
+        trust: "trusted".to_string(),
+        checksum_sha256: format!("pin-{name}-{tag}"),
+        approved: false,
+        license: String::new(),
+        platforms: Vec::new(),
+        pinned_ref: String::new(),
+        source_id: String::new(),
+    }
+}
+
+#[test]
+fn revision_pin_selects_exact_older_revision() {
+    let old = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2020-01-01", ""),
+        "2020-01-01",
+    );
+    let new = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2024-01-01", "leaf added-2024 { type uint32; }"),
+        "2024-01-01",
+    );
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-mod".to_string(), "2020-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins.clone(),
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(vec![new, old], &opts);
+    assert_eq!(cat.modules.len(), 1);
+    assert_eq!(cat.modules[0].name, "pin-mod");
+    assert_eq!(cat.modules[0].revision, "2020-01-01");
+    assert_eq!(cat.module_selection, pins);
+    // The 2024-only leaf must not appear in the pinned catalogue.
+    assert!(
+        !cat.paths.iter().any(|p| p.path.contains("added-2024")),
+        "pinned catalogue leaked newer-revision content: {:?}",
+        cat.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn revision_pin_absent_keeps_default_newest_policy() {
+    // Compatibility: no pins => identical behavior to before M6F-F.
+    let old = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2020-01-01", ""),
+        "2020-01-01",
+    );
+    let new = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2024-01-01", ""),
+        "2024-01-01",
+    );
+    let cat = compile_parsed(vec![old, new], &CompileOptions::default());
+    assert_eq!(cat.modules[0].revision, "2024-01-01");
+    assert!(cat.module_selection.is_empty());
+}
+
+#[test]
+fn revision_pin_missing_revision_fails_closed() {
+    let only = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2024-01-01", ""),
+        "2024-01-01",
+    );
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-mod".to_string(), "1999-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(vec![only], &opts);
+    assert!(
+        cat.diagnostics
+            .iter()
+            .any(|d| d.contains("pinned to revision '1999-01-01'")),
+        "expected pin diagnostic, got {:?}",
+        cat.diagnostics
+    );
+    assert!(
+        cat.modules.is_empty(),
+        "unpinned revision must not substitute"
+    );
+    assert_ne!(cat.status, "complete");
+}
+
+#[test]
+fn revision_pin_absent_module_fails_closed() {
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("ghost-mod".to_string(), "2020-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(
+        vec![pinned_input(
+            "real-mod",
+            &rev_module("real-mod", "2024-01-01", ""),
+            "2024-01-01",
+        )],
+        &opts,
+    );
+    assert!(
+        cat.diagnostics
+            .iter()
+            .any(|d| d.contains("'ghost-mod' pinned to revision '2020-01-01'")),
+        "got {:?}",
+        cat.diagnostics
+    );
+    // The unrelated module still compiles; the pin itself is diagnostic.
+    assert_eq!(cat.modules.len(), 1);
+    assert_ne!(cat.status, "complete");
+}
+
+#[test]
+fn revision_pin_enforces_import_revision_match() {
+    let child_yang = r#"module pin-child {
+  yang-version "1.1";
+  namespace "urn:example:pin-child";
+  prefix "pc";
+  import pin-base {
+    prefix "pb";
+    revision "2020-01-01";
+  }
+  container state {
+    leaf marker { type string; }
+  }
+}"#;
+    let mk_inputs = || {
+        vec![
+            pinned_input(
+                "pin-base",
+                &rev_module("pin-base", "2024-01-01", ""),
+                "2024-01-01",
+            ),
+            pinned_input(
+                "pin-base",
+                &rev_module("pin-base", "2020-01-01", ""),
+                "2020-01-01",
+            ),
+            pinned_input("pin-child", child_yang, "child"),
+        ]
+    };
+
+    // Pinning the import-declared revision resolves cleanly.
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-base".to_string(), "2020-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(mk_inputs(), &opts);
+    assert!(
+        !cat.diagnostics
+            .iter()
+            .any(|d| d.contains("imports 'pin-base'")),
+        "compatible pin must not produce import diagnostics: {:?}",
+        cat.diagnostics
+    );
+    assert_eq!(cat.modules.len(), 2);
+
+    // Pinning a different revision makes the declared import revision
+    // mismatch explicit — never silently satisfied.
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-base".to_string(), "2024-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(mk_inputs(), &opts);
+    assert!(
+        cat.diagnostics.iter().any(|d| d.contains(
+            "imports 'pin-base'@'2020-01-01' but compiled set provides revision '2024-01-01'"
+        )),
+        "expected import revision mismatch, got {:?}",
+        cat.diagnostics
+    );
+    assert_ne!(cat.status, "complete");
+}
+
+#[test]
+fn revision_pin_is_deterministic_across_input_order() {
+    let mk = || {
+        vec![
+            pinned_input(
+                "pin-mod",
+                &rev_module("pin-mod", "2020-01-01", ""),
+                "2020-01-01",
+            ),
+            pinned_input(
+                "pin-mod",
+                &rev_module("pin-mod", "2024-01-01", ""),
+                "2024-01-01",
+            ),
+            pinned_input(
+                "pin-other",
+                &rev_module("pin-other", "2019-05-05", ""),
+                "2019-05-05",
+            ),
+        ]
+    };
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-mod".to_string(), "2020-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let a = compile_parsed(mk(), &opts);
+    let mut reversed = mk();
+    reversed.reverse();
+    let b = compile_parsed(reversed, &opts);
+    assert_eq!(a.schema_id, b.schema_id);
+    assert_eq!(a.diagnostics, b.diagnostics);
+}
+
+#[test]
+fn revision_pin_matching_default_dedups_schema_id() {
+    // A pin that selects exactly what the default policy would keep, on a
+    // single-revision module, adds no diagnostics — the compiled content
+    // is identical and must share the same content-addressed schema_id.
+    let mk = || {
+        pinned_input(
+            "pin-mod",
+            &rev_module("pin-mod", "2024-01-01", ""),
+            "2024-01-01",
+        )
+    };
+    let unpinned = compile_parsed(vec![mk()], &CompileOptions::default());
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-mod".to_string(), "2024-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let pinned = compile_parsed(vec![mk()], &opts);
+    assert_eq!(unpinned.schema_id, pinned.schema_id);
+    assert_eq!(unpinned.status, pinned.status);
+}
+
+#[test]
+fn revision_pin_rejects_untrusted_module() {
+    // trusted_only compile: an untrusted pinned module is absent, so the
+    // pin is unresolvable — fail closed, never compile untrusted content.
+    let mut untrusted = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2020-01-01", ""),
+        "2020-01-01",
+    );
+    untrusted.trust = "experimental".to_string();
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-mod".to_string(), "2020-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        trusted_only: true,
+    };
+    let cat = compile_parsed(vec![untrusted], &opts);
+    assert!(cat.modules.is_empty());
+    assert!(
+        cat.diagnostics
+            .iter()
+            .any(|d| d.contains("pinned to revision '2020-01-01'")),
+        "got {:?}",
+        cat.diagnostics
+    );
+}

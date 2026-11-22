@@ -32,7 +32,7 @@ pub use compiler::{
 };
 pub use parser::{Module, parse_module};
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -156,8 +156,25 @@ pub fn load_module_inputs(
 /// Compile the library's modules into a deterministic compiled catalogue and
 /// persist it as an inactive bundle. Returns the compiled catalogue.
 pub fn compile_library(library: &YangLibrary, trusted_only: bool) -> Result<CompiledCatalogue> {
+    compile_library_with_selection(library, trusted_only, &BTreeMap::new())
+}
+
+/// Compile with an explicit operator-approved module-revision selection
+/// (M6F-F): `module_revisions` maps module name -> exact revision date.
+/// Pinned modules keep only inputs declaring that revision; unresolvable
+/// pins are diagnostics, never silent newest-revision substitution. The
+/// resulting bundle is content-addressed like any other — identical
+/// effective closures deduplicate to the same `schema_id`.
+pub fn compile_library_with_selection(
+    library: &YangLibrary,
+    trusted_only: bool,
+    module_revisions: &BTreeMap<String, String>,
+) -> Result<CompiledCatalogue> {
     let (inputs, pre_diagnostics) = load_module_inputs(library, !trusted_only)?;
-    let options = CompileOptions { trusted_only };
+    let options = CompileOptions {
+        trusted_only,
+        module_revisions: module_revisions.clone(),
+    };
     // Pre-compilation diagnostics (unreadable/mislabeled/corrupt records)
     // participate in status and schema identity — they can never be
     // silently downgraded to `complete`.

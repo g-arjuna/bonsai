@@ -780,6 +780,7 @@ mod tests {
                 status: None,
             }],
             diagnostics: Vec::new(),
+            module_selection: Default::default(),
         }
     }
 
