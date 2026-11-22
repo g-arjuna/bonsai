@@ -1,5 +1,33 @@
 # Bonsai current state
 
+M6F-D/E update — **M6F-D recovery merged; multi-vendor
+interoperability extended** (PRs #61 `7192c27`, #62 `a208d43`,
+#63 `8b37839`; Junos deferred). Stage 0: the three interrupted
+M6F-D commits were recovered with provenance — `d803570`→`b833872`
+(bounded collector lifecycle termination + stream-health
+reliability), `d9266c8`→`5ff02a4` (gNMI origin provenance for
+non-echoing NOS notifications, uniquely-covered authorized
+subscriptions only), `9fb9a2f`→`d50afd4` (YANG Library-backed
+organization mismatch advisory; capabilities-only stays strict).
+The `src/subscriber.rs` overlap was resolved manually keeping both
+test suites; follow-up `af6d57d` added org-mismatch boundary tests
+and fixed a caps-only fixture org. Canonical gates L0–L3 PASS on
+the merged SHA. Stage 6 partial: automatic acquisition now refuses
+to subscribe when the Capabilities RPC fails — hint-derived fallback
+can no longer manufacture model support (`capabilities_verified`
+flag; explicit operator-authorized acquisition unaffected; mock
+wire-level tests in `tests/gnmi_selective_acquisition.rs`).
+IOS XE: remote-endpoint harness mode added (verified-TLS-only,
+no containerlab, env-var credentials only); live probe of the
+Catalyst 9000v DevNet sandbox recorded connection-reset on all
+services — reservation backend inactive, live gNMI acceptance
+NOT_EXECUTED pending fresh reservation + refreshed credentials
+(`docs/merger/evidence/2026-11-22-m6f-iosxe/`). FRR: reusable
+version-pinned two-router topology under `lab/acceptance/m6f-frr/`;
+BMP peer/route/withdrawal evidence already exists
+(bn003/bn021c/bn021f); gNMI UNSUPPORTED, BGP-LS NOT_EXECUTED.
+Matrix updated (`lab/acceptance/m6f/MATRIX.md`).
+
 M6F-C update — **merged: coverage integrity, XRd/cEOS lab evidence,
 SR Linux regression PASS** (PRs #55 `b40223d`, #56 `9907d7d`,
 #57 `993d4f8`, #58 `f789ed8`). Stage A:
