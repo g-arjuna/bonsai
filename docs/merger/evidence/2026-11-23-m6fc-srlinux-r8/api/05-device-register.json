@@ -1,0 +1,45 @@
+{
+  "device": {
+    "acquisition": "disabled",
+    "acquisition_plan_detail": "acquisition disabled",
+    "acquisition_plan_id": "33cd78e6f9e27a6b",
+    "acquisition_plan_state": "disabled",
+    "address": "172.100.102.11:57400",
+    "ca_cert": "/app/tls/srl-ca.pem",
+    "client_cert": "",
+    "client_key": "<redacted>",
+    "collector_id": "",
+    "credential_alias": "m6f-srlinux",
+    "enabled": true,
+    "hostname": "srlinux",
+    "inventory_only": false,
+    "password_env": "<redacted>",
+    "resolution_audit": [
+      "Started with 0 paths (no base profile selected)",
+      "Final path list has 0 paths"
+    ],
+    "resolved_selected_paths": [],
+    "role": "leaf",
+    "security": "tls_verify",
+    "selected_paths": [],
+    "site": "m6f-lab",
+    "subscription_statuses": [
+      {
+        "first_observed_at_ns": 1795343320699948903,
+        "last_observed_at_ns": 1795343326212176792,
+        "mode": "SAMPLE",
+        "origin": "",
+        "path": "interface[name=mgmt0]/statistics",
+        "sample_interval_ns": 10000000000,
+        "status": "superseded",
+        "updated_at_ns": 1795343331333479325
+      }
+    ],
+    "tls_domain": "srlinux",
+    "updated_at_ns": 1795343406796273241,
+    "username_env": "",
+    "vendor": "nokia_srlinux"
+  },
+  "error": "",
+  "success": true
+}

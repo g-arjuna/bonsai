@@ -1,0 +1,69 @@
+{
+  "acquisition": {
+    "approval_revision": 3,
+    "binding_fingerprint": "086fcd6d233f57cd02e440008ee6897d580751b68fd92abf9f19ac22a51285cb",
+    "mode": "disabled",
+    "plan_id": "53a64d7c6aebc133",
+    "schema_binding": null
+  },
+  "binaries": {
+    "collector": {
+      "path": "/tmp/bonsai-m6fc-e2e-srlinux/bonsai",
+      "sha256": "080e9000239a4f43a9fee0b786540761fba0d2fbfd644c9a5332446fbb585e07"
+    },
+    "core": {
+      "path": "/tmp/bonsai-m6fc-e2e-srlinux/bonsai",
+      "sha256": "080e9000239a4f43a9fee0b786540761fba0d2fbfd644c9a5332446fbb585e07"
+    }
+  },
+  "evidence_references": {
+    "capabilities": "11-discovery-job-final.json / 12-applicability.json (device-advertised models + YANG Library outcome incl. explicit absence)",
+    "observed_telemetry": "31-telemetry-observed.json",
+    "revocation": "40-plan-revoke.json / 41-post-revoke-device.json / 42-post-revoke-assignment.json / 43-withdrawal-evidence.json",
+    "subscription_request": "20-plan-preview.json / preview.json / plan-file",
+    "yang_library": "12-applicability.json yang_library_evidence fields"
+  },
+  "generated_at": "2026-11-22T10:38:00Z",
+  "images": {
+    "collector": "bn021d-bonsai:local",
+    "core": "bn021d-bonsai:local"
+  },
+  "metric_projection": [
+    {
+      "in_octets": 1512029,
+      "name": "mgmt0",
+      "out_octets": 111057051,
+      "updated_at_ns": 1795343837858457830
+    }
+  ],
+  "model_source": {
+    "id": "nokia-srlinux",
+    "pinned_ref": "25013f95ce33cae55896b920239a18e0656c9d28",
+    "repo": "https://github.com/nokia/srlinux-yang-models.git",
+    "status": "PINNED",
+    "subdirs": [
+      "srlinux-yang-models"
+    ]
+  },
+  "nos": {
+    "vendor": "nokia_srlinux",
+    "version": "26.3.1-410"
+  },
+  "resources": "NOT_PROVIDED",
+  "schema": {
+    "applicability_status": "applicable",
+    "catalogue_status": "complete",
+    "compiled_schema_id": "ysc-4f20e39183beea7edbb16f2d943fa8bf",
+    "content_id": "1lg3lmex1lg3ln8{d1",
+    "datastore": "ietf-datastores:operational",
+    "module_count": 11,
+    "path_count": 419,
+    "snapshot_id": 4
+  },
+  "source": {
+    "commit_sha": "9c763205e65e1cc37c415e1e6037c17e2c25da8a",
+    "final_sha_acceptance_eligible": true,
+    "repo": "/home/arjuna/Desktop/bonsai-m6fc-a",
+    "tree_dirty": false
+  }
+}

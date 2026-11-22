@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "notifications": [
+    {
+      "timestamp": "1795343943593538622",
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "srl_nokia-interfaces:interface",
+                "key": {
+                  "name": "mgmt0"
+                }
+              },
+              {
+                "name": "statistics"
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJpbi1wYWNrZXRzIjogIjIwMjExIiwgImluLW9jdGV0cyI6ICIxNTEyNTIzIiwgImluLXVuaWNhc3QtcGFja2V0cyI6ICIxOTkxMSIsICJpbi1icm9hZGNhc3QtcGFja2V0cyI6ICIzOSIsICJpbi1tdWx0aWNhc3QtcGFja2V0cyI6ICIxNDAiLCAiaW4tZGlzY2FyZGVkLXBhY2tldHMiOiAiMTIxIiwgImluLWVycm9yLXBhY2tldHMiOiAiMCIsICJpbi1mY3MtZXJyb3ItcGFja2V0cyI6ICIwIiwgIm91dC1wYWNrZXRzIjogIjc2NjcwIiwgIm91dC1vY3RldHMiOiAiMTExMDU4ODgyIiwgIm91dC1taXJyb3Itb2N0ZXRzIjogIjAiLCAib3V0LXVuaWNhc3QtcGFja2V0cyI6ICI3NDU4OCIsICJvdXQtYnJvYWRjYXN0LXBhY2tldHMiOiAiNiIsICJvdXQtbXVsdGljYXN0LXBhY2tldHMiOiAiMjA3NiIsICJvdXQtZGlzY2FyZGVkLXBhY2tldHMiOiAiMCIsICJvdXQtZXJyb3ItcGFja2V0cyI6ICIwIiwgIm91dC1taXJyb3ItcGFja2V0cyI6ICIwIiwgImNhcnJpZXItdHJhbnNpdGlvbnMiOiAiMCIsICJpbnRlcmZhY2UtdHJhbnNpdGlvbnMiOiAiMSIsICJsaW5rLXRyYW5zaXRpb25zIjogIjAifQ=="
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "stages": [
+    {
+      "name": "preflight",
+      "status": "PASS",
+      "detail": "binary+runtime+lab verified",
+      "utc": "2026-11-22T09:57:45Z"
+    },
+    {
+      "name": "yang_catalogue",
+      "status": "PREPARED",
+      "detail": "sync done; compile via API",
+      "utc": "2026-11-22T09:59:04Z"
+    },
+    {
+      "name": "deploy",
+      "status": "PASS",
+      "detail": "core+collector containers up",
+      "utc": "2026-11-22T10:11:56Z"
+    },
+    {
+      "name": "isolation",
+      "status": "PASS",
+      "detail": "core cannot reach device; collector reaches both",
+      "utc": "2026-11-22T10:11:57Z"
+    },
+    {
+      "name": "api_drive",
+      "status": "PASS",
+      "detail": "all stages green",
+      "utc": "2026-11-22T10:38:01Z"
+    }
+  ],
+  "overall": "PASS"
+}

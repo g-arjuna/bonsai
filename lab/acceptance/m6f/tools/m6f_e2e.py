@@ -804,7 +804,12 @@ def cmd_provenance(api, args, results):
     ev = args.evidence_dir
     repo = args.repo
     head = _git(repo, "rev-parse", "HEAD")
-    dirty = bool(_git(repo, "status", "--porcelain"))
+    # Generated L4 evidence output must not mark the source tree dirty —
+    # it is produced BY the run, not part of the tested source. Untracked
+    # or modified files anywhere else (including other evidence-unrelated
+    # paths) still count.
+    dirty = bool(_git(repo, "status", "--porcelain", "--",
+                      ".", ":(exclude)docs/merger/evidence"))
 
     # Pinned model source for this vendor, when identifiable.
     model_source = {"status": "NOT_PROVIDED"}
