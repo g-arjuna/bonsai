@@ -571,6 +571,7 @@ async fn start_core_lab(pki: &Pki, device: TargetConfig, clock: SchemaBindingClo
         verifier_sessions,
         vsrx,
         Some(verifier_ready_tx),
+        None,
     ));
     verifier_ready_rx
         .await

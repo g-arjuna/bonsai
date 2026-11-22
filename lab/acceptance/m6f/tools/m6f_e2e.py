@@ -69,6 +69,34 @@ class Api:
     def post(self, path, body=None):
         return self._req("POST", path, body if body is not None else {})
 
+    def stream_events(self, duration):
+        """Yield `/api/events` SSE payloads for up to `duration` seconds.
+
+        Used to capture authoritative in-process evidence (plan-state
+        and status-change events) that durable read-backs cannot show.
+        Yields decoded JSON objects; transport errors end the stream.
+        """
+        headers = {"Accept": "text/event-stream"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        req = urllib.request.Request(
+            self.base + "/api/events", headers=headers)
+        deadline = time.time() + duration
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                for raw in r:
+                    if time.time() > deadline:
+                        break
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        yield json.loads(line[5:].strip())
+                    except Exception:
+                        continue
+        except Exception:
+            return
+
 
 def stage_dir(ev, name):
     d = os.path.join(ev, name)
@@ -420,57 +448,482 @@ def cmd_revoke(api, args, results):
     return ok
 
 
+# Durable subscription-status values that prove the coverage verifier
+# processed a non-submitted (withdrawn/disabled) manifest. "observed"
+# and "pending" are NEVER acceptable post-withdrawal states.
+_TERMINAL_STATUSES = {"superseded", "expired", "stale", "failed",
+                      "disabled"}
+
+
+def _device_withdrawal_snapshot(api, addr):
+    """One authoritative read: device detail + collector assignment
+    status. Returns (device, collector_entry_or_None, ok)."""
+    code, dev = api.get(f"/api/devices/{addr}")
+    code2, status = api.get("/api/assignment/status")
+    collector = None
+    if code2 == 200:
+        for c in status.get("collectors", []):
+            collector = c  # caller filters by id when needed
+    return (dev if code == 200 else None,
+            status if code2 == 200 else None,
+            code == 200 and code2 == 200)
+
+
 def cmd_verify_withdrawal(api, args, results):
-    """After revoke: acquisition must be disabled and no NEW telemetry
-    observations may be accepted. We verify (a) device binding cleared,
-    (b) subscription statuses stop advancing / drop out of observed,
-    (c) assignment status reflects withdrawal."""
+    """Authoritative withdrawal verification (M6F-C).
+
+    A frozen `last_observed_at` across one short poll interval is NOT
+    proof of withdrawal: a SAMPLE subscription at 10s can look stable
+    for two polls while the device keeps streaming, and a noncompliant
+    collector may ignore the withdrawal entirely. Withdrawal is
+    verified only when ALL of the following authoritative evidence is
+    observed within one monitoring window:
+
+      1. binding_revoked        — the durable registry cleared the
+                                  device's schema_binding.
+      2. acquisition_disabled   — the target's acquisition mode is
+                                  "disabled" (revoke sets it).
+      3. withdrawal_issued      — the coverage verifier registered the
+                                  disabled plan: durable subscription
+                                  statuses left "observed" AND a live
+                                  `subscription_plan_state` SSE event
+                                  recorded the withdrawal (or, when the
+                                  SSE stream was unavailable, every
+                                  status durably transitioned).
+      4. collector_ack          — the assigned collector's heartbeat is
+                                  still fresh (it is alive and applying
+                                  post-revoke generations) and its
+                                  reported subscription_count is zero.
+      5. subscription_terminated— no path remains "observed"/"pending";
+                                  terminal states are recorded.
+      6. no_continued_collection— across a window spanning at least two
+                                  sample intervals, no
+                                  last_observed_at_ns/updated_at_ns
+                                  advances, no path returns to
+                                  "observed", and subscription_count
+                                  stays zero. This is also the
+                                  observable consequence of
+                                  old-session rejection: telemetry
+                                  stamped with the retired session can
+                                  never re-establish coverage.
+
+    Any missing or contradictory evidence records FAIL — never a
+    frozen-timestamp pass.
+    """
     addr = args.device_addr
-    deadline = time.time() + args.timeout
-    withdrew = False
-    last_obs = None
-    while time.time() < deadline:
-        code, dev = api.get(f"/api/devices/{addr}")
-        code2, status = api.get("/api/assignment/status")
-        if code == 200:
+    evidence = {
+        "binding_revoked": False,
+        "acquisition_disabled": False,
+        "withdrawal_issued": False,
+        "collector_ack": False,
+        "subscription_terminated": False,
+        "no_continued_collection": False,
+        "old_session_rejected": False,
+    }
+    detail = {}
+
+    # Learn the sample cadence up-front so the stability window spans
+    # at least two full SAMPLE periods — the minimum interval in which
+    # continued collection would provably advance a timestamp. An
+    # explicit --withdraw-window overrides for tests.
+    code, dev0 = api.get(f"/api/devices/{addr}")
+    sample_ns = 0
+    if code == 200:
+        for s in dev0.get("subscription_statuses", []):
+            sample_ns = max(sample_ns, s.get("sample_interval_ns") or 0)
+    sample_secs = max(1.0, sample_ns / 1e9) if sample_ns else 10.0
+    window = (float(args.withdraw_window) if args.withdraw_window > 0
+              else min(max(25.0, 2.5 * sample_secs), 90.0))
+    wait_budget = max(float(args.timeout or 300),
+                      window + args.poll_secs + 2.0)
+    deadline = time.time() + wait_budget
+
+    # SSE capture runs for the whole verify in a daemon thread; plan
+    # state events are the authoritative withdrawal-issued signal.
+    import queue as _queue
+    import threading as _threading
+    events_q = _queue.Queue()
+
+    def _pump():
+        try:
+            for ev in api.stream_events(wait_budget + 5.0):
+                events_q.put(ev)
+        except Exception:
+            pass
+
+    pump = _threading.Thread(target=_pump, daemon=True)
+    pump.start()
+
+    revoke_ns = int(time.time() * 1e9)
+    collector_id = args.collector_id
+    saw_plan_state = False
+    sse_events = 0
+    contradictions = []
+    last_statuses = []
+
+    # Phase A — wait for quiesce: every positive evidence class must be
+    # observed. In-flight telemetry between revoke and termination is
+    # expected here and is NOT counted as contradiction.
+    quiesced = False
+    stable_deadline = None
+    baseline_obs = baseline_upd = None
+    while time.time() < deadline and not (
+            quiesced and time.time() >= stable_deadline):
+        dev, status_body, _ok = _device_withdrawal_snapshot(api, addr)
+        cur_obs = cur_upd = 0
+        sub_count = None
+        if dev is not None:
             dump(args.evidence_dir, "41-post-revoke-device.json",
                  redact(dev))
+            if not dev.get("schema_binding"):
+                evidence["binding_revoked"] = True
+            if dev.get("acquisition") == "disabled":
+                evidence["acquisition_disabled"] = True
             statuses = dev.get("subscription_statuses", [])
+            last_statuses = statuses
             observed = [s for s in statuses
                         if s.get("status") == "observed"]
-            cur = max((s.get("last_observed_at_ns") or 0
-                       for s in observed), default=0)
-            if last_obs is None:
-                last_obs = cur
-            # withdrawn when nothing remains observed OR observations
-            # stopped advancing for a full poll window
-            if not observed:
-                withdrew = True
-                break
-            if cur == last_obs:
-                # one stable read is not proof; require it stays stable
-                # across two consecutive polls below
-                pass
-        if code2 == 200:
-            dump(args.evidence_dir, "42-post-revoke-assignment.json",
-                 redact(status))
-        time.sleep(args.poll_secs)
-        # re-check stability: compare across loop iterations
-        if last_obs is not None:
-            code, dev = api.get(f"/api/devices/{addr}")
-            if code == 200:
-                statuses = dev.get("subscription_statuses", [])
-                observed = [s for s in statuses
-                            if s.get("status") == "observed"]
-                cur = max((s.get("last_observed_at_ns") or 0
+            cur_obs = max((s.get("last_observed_at_ns") or 0
                            for s in observed), default=0)
-                if not observed or cur == last_obs:
-                    withdrew = True
-                    break
-                last_obs = cur
+            cur_upd = max((s.get("updated_at_ns") or 0
+                           for s in statuses), default=0)
+            non_terminal = [s.get("status") for s in statuses
+                            if s.get("status") not in _TERMINAL_STATUSES]
+            detail["non_terminal_statuses"] = non_terminal[:10]
+            if not observed and not any(
+                    s.get("status") == "pending" for s in statuses):
+                evidence["subscription_terminated"] = True
+        if status_body is not None:
+            dump(args.evidence_dir, "42-post-revoke-assignment.json",
+                 redact(status_body))
+            for c in status_body.get("collectors", []):
+                if c.get("id") != collector_id:
+                    continue
+                hb = c.get("last_heartbeat_ns") or 0
+                alive = bool(c.get("connected")) and hb > revoke_ns
+                sub_count = c.get("subscription_count")
+                detail["collector"] = {
+                    "connected": c.get("connected"),
+                    "heartbeat_ns": hb,
+                    "subscription_count": sub_count,
+                    "pending_withdrawal_devices":
+                        c.get("pending_withdrawal_devices"),
+                }
+                # The collector acknowledges withdrawal by staying
+                # connected with a post-revoke heartbeat AND reporting
+                # zero live gNMI subscriptions. A collector that keeps
+                # streaming never satisfies this — it is the
+                # noncompliance detector.
+                if alive and (sub_count or 0) == 0:
+                    evidence["collector_ack"] = True
+        while True:
+            try:
+                ev = events_q.get_nowait()
+            except _queue.Empty:
+                break
+            sse_events += 1
+            if ev.get("device_address") == addr and \
+                    ev.get("event_type") == "subscription_plan_state":
+                try:
+                    dj = json.loads(ev.get("detail_json") or "{}")
+                except Exception:
+                    dj = {}
+                if dj.get("state") in ("disabled", "rejected",
+                                       "failed", "superseded"):
+                    saw_plan_state = True
+                    detail["plan_state_event"] = dj
+
+        positive = all(evidence[k] for k in (
+            "binding_revoked", "acquisition_disabled",
+            "collector_ack", "subscription_terminated"))
+        if positive and not quiesced:
+            quiesced = True
+            baseline_obs, baseline_upd = cur_obs, cur_upd
+            stable_deadline = time.time() + window
+            # the stability window is mandatory — extend the overall
+            # budget rather than silently truncating it
+            deadline = max(deadline, stable_deadline + args.poll_secs + 1)
+            detail["quiesced_at_ns"] = int(time.time() * 1e9)
+
+        if quiesced:
+            # Phase B — the stability window: ANY regression is
+            # continued/unauthorized collection.
+            if cur_obs > baseline_obs:
+                contradictions.append(
+                    f"last_observed_at_ns advanced "
+                    f"{baseline_obs} -> {cur_obs} post-quiesce")
+            if cur_upd > baseline_upd:
+                contradictions.append(
+                    f"updated_at_ns advanced "
+                    f"{baseline_upd} -> {cur_upd} post-quiesce")
+            baseline_obs = max(baseline_obs, cur_obs)
+            baseline_upd = max(baseline_upd, cur_upd)
+            if any(s.get("status") == "observed"
+                   for s in last_statuses):
+                contradictions.append(
+                    "a path returned to 'observed' post-quiesce")
+            if sub_count is None:
+                contradictions.append(
+                    "collector status unavailable during stability "
+                    "window — zero-subscription state unproven")
+            elif sub_count > 0:
+                contradictions.append(
+                    f"collector reports {sub_count} live subscription(s) "
+                    "post-quiesce")
+            if dev is not None and dev.get("schema_binding"):
+                contradictions.append("schema_binding reappeared")
+            if dev is not None and dev.get("acquisition") != "disabled":
+                contradictions.append("acquisition re-enabled")
+
+        time.sleep(args.poll_secs)
+
+    # final SSE drain
+    pump.join(timeout=2.0)
+    while True:
+        try:
+            ev = events_q.get_nowait()
+        except _queue.Empty:
+            break
+        sse_events += 1
+        if ev.get("device_address") == addr and \
+                ev.get("event_type") == "subscription_plan_state":
+            try:
+                dj = json.loads(ev.get("detail_json") or "{}")
+            except Exception:
+                dj = {}
+            if dj.get("state") in ("disabled", "rejected", "failed",
+                                   "superseded"):
+                saw_plan_state = True
+                detail["plan_state_event"] = dj
+    detail["sse_events_seen"] = sse_events
+    detail["quiesced"] = quiesced
+    detail["monitor_window_secs"] = round(window, 1)
+    detail["sample_interval_secs"] = round(sample_secs, 3)
+    detail["contradictions"] = contradictions
+
+    # withdrawal_issued resolves after the loop: the authoritative
+    # plan-state event, or — only when the SSE stream delivered NOTHING
+    # at all — every durable status sitting in a terminal state.
+    all_terminal = bool(last_statuses) and all(
+        s.get("status") in _TERMINAL_STATUSES for s in last_statuses)
+    evidence["withdrawal_issued"] = saw_plan_state or (
+        sse_events == 0 and all_terminal)
+    detail["saw_plan_state_event"] = saw_plan_state
+    detail["all_statuses_terminal"] = all_terminal
+
+    # The stability window must actually have elapsed post-quiesce.
+    evidence["no_continued_collection"] = (
+        quiesced and not contradictions
+        and stable_deadline is not None
+        and time.time() >= stable_deadline)
+    # Old-session rejection is verified through its observable
+    # consequence: retired-session telemetry can never re-establish
+    # coverage, so nothing may advance or return to 'observed' during
+    # the stability window (registry-level fencing is covered by the
+    # Rust session-authority tests).
+    evidence["old_session_rejected"] = (
+        evidence["no_continued_collection"]
+        and evidence["subscription_terminated"])
+
+    withdrew = all(evidence.values())
+    dump(args.evidence_dir, "43-withdrawal-evidence.json",
+         {"evidence": evidence, "detail": detail})
     record(results, "withdrawal_verified", withdrew,
-           "observed telemetry ceased / statuses cleared after revoke")
+           "; ".join(f"{k}={v}" for k, v in evidence.items())
+           + (f" contradictions={contradictions}" if contradictions
+              else ""))
+    for sub in ("binding_revoked", "acquisition_disabled",
+                "withdrawal_issued", "collector_ack",
+                "subscription_terminated", "no_continued_collection",
+                "old_session_rejected"):
+        record(results, f"withdrawal_{sub.removeprefix('withdrawal_')}",
+               evidence[sub],
+               "; ".join(detail["contradictions"])
+               if detail.get("contradictions") else None)
     return withdrew
+
+
+def _git(repo, *args):
+    import subprocess
+    try:
+        return subprocess.run(
+            ["git", "-C", repo, *args], capture_output=True, text=True,
+            timeout=15).stdout.strip()
+    except Exception:
+        return ""
+
+
+def _sha256_file(path):
+    import hashlib
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _load_json(ev, name):
+    try:
+        with open(os.path.join(ev, name)) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def cmd_provenance(api, args, results):
+    """L4 evidence provenance manifest (M6F-C A3).
+
+    Records everything needed to audit exactly what was tested:
+
+      * exact committed source SHA + dirty-tree flag (a binary built
+        from uncommitted production changes is NOT final-SHA
+        acceptance — `source_tree_dirty` makes that explicit),
+      * runtime binary SHA256 for core and collector,
+      * core/collector image identities,
+      * NOS vendor/version,
+      * pinned model source commit (from config/yang_sources.toml),
+      * compiled schema identity + applicability snapshot,
+      * capabilities / YANG-Library evidence references (the discovery
+        artifacts — including explicit absence),
+      * actual acquisition mode + approved plan identity,
+      * submitted subscription request,
+      * observed telemetry + metric projection read-back,
+      * revocation/withdrawal evidence references,
+      * operator-supplied resource-consumption snapshot.
+
+    Missing inputs are recorded as null/"NOT_PROVIDED" — never
+    invented.
+    """
+    ev = args.evidence_dir
+    repo = args.repo
+    head = _git(repo, "rev-parse", "HEAD")
+    dirty = bool(_git(repo, "status", "--porcelain"))
+
+    # Pinned model source for this vendor, when identifiable.
+    model_source = {"status": "NOT_PROVIDED"}
+    try:
+        import tomllib
+        with open(os.path.join(repo, "config", "yang_sources.toml"),
+                  "rb") as f:
+            sources = tomllib.load(f).get("source", [])
+        vendor = (args.vendor or "").lower()
+        for src in sources:
+            platforms = [p.lower() for p in src.get("platforms", [])]
+            if vendor in platforms or src.get("vendor", "").lower() == vendor:
+                model_source = {
+                    "status": "PINNED",
+                    "id": src.get("id"),
+                    "repo": src.get("repo"),
+                    "pinned_ref": src.get("pinned_ref"),
+                    "subdirs": src.get("subdirs"),
+                }
+                break
+    except Exception as e:
+        model_source = {"status": f"UNAVAILABLE: {e}"}
+
+    # Compiled schema identity from the catalogue/activation artifacts.
+    compile_ev = _load_json(ev, "08-catalogue-compile.json") or {}
+    activate_ev = _load_json(ev, "21-plan-activate.json") or {}
+    applicability = _load_json(ev, "12-applicability.json") or {}
+    snap = applicability.get("snapshot") or {}
+
+    # Live read-backs: acquisition mode, plan/binding identity,
+    # interface metric projection.
+    code, dev = api.get(f"/api/devices/{args.device_addr}")
+    device = dev if code == 200 else {}
+    interfaces = device.get("interfaces", []) or []
+    metric_projection = [
+        {"name": i.get("name"),
+         "in_octets": i.get("in_octets"),
+         "out_octets": i.get("out_octets"),
+         "updated_at_ns": i.get("updated_at_ns")}
+        for i in interfaces[:20]
+    ]
+
+    binaries = {}
+    for label, path in (("core", args.core_binary),
+                        ("collector", args.collector_binary)):
+        binaries[label] = {
+            "path": path or None,
+            "sha256": _sha256_file(path) if path else "NOT_PROVIDED",
+        }
+
+    resources = None
+    if args.resources_file:
+        try:
+            with open(args.resources_file) as f:
+                resources = json.load(f)
+        except Exception as e:
+            resources = {"error": str(e)}
+
+    prov = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                      time.gmtime()),
+        "source": {
+            "repo": repo,
+            "commit_sha": head or "NOT_PROVIDED",
+            "tree_dirty": dirty if head else "UNKNOWN",
+            "final_sha_acceptance_eligible": bool(head) and not dirty,
+        },
+        "binaries": binaries,
+        "images": {
+            "core": args.core_image or "NOT_PROVIDED",
+            "collector": args.collector_image or "NOT_PROVIDED",
+        },
+        "nos": {
+            "vendor": args.vendor,
+            "version": args.nos_version or "NOT_PROVIDED",
+        },
+        "model_source": model_source,
+        "schema": {
+            "compiled_schema_id": compile_ev.get("schema_id")
+                                  or "NOT_PROVIDED",
+            "catalogue_status": compile_ev.get("status"),
+            "module_count": compile_ev.get("module_count"),
+            "path_count": compile_ev.get("path_count"),
+            "snapshot_id": snap.get("snapshot_id"),
+            "applicability_status": snap.get("overall_status"),
+            "content_id": snap.get("content_id"),
+            "datastore": snap.get("datastore"),
+        },
+        "evidence_references": {
+            "capabilities": "11-discovery-job-final.json / "
+                            "12-applicability.json (device-advertised "
+                            "models + YANG Library outcome incl. "
+                            "explicit absence)",
+            "yang_library": "12-applicability.json "
+                            "yang_library_evidence fields",
+            "subscription_request": "20-plan-preview.json / "
+                                    "preview.json / plan-file",
+            "observed_telemetry": "31-telemetry-observed.json",
+            "revocation": "40-plan-revoke.json / "
+                          "41-post-revoke-device.json / "
+                          "42-post-revoke-assignment.json / "
+                          "43-withdrawal-evidence.json",
+        },
+        "acquisition": {
+            "mode": device.get("acquisition") or "NOT_PROVIDED",
+            "schema_binding": device.get("schema_binding"),
+            "plan_id": activate_ev.get("plan_id"),
+            "approval_revision": activate_ev.get("approval_revision"),
+            "binding_fingerprint": activate_ev.get("binding_fingerprint"),
+        },
+        "metric_projection": metric_projection,
+        "resources": resources or "NOT_PROVIDED",
+    }
+    ok = bool(prov["source"]["commit_sha"]
+              and prov["binaries"]["core"]["sha256"]
+              != "NOT_PROVIDED"
+              and prov["images"]["core"] != "NOT_PROVIDED")
+    record(results, "l4_provenance", ok,
+           f"sha={prov['source']['commit_sha'][:12]} "
+           f"dirty={prov['source']['tree_dirty']} "
+           f"core_img={prov['images']['core']}")
+    dump(ev, "00-provenance.json", prov)
+    return ok
 
 
 def main():
@@ -499,11 +952,33 @@ def main():
     ap.add_argument("--revoke-reason", default="m6f_acceptance_complete")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--poll-secs", type=int, default=5)
+    ap.add_argument("--withdraw-window", type=float, default=0,
+                    help="post-quiesce stability window seconds "
+                         "(0=auto: >=2 sample intervals, 25-90s)")
+    # L4 provenance inputs (A3) — all optional; missing values are
+    # recorded as NOT_PROVIDED, never invented.
+    ap.add_argument("--repo", default=".",
+                    help="bonsai checkout used for source SHA/dirty "
+                         "detection and yang_sources.toml lookup")
+    ap.add_argument("--core-binary", default="",
+                    help="path to the running core binary (sha256 "
+                         "recorded)")
+    ap.add_argument("--collector-binary", default="",
+                    help="path to the running collector binary")
+    ap.add_argument("--core-image", default="",
+                    help="core container image identity (repo:tag@digest)")
+    ap.add_argument("--collector-image", default="",
+                    help="collector container image identity")
+    ap.add_argument("--nos-version", default="",
+                    help="NOS version string (e.g. 26.3.1-410)")
+    ap.add_argument("--resources-file", default="",
+                    help="optional JSON file with resource-consumption "
+                         "snapshot (docker stats etc.)")
     ap.add_argument("--stage", default="all",
                     help="comma list or 'all': login,provision,"
                          "wait_collector,compile,discovery,applicability,"
                          "paths,preview,activate,telemetry,revoke,"
-                         "verify_withdrawal")
+                         "verify_withdrawal,provenance")
     args = ap.parse_args()
 
     os.makedirs(args.evidence_dir, exist_ok=True)
@@ -513,7 +988,8 @@ def main():
     stages = (args.stage.split(",") if args.stage != "all"
               else ["login", "provision", "wait_collector", "compile",
                     "discovery", "applicability", "preview", "activate",
-                    "telemetry", "revoke", "verify_withdrawal"])
+                    "telemetry", "revoke", "verify_withdrawal",
+                    "provenance"])
 
     token = None
     if "login" in stages:
@@ -534,6 +1010,7 @@ def main():
         "telemetry": lambda: cmd_telemetry(api, args, results),
         "revoke": lambda: cmd_revoke(api, args, results),
         "verify_withdrawal": lambda: cmd_verify_withdrawal(api, args, results),
+        "provenance": lambda: cmd_provenance(api, args, results),
     }
     ok = True
     for s in stages:

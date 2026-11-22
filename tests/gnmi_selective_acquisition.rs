@@ -698,6 +698,7 @@ async fn plan_change_supersedes_stale_paths_without_false_active() {
         Arc::new(bonsai::subscription_sessions::SubscriptionSessionRegistry::new()),
         srx,
         None,
+        None,
     ));
 
     let expectation = |path: &str| SubscriptionPathExpectation {
@@ -721,6 +722,7 @@ async fn plan_change_supersedes_stale_paths_without_false_active() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -736,6 +738,7 @@ async fn plan_change_supersedes_stale_paths_without_false_active() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -751,6 +754,7 @@ async fn plan_change_supersedes_stale_paths_without_false_active() {
             state: "disabled".to_string(),
             acquisition: "disabled".to_string(),
             detail: "acquisition disabled".to_string(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -957,6 +961,7 @@ async fn stale_session_observation_never_projects_coverage() {
         verifier_sessions,
         srx,
         None,
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -975,6 +980,7 @@ async fn stale_session_observation_never_projects_coverage() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -1116,6 +1122,7 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
         Duration::from_millis(50),
         Duration::from_millis(200),
         None,
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1134,6 +1141,7 @@ async fn delete_evidence_and_sample_freshness_invalidate_coverage() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -1431,6 +1439,7 @@ async fn early_sync_observation_is_buffered_until_session_current() {
         Duration::from_millis(50),
         Duration::from_millis(10_000),
         None,
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1448,6 +1457,7 @@ async fn early_sync_observation_is_buffered_until_session_current() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -1468,6 +1478,7 @@ async fn early_sync_observation_is_buffered_until_session_current() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -1538,6 +1549,7 @@ async fn unregistered_session_observation_never_covers() {
         Duration::from_millis(50),
         Duration::from_millis(10_000),
         None,
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1555,6 +1567,7 @@ async fn unregistered_session_observation_never_covers() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -1618,6 +1631,7 @@ async fn pending_evidence_requires_the_authorized_session_identity() {
         Duration::from_millis(50),
         Duration::from_millis(10_000),
         None,
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1635,6 +1649,7 @@ async fn pending_evidence_requires_the_authorized_session_identity() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -1716,6 +1731,7 @@ async fn coverage_is_acquisition_not_classification() {
         Duration::from_millis(50),
         Duration::from_millis(10_000),
         None,
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1734,6 +1750,7 @@ async fn coverage_is_acquisition_not_classification() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -1753,6 +1770,7 @@ async fn coverage_is_acquisition_not_classification() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -1937,6 +1955,7 @@ async fn failed_status_write_is_retried_not_claimed() {
         Duration::from_millis(50),
         Duration::from_millis(10_000),
         None,
+        None,
     ));
 
     let target = "dut:57400".to_string();
@@ -1954,6 +1973,7 @@ async fn failed_status_write_is_retried_not_claimed() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -1973,6 +1993,7 @@ async fn failed_status_write_is_retried_not_claimed() {
             state: "submitted".to_string(),
             acquisition: "explicit".to_string(),
             detail: String::new(),
+            schema_id: None,
         })
         .await
         .unwrap();
@@ -2132,6 +2153,7 @@ async fn local_all_mode_manifest_orders_coverage_across_reconnect() {
         Arc::clone(&sessions),
         vsrx,
         Some(ready_tx),
+        None,
     ));
     ready_rx
         .await

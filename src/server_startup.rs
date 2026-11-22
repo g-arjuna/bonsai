@@ -1214,6 +1214,18 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let verifier_bus = std::sync::Arc::clone(&bus);
         let verifier_shutdown = shutdown_rx.clone();
         let verifier_sessions = std::sync::Arc::clone(&session_registry);
+        // M6F-C: coverage verification binds observed gNMI module
+        // qualifiers to the verified compiled catalogue — the approved
+        // schema-bound bundle for bound plans, the active catalogue for
+        // unbound ones. The library opens lazily on first plan
+        // registration; absent/corrupt catalogues leave qualifiers
+        // unverifiable (fail closed).
+        let verifier_schema_source: std::sync::Arc<dyn subscription_status::CoverageSchemaSource> =
+            std::sync::Arc::new(subscription_status::YangLibraryCoverageSource::new(
+                cfg.yang.library_root.clone(),
+                cfg.yang.cache_root.clone(),
+                cfg.yang.bundle_key_env.clone(),
+            ));
         tokio::spawn(async move {
             subscription_status::run_subscription_verifier(
                 verifier_store,
@@ -1222,6 +1234,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 verifier_sessions,
                 verifier_shutdown,
                 Some(verifier_ready_tx),
+                Some(verifier_schema_source),
             )
             .await;
         });
