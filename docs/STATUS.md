@@ -1,7 +1,8 @@
 # Bonsai current state
 
-M6F-C update — **coverage integrity + XRd probe progress**
-(branch `fix/m6fc-coverage`, worktree `bonsai-m6fc-a`). Stage A:
+M6F-C update — **merged: coverage integrity, XRd/cEOS lab evidence,
+SR Linux regression PASS** (PRs #55 `b40223d`, #56 `9907d7d`,
+#57 `993d4f8`, #58 `f789ed8`). Stage A:
 coverage matching is now schema-aware — observed gNMI module
 qualifiers (`prefix:local`) must resolve through the plan's verified
 compiled-catalogue identity (`src/schema_coverage.rs`); arbitrary or
@@ -41,6 +42,20 @@ Library). Finding: cEOS does not echo gNMI `Path.origin`, so
 explicit plans must leave `origin` empty
 (`docs/merger/evidence/2026-11-22-m6f-ceos-e2e/`,
 `docs/M6F_CEOS_EXPLICIT_ACQUISITION.md`).
+Stage E/regression: the merged code was revalidated live against SR
+Linux 26.3.1-410 — full production path PASS
+(`docs/merger/evidence/2026-11-23-m6fc-srlinux-r8/`), including
+module-prefixed coverage under the new schema verification and all
+seven authoritative withdrawal checks, with
+`final_sha_acceptance_eligible=true`. Telemetry granularity confirmed:
+coverage is container-granular by design (a container blob never
+fabricates child-leaf coverage) and the mgmt0 counter chain
+(device Get → collector → Core → API projection) verified with
+advancing values. Remaining open items: XRd production-path needs a
+revision-pinned OpenConfig/IETF source closure plus a schema-authority
+policy decision on capabilities `organization` free-text conflicts;
+Junos awaits a gNMI-capable image; Stage G resilience scenarios not
+yet executed.
 
 M6F-B update — **real Nokia SR Linux production-path
 interoperability validated** (branch `feat/m6fb-gnmi-interop`).

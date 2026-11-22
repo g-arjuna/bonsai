@@ -6,7 +6,10 @@ A missing image or unexecuted check is NOT_EXECUTED — never PASS.
 Evidence: `docs/merger/evidence/2026-11-21-m6f-srlinux/` (probe slice),
 `docs/merger/evidence/2026-11-22-m6fb-srlinux-r6/` +
 `docs/merger/evidence/2026-11-22-m6fb-srlinux-r7/` (production
-Core/collector slice — full path PASS, run twice) and
+Core/collector slice — full path PASS, run twice),
+`docs/merger/evidence/2026-11-23-m6fc-srlinux-r8/` (M6F-C merged-code
+regression — full path PASS incl. schema-aware coverage + all seven
+authoritative withdrawal checks, final-SHA-eligible provenance) and
 `docs/merger/evidence/2026-11-22-m6f-ceos-probe/` (cEOS probe slice —
 standalone probe only, NOT the production path).
 
@@ -34,7 +37,7 @@ standalone probe only, NOT the production path).
 | Exact plan activation | PASS (schema-bound rev 4/5) | FAIL→refused (conflicted/unknown applicability — see notes) | NOT_EXECUTED | NOT_EXECUTED (explicit mode, no schema binding) |
 | Coverage projection | PASS (`observed`, advancing timestamps) | NOT_EXECUTED | NOT_EXECUTED | PASS (explicit: `observed`, advancing) |
 | Revocation | PASS (withdrawal verified) | NOT_EXECUTED | NOT_EXECUTED | PASS (explicit empty selection, collector subs=0) |
-| Production Core/collector e2e | PASS (`docs/merger/evidence/2026-11-22-m6fb-srlinux-r6`, `-r7`) | PARTIAL (provisioning+discovery PASS; plan preview correctly refused — `2026-11-22-m6f-xrd-e2e`) | NOT_EXECUTED | PARTIAL (explicit-mode slice PASS — `2026-11-22-m6f-ceos-e2e`; schema-bound N/A) |
+| Production Core/collector e2e | PASS (`docs/merger/evidence/2026-11-22-m6fb-srlinux-r6`, `-r7`; M6F-C regression `2026-11-23-m6fc-srlinux-r8`) | PARTIAL (provisioning+discovery PASS; plan preview correctly refused — `2026-11-22-m6f-xrd-e2e`) | NOT_EXECUTED | PARTIAL (explicit-mode slice PASS — `2026-11-22-m6f-ceos-e2e`; schema-bound N/A) |
 
 SR Linux notes (v26.3.1-410, gNMI 0.10.0): requires canonical
 `ietf-yang-library` module name for YANG Library paths (rejects
