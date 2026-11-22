@@ -292,7 +292,7 @@ fn t1_complete_evidence_produces_deterministic_applicable_result() {
 #[test]
 fn t2_capabilities_only_never_reaches_applicable() {
     let catalogue = compile_app();
-    let caps = caps_evidence(vec![advertised("test-app", "example", "1.0")]);
+    let caps = caps_evidence(vec![advertised("test-app", "Example Org", "1.0")]);
     let device = binding();
     let r = resolve(Some(&catalogue), Some(&caps), None, &device);
 
@@ -399,6 +399,88 @@ fn t3b_library_backed_organization_mismatch_is_advisory() {
     assert_eq!(
         path_status(&r, "mtu").unwrap().status,
         ApplicabilityStatus::NotApplicable
+    );
+}
+
+/// The advisory org-mismatch downgrade must not rescue independently
+/// broken identity: a library-backed module whose revision disagrees with
+/// the compiled catalogue stays unresolved.
+#[test]
+fn t3c_org_mismatch_advisory_does_not_override_revision_conflict() {
+    let catalogue = compile_app();
+    let device = binding();
+    let caps = caps_evidence(vec![advertised("test-app", "different-org", "1")]);
+    let lib = nmda_outcome(&["base-f"], &[], Some("1999-01-01"));
+    let r = resolve(Some(&catalogue), Some(&caps), Some(&lib), &device);
+
+    let app = module_status(&r, "test-app").unwrap();
+    assert_eq!(app.status, ApplicabilityStatus::Unknown);
+    assert!(
+        app.reasons
+            .contains(&ReasonCode::ModuleOrganizationMismatch),
+        "org mismatch still recorded: {:?}",
+        app.reasons
+    );
+    assert!(
+        app.reasons.contains(&ReasonCode::ModuleRevisionUnresolved),
+        "revision conflict must stay explicit: {:?}",
+        app.reasons
+    );
+}
+
+/// Legacy RFC 7895 modules-state establishes module implementation but
+/// NOT the datastore→schema link. An org mismatch there is advisory, yet
+/// the module can never rise above Candidate.
+#[test]
+fn t3d_legacy_library_org_mismatch_stays_candidate() {
+    let catalogue = compile_app();
+    let device = binding();
+    let caps = caps_evidence(vec![advertised("test-app", "different-org", "1")]);
+    let evidence = YangLibraryEvidence {
+        tree: YangLibraryTree::Legacy,
+        content_id: None,
+        module_sets: vec![YangLibraryModuleSet {
+            name: "ms1".to_string(),
+            modules: vec![
+                lib_module(
+                    "test-app",
+                    Some("2024-01-01"),
+                    Some("urn:example:test-app"),
+                    &["base-f"],
+                    &[],
+                ),
+                lib_module(
+                    "test-baselib",
+                    Some("2023-06-01"),
+                    Some("urn:example:test-baselib"),
+                    &[],
+                    &[],
+                ),
+            ],
+            import_only_modules: Vec::new(),
+        }],
+        schemas: Vec::new(),
+        datastores: Vec::new(),
+        origin: "ietf".to_string(),
+        path: "/modules-state".to_string(),
+        fetched_at_ns: 2_000,
+        diagnostics: Vec::new(),
+    };
+    let lib = YangLibraryOutcome::Legacy { evidence };
+    let r = resolve(Some(&catalogue), Some(&caps), Some(&lib), &device);
+
+    let app = module_status(&r, "test-app").unwrap();
+    assert_eq!(app.status, ApplicabilityStatus::Candidate);
+    assert!(
+        app.reasons
+            .contains(&ReasonCode::ModuleOrganizationMismatch),
+        "legacy org mismatch is advisory: {:?}",
+        app.reasons
+    );
+    assert!(
+        app.reasons.contains(&ReasonCode::DatastoreSchemaUnverified),
+        "missing datastore link must stay explicit: {:?}",
+        app.reasons
     );
 }
 
