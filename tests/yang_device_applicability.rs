@@ -37,6 +37,7 @@ module test-app {
   yang-version 1.1;
   namespace "urn:example:test-app";
   prefix ta;
+  organization "Example Org";
   revision 2024-01-01;
 
   feature base-f {
@@ -360,6 +361,45 @@ fn t3_revision_and_organization_conflicts_stay_unresolved() {
         app.reasons
     );
     assert_ne!(app.status, ApplicabilityStatus::Applicable);
+}
+
+/// M6F-D: gNMI Capabilities `organization` is descriptive provenance, not
+/// YANG module identity. When RFC 8525 YANG Library membership already
+/// proves name+namespace+revision, an organization-string difference is a
+/// recorded warning — not a conflict. Capabilities-only evidence keeps the
+/// strict conflict behavior (covered by T3).
+#[test]
+fn t3b_library_backed_organization_mismatch_is_advisory() {
+    let catalogue = compile_app();
+    let device = binding();
+    let caps = caps_evidence(vec![advertised("test-app", "different-org", "1")]);
+    let lib = nmda_outcome(&["base-f"], &[], None);
+    let r = resolve(Some(&catalogue), Some(&caps), Some(&lib), &device);
+
+    let app = module_status(&r, "test-app").unwrap();
+    assert_eq!(app.status, ApplicabilityStatus::Applicable);
+    assert!(
+        app.reasons
+            .contains(&ReasonCode::ModuleOrganizationMismatch),
+        "org mismatch must be recorded: {:?}",
+        app.reasons
+    );
+    assert!(
+        !app.reasons
+            .contains(&ReasonCode::ModuleOrganizationConflict),
+        "library-backed org mismatch must not be a conflict: {:?}",
+        app.reasons
+    );
+    // Ungated state path remains positively applicable; feature-gated
+    // path still obeys feature state.
+    assert_eq!(
+        path_status(&r, "oper-status").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+    assert_eq!(
+        path_status(&r, "mtu").unwrap().status,
+        ApplicabilityStatus::NotApplicable
+    );
 }
 
 // ── T4: features and deviations ──────────────────────────────────────────────
@@ -1638,10 +1678,10 @@ fn t12_vendor_release_skew_stays_unresolved() {
     assert!(
         r.reasons.contains(&ReasonCode::DatastoreSchemaMissing)
             || r.reasons.contains(&ReasonCode::DatastoreMismatch)
-            || r.modules.iter().any(|m| m
-                .reasons
-                .contains(&ReasonCode::DatastoreSchemaMissing)
-                || m.reasons.contains(&ReasonCode::DatastoreMismatch)),
+            || r.modules
+                .iter()
+                .any(|m| m.reasons.contains(&ReasonCode::DatastoreSchemaMissing)
+                    || m.reasons.contains(&ReasonCode::DatastoreMismatch)),
         "missing requested datastore must stay explicit: {:?}",
         r.reasons
     );
