@@ -1,0 +1,52 @@
+name: m6f-frr
+
+# M6F-FRR — reusable two-router FRRouting acceptance topology.
+#
+# Purpose: real BMP speaker + BGP lifecycle/route-update acceptance for
+# Bonsai's routing_service BMP listener. NOT a gNMI platform — FRR's
+# northbound gRPC API is not OpenConfig gNMI and must never be reported
+# as such.
+#
+#   frr-a (AS 65001) --eth1 /31-- frr-b (AS 65002)
+#      |                                  |
+#      +-- BMP target -> host mgmt gw     +-- originates 10.99.10.0/24
+#
+# Distinct management subnet (172.100.110.0/24) — no overlap with
+# m6f-srlinux (.102), m6f-xrd (.103), m6f-ceos (.104), bn003 labs
+# (.207/.208) or production management.
+
+mgmt:
+  network: m6f-frr-mgmt
+  ipv4-subnet: 172.100.110.0/24
+
+topology:
+  nodes:
+    frr-a:
+      kind: linux
+      # Version-pinned upstream FRR image (digest recorded 2026-11-22).
+      image: quay.io/frrouting/frr@sha256:89e5e1ec8b17c5dffaf57dbac58a29ebeb3731a84e5bc09dad1662adff2ba7f5
+      mgmt-ipv4: 172.100.110.11
+      binds:
+        - configs/daemons-a:/etc/frr/daemons
+        - configs/frr-a.conf:/etc/frr/frr.conf
+        - configs/vtysh.conf:/etc/frr/vtysh.conf
+      labels:
+        bonsai.role: bmp-exporter
+        bonsai.vendor: frrouting
+        bonsai.frr-version: "10.6.2"
+
+    frr-b:
+      kind: linux
+      image: quay.io/frrouting/frr@sha256:89e5e1ec8b17c5dffaf57dbac58a29ebeb3731a84e5bc09dad1662adff2ba7f5
+      mgmt-ipv4: 172.100.110.12
+      binds:
+        - configs/daemons-b:/etc/frr/daemons
+        - configs/frr-b.conf:/etc/frr/frr.conf
+        - configs/vtysh.conf:/etc/frr/vtysh.conf
+      labels:
+        bonsai.role: bgp-peer
+        bonsai.vendor: frrouting
+        bonsai.frr-version: "10.6.2"
+
+  links:
+    - endpoints: ["frr-a:eth1", "frr-b:eth1"]
