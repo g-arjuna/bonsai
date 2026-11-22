@@ -2332,7 +2332,10 @@ async fn automatic_mode_refuses_subscriptions_when_capabilities_fail() {
         "capabilities probe must have been attempted"
     );
 
-    _stx.send(true).unwrap();
+    // subscribe_telemetry returns Ok so run_forever's reconnect backoff
+    // retries the Capabilities probe; the direct-call handle is already
+    // finished, so shutdown delivery is best-effort here.
+    let _ = _stx.send(true);
     let _ = handle.await;
 }
 
