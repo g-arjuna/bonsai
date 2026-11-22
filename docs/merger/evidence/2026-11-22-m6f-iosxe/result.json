@@ -1,0 +1,9 @@
+{
+  "vendor": "iosxe",
+  "date": "2026-11-22",
+  "checks": {},
+  "overall": "FAIL",
+  "reason": "remote preflight passed; deploy/probe not executed in this action",
+  "detail": "Capabilities RPC failed: {\n  \"ok\": false,\n  \"error\": \"_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\\n\\tstatus = StatusCode.UNAVAILABLE\\n\\tdetails = \\\"failed to connect to all addresses; last error: UNAVAILABLE: ipv4:131.226.217.162:9339: recvmsg:Connection reset by peer\\\"\\n\\tdebug_error_string = \\\"UNKNO",
+  "finished_utc": "2026-11-22T14:04:26.818982+00:00"
+}

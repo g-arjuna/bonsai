@@ -50,8 +50,22 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -n "$VENDOR" ] || usage 1
-command -v containerlab >/dev/null || die "containerlab not found"
-command -v docker >/dev/null || die "docker not found"
+# Remote vendors (manifest `remote: true`) are operator-hosted endpoints —
+# the harness never deploys, destroys or even requires containerlab/docker
+# for them. Probe-only, read-only.
+REMOTE="$("$PYTHON" - "$MANIFEST" "$VENDOR" <<'EOF'
+import sys,yaml
+try:
+    d=yaml.safe_load(open(sys.argv[1]))["vendors"][sys.argv[2]]
+    print("1" if d.get("remote") else "0")
+except Exception:
+    print("0")
+EOF
+)"
+if [ "$REMOTE" != "1" ]; then
+    command -v containerlab >/dev/null || die "containerlab not found"
+    command -v docker >/dev/null || die "docker not found"
+fi
 
 LAB_NAME="m6f-$VENDOR"
 # Fixed per-vendor workdir (not mktemp) so a later `--action cleanup`
@@ -107,10 +121,27 @@ d=yaml.safe_load(open(sys.argv[1]))["vendors"][sys.argv[2]]
 print(d["gnmi"].get("tls_server_name") or "")
 EOF
 )"
+CA_PEM="$("$PYTHON" - "$MANIFEST" "$VENDOR" <<'EOF'
+import sys,yaml
+d=yaml.safe_load(open(sys.argv[1]))["vendors"][sys.argv[2]]
+print(d["gnmi"].get("ca") or "")
+EOF
+)"
+[ "$CA_PEM" = "None" ] && CA_PEM=""
+REMOTE_HOST="$(mfield endpoint_host 2>/dev/null || true)"
+[ "$REMOTE_HOST" = "None" ] || [ "$REMOTE_HOST" = "null" ] && REMOTE_HOST=""
+EVIDENCE_CLASS="$(mfield evidence_class 2>/dev/null || true)"
+[ "$EVIDENCE_CLASS" = "None" ] || [ "$EVIDENCE_CLASS" = "null" ] || [ -z "$EVIDENCE_CLASS" ] \
+    && EVIDENCE_CLASS="local_virtual_nos"
 IMAGE_SELECT="$(mfield image_select 2>/dev/null || true)"
 [ "$IMAGE_SELECT" = "None" ] && IMAGE_SELECT=""
 STARTUP_CFG="$(mfield startup_config)"
-ADDR="$MGMT_IP:$GNMI_PORT"
+if [ "$REMOTE" = "1" ]; then
+    [ -n "$REMOTE_HOST" ] || die "remote vendor $VENDOR missing endpoint_host in manifest"
+    ADDR="$REMOTE_HOST:$GNMI_PORT"
+else
+    ADDR="$MGMT_IP:$GNMI_PORT"
+fi
 
 write_result() { # status detail
     "$PYTHON" - "$RESULT_JSON" "$VENDOR" "$1" "$2" "$DATE" <<'EOF'
@@ -126,6 +157,7 @@ if status=="NOT_EXECUTED":
     d["reason"]=detail
 else:
     d["overall"]=status; d["detail"]=detail
+    d.pop("reason",None)
     d["finished_utc"]=datetime.datetime.now(datetime.timezone.utc).isoformat()
 json.dump(d,open(path,"w"),indent=2)
 EOF
@@ -134,9 +166,31 @@ EOF
 # ── preflight ────────────────────────────────────────────────────────────────
 
 action_preflight() {
-    log "preflight: vendor=$VENDOR family=$NOS_FAMILY kind=$KIND addr=$ADDR"
+    log "preflight: vendor=$VENDOR family=$NOS_FAMILY kind=$KIND addr=$ADDR remote=$REMOTE class=$EVIDENCE_CLASS"
     df -h "$ROOT" | tee "$EVIDENCE_DIR/disk-before.txt"
     free -h | tee "$EVIDENCE_DIR/mem.txt"
+    if [ "$REMOTE" = "1" ]; then
+        # Remote hosted endpoint: no image, no topology, no deploy.
+        # Verify DNS + TCP reachability only; liveness of the backend
+        # is established by the probe itself.
+        local host="${REMOTE_HOST%%:*}"
+        if ! getent hosts "$host" >/dev/null 2>&1; then
+            write_result NOT_EXECUTED "DNS resolution failed for $host"
+            die "DNS resolution failed for $host (NOT_EXECUTED)"
+        fi
+        getent hosts "$host" | tee "$EVIDENCE_DIR/dns.txt"
+        if timeout 5 bash -c "</dev/tcp/$host/$GNMI_PORT" 2>/dev/null; then
+            log "TCP/$GNMI_PORT reachable on $host"
+        else
+            log "WARN: TCP/$GNMI_PORT not reachable on $host — probe will record the failure"
+        fi
+        if [ -n "$USER_ENV" ]; then
+            [ -n "${!USER_ENV:-}" ] || log "WARN: $USER_ENV unset — unauthenticated probe will be attempted"
+        fi
+        log "preflight OK (remote endpoint; nothing deployed)"
+        write_result NOT_EXECUTED "remote preflight passed; deploy/probe not executed in this action"
+        return 0
+    fi
     # conflicting topology?
     if docker ps -a --format '{{.Names}}' | grep -q "^clab-$LAB_NAME-"; then
         die "containers for $LAB_NAME already exist; run --action cleanup or inspect first"
@@ -230,6 +284,21 @@ PYEOF
 }
 
 action_deploy() {
+    if [ "$REMOTE" = "1" ]; then
+        # Remote hosted endpoint — there is nothing to deploy. Verify
+        # reachability only; never touch the shared reservation.
+        log "remote endpoint $ADDR — no deploy (read-only acceptance only)"
+        local host="${REMOTE_HOST%%:*}"
+        local i
+        for i in $(seq 1 12); do
+            if timeout 3 bash -c "</dev/tcp/$host/$GNMI_PORT" 2>/dev/null; then
+                log "gNMI port reachable on $host"
+                return 0
+            fi
+            sleep 5
+        done
+        die "gNMI port $GNMI_PORT on $host not reachable after 60s"
+    fi
     local topo; topo="$(gen_topology)"
     # if image came from archive, resolve the EXACT archive-declared
     # reference — never a globally-newest docker image
@@ -344,6 +413,18 @@ ca_args() {
         [ -n "$TLS_SERVER_NAME" ] && printf -- ' --server-name %s' "$TLS_SERVER_NAME"
         return 0
     fi
+    if [ "$TLS_MODE" = "verified" ]; then
+        # Certificate-verified TLS against public/system roots (or an
+        # operator-supplied CA bundle). An untrusted or expired chain
+        # fails closed inside the gRPC client — never bypassed here.
+        if [ -n "$CA_PEM" ]; then
+            [ -f "$CA_PEM" ] || { log "ERROR: gnmi.ca not found: $CA_PEM"; return 1; }
+            printf -- '--ca %s' "$CA_PEM"
+        fi
+        [ -n "$TLS_SERVER_NAME" ] && printf -- ' --server-name %s' "$TLS_SERVER_NAME"
+        printf -- ' --tls-mode verified'
+        return 0
+    fi
     # tls: insecure → explicit lab-only PLAINTEXT channel. This is not
     # "skip certificate verification"; the client labels it accordingly.
     printf -- '--tls-mode plaintext'
@@ -381,14 +462,16 @@ action_probe() {
     # returns no data; the OpenConfig counters path streams real
     # per-interface counter JSON_IETF updates.
     [ "$NOS_FAMILY" = "cisco_xrd" ] && sub_path="/openconfig-interfaces:interfaces/interface[name=*]/state/counters"
+    [ "$NOS_FAMILY" = "cisco_iosxe" ] && sub_path="/openconfig-interfaces:interfaces/interface[name=*]/state/counters"
     [ "$NOS_FAMILY" = "juniper_junos" ] && sub_path="/interfaces/interface[name=*]"
     gnmi subscribe-once --path "$sub_path" --mode once \
         > "$EVIDENCE_DIR/subscribe-once.json" 2>"$EVIDENCE_DIR/subscribe.stderr" || true
     # evaluate statuses
-    "$PYBIN" - "$EVIDENCE_DIR" "$VENDOR" "$ADDR" "$sub_path" <<'PYEOF'
+    "$PYBIN" - "$EVIDENCE_DIR" "$VENDOR" "$ADDR" "$sub_path" "$EVIDENCE_CLASS" <<'PYEOF'
 import json,sys,os,hashlib,datetime
-ev,vendor,addr,path=sys.argv[1:5]
-res={"vendor":vendor,"addr":addr,"utc":datetime.datetime.now(datetime.timezone.utc).isoformat(),"checks":{}}
+ev,vendor,addr,path,evidence_class=sys.argv[1:6]
+res={"vendor":vendor,"addr":addr,"evidence_class":evidence_class,
+     "utc":datetime.datetime.now(datetime.timezone.utc).isoformat(),"checks":{}}
 def load(n):
     try: return json.load(open(os.path.join(ev,n)))
     except Exception: return {"ok":False,"error":"missing/unparseable"}
@@ -421,6 +504,7 @@ try: r=json.load(open(rp))
 except Exception: r={"vendor":vendor,"date":res["utc"][:10],"checks":{}}
 r.setdefault("checks",{}).update(res["checks"]); r["overall"]=res["overall"]
 r["outcome_states"]=res["outcome_states"]
+r["evidence_class"]=evidence_class
 r.pop("reason",None)
 r["probe"]=res
 json.dump(r,open(rp,"w"),indent=2)
@@ -439,6 +523,10 @@ action_status() {
 }
 
 action_cleanup() {
+    if [ "$REMOTE" = "1" ]; then
+        log "remote endpoint $ADDR — nothing to clean up (no resources owned)"
+        return 0
+    fi
     local topo="$WORKDIR/topology.clab.yml"
     if [ ! -f "$topo" ]; then
         topo="$(gen_topology)"
