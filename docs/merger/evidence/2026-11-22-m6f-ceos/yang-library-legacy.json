@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error": "_InactiveRpcError: <_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"ASCII encoding is supported only for origin \"cli\"\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"ASCII encoding is supported only for origin \\\"cli\\\"\", grpc_status:12}\"\n>"
+}
+

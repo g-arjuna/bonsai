@@ -1,0 +1,56 @@
+{
+  "vendor": "ceos",
+  "date": "2026-11-22",
+  "checks": {
+    "capabilities": "PASS",
+    "yang_library_rfc8525": "UNSUPPORTED",
+    "yang_library_legacy": "UNSUPPORTED",
+    "subscribe_once": "PASS",
+    "sample_path": "/interfaces/interface[name=*]/state/counters"
+  },
+  "overall": "PARTIAL",
+  "outcome_states": {
+    "executed_pass": [
+      "capabilities",
+      "subscribe_once"
+    ],
+    "unsupported": [
+      "yang_library_rfc8525",
+      "yang_library_legacy"
+    ],
+    "not_executed": [],
+    "failed": []
+  },
+  "probe": {
+    "vendor": "ceos",
+    "addr": "172.100.104.11:6030",
+    "utc": "2026-11-22T08:57:34.365117+00:00",
+    "checks": {
+      "capabilities": "PASS",
+      "yang_library_rfc8525": "UNSUPPORTED",
+      "yang_library_legacy": "UNSUPPORTED",
+      "subscribe_once": "PASS",
+      "sample_path": "/interfaces/interface[name=*]/state/counters"
+    },
+    "gnmi_version": "0.7.0",
+    "supported_encodings": [
+      "JSON",
+      "JSON_IETF",
+      "ASCII"
+    ],
+    "supported_models_count": 303,
+    "overall": "PARTIAL",
+    "outcome_states": {
+      "executed_pass": [
+        "capabilities",
+        "subscribe_once"
+      ],
+      "unsupported": [
+        "yang_library_rfc8525",
+        "yang_library_legacy"
+      ],
+      "not_executed": [],
+      "failed": []
+    }
+  }
+}

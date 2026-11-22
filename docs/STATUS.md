@@ -20,8 +20,27 @@ acceptance. Stage B: XRd 24.4.2 boots after the owner raised host
 inotify limits; probe-level Capabilities, RFC 8525 + legacy YANG
 Library and subscribe-once on OpenConfig interface counters all PASS
 (gNMI 0.10.0 plaintext on TCP/9339 via the containerlab-injected
-config; 1064 advertised models). XRd production-path acceptance is
-still pending.
+config; 1064 advertised models). XRd production-path ran end-to-end
+through Core-issued discovery (snapshot 3) but plan preview correctly
+REFUSED activation — applicability `conflicted`: XRd declares no
+`operational` datastore (running/candidate only), capabilities
+organization strings conflict with catalogue YANG org statements on
+the IETF modules, and device OpenConfig revisions (2022-era) do not
+match the pinned 2026 catalogue. Documented in
+`docs/merger/evidence/2026-11-22-m6f-xrd-e2e/BLOCKED-FINDINGS.md`.
+Stage C: pinned Arista `aristanetworks/yang@f7fc5de` EOS-4.37.0F
+audited — `release/openconfig` is the correct supported closure,
+`experimental/` must stay out of the authoritative catalogue,
+`pathreport.csv` is advisory-only
+(`docs/merger/evidence/2026-11-23-m6fc-arista-yang-audit/`).
+Stage D: cEOS 4.37.0F explicit selective acquisition slice PASS on
+the production path — bounded operator-selected path, `observed`
+coverage with advancing timestamps, interface-counter projection,
+and verified withdrawal; schema-bound remains impossible (no YANG
+Library). Finding: cEOS does not echo gNMI `Path.origin`, so
+explicit plans must leave `origin` empty
+(`docs/merger/evidence/2026-11-22-m6f-ceos-e2e/`,
+`docs/M6F_CEOS_EXPLICIT_ACQUISITION.md`).
 
 M6F-B update — **real Nokia SR Linux production-path
 interoperability validated** (branch `feat/m6fb-gnmi-interop`).

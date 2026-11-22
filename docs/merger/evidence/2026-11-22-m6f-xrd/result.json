@@ -1,0 +1,56 @@
+{
+  "vendor": "xrd",
+  "date": "2026-11-22",
+  "checks": {
+    "capabilities": "PASS",
+    "yang_library_rfc8525": "PASS",
+    "yang_library_legacy": "PASS",
+    "subscribe_once": "PASS",
+    "sample_path": "/openconfig-interfaces:interfaces/interface[name=*]/state/counters"
+  },
+  "overall": "PASS",
+  "detail": "Capabilities RPC failed: ",
+  "finished_utc": "2026-11-22T05:15:05.012568+00:00",
+  "outcome_states": {
+    "executed_pass": [
+      "capabilities",
+      "yang_library_rfc8525",
+      "yang_library_legacy",
+      "subscribe_once"
+    ],
+    "unsupported": [],
+    "not_executed": [],
+    "failed": []
+  },
+  "probe": {
+    "vendor": "xrd",
+    "addr": "172.100.103.21:9339",
+    "utc": "2026-11-22T05:16:43.191624+00:00",
+    "checks": {
+      "capabilities": "PASS",
+      "yang_library_rfc8525": "PASS",
+      "yang_library_legacy": "PASS",
+      "subscribe_once": "PASS",
+      "sample_path": "/openconfig-interfaces:interfaces/interface[name=*]/state/counters"
+    },
+    "gnmi_version": "0.10.0",
+    "supported_encodings": [
+      "JSON_IETF",
+      "ASCII",
+      "PROTO"
+    ],
+    "supported_models_count": 1064,
+    "overall": "PASS",
+    "outcome_states": {
+      "executed_pass": [
+        "capabilities",
+        "yang_library_rfc8525",
+        "yang_library_legacy",
+        "subscribe_once"
+      ],
+      "unsupported": [],
+      "not_executed": [],
+      "failed": []
+    }
+  }
+}

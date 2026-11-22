@@ -1,0 +1,40 @@
+{
+  "vendor": "arista_ceos",
+  "nos": "Arista cEOSLab 4.37.0F-51574443.4370F",
+  "image": "ceos:4.37.0F sha256:0c2645f9ce3c376b61420a5c068e307ba32b48a2c5cb2f86b81f89adf806c1f0",
+  "overall": "PARTIAL",
+  "checks": [
+    {
+      "name": "probe_capabilities",
+      "status": "PASS",
+      "evidence": "../2026-11-22-m6f-ceos/"
+    },
+    {
+      "name": "probe_subscribe",
+      "status": "PASS",
+      "evidence": "../2026-11-22-m6f-ceos/"
+    },
+    {
+      "name": "yang_library_rfc8525",
+      "status": "UNSUPPORTED",
+      "evidence": "../2026-11-22-m6f-ceos/"
+    },
+    {
+      "name": "yang_library_legacy",
+      "status": "UNSUPPORTED",
+      "evidence": "../2026-11-22-m6f-ceos/"
+    },
+    {
+      "name": "e2e_explicit_acquisition",
+      "status": "PASS",
+      "detail": "observed coverage + projection + verified withdrawal; origin must be empty (EOS does not echo path origin)",
+      "evidence": "api/60-explicit-slice-evidence.json"
+    },
+    {
+      "name": "e2e_schema_bound",
+      "status": "NOT_EXECUTED",
+      "detail": "no YANG Library \u2014 applicability cannot reach applicable; fail-closed by design"
+    }
+  ],
+  "notes": "Explicit selective acquisition only; no schema authority claimed. See README.md and docs/M6F_CEOS_EXPLICIT_ACQUISITION.md."
+}

@@ -1,0 +1,46 @@
+{
+  "generated_at": "2026-11-22T09:00:59Z",
+  "device": "172.100.104.11:6030",
+  "acquisition_mode": "explicit",
+  "schema_binding": null,
+  "selected_path": {
+    "path": "interfaces/interface[name=Management0]/state/counters/in-octets",
+    "origin": "",
+    "mode": "SAMPLE",
+    "sample_interval_ns": 10000000000,
+    "note": "origin MUST be empty for cEOS: EOS does not echo gNMI path origin in notifications; expectation origin 'openconfig' can never be coverage-matched (observation_covers requires exact origin equality) \u2014 verified live 2026-11-22",
+    "provenance": "vendor_release_schema_pinned:aristanetworks/yang@f7fc5de3d80aa32de403f067b625dd8db633ca34:pathreport.csv"
+  },
+  "observed_phase": {
+    "subscription_status": "observed",
+    "first_observed_at_ns": 1795337956406985179,
+    "last_observed_at_ns": 1795338014832061446,
+    "timestamps_advancing": true,
+    "interface_projection": {
+      "name": "Management0",
+      "in_octets": 29994,
+      "updated_at_ns": 1795338010522027098
+    },
+    "note": "in_octets advanced 21259 -> 29994 across the observed window; projection updated_at_ns tracks live samples"
+  },
+  "withdrawal": {
+    "method": "POST /api/devices/{addr}/selected-paths {\"selected_paths\": []}",
+    "result": "explicit empty selection -> collector resync -> Subscribe terminated",
+    "post_revoke_statuses": [
+      {
+        "path": "interfaces/interface[name=Management0]/state/counters/in-octets",
+        "origin": "openconfig",
+        "status": "superseded"
+      },
+      {
+        "path": "interfaces/interface[name=Management0]/state/counters/in-octets",
+        "origin": "",
+        "status": "superseded"
+      }
+    ],
+    "collector_subscription_count": 0,
+    "interface_updated_at_ns_frozen": 1795338010522027098,
+    "continued_collection": "none \u2014 last_observed_at_ns frozen at 1795338014832061446, collector subscription_count=0"
+  },
+  "evidence_class": "explicit_selective_acquisition \u2014 NOT schema-bound; no applicability/catalogue authority claimed"
+}

@@ -73,6 +73,9 @@ KIND="$(mfield containerlab_kind)"
 IMAGE="$(mfield image)"
 ARCHIVE="$(mfield image_archive)"
 MGMT_IP="$(mfield mgmt_ipv4)"
+MGMT_SUBNET="$(mfield mgmt_subnet 2>/dev/null || true)"
+[ "$MGMT_SUBNET" = "None" ] || [ "$MGMT_SUBNET" = "null" ] || [ -z "$MGMT_SUBNET" ] \
+    && MGMT_SUBNET="172.100.102.0/24"
 GNMI_PORT="$(mfield gnmi.port 2>/dev/null || true)"
 [ -n "$GNMI_PORT" ] || GNMI_PORT="$("$PYTHON" - "$MANIFEST" "$VENDOR" <<'EOF'
 import json,sys,yaml
@@ -202,7 +205,7 @@ gen_topology() {
 name: $LAB_NAME
 mgmt:
   network: $LAB_NAME-mgmt
-  ipv4-subnet: 172.100.102.0/24
+  ipv4-subnet: $MGMT_SUBNET
 topology:
   nodes:
     $VENDOR:
@@ -374,7 +377,10 @@ action_probe() {
     # subscribe once on a conservative read-only path per vendor
     local sub_path="/interfaces/interface[name=*]/state/counters"
     [ "$NOS_FAMILY" = "nokia_srlinux" ] && sub_path="/interface[name=*]/statistics"
-    [ "$NOS_FAMILY" = "cisco_xrd" ] && sub_path="/Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface[interface-name=*]/latest/generic-counters"
+    # XRd 24.4.2 live-verified 2026-11-22: the infra-statsd deep path
+    # returns no data; the OpenConfig counters path streams real
+    # per-interface counter JSON_IETF updates.
+    [ "$NOS_FAMILY" = "cisco_xrd" ] && sub_path="/openconfig-interfaces:interfaces/interface[name=*]/state/counters"
     [ "$NOS_FAMILY" = "juniper_junos" ] && sub_path="/interfaces/interface[name=*]"
     gnmi subscribe-once --path "$sub_path" --mode once \
         > "$EVIDENCE_DIR/subscribe-once.json" 2>"$EVIDENCE_DIR/subscribe.stderr" || true

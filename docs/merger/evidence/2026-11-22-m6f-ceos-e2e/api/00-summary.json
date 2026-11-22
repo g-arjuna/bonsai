@@ -1,0 +1,42 @@
+{
+  "evidence_dir": "/home/arjuna/Desktop/bonsai-m6fc-a/docs/merger/evidence/2026-11-22-m6f-ceos-e2e/api",
+  "overall": "PASS",
+  "stages": [
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "admin_login"
+    },
+    {
+      "detail": "http=200 device_id=dev-ebd7c19e-01c8-470f-9c87-197f07e44582",
+      "ok": true,
+      "stage": "identity_device"
+    },
+    {
+      "detail": "http=400",
+      "ok": true,
+      "stage": "collector_binding"
+    },
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "device_credential"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_register"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_assignment"
+    },
+    {
+      "detail": "assigned=2",
+      "ok": true,
+      "stage": "collector_registered"
+    }
+  ],
+  "utc": "2026-11-22T08:52:01Z"
+}
