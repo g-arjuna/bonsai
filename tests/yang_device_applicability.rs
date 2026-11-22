@@ -1551,3 +1551,98 @@ fn m6fb_feature_bound_exceeds_live_srlinux_catalog() {
     let ev = yang_library::parse_nmda_library(&tree, 1).expect("parses");
     assert_eq!(ev.module_sets[0].modules[0].features.len(), 700);
 }
+
+// ── T12: vendor release-pin skew (M6F-C Stage D6) ────────────────────────────
+//
+// A pinned vendor release catalogue must never manufacture applicability
+// for a device running a different release, and device-advertised modules
+// absent from the compiled catalogue (experimental-only, unpinned source,
+// device-internal) must never gain applicability either. These cases model
+// the cEOS/EOS skew scenarios: capabilities `ModelData.version` is opaque
+// provenance, the YANG Library revision is the only revision authority.
+
+#[test]
+fn t12_vendor_release_skew_stays_unresolved() {
+    let catalogue = compile_app();
+    let device = binding();
+
+    // (a) Release skew: device library reports a plausible adjacent-release
+    // revision (e.g. EOS 4.36 catalogue vs 4.37 device). Namespace, org and
+    // features all match — revision alone must hold the module unresolved.
+    let lib = nmda_outcome(&["base-f"], &[], Some("2023-11-15"));
+    let caps = caps_evidence(vec![advertised("test-app", "example", "2023-11-15")]);
+    let r = resolve(Some(&catalogue), Some(&caps), Some(&lib), &device);
+    let app = module_status(&r, "test-app").unwrap();
+    assert_eq!(app.status, ApplicabilityStatus::Unknown);
+    assert!(app.reasons.contains(&ReasonCode::ModuleRevisionUnresolved));
+    // Overall may still be Applicable via unaffected modules — the skewed
+    // module and every path it declares must stay non-applicable.
+    assert!(
+        r.paths
+            .iter()
+            .filter(|p| p.module == "test-app")
+            .all(|p| p.status != ApplicabilityStatus::Applicable),
+        "skewed module paths must not be applicable"
+    );
+
+    // (b) Module advertised by capabilities AND present in the device
+    // library but absent from the compiled catalogue (experimental-only /
+    // unpinned source): it must produce no applicable module result and no
+    // applicable path — applicability is catalogue-driven, never
+    // device-advertisement-driven.
+    let mut ev = match nmda_outcome(&["base-f"], &[], None) {
+        YangLibraryOutcome::Complete { evidence } => evidence,
+        _ => unreachable!(),
+    };
+    ev.module_sets[0].modules.push(lib_module(
+        "arista-exp-foo",
+        Some("2025-01-01"),
+        Some("urn:arista:exp"),
+        &[],
+        &[],
+    ));
+    let caps = caps_evidence(vec![
+        advertised("test-app", "example", "9.9"),
+        advertised("arista-exp-foo", "arista", "4.37.0F"),
+    ]);
+    let r = resolve(
+        Some(&catalogue),
+        Some(&caps),
+        Some(&YangLibraryOutcome::Complete { evidence: ev }),
+        &device,
+    );
+    assert!(module_status(&r, "arista-exp-foo").is_none());
+    assert!(r.paths.iter().all(|p| !p.path.contains("arista-exp")));
+    // The catalogue modules that DO have complete evidence still resolve —
+    // an uncatalogued device module does not poison the whole snapshot.
+    assert_eq!(
+        module_status(&r, "test-app").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+
+    // (c) Requested datastore absent from the device library (XRd declares
+    // only `running`/`candiate`; a plan asking for `operational` must fail
+    // closed, never fall back silently).
+    let lib = nmda_outcome(&["base-f"], &[], None);
+    let r = applicability::resolve_applicability(&ApplicabilityInput {
+        catalogue: Some(&catalogue),
+        catalogue_diagnostics: Vec::new(),
+        capabilities: None,
+        yang_library: Some(&lib),
+        requested_datastore: Some("ietf-datastores:operational"),
+        platform: None,
+        device: &device,
+        now_ns: 10_000,
+    });
+    assert_ne!(r.overall_status, ApplicabilityStatus::Applicable);
+    assert!(
+        r.reasons.contains(&ReasonCode::DatastoreSchemaMissing)
+            || r.reasons.contains(&ReasonCode::DatastoreMismatch)
+            || r.modules.iter().any(|m| m
+                .reasons
+                .contains(&ReasonCode::DatastoreSchemaMissing)
+                || m.reasons.contains(&ReasonCode::DatastoreMismatch)),
+        "missing requested datastore must stay explicit: {:?}",
+        r.reasons
+    );
+}
