@@ -1768,3 +1768,302 @@ fn t12_vendor_release_skew_stays_unresolved() {
         r.reasons
     );
 }
+
+// ── M6F-F: per-device schema selection ──────────────────────────────────────
+
+fn selection(
+    key: &str,
+    addr: &str,
+    schema_id: &str,
+) -> bonsai::sqlite_store::DeviceSchemaSelection {
+    bonsai::sqlite_store::DeviceSchemaSelection {
+        device_key: key.to_string(),
+        device_address: addr.to_string(),
+        schema_id: schema_id.to_string(),
+        selection_source: "admin".to_string(),
+        selected_by: Some("tester".to_string()),
+        note: None,
+        selection_revision: 0,
+        created_at_ns: 0,
+        updated_at_ns: 0,
+    }
+}
+
+fn compile_baselib_only() -> bonsai::yang_schema::CompiledCatalogue {
+    yang_schema::compile_parsed(
+        vec![module_input("test-baselib", MODULE_BASELIB)],
+        &CompileOptions::default(),
+    )
+}
+
+#[test]
+fn m6ff_selection_store_crud_restart_references() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(dir.path()).unwrap();
+    assert!(
+        store
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .is_none()
+    );
+
+    let sel = selection(
+        "10.0.0.9",
+        "10.0.0.9:57400",
+        "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    let stored = store
+        .set_device_schema_selection(&sel, "admin", "test")
+        .unwrap();
+    assert_eq!(stored.selection_revision, 1);
+    // Idempotent same-provenance upsert keeps the selection epoch stable.
+    let again = store
+        .set_device_schema_selection(&sel, "admin", "test")
+        .unwrap();
+    assert_eq!(again.selection_revision, 1);
+    // Any provenance/content change bumps the epoch.
+    let mut changed = sel.clone();
+    changed.note = Some("operator note".to_string());
+    let bumped = store
+        .set_device_schema_selection(&changed, "admin", "test")
+        .unwrap();
+    assert_eq!(bumped.selection_revision, 2);
+    assert!(
+        store
+            .compiled_schema_references()
+            .unwrap()
+            .contains(&sel.schema_id)
+    );
+
+    // Restart: a fresh store handle sees the durable row.
+    let store2 = SqliteStore::open(dir.path()).unwrap();
+    let loaded = store2
+        .get_device_schema_selection("10.0.0.9")
+        .unwrap()
+        .expect("selection persisted");
+    assert_eq!(loaded.schema_id, sel.schema_id);
+    assert_eq!(loaded.selection_revision, 2);
+    assert_eq!(store2.list_device_schema_selections().unwrap().len(), 1);
+
+    // Clear → default-catalogue fallback, references released.
+    assert!(
+        store2
+            .clear_device_schema_selection("10.0.0.9", "admin", "test")
+            .unwrap()
+    );
+    assert!(
+        store2
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !store2
+            .compiled_schema_references()
+            .unwrap()
+            .contains(&sel.schema_id)
+    );
+    assert!(
+        !store2
+            .clear_device_schema_selection("10.0.0.9", "admin", "test")
+            .unwrap()
+    );
+}
+
+#[test]
+fn m6ff_effective_catalogue_selection_isolation_and_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let cat_a = compile_app();
+    let cat_b = compile_baselib_only();
+    assert_ne!(cat_a.schema_id, cat_b.schema_id);
+    yang_schema::persist_compiled(&library, &cat_a).unwrap();
+    yang_schema::persist_compiled(&library, &cat_b).unwrap();
+    yang_schema::activate_compiled(&library, &cat_a.schema_id).unwrap();
+    let store = SqliteStore::open(store_dir.path()).unwrap();
+
+    // No selection row → the globally active catalogue, exactly as before.
+    let eff =
+        yang_applicability::resolve_effective_catalogue(&library, &store, "10.0.0.9").unwrap();
+    assert_eq!(
+        eff.effective_schema_id.as_deref(),
+        Some(cat_a.schema_id.as_str())
+    );
+    assert!(eff.selection.is_none());
+    assert_eq!(eff.catalogue.as_ref().unwrap().schema_id, cat_a.schema_id);
+
+    // Explicit selection binds ONLY this device to cat_b.
+    store
+        .set_device_schema_selection(
+            &selection("10.0.0.9", "10.0.0.9:57400", &cat_b.schema_id),
+            "admin",
+            "test",
+        )
+        .unwrap();
+    let eff =
+        yang_applicability::resolve_effective_catalogue(&library, &store, "10.0.0.9").unwrap();
+    assert_eq!(eff.catalogue.as_ref().unwrap().schema_id, cat_b.schema_id);
+    assert_eq!(
+        eff.effective_schema_id.as_deref(),
+        Some(cat_b.schema_id.as_str())
+    );
+    assert_eq!(
+        eff.active_schema_id.as_deref(),
+        Some(cat_a.schema_id.as_str())
+    );
+    assert_eq!(eff.selection.as_ref().unwrap().schema_id, cat_b.schema_id);
+    // No cross-device authority: a sibling device still uses cat_a.
+    let other =
+        yang_applicability::resolve_effective_catalogue(&library, &store, "10.0.0.10").unwrap();
+    assert_eq!(other.catalogue.as_ref().unwrap().schema_id, cat_a.schema_id);
+
+    // A selection naming a missing bundle fails closed — never a silent
+    // fallback to the global catalogue.
+    let ghost = "ysc-00000000000000000000000000000000";
+    store
+        .set_device_schema_selection(
+            &selection("10.0.0.11", "10.0.0.11:57400", ghost),
+            "admin",
+            "test",
+        )
+        .unwrap();
+    let eff =
+        yang_applicability::resolve_effective_catalogue(&library, &store, "10.0.0.11").unwrap();
+    assert!(eff.catalogue.is_none());
+    assert!(eff.catalogue_state.is_some());
+    assert_eq!(eff.effective_schema_id.as_deref(), Some(ghost));
+
+    // Clearing the selection restores the default catalogue.
+    store
+        .clear_device_schema_selection("10.0.0.9", "admin", "test")
+        .unwrap();
+    let eff =
+        yang_applicability::resolve_effective_catalogue(&library, &store, "10.0.0.9").unwrap();
+    assert_eq!(eff.catalogue.as_ref().unwrap().schema_id, cat_a.schema_id);
+    assert!(eff.selection.is_none());
+}
+
+#[test]
+fn m6ff_snapshot_freshness_binds_to_effective_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let cat_a = compile_app();
+    let cat_b = compile_baselib_only();
+    yang_schema::persist_compiled(&library, &cat_a).unwrap();
+    yang_schema::persist_compiled(&library, &cat_b).unwrap();
+    yang_schema::activate_compiled(&library, &cat_a.schema_id).unwrap();
+    let store = SqliteStore::open(store_dir.path()).unwrap();
+
+    // Snapshot observed under cat_a (the then-active catalogue).
+    let device = DeviceBinding {
+        address: "10.0.0.9:57400".to_string(),
+        canonical_address: "10.0.0.9".to_string(),
+        external_id: None,
+        collector_id: Some("col-local".to_string()),
+        identity_ambiguous: false,
+    };
+    let caps = caps_evidence(vec![advertised("test-app", "example", "1")]);
+    let lib = nmda_outcome(&["base-f"], &[], None);
+    let result = resolve(Some(&cat_a), Some(&caps), Some(&lib), &device);
+    let snap = yang_applicability::ApplicabilitySnapshot {
+        snapshot_id: 0,
+        device_key: device.identity_key(),
+        device_address: device.address.clone(),
+        collector_id: device.collector_id.clone(),
+        schema_id: result.schema_id.clone(),
+        content_id: result.content_id.clone(),
+        datastore: result.datastore.clone(),
+        overall_status: result.overall_status.as_str().to_string(),
+        outcome: "ok".to_string(),
+        result,
+        capabilities: Some(caps),
+        yang_library: Some(lib),
+        evidence_fingerprint: "fp".to_string(),
+        observed_at_ns: Some(15_000),
+        evaluated_at_ns: 20_000,
+        error: None,
+        created_at_ns: 20_000,
+        provenance: Default::default(),
+    };
+    let row = yang_applicability::snapshot_to_row(&snap, 0).unwrap();
+    store.save_yang_applicability_snapshot(&row).unwrap();
+
+    let target = lab_target("10.0.0.9:57400");
+    let now = 20_000 + 1000;
+
+    // Default: fresh against the active catalogue.
+    let view = yang_applicability::load_snapshot_view(&store, &library, &target, now)
+        .unwrap()
+        .expect("snapshot view");
+    assert_eq!(view.freshness, yang_applicability::SnapshotFreshness::Fresh);
+    assert_eq!(
+        view.effective_schema_id.as_deref(),
+        Some(cat_a.schema_id.as_str())
+    );
+
+    // Selecting cat_b makes THIS device's cat_a-bound snapshot stale —
+    // freshness compares against the device-effective schema, not the
+    // global pointer.
+    store
+        .set_device_schema_selection(
+            &selection("10.0.0.9", "10.0.0.9:57400", &cat_b.schema_id),
+            "admin",
+            "test",
+        )
+        .unwrap();
+    let view = yang_applicability::load_snapshot_view(&store, &library, &target, now)
+        .unwrap()
+        .expect("snapshot view");
+    assert_eq!(view.freshness, yang_applicability::SnapshotFreshness::Stale);
+    assert!(
+        view.freshness_reasons
+            .contains(&ReasonCode::SchemaVersionChanged)
+    );
+    assert_eq!(
+        view.effective_schema_id.as_deref(),
+        Some(cat_b.schema_id.as_str())
+    );
+    assert_eq!(
+        view.selected_schema_id.as_deref(),
+        Some(cat_b.schema_id.as_str())
+    );
+    assert_eq!(
+        view.active_schema_id.as_deref(),
+        Some(cat_a.schema_id.as_str())
+    );
+
+    // Re-selecting cat_a restores freshness deterministically — the
+    // durable selection, not approval state, governs.
+    store
+        .set_device_schema_selection(
+            &selection("10.0.0.9", "10.0.0.9:57400", &cat_a.schema_id),
+            "admin",
+            "test",
+        )
+        .unwrap();
+    let view = yang_applicability::load_snapshot_view(&store, &library, &target, now)
+        .unwrap()
+        .expect("snapshot view");
+    assert_eq!(view.freshness, yang_applicability::SnapshotFreshness::Fresh);
+
+    // A selection whose bundle cannot be verified stays an explicit
+    // catalogue state — never silently fresh.
+    store
+        .set_device_schema_selection(
+            &selection(
+                "10.0.0.9",
+                "10.0.0.9:57400",
+                "ysc-00000000000000000000000000000000",
+            ),
+            "admin",
+            "test",
+        )
+        .unwrap();
+    let view = yang_applicability::load_snapshot_view(&store, &library, &target, now)
+        .unwrap()
+        .expect("snapshot view");
+    assert_eq!(view.freshness, yang_applicability::SnapshotFreshness::Stale);
+    assert!(view.catalogue_state.is_some());
+}

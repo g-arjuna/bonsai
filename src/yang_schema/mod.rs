@@ -156,7 +156,16 @@ pub fn load_module_inputs(
 /// Compile the library's modules into a deterministic compiled catalogue and
 /// persist it as an inactive bundle. Returns the compiled catalogue.
 pub fn compile_library(library: &YangLibrary, trusted_only: bool) -> Result<CompiledCatalogue> {
-    compile_library_with_selection(library, trusted_only, &BTreeMap::new())
+    compile_library_with_selection(
+        library,
+        trusted_only,
+        &BTreeMap::new(),
+        // This entry point has no access to device-selection/approval
+        // state, so it cannot prove which bundles are referenced.
+        // Unknown references fail closed: retention is skipped rather
+        // than risking eviction of a device-selected bundle.
+        None,
+    )
 }
 
 /// Compile with an explicit operator-approved module-revision selection
@@ -165,10 +174,15 @@ pub fn compile_library(library: &YangLibrary, trusted_only: bool) -> Result<Comp
 /// pins are diagnostics, never silent newest-revision substitution. The
 /// resulting bundle is content-addressed like any other — identical
 /// effective closures deduplicate to the same `schema_id`.
+///
+/// `references` protects already-referenced bundles from retention
+/// eviction (see [`persist_compiled_with_references`]); `None` skips
+/// retention enforcement entirely (fail closed).
 pub fn compile_library_with_selection(
     library: &YangLibrary,
     trusted_only: bool,
     module_revisions: &BTreeMap<String, String>,
+    references: Option<&BTreeSet<String>>,
 ) -> Result<CompiledCatalogue> {
     let (inputs, pre_diagnostics) = load_module_inputs(library, !trusted_only)?;
     let options = CompileOptions {
@@ -179,7 +193,7 @@ pub fn compile_library_with_selection(
     // participate in status and schema identity — they can never be
     // silently downgraded to `complete`.
     let catalogue = compile_with_diagnostics(inputs, &options, pre_diagnostics);
-    persist_compiled(library, &catalogue)?;
+    persist_compiled_with_references(library, &catalogue, references)?;
     Ok(catalogue)
 }
 
@@ -368,7 +382,42 @@ fn read_verified_bundle(library: &YangLibrary, schema_id: &str) -> Result<Compil
 
 /// Write the compiled catalogue to `compiled/<schema_id>.json` atomically and
 /// refresh `compiled/index.json`. Does NOT activate it.
+///
+/// Retention protects only the active bundle — callers that know durable
+/// device/schema references MUST use [`persist_compiled_with_references`]
+/// so referenced bundles can never be evicted as "oldest".
 pub fn persist_compiled(library: &YangLibrary, catalogue: &CompiledCatalogue) -> Result<()> {
+    persist_compiled_impl(library, catalogue, true, &BTreeSet::new())
+}
+
+/// Persist with reference-aware retention (M6F-F). `references` is the
+/// set of schema_ids that must survive eviction (device selections,
+/// active approvals, operator pins). `None` means the reference state
+/// could not be established — retention is SKIPPED entirely (fail
+/// closed: unknown references never justify deletion).
+pub fn persist_compiled_with_references(
+    library: &YangLibrary,
+    catalogue: &CompiledCatalogue,
+    references: Option<&BTreeSet<String>>,
+) -> Result<()> {
+    match references {
+        Some(refs) => persist_compiled_impl(library, catalogue, true, refs),
+        None => {
+            tracing::warn!(
+                schema_id = %catalogue.schema_id,
+                "compiled-bundle reference state unavailable; retention enforcement skipped"
+            );
+            persist_compiled_impl(library, catalogue, false, &BTreeSet::new())
+        }
+    }
+}
+
+fn persist_compiled_impl(
+    library: &YangLibrary,
+    catalogue: &CompiledCatalogue,
+    enforce_retention: bool,
+    protected: &BTreeSet<String>,
+) -> Result<()> {
     if !valid_schema_id(&catalogue.schema_id) {
         bail!("refusing to persist bundle with invalid schema id");
     }
@@ -400,7 +449,7 @@ pub fn persist_compiled(library: &YangLibrary, catalogue: &CompiledCatalogue) ->
     if target.exists() {
         match read_verified_bundle(library, &catalogue.schema_id) {
             Ok(_) => {
-                refresh_compiled_index(library)?;
+                refresh_compiled_index(library, enforce_retention, protected)?;
                 return Ok(());
             }
             Err(e) => bail!(
@@ -425,15 +474,17 @@ pub fn persist_compiled(library: &YangLibrary, catalogue: &CompiledCatalogue) ->
             ),
         },
     }
-    refresh_compiled_index(library)?;
+    refresh_compiled_index(library, enforce_retention, protected)?;
     Ok(())
 }
 
-fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
+/// Collect verified-index metadata for every compiled bundle. The active
+/// pointer is resolved fail-closed: an unreadable/malformed pointer is an
+/// error, never proof that no active bundle exists.
+fn compiled_bundle_infos(
+    library: &YangLibrary,
+) -> Result<(Option<String>, Vec<CompiledBundleInfo>)> {
     let dir = compiled_dir(library);
-    // Fail closed: an unreadable or malformed active pointer must never be
-    // treated as proof that no active bundle exists — destructive retention
-    // below relies on this identity to protect the live catalogue.
     let active = load_active(library)?;
     let mut infos = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -490,12 +541,29 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
         }
     }
     infos.sort_by_key(|i| std::cmp::Reverse(i.compiled_at_ns));
-    // Bounded retention: keep newest MAX_COMPILED_BUNDLES, evict the rest —
-    // but never evict the active bundle. Eviction is destructive, so the
-    // ordering must not rest on unverified metadata: a forged bundle can
-    // carry a valid `ysc-` filename, a matching embedded schema_id and a
-    // fabricated `compiled_at_ns` (e.g. i64::MAX) while its semantic
-    // content is invalid. A header-consistent embedded id is NOT proof of
+    Ok((active, infos))
+}
+
+/// Refresh `compiled/index.json`; when `enforce_retention` is set also
+/// apply bounded retention. `protected` carries schema_ids that must
+/// survive eviction (M6F-F device selections, active approvals, operator
+/// pins) — protected bundles never consume an unreferenced retention
+/// slot and are never deleted. Read paths pass `enforce_retention=false`
+/// so browsing can never destroy referenced bundles.
+fn refresh_compiled_index(
+    library: &YangLibrary,
+    enforce_retention: bool,
+    protected: &BTreeSet<String>,
+) -> Result<()> {
+    let dir = compiled_dir(library);
+    let (active, infos) = compiled_bundle_infos(library)?;
+    // Bounded retention: keep newest MAX_COMPILED_BUNDLES unreferenced
+    // bundles, evict the rest — but never evict the active bundle or a
+    // protected reference. Eviction is destructive, so the ordering must
+    // not rest on unverified metadata: a forged bundle can carry a valid
+    // `ysc-` filename, a matching embedded schema_id and a fabricated
+    // `compiled_at_ns` (e.g. i64::MAX) while its semantic content is
+    // invalid. A header-consistent embedded id is NOT proof of
     // integrity — only a recomputed content hash is.
     //
     // Verification is therefore lazy and bounded: it runs only when the
@@ -505,13 +573,12 @@ fn refresh_compiled_index(library: &YangLibrary) -> Result<()> {
     // full — bundles beyond the cutoff are evicted on ordering alone
     // because 32 integrity-verified newer bundles already justify it.
     let active_id = active.clone();
-    if infos.len() > MAX_COMPILED_BUNDLES {
+    if enforce_retention && infos.len() > MAX_COMPILED_BUNDLES {
         let mut kept = 0usize;
         let mut preserved_unreadable = 0usize;
         for info in &infos {
             let is_active = Some(info.schema_id.as_str()) == active_id.as_deref();
-            if is_active {
-                kept += 1;
+            if is_active || protected.contains(info.schema_id.as_str()) {
                 continue;
             }
             // Every eviction candidate is verified before deletion —
@@ -655,7 +722,8 @@ pub fn activate_compiled(library: &YangLibrary, schema_id: &str) -> Result<()> {
     };
     let raw = serde_json::to_vec(&pointer)?;
     write_file_atomic(&dir, ACTIVE_POINTER, &raw)?;
-    refresh_compiled_index(library)?;
+    // Activation never adds bundles — index refresh only, no eviction.
+    refresh_compiled_index(library, false, &BTreeSet::new())?;
     Ok(())
 }
 
@@ -745,7 +813,9 @@ pub fn active_catalogue_state(library: &YangLibrary) -> ActiveCatalogueState {
 
 /// List retained compiled bundles (newest first).
 pub fn list_compiled(library: &YangLibrary) -> Result<Vec<CompiledBundleInfo>> {
-    refresh_compiled_index(library)?;
+    // Read path: refresh the index but never evict — browsing must not
+    // destroy bundles that device selections or approvals still reference.
+    refresh_compiled_index(library, false, &BTreeSet::new())?;
     let index_path = compiled_dir(library).join(INDEX_FILE);
     if !index_path.exists() {
         return Ok(Vec::new());
@@ -849,6 +919,25 @@ pub fn search_active_paths(
 /// preview without activating).
 pub fn load_compiled(library: &YangLibrary, schema_id: &str) -> Result<CompiledCatalogue> {
     read_verified_bundle(library, schema_id)
+}
+
+/// Load a specific bundle with the same failure classification as the
+/// active pointer (M6F-F): device-specific selections need identical
+/// fail-closed semantics — `Verified`/`Partial` carry the catalogue,
+/// `InvalidBundle`/`UnreadableBundle`/`CorruptPointer` are explicit
+/// non-authoritative states, never silent fallback.
+pub fn compiled_bundle_state(library: &YangLibrary, schema_id: &str) -> ActiveCatalogueState {
+    if !valid_schema_id(schema_id) {
+        return ActiveCatalogueState::InvalidBundle;
+    }
+    match verify_bundle(library, schema_id) {
+        Ok(catalogue) if catalogue.status == "complete" => {
+            ActiveCatalogueState::Verified(catalogue)
+        }
+        Ok(catalogue) => ActiveCatalogueState::Partial(catalogue),
+        Err(VerifyFailure::Invalid(_)) => ActiveCatalogueState::InvalidBundle,
+        Err(VerifyFailure::Unreadable(_)) => ActiveCatalogueState::UnreadableBundle,
+    }
 }
 
 /// Convenience: parse + compile directly from an in-memory module set

@@ -12,13 +12,13 @@ use serde::{Deserialize, Serialize};
 use crate::config::TargetConfig;
 use crate::discovery::{self, DiscoveryInput};
 use crate::registry::canonical_device_key;
-use crate::sqlite_store::{SqliteStore, YangApplicabilitySnapshotRow};
+use crate::sqlite_store::{DeviceSchemaSelection, SqliteStore, YangApplicabilitySnapshotRow};
 use crate::yang::YangLibrary;
 use crate::yang_library::probe_yang_library;
-use crate::yang_schema::active_catalogue_state;
 use crate::yang_schema::applicability::{
     self, ApplicabilityResult, CapabilityEvidence, DeviceBinding, YangLibraryOutcome,
 };
+use crate::yang_schema::{CompiledCatalogue, active_catalogue_state, compiled_bundle_state};
 
 /// Evidence older than this is reported stale on read (never silently
 /// current). Chosen conservatively: device module-sets change on
@@ -130,12 +130,76 @@ pub struct ApplicabilitySnapshotView {
     pub freshness: SnapshotFreshness,
     #[serde(default)]
     pub freshness_reasons: Vec<applicability::ReasonCode>,
-    /// schema_id of the currently active catalogue at read time.
+    /// schema_id of the globally active catalogue at read time.
     pub active_schema_id: Option<String>,
-    /// Why the active catalogue could not be used as authority, when it
-    /// could not. `None` only for a verified complete active catalogue.
+    /// schema_id the device is effectively bound to (explicit selection
+    /// when present, else the active catalogue). Freshness is evaluated
+    /// against THIS identity — a schema activation for another device
+    /// can never stale this snapshot (M6F-F).
+    #[serde(default)]
+    pub effective_schema_id: Option<String>,
+    /// The durable device selection's schema_id, when one exists.
+    #[serde(default)]
+    pub selected_schema_id: Option<String>,
+    /// Why the EFFECTIVE catalogue could not be used as authority, when
+    /// it could not. `None` only for a verified complete catalogue.
     #[serde(default)]
     pub catalogue_state: Option<applicability::ReasonCode>,
+}
+
+/// The compiled catalogue a device's evidence resolves against
+/// (M6F-F): an explicit durable device selection wins over the globally
+/// active catalogue. Fail-closed: a selection whose bundle is absent,
+/// corrupt or non-authoritative is an explicit state — NEVER a silent
+/// fallback to the global catalogue, which would let one device's schema
+/// authorize another device's evidence.
+#[derive(Debug)]
+pub struct EffectiveCatalogue {
+    /// Verified catalogue to resolve against. `Partial` selections carry
+    /// the catalogue plus a `CataloguePartial` state, mirroring
+    /// `ActiveCatalogueState` semantics.
+    pub catalogue: Option<CompiledCatalogue>,
+    /// Why no verified catalogue is usable, when it is not.
+    pub catalogue_state: Option<applicability::ReasonCode>,
+    /// schema_id of the globally active catalogue — reported for UI
+    /// distinction even when the device uses a different selection.
+    pub active_schema_id: Option<String>,
+    /// schema_id the device is effectively bound to: the explicit
+    /// selection when present, else the active catalogue's.
+    pub effective_schema_id: Option<String>,
+    /// The durable selection row, when the device has one.
+    pub selection: Option<DeviceSchemaSelection>,
+}
+
+/// Resolve the effective catalogue for `device_key`: explicit durable
+/// selection first (verified bundle, fail-closed), else the globally
+/// active catalogue exactly as before. A store read failure propagates —
+/// selection state that cannot be established is never guessed.
+pub fn resolve_effective_catalogue(
+    library: &YangLibrary,
+    store: &SqliteStore,
+    device_key: &str,
+) -> Result<EffectiveCatalogue> {
+    let active_state = active_catalogue_state(library);
+    let active_schema_id = active_state.schema_id().map(str::to_string);
+    let selection = store.get_device_schema_selection(device_key)?;
+    if let Some(selection) = selection {
+        let state = compiled_bundle_state(library, &selection.schema_id);
+        return Ok(EffectiveCatalogue {
+            catalogue: state.catalogue().cloned(),
+            catalogue_state: state.reason_code(),
+            active_schema_id,
+            effective_schema_id: Some(selection.schema_id.clone()),
+            selection: Some(selection),
+        });
+    }
+    Ok(EffectiveCatalogue {
+        catalogue: active_state.catalogue().cloned(),
+        catalogue_state: active_state.reason_code(),
+        effective_schema_id: active_schema_id.clone(),
+        active_schema_id,
+        selection: None,
+    })
 }
 
 /// Perform a bounded refresh for one device: capabilities → YANG
@@ -228,16 +292,22 @@ pub async fn resolve_applicability_snapshot(
     };
     let device_key = device.identity_key();
 
-    // ── Catalogue (verified, fail-closed) ─────────────────────────────
-    let catalogue_state = active_catalogue_state(input.library);
+    // ── Catalogue (device-selected or active; verified, fail-closed) ──
+    let effective = resolve_effective_catalogue(input.library, input.store, &device_key)?;
     let mut diagnostics = diagnostics;
     diagnostics.extend(
-        catalogue_state
-            .reason_code()
-            .map(|rc| vec![format!("active catalogue state: {}", rc.as_str())])
+        effective
+            .catalogue_state
+            .map(|rc| vec![format!("effective catalogue state: {}", rc.as_str())])
             .unwrap_or_default(),
     );
-    let catalogue = catalogue_state.catalogue().cloned();
+    if let Some(selection) = &effective.selection {
+        diagnostics.push(format!(
+            "device schema selection: {} (source {}, revision {})",
+            selection.schema_id, selection.selection_source, selection.selection_revision
+        ));
+    }
+    let catalogue = effective.catalogue;
 
     let catalogue_ref = catalogue.as_ref();
     let capabilities_ref = capabilities.as_ref();
@@ -372,12 +442,13 @@ pub fn snapshot_from_row(row: &YangApplicabilitySnapshotRow) -> Result<Applicabi
     })
 }
 
-/// Compute read-side freshness for a snapshot against the CURRENT
-/// active catalogue and wall clock. Invalidation is computed, never
+/// Compute read-side freshness for a snapshot against the schema the
+/// DEVICE is bound to (its effective catalogue — explicit selection or
+/// global active) and wall clock. Invalidation is computed, never
 /// written back — history stays intact for diagnostics.
 pub fn evaluate_freshness(
     snapshot: &ApplicabilitySnapshot,
-    active_schema_id: Option<&str>,
+    expected_schema_id: Option<&str>,
     now_ns: i64,
 ) -> (SnapshotFreshness, Vec<applicability::ReasonCode>) {
     let mut reasons = Vec::new();
@@ -386,8 +457,8 @@ pub fn evaluate_freshness(
         reasons.push(applicability::ReasonCode::CatalogueIntegrityFailure);
     }
     // Schema version changed: snapshot bound to a different catalogue.
-    if let (Some(snap_schema), Some(active)) = (&snapshot.schema_id, active_schema_id)
-        && snap_schema != active
+    if let (Some(snap_schema), Some(expected)) = (&snapshot.schema_id, expected_schema_id)
+        && snap_schema != expected
     {
         reasons.push(applicability::ReasonCode::SchemaVersionChanged);
     }
@@ -438,6 +509,15 @@ pub fn load_snapshot_view(
         .external_id
         .clone()
         .unwrap_or_else(|| canonical_device_key(&target.address));
+    // The device's EFFECTIVE catalogue governs freshness: an explicit
+    // selection is the authority, the global active catalogue is only
+    // the fallback. Resolving once keeps snapshot comparison, view
+    // fields and reason codes consistent.
+    let effective = resolve_effective_catalogue(library, store, &device_key)?;
+    let effective_schema_id = effective.effective_schema_id.clone();
+    let selected_schema_id = effective.selection.as_ref().map(|s| s.schema_id.clone());
+    let active_schema_id = effective.active_schema_id.clone();
+    let catalogue_state = effective.catalogue_state;
     let Some(row) = store.latest_yang_applicability_snapshot(&device_key)? else {
         return Ok(None);
     };
@@ -473,21 +553,19 @@ pub fn load_snapshot_view(
                     evidence_received_at_ns: row.evidence_received_at_ns,
                 },
             };
-            let state = active_catalogue_state(library);
-            let active_schema_id = state.schema_id().map(str::to_string);
             return Ok(Some(ApplicabilitySnapshotView {
                 snapshot: stub,
                 freshness: SnapshotFreshness::Invalid,
                 freshness_reasons: vec![applicability::ReasonCode::CatalogueIntegrityFailure],
                 active_schema_id,
-                catalogue_state: state.reason_code(),
+                effective_schema_id,
+                selected_schema_id,
+                catalogue_state,
             }));
         }
     };
-    let state = active_catalogue_state(library);
-    let active_schema_id = state.schema_id().map(str::to_string);
     let mut freshness_reasons =
-        evaluate_freshness(&snapshot, active_schema_id.as_deref(), now_ns).1;
+        evaluate_freshness(&snapshot, effective_schema_id.as_deref(), now_ns).1;
     // Bind the snapshot to the CURRENT device/collector identity. A
     // snapshot observed for another device or collector is never
     // reusable authority for this target.
@@ -500,7 +578,7 @@ pub fn load_snapshot_view(
     if snapshot.schema_id.is_none() || snapshot.evidence_fingerprint.is_empty() {
         freshness_reasons.push(applicability::ReasonCode::CatalogueIntegrityFailure);
     }
-    if let Some(rc) = state.reason_code() {
+    if let Some(rc) = catalogue_state {
         freshness_reasons.push(rc);
     }
     freshness_reasons.sort();
@@ -515,7 +593,9 @@ pub fn load_snapshot_view(
         freshness,
         freshness_reasons,
         active_schema_id,
-        catalogue_state: state.reason_code(),
+        effective_schema_id,
+        selected_schema_id,
+        catalogue_state,
     }))
 }
 

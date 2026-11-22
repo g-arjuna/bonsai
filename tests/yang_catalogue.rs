@@ -2072,8 +2072,15 @@ fn forged_bundle_metadata_cannot_evict_verified_bundles() {
     )
     .unwrap();
 
-    // Trigger a retention pass.
-    list_compiled(&library).unwrap();
+    // Trigger a retention pass. Read paths never evict (M6F-F: browsing
+    // must not destroy device-referenced bundles), so retention runs on
+    // the write path — re-persisting an already-verified bundle triggers
+    // the same index+retention refresh without adding a file.
+    let trigger = compile_parsed(
+        vec![inline_input("legit39", &tiny_yang("urn:legit39"))],
+        &CompileOptions::default(),
+    );
+    persist_compiled(&library, &trigger).unwrap();
 
     // The forged bundle must not survive retention: it is proven invalid
     // and evicted rather than trusted.
@@ -2138,8 +2145,20 @@ fn unreadable_bundle_beyond_retention_cutoff_is_preserved() {
     let invalid_id = format!("ysc-{}", "e".repeat(32));
     std::fs::write(cdir.join(format!("{invalid_id}.json")), b"not json").unwrap();
 
-    // Trigger the retention pass.
-    list_compiled(&library).unwrap();
+    // Trigger the retention pass via the write path (reads never evict —
+    // M6F-F). Re-persisting an existing verified bundle refreshes the
+    // index and runs retention without adding a file.
+    let trigger = compile_parsed(
+        vec![inline_input(
+            &format!("keep{}", bonsai::yang_schema::MAX_COMPILED_BUNDLES - 1),
+            &tiny_yang(&format!(
+                "urn:keep{}",
+                bonsai::yang_schema::MAX_COMPILED_BUNDLES - 1
+            )),
+        )],
+        &CompileOptions::default(),
+    );
+    persist_compiled(&library, &trigger).unwrap();
 
     assert!(
         cdir.join(format!("{unreadable_id}.json")).exists(),
@@ -2531,5 +2550,52 @@ fn revision_pin_rejects_untrusted_module() {
             .any(|d| d.contains("pinned to revision '2020-01-01'")),
         "got {:?}",
         cat.diagnostics
+    );
+}
+
+// ── M6F-F: retention protects referenced bundles ────────────────────────────
+
+#[test]
+fn m6ff_retention_protects_referenced_bundles() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let bound = bonsai::yang_schema::MAX_COMPILED_BUNDLES + 2;
+
+    // The first (oldest) bundle is the one a device selection would pin.
+    let mut protected = std::collections::BTreeSet::new();
+    let mut first_id = String::new();
+    for i in 0..bound {
+        let yang = format!(
+            "module m{i} {{ yang-version 1.1; namespace \"urn:example:m{i}\"; \
+             prefix m; revision 2024-01-01; container c{i} {{ leaf l {{ type string; }} }} }}"
+        );
+        let cat = compile_parsed(
+            vec![inline_input(&format!("m{i}"), &yang)],
+            &CompileOptions::default(),
+        );
+        if i == 0 {
+            first_id = cat.schema_id.clone();
+            protected.insert(first_id.clone());
+        }
+        bonsai::yang_schema::persist_compiled_with_references(&library, &cat, Some(&protected))
+            .unwrap();
+    }
+
+    // 34 bundles > bound 32: the unprotected overflow is evicted, but the
+    // referenced bundle survives regardless of age.
+    let infos = list_compiled(&library).unwrap();
+    assert_eq!(infos.len(), bonsai::yang_schema::MAX_COMPILED_BUNDLES + 1);
+    assert!(infos.iter().any(|i| i.schema_id == first_id));
+    assert!(bonsai::yang_schema::load_compiled(&library, &first_id).is_ok());
+
+    // Unknown reference state → retention skipped entirely (fail closed:
+    // never evict on unverifiable references).
+    let yang = "module mz { yang-version 1.1; namespace \"urn:example:mz\"; \
+                prefix mz; revision 2024-01-01; container cz { leaf l { type string; } } }";
+    let extra = compile_parsed(vec![inline_input("mz", yang)], &CompileOptions::default());
+    bonsai::yang_schema::persist_compiled_with_references(&library, &extra, None).unwrap();
+    assert_eq!(
+        list_compiled(&library).unwrap().len(),
+        bonsai::yang_schema::MAX_COMPILED_BUNDLES + 2
     );
 }
