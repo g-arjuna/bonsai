@@ -13,6 +13,13 @@ with containerlab and Docker.
   Get RFC 8525 + legacy, one-shot Subscribe). Generates stubs from
   `proto/gnmi.proto` at run time; implements **no Set RPC**.
 - `tools/m6f_manifest.py` — manifest resolver.
+- `tools/m6f_image.py` — deterministic docker-archive → image
+  resolution. Reads the archive's own docker-save `manifest.json`
+  (including a single nested docker archive, e.g. the XRd wrapper
+  .tgz), inspects ONLY the references the archive declares, skips
+  `docker load` when a compatible image is already present, and never
+  selects a globally-newest image. Multiple distinct images in one
+  archive require an explicit `image_select`/manifest `image` choice.
 - `../../scripts/lab/m6f-gnmi-interop.sh` — orchestrator.
 
 ## Usage
@@ -53,9 +60,32 @@ never written to evidence files.
   public ghcr image; otherwise it must already be present.
 - `xrd`, `junos`, `ceos`: owner-supplied. Populate `image` or
   `image_archive` in the manifest once the owner images under
-  `~/Desktop/clab-images/` are imported. The harness `docker load`s the
-  archive and resolves the reference — **no source changes needed**.
-  Proprietary images are never pulled and owner tags are never modified.
+  `~/Desktop/clab-images/` are imported. The harness resolves the exact
+  archive-declared reference via `tools/m6f_image.py` and `docker load`s
+  only when no compatible image is already present — **no source changes
+  needed**. Proprietary images are never pulled and owner tags are never
+  modified. Archives carrying multiple distinct images require an
+  explicit `image_select` manifest field.
+
+## TLS semantics
+
+`tools/m6f_gnmi.py` makes transport security explicit — there is no
+silent downgrade:
+
+- `--tls-mode verified` (default): certificate-verified TLS. `--ca`
+  selects the trust root (system roots when omitted); `--server-name`
+  sets SNI *and* the expected certificate identity; `--client-cert` /
+  `--client-key` enable mutual TLS where required.
+- `--tls-mode plaintext`: explicit lab-only cleartext channel.
+  `--insecure` is a deprecated alias for this — it does **not** mean
+  "TLS without certificate verification".
+- `--tls-mode unverified`: rejected — unverified TLS is not supported.
+- Missing `--ca`/cert files fail closed before any RPC.
+
+The orchestrator maps manifest `gnmi.tls: clab_ca` to verified TLS with
+the lab CA discovered under the run's own workdir and the manifest
+`gnmi.tls_server_name`; `gnmi.tls: insecure` maps to explicit plaintext.
+A missing lab CA is an error, never a plaintext fallback.
 
 ## Evidence
 
@@ -83,5 +113,10 @@ Captured evidence is sanitized: no credentials, keys or tokens.
 | FAIL | RPC executed but errored / malformed |
 | UNSUPPORTED | device responded but lacks the capability |
 | NOT_EXECUTED | precondition missing (image, creds, reachability) |
+
+Overall result is `PASS` only when every check PASSes; any
+UNSUPPORTED/NOT_EXECUTED check yields overall `PARTIAL`, any FAIL
+yields `FAIL`. Per-check outcome states are recorded under
+`outcome_states` in `result.json`/`probe-result.json`.
 
 See `MATRIX.md` for the per-vendor capability matrix.

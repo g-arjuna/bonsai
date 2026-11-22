@@ -9,8 +9,21 @@ stderr. Never writes device state (no Set RPC is implemented).
 
 Auth: gNMI has no credential field in the request; lab NOS devices
 commonly accept HTTP/2 `username`/`password` metadata headers. We send
-those plus an optional `authorization: Bearer` when configured. TLS can
-use a CA file + server name, or be fully insecure for lab images.
+those plus an optional `authorization: Bearer` when configured.
+
+TLS modes are explicit — there is no silent downgrade:
+
+  * ``--tls-mode verified`` (default): TLS with certificate
+    verification. ``--ca`` selects the trust root (system roots when
+    omitted); ``--server-name`` overrides SNI *and* the expected
+    certificate identity; ``--client-cert``/``--client-key`` enable
+    mutual TLS where the device requires it.
+  * ``--tls-mode plaintext``: explicit lab-only cleartext channel.
+    ``--insecure`` is a deprecated alias for this — it does NOT mean
+    "TLS without certificate verification".
+  * ``--tls-mode unverified``: rejected. Unverified TLS is not
+    supported by this harness; use plaintext for lab endpoints or
+    supply the lab CA.
 
 Usage:
   m6f_gnmi.py ensure-stubs --proto-dir DIR --out DIR
@@ -20,9 +33,12 @@ Usage:
   m6f_gnmi.py get --addr ... --path X
 
 Common options:
-  --ca FILE            PEM CA bundle for TLS
-  --server-name NAME   TLS SNI / cert name override
-  --insecure           plaintext or skip verification (lab only)
+  --ca FILE            PEM CA bundle for verified TLS
+  --server-name NAME   TLS SNI / expected certificate name
+  --tls-mode MODE      verified (default) | plaintext | unverified(rejected)
+  --client-cert FILE   PEM client certificate for mTLS
+  --client-key FILE    PEM client private key for mTLS
+  --insecure           deprecated alias for --tls-mode plaintext
   --user-env NAME      env var holding username (never pass secrets on CLI)
   --pass-env NAME      env var holding password
   --token-env NAME     env var holding bearer token
@@ -101,10 +117,28 @@ def build_channel(addr, args):
     import grpc
     opts = [("grpc.max_receive_message_length", 64 * 1024 * 1024),
             ("grpc.max_send_message_length", 64 * 1024 * 1024)]
-    if args.insecure:
+    mode = getattr(args, "tls_mode", None) or "verified"
+    if getattr(args, "insecure", False):
+        # Legacy flag: historically created a *plaintext* channel while
+        # being labelled as if it merely skipped certificate checks.
+        # It is now explicitly plaintext-only.
+        mode = "plaintext"
+    if mode == "unverified":
+        raise SystemExit(
+            "--tls-mode unverified is not supported: gRPC Python does "
+            "not expose skip-verify transport credentials. Use "
+            "--tls-mode plaintext for lab endpoints or supply --ca.")
+    if mode == "plaintext":
+        log("WARNING: plaintext gNMI channel (explicit lab-only mode)")
         return grpc.insecure_channel(addr, options=opts)
+    # verified TLS (default)
     creds = grpc.ssl_channel_credentials(
-        root_certificates=_read(args.ca) if args.ca else None)
+        root_certificates=_read(args.ca) if args.ca else None,
+        private_key=_read(args.client_key) if args.client_key else None,
+        certificate_chain=_read(args.client_cert)
+        if args.client_cert else None)
+    if getattr(args, "server_name", None):
+        opts.append(("grpc.ssl_target_name_override", args.server_name))
     return grpc.secure_channel(addr, creds, options=opts)
 
 
@@ -314,7 +348,16 @@ def main():
         p.add_argument("--addr", required=True)
         p.add_argument("--ca")
         p.add_argument("--server-name")
-        p.add_argument("--insecure", action="store_true")
+        p.add_argument("--tls-mode",
+                       choices=["verified", "plaintext", "unverified"],
+                       default=None,
+                       help="default: verified (system roots if --ca "
+                            "omitted); plaintext is explicit lab-only")
+        p.add_argument("--client-cert")
+        p.add_argument("--client-key")
+        p.add_argument("--insecure", action="store_true",
+                       help="deprecated alias for --tls-mode plaintext "
+                            "(cleartext, lab-only)")
         p.add_argument("--user-env")
         p.add_argument("--pass-env")
         p.add_argument("--token-env")
@@ -348,6 +391,19 @@ def main():
     p.set_defaults(fn=cmd_subscribe_once)
 
     args = ap.parse_args()
+    # Fail closed on missing trust material or contradictory TLS config
+    # before any RPC is attempted.
+    for opt in ("ca", "client_cert", "client_key"):
+        val = getattr(args, opt, None)
+        if val and not os.path.isfile(val):
+            print(f"error: --{opt.replace('_','-')} file not found: {val}",
+                  file=sys.stderr)
+            return 2
+    if getattr(args, "tls_mode", None) == "unverified":
+        print("error: --tls-mode unverified is not supported; use "
+              "plaintext for lab endpoints or supply --ca",
+              file=sys.stderr)
+        return 2
     if args.cmd == "ensure-stubs":
         print(ensure_stubs(args.proto_dir, args.out))
         return 0

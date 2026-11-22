@@ -292,3 +292,7 @@ date,command,scope,wall_seconds,result,notes
 2026-11-21,build-benchmark bn019-warm itbuild,bonsai --test bmp_rfc_contract (ci),482.64,pass,"compile+link"
 2026-11-21,build-benchmark bn019-warm itest,bonsai --test bmp_rfc_contract (ci),529.75,pass,"execution"
 2026-11-21,build-benchmark bn019-warm itedit,bonsai --test bmp_rfc_contract edit-loop (ci),517.57,pass,"test-file-only recompile+link"
+2026-11-22,cargo check -p bonsai --lib --offline,bonsai --lib (ci lane),96.0,pass,warm lane; sccache wrapper active
+2026-11-22,cargo test --test yang_device_applicability (ci),bonsai integration yang_device_applicability,503.0,pass,"compile+link ~8m20 + run; 15 passed 1 ignored; live SR Linux probe rerun passed"
+2026-11-22,cargo test --test yang_remote_collector_discovery --test yang_schema_bound_acquisition --test gnmi_selective_acquisition --test gnmi_subscription_e2e (ci),bonsai integration batch,667.0,pass,"compile 9m07 + run 178s; 64 passed 0 failed"
+2026-11-22,pytest python/tests/test_m6f_gnmi_tls.py test_m6f_image.py test_m6f_evidence.py,python m6f harness tests,8.4,pass,"27 passed"

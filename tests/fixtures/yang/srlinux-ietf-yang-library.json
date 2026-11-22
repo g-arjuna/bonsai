@@ -1,0 +1,93 @@
+{
+ "content-id": "1lg3lmex1lg3ln8{d1",
+ "module-set": [
+  {
+   "name": "nokia",
+   "module": [
+    {
+     "name": "ietf-netconf",
+     "revision": "2011-06-01",
+     "namespace": "urn:ietf:params:xml:ns:netconf:base:1.0",
+     "feature": [
+      "candidate",
+      "confirmed-commit",
+      "rollback-on-error",
+      "validate",
+      "startup",
+      "url"
+     ],
+     "deviation": [
+      "ietf-srl-deviations"
+     ]
+    },
+    {
+     "name": "ietf-yang-library",
+     "revision": "2019-01-04",
+     "namespace": "urn:ietf:params:xml:ns:yang:ietf-yang-library"
+    },
+    {
+     "name": "openconfig-aaa",
+     "revision": "2022-07-29",
+     "namespace": "http://openconfig.net/yang/aaa",
+     "submodule": [
+      {
+       "name": "openconfig-aaa-radius",
+       "revision": "2022-07-29"
+      },
+      {
+       "name": "openconfig-aaa-tacacs",
+       "revision": "2022-07-29"
+      }
+     ]
+    }
+   ],
+   "import-only-module": [
+    {
+     "name": "iana-if-type",
+     "revision": "2014-05-08",
+     "namespace": "urn:ietf:params:xml:ns:yang:iana-if-type"
+    },
+    {
+     "name": "ietf-datastores",
+     "revision": "2018-02-14",
+     "namespace": "urn:ietf:params:xml:ns:yang:ietf-datastores"
+    },
+    {
+     "name": "openconfig-extensions",
+     "revision": "2024-09-19",
+     "namespace": "http://openconfig.net/yang/openconfig-ext"
+    }
+   ]
+  }
+ ],
+ "schema": [
+  {
+   "name": "nokia",
+   "module-set": [
+    "nokia"
+   ]
+  }
+ ],
+ "datastore": [
+  {
+   "name": "ietf-datastores:candidate",
+   "schema": "nokia"
+  },
+  {
+   "name": "ietf-datastores:intended",
+   "schema": "nokia"
+  },
+  {
+   "name": "ietf-datastores:operational",
+   "schema": "nokia"
+  },
+  {
+   "name": "ietf-datastores:running",
+   "schema": "nokia"
+  },
+  {
+   "name": "ietf-datastores:startup",
+   "schema": "nokia"
+  }
+ ]
+}
