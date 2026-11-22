@@ -597,6 +597,31 @@ impl GnmiSubscriber {
         )
         .await;
 
+        // Automatic acquisition derives its path set solely from
+        // device-advertised Capabilities. When the probe fails, the
+        // hint-derived fallback must NOT manufacture native model
+        // support: refuse to emit Subscribe and let the reconnect
+        // backoff retry until real capabilities arrive. Explicit
+        // acquisition is unaffected — its paths are operator-authorized
+        // and never depended on capability evidence.
+        if self.acquisition == AcquisitionMode::Automatic && !caps.capabilities_verified {
+            warn!(
+                target = %target,
+                vendor_hint = ?self.vendor_hint,
+                "Capabilities unavailable — automatic acquisition refuses \
+                 to subscribe on unverified model assumptions"
+            );
+            self.publish_blocked_plan(
+                "rejected",
+                "capabilities_unavailable: automatic acquisition requires \
+                 a successful Capabilities probe; configure explicit \
+                 acquisition for operator-authorized paths"
+                    .to_string(),
+            )
+            .await;
+            return Ok(());
+        }
+
         let username = self.username.clone();
         let password = self.password.clone();
 
@@ -1604,6 +1629,10 @@ pub fn blocked_subscription_plan(
 struct ModelCapabilities {
     vendor_label: String,
     encoding: i32,
+    /// True only when built from a real Capabilities response. False for
+    /// hint-derived fallback: automatic acquisition must never treat
+    /// fabricated model support as device-advertised capability.
+    capabilities_verified: bool,
     /// OC interfaces model advertised → subscribe to OC interface paths.
     has_oc_interfaces: bool,
     /// OC BFD model advertised → subscribe to OC BFD paths.
@@ -1670,6 +1699,7 @@ impl ModelCapabilities {
         Self {
             vendor_label: vendor_label.to_string(),
             encoding,
+            capabilities_verified: true,
             has_oc_interfaces: has_oc_iface,
             has_oc_bfd,
             has_oc_bgp,
@@ -1692,6 +1722,7 @@ impl ModelCapabilities {
             Some(h) if h.contains("srl") || h.contains("nokia") => Self {
                 vendor_label: label,
                 encoding: json_ietf,
+                capabilities_verified: false,
                 has_srl_native: true,
                 has_srl_native_bfd: true,
                 has_xr_native: false,
@@ -1703,6 +1734,7 @@ impl ModelCapabilities {
             Some(h) if h.contains("xrd") || h.contains("cisco") => Self {
                 vendor_label: label,
                 encoding: json_ietf,
+                capabilities_verified: false,
                 has_srl_native: false,
                 has_srl_native_bfd: false,
                 has_xr_native: true,
@@ -1714,6 +1746,7 @@ impl ModelCapabilities {
             _ => Self {
                 vendor_label: label,
                 encoding: json_ietf,
+                capabilities_verified: false,
                 has_srl_native: false,
                 has_srl_native_bfd: false,
                 has_xr_native: false,

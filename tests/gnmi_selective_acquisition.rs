@@ -28,6 +28,9 @@ use tonic::{Request, Response, Status, Streaming, transport::Server};
 #[derive(Clone)]
 struct MockGnmi {
     caps: CapabilityResponse,
+    /// When true, capabilities() fails — simulates a device/proxy that
+    /// cannot answer the Capabilities RPC.
+    fail_capabilities: bool,
     requests: Arc<Mutex<Vec<SubscribeRequest>>>,
     capability_calls: Arc<AtomicUsize>,
     subscribe_calls: Arc<AtomicUsize>,
@@ -47,6 +50,9 @@ impl GNmi for MockGnmi {
         _request: Request<CapabilityRequest>,
     ) -> Result<Response<CapabilityResponse>, Status> {
         self.capability_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_capabilities {
+            return Err(Status::unavailable("capabilities probe failed"));
+        }
         Ok(Response::new(self.caps.clone()))
     }
 
@@ -131,6 +137,10 @@ struct Lab {
 }
 
 async fn start_lab(models: Vec<&str>) -> Lab {
+    start_lab_opts(models, false).await
+}
+
+async fn start_lab_opts(models: Vec<&str>, fail_capabilities: bool) -> Lab {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let capability_calls = Arc::new(AtomicUsize::new(0));
     let subscribe_calls = Arc::new(AtomicUsize::new(0));
@@ -150,6 +160,7 @@ async fn start_lab(models: Vec<&str>) -> Lab {
             g_nmi_version: "0.0.0".to_string(),
             ..Default::default()
         },
+        fail_capabilities,
         requests: Arc::clone(&requests),
         capability_calls: Arc::clone(&capability_calls),
         subscribe_calls: Arc::clone(&subscribe_calls),
@@ -2280,4 +2291,84 @@ async fn local_all_mode_manifest_orders_coverage_across_reconnect() {
     let _ = sd2.send(true);
     let _ = vsd.send(true);
     let _ = verifier.await;
+}
+
+// ── capabilities-unavailable acquisition guard ───────────────────────────────
+//
+// Automatic acquisition derives its path set solely from device-advertised
+// Capabilities. When the Capabilities RPC fails, hint-derived fallback must
+// never manufacture native model support: no Subscribe RPC may be emitted.
+// Explicit acquisition is unaffected — its paths are operator-authorized.
+
+#[tokio::test]
+async fn automatic_mode_refuses_subscriptions_when_capabilities_fail() {
+    let lab = start_lab_opts(vec!["openconfig-interfaces"], true).await;
+    let (plan_tx, mut plan_rx) = mpsc::channel(8);
+    let sub = subscriber(&lab, vec![], AcquisitionMode::Automatic, plan_tx);
+    let (_stx, mut srx) = watch::channel(false);
+    let handle = tokio::spawn(async move { sub.subscribe_telemetry(&mut srx).await });
+
+    let plan = tokio::time::timeout(Duration::from_secs(10), plan_rx.recv())
+        .await
+        .expect("blocked plan published")
+        .expect("plan channel open");
+    assert_eq!(plan.state, "rejected");
+    assert!(
+        plan.detail.contains("capabilities_unavailable"),
+        "plan detail must name the cause: {}",
+        plan.detail
+    );
+
+    // Give any erroneous Subscribe attempt time to happen, then prove
+    // none was emitted.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        lab.subscribe_calls.load(Ordering::SeqCst),
+        0,
+        "automatic mode must not Subscribe on unverified capabilities"
+    );
+    assert!(
+        lab.capability_calls.load(Ordering::SeqCst) >= 1,
+        "capabilities probe must have been attempted"
+    );
+
+    _stx.send(true).unwrap();
+    let _ = handle.await;
+}
+
+#[tokio::test]
+async fn explicit_mode_still_subscribes_when_capabilities_fail() {
+    let lab = start_lab_opts(vec!["openconfig-interfaces"], true).await;
+    let (plan_tx, mut plan_rx) = mpsc::channel(8);
+    let paths = vec![selected(
+        "interfaces/interface[name=Ethernet1/1]/state/counters",
+        "SAMPLE",
+    )];
+    let sub = subscriber(&lab, paths, AcquisitionMode::Explicit, plan_tx);
+    let (_stx, mut srx) = watch::channel(false);
+    let handle = tokio::spawn(async move { sub.subscribe_telemetry(&mut srx).await });
+
+    assert!(
+        wait_for(
+            || lab.subscribe_calls.load(Ordering::SeqCst) > 0,
+            Duration::from_secs(10)
+        )
+        .await,
+        "explicit mode must still emit its operator-authorized Subscribe"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let requests = lab.requests.lock().await;
+    let subs = subscription_list(&requests[0]);
+    assert_eq!(subs.len(), 1, "exactly the requested path");
+    drop(requests);
+
+    let plan = tokio::time::timeout(Duration::from_secs(5), plan_rx.recv())
+        .await
+        .expect("plan published")
+        .expect("plan channel open");
+    assert_eq!(plan.state, "submitted");
+    assert_eq!(plan.acquisition, "explicit");
+
+    _stx.send(true).unwrap();
+    let _ = handle.await;
 }
