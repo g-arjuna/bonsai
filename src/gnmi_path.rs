@@ -467,8 +467,12 @@ mod tests {
             "other-module:interface[name=mgmt0]/statistics/in-packets",
         )
         .unwrap();
-        // Any single module prefix qualifies — the subscription itself
-        // is the authority boundary for which module answered.
+        // STRUCTURAL matching is prefix-tolerant: any single module
+        // prefix satisfies a bare local name at this layer. Whether the
+        // qualifier names the declaring module is verified separately
+        // against the plan's compiled schema identity (M6F-C,
+        // `schema_coverage` / `coverage_match`) — an arbitrary prefix
+        // never establishes coverage there.
         assert!(observation_covers(&exp, &obs_other_mod));
         // A prefixed EXPECTATION still requires an exact match: the
         // same prefix covers, a different prefix does not.

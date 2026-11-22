@@ -6,6 +6,8 @@ use tracing::{debug, info, warn};
 
 use crate::event_bus::InProcessBus;
 use crate::graph::{BonsaiEvent, SubscriptionStatusWrite};
+use crate::schema_coverage::CoverageSchemaIndex;
+pub use crate::schema_coverage::{CoverageSchemaSource, YangLibraryCoverageSource};
 use crate::store::BonsaiStore;
 use crate::subscription_sessions::{
     ApplyOutcome, SessionLifecycleEvent, SubscriptionSessionRegistry,
@@ -374,6 +376,12 @@ pub struct SubscriptionPlan {
     pub state: String,
     /// "automatic" | "explicit" | "disabled" — operator acquisition intent.
     pub acquisition: String,
+    /// Verified schema identity this plan's coverage expectations are
+    /// bound to (M6F-C): the approved schema-bound `schema_id`, or
+    /// `None` for unbound plans (verified against the active catalogue).
+    /// Module qualifiers on observed gNMI paths must resolve through
+    /// this identity — an arbitrary prefix never establishes coverage.
+    pub schema_id: Option<String>,
     /// Device-facing subscription session that owns this plan's coverage.
     /// Minted per Subscribe session by the collector; empty for
     /// non-submitted states. A reconnect under the same plan_id carries a
@@ -412,9 +420,24 @@ impl SubscriptionPlan {
             session_id: event.session_id.clone(),
             state: "submitted".to_string(),
             acquisition: event.acquisition.clone(),
+            schema_id: event
+                .schema_binding
+                .as_ref()
+                .filter(|b| b.mode == "schema_bound" && !b.schema_id.is_empty())
+                .map(|b| b.schema_id.clone()),
             detail: String::new(),
         })
     }
+}
+
+/// Verified schema identity for coverage prefix verification: the
+/// approved schema-bound bundle id, or `None` for unbound plans.
+pub fn plan_schema_id(target: &crate::config::TargetConfig) -> Option<String> {
+    target
+        .schema_binding
+        .as_ref()
+        .filter(|b| b.mode == "schema_bound" && !b.schema_id.is_empty())
+        .map(|b| b.schema_id.clone())
 }
 
 #[derive(Clone, Debug)]
@@ -467,6 +490,11 @@ struct TrackedPath {
     /// reported stale. `Duration::MAX` for ON_CHANGE: a quiet ON_CHANGE
     /// subscription remains valid (M5.2B B3).
     stale_after: Duration,
+    /// Verified schema identity resolved at plan registration (M6F-C):
+    /// the compiled-catalogue index used to verify module qualifiers on
+    /// observed gNMI paths. `None` = no verified catalogue — qualified
+    /// observations are unverifiable and never establish coverage.
+    schema: Option<Arc<CoverageSchemaIndex>>,
 }
 
 pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
@@ -476,6 +504,7 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
     sessions: Arc<SubscriptionSessionRegistry>,
     shutdown: tokio::sync::watch::Receiver<bool>,
     ready: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    schema_source: Option<Arc<dyn CoverageSchemaSource>>,
 ) {
     run_subscription_verifier_with_windows(
         store,
@@ -486,6 +515,7 @@ pub async fn run_subscription_verifier<S: BonsaiStore + 'static>(
         Duration::from_secs(5),
         VERIFICATION_WINDOW,
         ready,
+        schema_source,
     )
     .await;
 }
@@ -504,6 +534,7 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
     tick: Duration,
     freshness_floor: Duration,
     mut ready: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    schema_source: Option<Arc<dyn CoverageSchemaSource>>,
 ) {
     let (sub, mut telemetry_rx) = crate::event_bus::MpscSubscriber::new(
         "subscription_verifier",
@@ -616,8 +647,15 @@ pub async fn run_subscription_verifier_with_windows<S: BonsaiStore + 'static>(
                 // fence-rejected manifest must not poison deduplication
                 // of a later legitimate retry (M5.2B review).
                 registered_plans.insert(plan.target.clone(), key);
-                register_plan(&store, &mut tracked, &mut pending_writes, plan, freshness_floor)
-                    .await;
+                register_plan(
+                    &store,
+                    &mut tracked,
+                    &mut pending_writes,
+                    plan,
+                    freshness_floor,
+                    schema_source.as_ref(),
+                )
+                .await;
             }
             event = telemetry_rx.recv() => {
                 match event {
@@ -797,12 +835,40 @@ pub async fn apply_local_lifecycle_event(
     }
 }
 
+/// Resolve the verified schema index for one plan registration (M6F-C).
+/// Bound plans load their approved `schema_id` bundle; unbound plans
+/// use the active catalogue. Any load failure yields `None` — qualified
+/// observations then stay unverifiable (fail closed, never identity by
+/// guesswork). Runs the blocking catalogue IO off the async executor.
+async fn resolve_plan_schema_index(
+    schema_source: Option<&Arc<dyn CoverageSchemaSource>>,
+    schema_id: Option<&str>,
+) -> Option<Arc<CoverageSchemaIndex>> {
+    let source = schema_source?.clone();
+    let schema_id = schema_id.map(str::to_string);
+    let catalogue =
+        tokio::task::spawn_blocking(move || source.catalogue_for(schema_id.as_deref())).await;
+    match catalogue {
+        Ok(Ok(Some(catalogue))) => Some(Arc::new(CoverageSchemaIndex::new(&catalogue))),
+        Ok(Ok(None)) => None,
+        Ok(Err(error)) => {
+            warn!(%error, "coverage schema catalogue unavailable — qualified observations unverifiable");
+            None
+        }
+        Err(error) => {
+            warn!(%error, "coverage schema resolution task failed");
+            None
+        }
+    }
+}
+
 async fn register_plan<S: BonsaiStore>(
     store: &S,
     tracked: &mut HashMap<(String, String), TrackedPath>,
     pending_writes: &mut VecDeque<SubscriptionStatusWrite>,
     plan: SubscriptionPlan,
     freshness_floor: Duration,
+    schema_source: Option<&Arc<dyn CoverageSchemaSource>>,
 ) {
     let now = now_ns();
     let target = plan.target.clone();
@@ -883,6 +949,10 @@ async fn register_plan<S: BonsaiStore>(
         return;
     }
 
+    // Verified schema identity is resolved once per registration and
+    // shared by every expectation of the plan — the approved binding
+    // bundle for schema-bound plans, the active catalogue otherwise.
+    let schema_index = resolve_plan_schema_index(schema_source, plan.schema_id.as_deref()).await;
     let deadline = Instant::now() + freshness_floor;
     for expectation in plan.paths {
         let key = tracked_key(&target, &expectation);
@@ -906,6 +976,7 @@ async fn register_plan<S: BonsaiStore>(
                     last_seen: existing.last_seen,
                     last_evidence_at: existing.last_evidence_at,
                     stale_after: sample_stale_after(&expectation, freshness_floor),
+                    schema: schema_index.clone(),
                 },
             )
         });
@@ -923,6 +994,7 @@ async fn register_plan<S: BonsaiStore>(
             last_seen: Instant::now(),
             last_evidence_at: None,
             stale_after: sample_stale_after(&expectation, freshness_floor),
+            schema: schema_index.clone(),
         });
         tracked.insert(key.clone(), tracked_path);
         if is_new {
@@ -995,7 +1067,12 @@ async fn observe_update<S: BonsaiStore>(
                 // manifest re-registers the paths as pending.
                 && tracked_path.session_id == update.session_id)
                 .then(|| {
-                    coverage_match(&tracked_path.expectation, update).map(|m| (key.clone(), m))
+                    coverage_match(
+                        &tracked_path.expectation,
+                        update,
+                        tracked_path.schema.as_deref(),
+                    )
+                    .map(|m| (key.clone(), m))
                 })
                 .flatten()
         })
@@ -1450,9 +1527,25 @@ enum CoverageMatch {
 /// deletes that only QUALIFY coverage. Observations that fail to parse,
 /// and updates without structured paths, are explicit non-coverage;
 /// string containment is never used.
+/// Module-qualifier verification (M6F-C): every observed path carrying
+/// a `prefix:local` element name must prove the qualifier names the
+/// module that declares that schema node — resolved through the plan's
+/// verified catalogue identity. With no verified schema (`None`),
+/// qualified observations are unverifiable and never cover. Unqualified
+/// elements make no module claim and pass this layer.
+fn prefixes_verified(
+    schema: Option<&CoverageSchemaIndex>,
+    paths: &[crate::proto::gnmi::Path],
+) -> bool {
+    paths.iter().all(|p| {
+        !crate::schema_coverage::path_has_qualifiers(p) || schema.is_some_and(|s| s.verify_path(p))
+    })
+}
+
 fn coverage_match(
     expectation: &SubscriptionPathExpectation,
     update: &TelemetryUpdate,
+    schema: Option<&CoverageSchemaIndex>,
 ) -> Option<CoverageMatch> {
     if update.gnmi_path.is_empty() {
         return None;
@@ -1463,6 +1556,9 @@ fn coverage_match(
     if update.is_delete {
         let mut qualified = false;
         for obs in &update.gnmi_path {
+            if !prefixes_verified(schema, std::slice::from_ref(obs)) {
+                continue;
+            }
             if crate::gnmi_path::delete_covers(&expected, obs) {
                 return Some(CoverageMatch::DeleteComplete);
             }
@@ -1475,6 +1571,7 @@ fn coverage_match(
         update
             .gnmi_path
             .iter()
+            .filter(|obs| prefixes_verified(schema, std::slice::from_ref(obs)))
             .any(|obs| crate::gnmi_path::observation_covers(&expected, obs))
             .then_some(CoverageMatch::Observe)
     }
@@ -1572,7 +1669,8 @@ mod tests {
                     "interfaces/interface[name=ethernet-1/1]/state/counters",
                     "SAMPLE"
                 ),
-                &update
+                &update,
+                None
             ),
             Some(CoverageMatch::Observe)
         );
@@ -1583,7 +1681,8 @@ mod tests {
                     "interfaces/interface[name=ethernet-1/2]/state/counters",
                     "SAMPLE"
                 ),
-                &update
+                &update,
+                None
             ),
             None
         );
@@ -1594,7 +1693,8 @@ mod tests {
                     "interfaces/interface[name=ethernet-1/1]/state/counters/in-octets/extra",
                     "SAMPLE"
                 ),
-                &update
+                &update,
+                None
             ),
             None
         );
@@ -1602,7 +1702,8 @@ mod tests {
         assert_eq!(
             coverage_match(
                 &expectation("interfaces/interface[name=ethernet-1/1", "SAMPLE"),
-                &update
+                &update,
+                None
             ),
             None
         );
@@ -1610,9 +1711,118 @@ mod tests {
         let mut bare = update.clone();
         bare.gnmi_path = Vec::new();
         assert_eq!(
-            coverage_match(&expectation("interfaces", "SAMPLE"), &bare),
+            coverage_match(&expectation("interfaces", "SAMPLE"), &bare, None),
             None
         );
+    }
+
+    /// M6F-C: a `prefix:local` element name is a module claim, not just
+    /// a local-name alias. Coverage requires the qualifier to resolve —
+    /// through the plan's verified catalogue — to the module that
+    /// declares that schema node. An arbitrary prefix never establishes
+    /// positive coverage; unqualified observations make no claim and
+    /// remain governed by structural matching alone.
+    #[test]
+    fn module_qualified_observations_require_verified_schema_identity() {
+        let index = CoverageSchemaIndex::new(&crate::schema_coverage::fixture_catalogue());
+        let expectation = expectation("interface[name=mgmt0]/statistics", "SAMPLE");
+
+        // SR Linux convention: the YANG module qualifies the list
+        // element; the approved unprefixed expectation is covered only
+        // because the verified catalogue proves `srl_nokia-interfaces`
+        // declares `/interface[name]`.
+        let srl = gnmi_update(
+            "interface[name=mgmt0]/statistics",
+            "srl_nokia-interfaces:interface[name=mgmt0]/statistics",
+        );
+        assert_eq!(
+            coverage_match(&expectation, &srl, Some(&index)),
+            Some(CoverageMatch::Observe)
+        );
+
+        // A different real module prefix on the same local name is a
+        // different schema identity — local-name equality is not enough.
+        let wrong_prefix = gnmi_update(
+            "interface[name=mgmt0]/statistics",
+            "oc-if:interface[name=mgmt0]/statistics",
+        );
+        assert_eq!(
+            coverage_match(&expectation, &wrong_prefix, Some(&index)),
+            None
+        );
+
+        // An unknown qualifier is equally non-covering.
+        let unknown = gnmi_update(
+            "interface[name=mgmt0]/statistics",
+            "other-module:interface[name=mgmt0]/statistics",
+        );
+        assert_eq!(coverage_match(&expectation, &unknown, Some(&index)), None);
+
+        // With NO verified schema identity the qualifier cannot be
+        // verified — uncertainty is preserved as non-coverage rather
+        // than resolved by guesswork.
+        assert_eq!(coverage_match(&expectation, &srl, None), None);
+
+        // Unqualified observations (e.g. cEOS/OpenConfig style) make no
+        // module claim: they still cover under structural matching, with
+        // or without a catalogue.
+        let bare = gnmi_update(
+            "interface[name=mgmt0]/statistics",
+            "interface[name=mgmt0]/statistics",
+        );
+        assert_eq!(
+            coverage_match(&expectation, &bare, Some(&index)),
+            Some(CoverageMatch::Observe)
+        );
+        assert_eq!(
+            coverage_match(&expectation, &bare, None),
+            Some(CoverageMatch::Observe)
+        );
+    }
+
+    /// M6F-C: delete/tombstone evidence obeys the same module-identity
+    /// rule — a qualified delete from an unverified module cannot
+    /// complete or partially qualify coverage.
+    #[test]
+    fn module_qualified_deletes_require_verified_schema_identity() {
+        let index = CoverageSchemaIndex::new(&crate::schema_coverage::fixture_catalogue());
+        let expectation = expectation("interface[name=mgmt0]/statistics", "SAMPLE");
+
+        let mut verified_delete = gnmi_update(
+            "interface[name=mgmt0]",
+            "srl_nokia-interfaces:interface[name=mgmt0]",
+        );
+        verified_delete.is_delete = true;
+        assert_eq!(
+            coverage_match(&expectation, &verified_delete, Some(&index)),
+            Some(CoverageMatch::DeleteComplete)
+        );
+
+        let mut wrong_delete = gnmi_update("interface[name=mgmt0]", "oc-if:interface[name=mgmt0]");
+        wrong_delete.is_delete = true;
+        assert_eq!(
+            coverage_match(&expectation, &wrong_delete, Some(&index)),
+            None
+        );
+    }
+
+    /// M6F-C: origin semantics are unchanged — a qualified path under a
+    /// non-matching gNMI origin still cannot cover, and schema identity
+    /// never substitutes for origin identity.
+    #[test]
+    fn module_qualified_origin_mismatch_never_covers() {
+        let index = CoverageSchemaIndex::new(&crate::schema_coverage::fixture_catalogue());
+        let expectation = SubscriptionPathExpectation {
+            origin: "openconfig".to_string(),
+            ..expectation("interface[name=mgmt0]/statistics", "SAMPLE")
+        };
+        let srl = gnmi_update(
+            "interface[name=mgmt0]/statistics",
+            "srl_nokia-interfaces:interface[name=mgmt0]/statistics",
+        );
+        // The update's origin is empty — it cannot satisfy an
+        // origin-bound expectation regardless of module verification.
+        assert_eq!(coverage_match(&expectation, &srl, Some(&index)), None);
     }
 
     #[test]
@@ -1653,14 +1863,19 @@ mod tests {
             .unwrap_or_default();
 
         assert_eq!(
-            coverage_match(&expectation("network-instances", "ON_CHANGE"), &update),
+            coverage_match(
+                &expectation("network-instances", "ON_CHANGE"),
+                &update,
+                None
+            ),
             Some(CoverageMatch::Observe)
         );
         // Ancestor observation cannot cover a descendant expectation.
         assert_eq!(
             coverage_match(
                 &expectation("network-instances/protocols/bgp", "ON_CHANGE"),
-                &update
+                &update,
+                None
             ),
             None
         );
@@ -1979,6 +2194,7 @@ mod tests {
                 last_seen: Instant::now(),
                 last_evidence_at: None,
                 stale_after: Duration::from_secs(30),
+                schema: None,
             },
         );
         let mut pending = PendingObservations::default();
@@ -2201,6 +2417,7 @@ mod tests {
                     last_seen: Instant::now(),
                     last_evidence_at: None,
                     stale_after: Duration::MAX,
+                    schema: None,
                 },
             );
             let tp = tracked.get(&key).unwrap();
@@ -2273,6 +2490,7 @@ mod tests {
             acquisition: "explicit".to_string(),
             session_id: session_id.to_string(),
             detail: String::new(),
+            schema_id: None,
         };
         let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
         let mut pending = PendingObservations::default();
@@ -2286,6 +2504,7 @@ mod tests {
             &mut pending_writes,
             plan("sess-a"),
             floor,
+            None,
         )
         .await;
         let key = tracked_key(target, &expectation(plan_path, "ON_CHANGE"));
@@ -2320,6 +2539,7 @@ mod tests {
             &mut pending_writes,
             plan("sess-b"),
             floor,
+            None,
         )
         .await;
         assert_eq!(tracked.get(&key).unwrap().session_id, "sess-b");
@@ -2393,6 +2613,7 @@ mod tests {
             acquisition: "explicit".to_string(),
             session_id: session_id.to_string(),
             detail: String::new(),
+            schema_id: None,
         };
         let mut tracked: HashMap<(String, String), TrackedPath> = HashMap::new();
         let mut pending = PendingObservations::default();
@@ -2400,7 +2621,15 @@ mod tests {
         let floor = Duration::from_secs(60);
 
         // Desired-plan preview registers first (session-unbound).
-        register_plan(&store, &mut tracked, &mut pending_writes, plan(""), floor).await;
+        register_plan(
+            &store,
+            &mut tracked,
+            &mut pending_writes,
+            plan(""),
+            floor,
+            None,
+        )
+        .await;
         let key = tracked_key(target, &expectation(plan_path, "ON_CHANGE"));
         assert_eq!(tracked.get(&key).unwrap().session_id, "");
 
@@ -2430,6 +2659,7 @@ mod tests {
             &mut pending_writes,
             plan("sess-b"),
             floor,
+            None,
         )
         .await;
         assert_eq!(tracked.get(&key).unwrap().session_id, "sess-b");
@@ -2494,6 +2724,7 @@ mod tests {
             Duration::from_millis(50),
             Duration::from_millis(200),
             Some(ready_tx),
+            None,
         ));
         // Await the readiness contract, then inject plan + telemetry with
         // NO intervening sleep — bus delivery is already guaranteed.
@@ -2513,6 +2744,7 @@ mod tests {
                 acquisition: "explicit".to_string(),
                 session_id: "sess-b".to_string(),
                 detail: String::new(),
+                schema_id: None,
             })
             .await
             .unwrap();
@@ -2588,6 +2820,7 @@ mod tests {
             Duration::from_millis(50),
             Duration::from_millis(200),
             Some(ready_tx),
+            None,
         ));
         let readiness = ready_rx.await.expect("verifier dropped readiness sender");
         let error = readiness.expect_err("failed boot expiry must fail readiness");
@@ -2635,6 +2868,7 @@ mod tests {
             Duration::from_millis(50),
             Duration::from_millis(200),
             Some(ready_tx),
+            None,
         ));
         let readiness = tokio::time::timeout(Duration::from_secs(5), ready_rx)
             .await

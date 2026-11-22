@@ -47,6 +47,7 @@ pub mod resource_profile;
 pub mod retention;
 pub mod routing_service;
 pub mod schema_binding;
+pub mod schema_coverage;
 pub mod security;
 pub mod service_discovery;
 pub mod shun;

@@ -445,6 +445,7 @@ async fn start_lab(pki: &Pki, device: TargetConfig) -> Lab {
         verifier_sessions,
         vsrx,
         Some(verifier_ready_tx),
+        None,
     ));
     verifier_ready_rx
         .await

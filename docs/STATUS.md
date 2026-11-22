@@ -1,5 +1,28 @@
 # Bonsai current state
 
+M6F-C update — **coverage integrity + XRd probe progress**
+(branch `fix/m6fc-coverage`, worktree `bonsai-m6fc-a`). Stage A:
+coverage matching is now schema-aware — observed gNMI module
+qualifiers (`prefix:local`) must resolve through the plan's verified
+compiled-catalogue identity (`src/schema_coverage.rs`); arbitrary or
+unverifiable qualifiers fail closed instead of establishing
+coverage, while unqualified structural matching is unchanged.
+Withdrawal verification in `lab/acceptance/m6f/tools/m6f_e2e.py` now
+requires authoritative evidence (binding revoked, acquisition
+disabled, plan-state/terminal statuses, live collector ack with zero
+subscriptions, and a stability window spanning ≥2 sample intervals)
+— a frozen timestamp alone no longer passes, and a noncompliant
+collector that keeps streaming fails. A new `provenance` stage
+records source SHA/dirty flag, binary SHA256s, image identities, NOS
+version, model-source pin, schema identity and acquisition/plan
+revisions; dirty trees are marked ineligible for final-SHA
+acceptance. Stage B: XRd 24.4.2 boots after the owner raised host
+inotify limits; probe-level Capabilities, RFC 8525 + legacy YANG
+Library and subscribe-once on OpenConfig interface counters all PASS
+(gNMI 0.10.0 plaintext on TCP/9339 via the containerlab-injected
+config; 1064 advertised models). XRd production-path acceptance is
+still pending.
+
 M6F-B update — **real Nokia SR Linux production-path
 interoperability validated** (branch `feat/m6fb-gnmi-interop`).
 The complete production chain ran against a live SR Linux 26.3.1

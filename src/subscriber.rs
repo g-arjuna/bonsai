@@ -346,6 +346,7 @@ impl GnmiSubscriber {
             state: state.to_string(),
             acquisition: self.acquisition.as_str().to_string(),
             detail: detail.clone(),
+            schema_id: None,
         })
         .await;
         self.emit_plan_outcome(state, &plan_id, &detail).await;
@@ -462,6 +463,7 @@ impl GnmiSubscriber {
                 state: "rejected".to_string(),
                 acquisition: self.acquisition.as_str().to_string(),
                 detail: reason.to_string(),
+                schema_id: None,
             })
             .await;
             self.emit_plan_outcome("failed", &plan_id, reason).await;
@@ -487,6 +489,7 @@ impl GnmiSubscriber {
                         state: "disabled".to_string(),
                         acquisition: self.acquisition.as_str().to_string(),
                         detail: "acquisition disabled".to_string(),
+                        schema_id: None,
                     })
                     .await;
                     self.emit_plan_outcome("disabled", &plan_id, "acquisition disabled")
@@ -510,6 +513,7 @@ impl GnmiSubscriber {
                         state: "rejected".to_string(),
                         acquisition: self.acquisition.as_str().to_string(),
                         detail: detail.clone(),
+                        schema_id: None,
                     })
                     .await;
                     self.emit_plan_outcome("failed", &plan_id, &detail).await;
@@ -626,6 +630,7 @@ impl GnmiSubscriber {
                     state: "disabled".to_string(),
                     acquisition: self.acquisition.as_str().to_string(),
                     detail: "acquisition disabled".to_string(),
+                    schema_id: None,
                 })
                 .await;
                 self.emit_plan_outcome("disabled", &plan_id, "acquisition disabled")
@@ -649,6 +654,7 @@ impl GnmiSubscriber {
                     state: "rejected".to_string(),
                     acquisition: self.acquisition.as_str().to_string(),
                     detail: detail.clone(),
+                    schema_id: None,
                 })
                 .await;
                 self.emit_plan_outcome("failed", &plan_id, &detail).await;
@@ -1495,10 +1501,20 @@ pub fn planned_subscription_plan_for_target(
             state: "rejected".to_string(),
             acquisition: target.acquisition.as_str().to_string(),
             detail: reason.to_string(),
+            schema_id: target
+                .schema_binding
+                .as_ref()
+                .filter(|b| b.mode == "schema_bound")
+                .map(|b| b.schema_id.clone()),
         };
     }
     // Preview uses capability fallback hints for automatic mode; explicit
     // plans are validated strictly (no capability substitution).
+    let schema_id = target
+        .schema_binding
+        .as_ref()
+        .filter(|b| b.mode == "schema_bound")
+        .map(|b| b.schema_id.clone());
     let caps = ModelCapabilities::fallback(
         target
             .vendor
@@ -1515,6 +1531,7 @@ pub fn planned_subscription_plan_for_target(
             state: "disabled".to_string(),
             acquisition: target.acquisition.as_str().to_string(),
             detail: "acquisition disabled".to_string(),
+            schema_id,
         },
         AcquisitionPlan::Rejected { plan_id, errors } => SubscriptionPlan {
             target: target.address.clone(),
@@ -1524,6 +1541,7 @@ pub fn planned_subscription_plan_for_target(
             state: "rejected".to_string(),
             acquisition: target.acquisition.as_str().to_string(),
             detail: errors.join("; "),
+            schema_id,
         },
         AcquisitionPlan::Ready {
             subscriptions,
@@ -1540,6 +1558,7 @@ pub fn planned_subscription_plan_for_target(
             state: "submitted".to_string(),
             acquisition: target.acquisition.as_str().to_string(),
             detail: String::new(),
+            schema_id,
         },
     }
 }
