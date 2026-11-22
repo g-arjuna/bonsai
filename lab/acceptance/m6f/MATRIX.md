@@ -24,24 +24,24 @@ standalone probe only, NOT the production path).
 > list-key and TLS findings are unchanged: they are backed by the
 > committed capture. Historical evidence files were not modified.
 
-| Capability | SR Linux | XRd | Junos (cJunos) | cEOS |
-|---|---|---|---|---|
-| Capabilities | PASS | PASS (probe) | NOT_EXECUTED | PASS (probe) |
-| YANG Library RFC 8525 | PASS | PASS (probe) | NOT_EXECUTED | UNSUPPORTED |
-| Legacy YANG Library | PASS | PASS (probe) | NOT_EXECUTED | UNSUPPORTED |
-| JSON_IETF encoding | PASS | PASS (probe) | NOT_EXECUTED | PASS (probe) |
-| SAMPLE mode | PASS (production collector, sustained) | PASS (probe) | NOT_EXECUTED | PASS (probe + explicit production) |
-| ON_CHANGE mode | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED | PARTIAL (probe: initial sync only) |
-| List-key handling | PASS | PASS (probe) | NOT_EXECUTED | PASS (probe) |
-| Initial sync | PASS | PASS (probe) | NOT_EXECUTED | PASS (probe) |
-| Delete semantics | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED |
-| TLS authentication | PASS | NOT_EXECUTED (lab plaintext) | NOT_EXECUTED | NOT_EXECUTED (lab plaintext) |
-| Remote collector discovery | PASS (Core-issued job, snapshot 8) | PASS (job completed, snapshot 3) | NOT_EXECUTED | NOT_EXECUTED (no YANG Library) |
-| Exact plan activation | PASS (schema-bound rev 4/5) | FAIL→refused (conflicted/unknown applicability — see notes) | NOT_EXECUTED | NOT_EXECUTED (explicit mode, no schema binding) |
-| Coverage projection | PASS (`observed`, advancing timestamps) | NOT_EXECUTED | NOT_EXECUTED | PASS (explicit: `observed`, advancing) |
-| Revocation | PASS (withdrawal verified) | NOT_EXECUTED | NOT_EXECUTED | PASS (explicit empty selection, collector subs=0) |
-| Resilience (restart/disconnect/revoke) | PASS (`2026-11-23-m6fc-srlinux-g1`) | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED |
-| Production Core/collector e2e | PASS (`docs/merger/evidence/2026-11-22-m6fb-srlinux-r6`, `-r7`; M6F-C regression `2026-11-23-m6fc-srlinux-r8`) | PARTIAL (provisioning+discovery PASS; plan preview correctly refused — `2026-11-22-m6f-xrd-e2e`) | NOT_EXECUTED | PARTIAL (explicit-mode slice PASS — `2026-11-22-m6f-ceos-e2e`; schema-bound N/A) |
+| Capability | SR Linux | XRd | Junos (cJunos) | cEOS | IOS XE c9kv (remote DevNet) |
+|---|---|---|---|---|---|
+| Capabilities | PASS | PASS (probe) | NOT_EXECUTED | PASS (probe) | FAIL (probe 2026-11-22: TCP/9339 reachable, gRPC UNAVAILABLE connection-reset — sandbox backend inactive; see notes) |
+| YANG Library RFC 8525 | PASS | PASS (probe) | NOT_EXECUTED | UNSUPPORTED | NOT_EXECUTED |
+| Legacy YANG Library | PASS | PASS (probe) | NOT_EXECUTED | UNSUPPORTED | NOT_EXECUTED |
+| JSON_IETF encoding | PASS | PASS (probe) | NOT_EXECUTED | PASS (probe) | NOT_EXECUTED |
+| SAMPLE mode | PASS (production collector, sustained) | PASS (probe) | NOT_EXECUTED | PASS (probe + explicit production) | NOT_EXECUTED |
+| ON_CHANGE mode | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED | PARTIAL (probe: initial sync only) | NOT_EXECUTED |
+| List-key handling | PASS | PASS (probe) | NOT_EXECUTED | PASS (probe) | NOT_EXECUTED |
+| Initial sync | PASS | PASS (probe) | NOT_EXECUTED | PASS (probe) | NOT_EXECUTED |
+| Delete semantics | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED |
+| TLS authentication | PASS | NOT_EXECUTED (lab plaintext) | NOT_EXECUTED | NOT_EXECUTED (lab plaintext) | NOT_EXECUTED (verified-TLS harness ready; live probe failed before handshake completed) |
+| Remote collector discovery | PASS (Core-issued job, snapshot 8) | PASS (job completed, snapshot 3) | NOT_EXECUTED | NOT_EXECUTED (no YANG Library) | NOT_EXECUTED |
+| Exact plan activation | PASS (schema-bound rev 4/5) | FAIL→refused (conflicted/unknown applicability — see notes) | NOT_EXECUTED | NOT_EXECUTED (explicit mode, no schema binding) | NOT_EXECUTED |
+| Coverage projection | PASS (`observed`, advancing timestamps) | NOT_EXECUTED | NOT_EXECUTED | PASS (explicit: `observed`, advancing) | NOT_EXECUTED |
+| Revocation | PASS (withdrawal verified) | NOT_EXECUTED | NOT_EXECUTED | PASS (explicit empty selection, collector subs=0) | NOT_EXECUTED |
+| Resilience (restart/disconnect/revoke) | PASS (`2026-11-23-m6fc-srlinux-g1`) | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED |
+| Production Core/collector e2e | PASS (`docs/merger/evidence/2026-11-22-m6fb-srlinux-r6`, `-r7`; M6F-C regression `2026-11-23-m6fc-srlinux-r8`) | PARTIAL (provisioning+discovery PASS; plan preview correctly refused — `2026-11-22-m6f-xrd-e2e`) | NOT_EXECUTED | PARTIAL (explicit-mode slice PASS — `2026-11-22-m6f-ceos-e2e`; schema-bound N/A) | NOT_EXECUTED |
 
 SR Linux notes (v26.3.1-410, gNMI 0.10.0): requires canonical
 `ietf-yang-library` module name for YANG Library paths (rejects
@@ -139,6 +139,34 @@ gNMI service: no `system services grpc`/`gnmi` stanza exists and no
 gNMI endpoint exists to probe (recorded as UNSUPPORTED in the probe
 README, not a matrix PASS/FAIL). A different Junos platform image
 (vMX/vSRX or another PTX train) is needed for gNMI acceptance.
+
+IOS XE notes (Catalyst 9000v, remote DevNet Always-On sandbox
+`devnetsandboxiosxec9k.cisco.com`, evidence class
+`remote_hosted_virtual_nos` — a hosted virtual switch, NOT physical
+hardware): the harness gained a `remote: true` manifest mode — no
+containerlab deploy/destroy, DNS+TCP preflight, verified-TLS-only gNMI
+probe (`--tls-mode verified`, optional operator CA bundle, never a
+silent downgrade). Probe executed 2026-11-22
+(`docs/merger/evidence/2026-11-22-m6f-iosxe/`): DNS resolves
+(131.226.217.162), TCP/9339 accepts connections, but every gRPC/TLS
+attempt is reset by the peer (`UNAVAILABLE: Connection reset by
+peer`) and RESTCONF/NETCONF/SSH backends likewise return no service —
+the time-limited reservation appears inactive. Capabilities is
+recorded FAIL (connectivity), all dependent checks NOT_EXECUTED. Live
+gNMI acceptance requires a fresh reservation plus refreshed
+credentials via `BONSAI_LAB_IOSXE_USERNAME`/`_PASSWORD` — the
+previously screenshot-exposed password is never used or stored.
+
+FRRouting is a protocol platform, not a gNMI vendor — see
+`lab/acceptance/m6f-frr/README.md`. gNMI rows: UNSUPPORTED (no
+OpenConfig gNMI endpoint; FRR's daemon gRPC API is not gNMI).
+Protocol-appropriate rows: BMP peer-up/down, route monitoring and
+withdrawal PASS on executed evidence (FRR 10.6.x → Bonsai
+routing_service: `2026-11-08-bn003-genuine-vrf-bmp`,
+`2026-11-10-bn021c-nat-acceptance`, `2026-11-11-bn021f-authenticated-bmp`,
+peer-down investigations); reusable pinned topology
+`lab/acceptance/m6f-frr/` (FRR 10.6.2 digest-pinned); BGP-LS
+NOT_EXECUTED pending live capability verification.
 
 Update this matrix only from captured evidence in
 `docs/merger/evidence/*-m6f-*/`. Mock-gNMI suites and inferred
