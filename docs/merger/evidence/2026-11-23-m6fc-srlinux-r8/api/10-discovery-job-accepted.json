@@ -1,0 +1,12 @@
+{
+  "collector_id": "m6f-col-1",
+  "created_at_ns": 1795343407033253161,
+  "datastore": "ietf-datastores:operational",
+  "deadline_ns": 1795343527033253161,
+  "device_address": "172.100.102.11:57400",
+  "device_key": "<redacted>",
+  "job_id": "3e9a5d77-113c-4abb-9dcd-3c914bbac3bb",
+  "operation": "yang_applicability",
+  "state": "queued",
+  "status_url": "/api/devices/172.100.102.11:57400/yang-discovery/jobs"
+}

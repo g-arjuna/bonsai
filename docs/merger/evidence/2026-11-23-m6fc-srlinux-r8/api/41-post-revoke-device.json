@@ -1,0 +1,60 @@
+{
+  "acquisition": "disabled",
+  "address": "172.100.102.11:57400",
+  "bgp_neighbors": [],
+  "collector_id": "m6f-col-1",
+  "created_at_ns": 1795341560961353806,
+  "created_by": "api",
+  "credential_alias": "m6f-srlinux",
+  "enabled": true,
+  "health": "healthy",
+  "hostname": "srlinux",
+  "interfaces": [
+    {
+      "carrier_transitions": 0,
+      "in_errors": 0,
+      "in_octets": 1512029,
+      "name": "mgmt0",
+      "out_errors": 0,
+      "out_octets": 111057051,
+      "updated_at_ns": 1795343837858457830
+    }
+  ],
+  "inventory_only": false,
+  "last_operator_action": "api_schema_binding_revoke",
+  "lldp_neighbors": [],
+  "recent_detections": [],
+  "recent_state_changes": [],
+  "resolution_audit": [
+    "Started from profile with 1 paths",
+    "Final path list has 1 paths"
+  ],
+  "role": "leaf",
+  "selected_paths": [
+    {
+      "mode": "SAMPLE",
+      "optional": false,
+      "origin": "",
+      "path": "/interface[name=mgmt0]/statistics",
+      "provenance": "",
+      "rationale": "m6f acceptance: mgmt0 statistics container (SR Linux reports leaf counters at container granularity)",
+      "sample_interval_ns": 10000000000
+    }
+  ],
+  "site": "m6f-lab",
+  "subscription_statuses": [
+    {
+      "first_observed_at_ns": 1795343828027124944,
+      "last_observed_at_ns": 1795343837880193724,
+      "mode": "SAMPLE",
+      "origin": "",
+      "path": "interface[name=mgmt0]/statistics",
+      "sample_interval_ns": 10000000000,
+      "status": "superseded",
+      "updated_at_ns": 1795343843019323794
+    }
+  ],
+  "updated_at_ns": 1795343842903906367,
+  "updated_by": "user:admin",
+  "vendor": "nokia_srlinux"
+}

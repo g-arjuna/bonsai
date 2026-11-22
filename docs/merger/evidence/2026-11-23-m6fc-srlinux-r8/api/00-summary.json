@@ -1,0 +1,120 @@
+{
+  "evidence_dir": "/home/arjuna/Desktop/bonsai-m6fc-a/docs/merger/evidence/2026-11-23-m6fc-srlinux-r8/api",
+  "overall": "PASS",
+  "stages": [
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "admin_login"
+    },
+    {
+      "detail": "http=200 device_id=dev-fff86b96-b412-4631-a055-9f7fb579b407",
+      "ok": true,
+      "stage": "identity_device"
+    },
+    {
+      "detail": "http=400",
+      "ok": true,
+      "stage": "collector_binding"
+    },
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "device_credential"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_register"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_assignment"
+    },
+    {
+      "detail": "assigned=1",
+      "ok": true,
+      "stage": "collector_registered"
+    },
+    {
+      "detail": "http=200 schema=ysc-4f20e39183beea7edbb16f2d943fa8bf status=complete modules=11 paths=419 activated=True",
+      "ok": true,
+      "stage": "catalogue_compile"
+    },
+    {
+      "detail": "http=202 job=3e9a5d77-113c-4abb-9dcd-3c914bbac3bb",
+      "ok": true,
+      "stage": "discovery_job_queued"
+    },
+    {
+      "detail": "state=completed class=completed reason=None snapshot=4",
+      "ok": true,
+      "stage": "discovery_job_completed"
+    },
+    {
+      "detail": "http=200 status=applicable outcome=ok schema=ysc-4f20e39183beea7edbb16f2d943fa8bf content_id=1lg3lmex1lg3ln8{d1 paths=419",
+      "ok": true,
+      "stage": "applicability_snapshot"
+    },
+    {
+      "detail": "http=200 permitted=True plan=53a64d7c6aebc133 reasons=[]",
+      "ok": true,
+      "stage": "plan_preview"
+    },
+    {
+      "detail": "http=200 plan=53a64d7c6aebc133 rev=3 state=active",
+      "ok": true,
+      "stage": "plan_activate"
+    },
+    {
+      "detail": "1 observed path(s), last_observed advancing (1795343828027124944 -> 1795343837880193724)",
+      "ok": true,
+      "stage": "telemetry_observed"
+    },
+    {
+      "detail": "http=200 state=revoked",
+      "ok": true,
+      "stage": "plan_revoke"
+    },
+    {
+      "detail": "binding_revoked=True; acquisition_disabled=True; withdrawal_issued=True; collector_ack=True; subscription_terminated=True; no_continued_collection=True; old_session_rejected=True",
+      "ok": true,
+      "stage": "withdrawal_verified"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_binding_revoked"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_acquisition_disabled"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_issued"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_collector_ack"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_subscription_terminated"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_no_continued_collection"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_old_session_rejected"
+    },
+    {
+      "detail": "sha=9c763205e65e dirty=False core_img=bn021d-bonsai:local",
+      "ok": true,
+      "stage": "l4_provenance"
+    }
+  ],
+  "utc": "2026-11-22T10:38:00Z"
+}

@@ -1,0 +1,45 @@
+{
+  "vendor": "nokia_srlinux",
+  "nos": "Nokia SR Linux 26.3.1-410",
+  "image": "ghcr.io/nokia/srlinux@sha256:ad3d4a533674cf2e2e7321fef38806a6c66e3d56a3e8693c45fc2b4206078dd6",
+  "overall": "PASS",
+  "checks": [
+    {
+      "name": "production_path_regression",
+      "status": "PASS",
+      "detail": "all stages green on merged-main-equivalent src; schema-aware coverage verified live on srl_nokia-prefixed paths",
+      "evidence": "api/00-summary.json"
+    },
+    {
+      "name": "applicability",
+      "status": "PASS",
+      "detail": "snapshot applicable, schema ysc-4f20e391, 11 modules/419 paths",
+      "evidence": "api/12-applicability.json"
+    },
+    {
+      "name": "telemetry_observed",
+      "status": "PASS",
+      "detail": "container-granular observed, advancing timestamps",
+      "evidence": "api/31-telemetry-observed.json"
+    },
+    {
+      "name": "counter_projection",
+      "status": "PASS",
+      "detail": "device get in-octets 1512523 vs API 1512029 (advancing sample)",
+      "evidence": "api/32-device-counter-get.json + api/00-provenance.json"
+    },
+    {
+      "name": "withdrawal_verified",
+      "status": "PASS",
+      "detail": "all 7 authoritative checks",
+      "evidence": "api/43-withdrawal-evidence.json"
+    },
+    {
+      "name": "l4_provenance",
+      "status": "PASS",
+      "detail": "sha=9c76320 dirty=false eligible=true",
+      "evidence": "api/00-provenance.json"
+    }
+  ],
+  "notes": "M6F-C regression: schema-aware coverage + authoritative withdrawal revalidated live. See README.md."
+}

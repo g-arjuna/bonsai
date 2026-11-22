@@ -1,0 +1,14 @@
+{
+  "statuses": [
+    {
+      "first_observed_at_ns": 1795343828027124944,
+      "last_observed_at_ns": 1795343837880193724,
+      "mode": "SAMPLE",
+      "origin": "",
+      "path": "interface[name=mgmt0]/statistics",
+      "sample_interval_ns": 10000000000,
+      "status": "observed",
+      "updated_at_ns": 1795343840700150706
+    }
+  ]
+}

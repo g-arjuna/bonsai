@@ -1,0 +1,8 @@
+{
+  "approval_revision": null,
+  "binding_fingerprint": null,
+  "device_address": "172.100.102.11:57400",
+  "plan_id": null,
+  "state": "revoked",
+  "success": true
+}
