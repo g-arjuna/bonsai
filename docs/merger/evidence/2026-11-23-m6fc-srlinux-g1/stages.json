@@ -1,0 +1,11 @@
+{
+  "stages": [
+    {
+      "name": "api_drive",
+      "status": "PASS",
+      "detail": "all stages green",
+      "utc": "2026-11-22T10:49:23Z"
+    }
+  ],
+  "overall": "PASS"
+}

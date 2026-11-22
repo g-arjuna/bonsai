@@ -1,0 +1,24 @@
+{
+ "device_http": 200,
+ "statuses": [
+  {
+   "path": "interface[name=mgmt0]/statistics",
+   "origin": "",
+   "mode": "SAMPLE",
+   "sample_interval_ns": 10000000000,
+   "status": "observed",
+   "first_observed_at_ns": 1795344828869737449,
+   "last_observed_at_ns": 1795345058751377048,
+   "updated_at_ns": 1795345060699463868
+  }
+ ],
+ "acquisition": "explicit",
+ "plan_state": null,
+ "collectors": [
+  {
+   "id": "m6f-col-1",
+   "connected": true,
+   "assigned": 1
+  }
+ ]
+}

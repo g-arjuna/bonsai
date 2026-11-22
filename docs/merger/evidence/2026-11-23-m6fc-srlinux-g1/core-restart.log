@@ -1,0 +1,130 @@
+[2m2026-11-22T10:46:54.532174Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-11-22T10:46:54.532186Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m677 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:47:54.531838Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m674 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:48:54.531796Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m674 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:49:08.169661Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"m6f-srlinux","outcome":"success","purpose":"subscribe","timestamp_ns":1795344548169650271}
+[2m2026-11-22T10:49:54.531539Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m695 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:49:58.375464Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin","error":"credential alias 'bonsai-admin' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344598375449377}
+[2m2026-11-22T10:49:58.375721Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin-pass","error":"credential alias 'bonsai-admin-pass' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344598375717883}
+[2m2026-11-22T10:50:05.600942Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin","error":"credential alias 'bonsai-admin' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344605600927781}
+[2m2026-11-22T10:50:05.601184Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin-pass","error":"credential alias 'bonsai-admin-pass' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344605601180630}
+[2m2026-11-22T10:50:05.705240Z[0m [32m INFO[0m [2mbonsai::assignment[0m[2m:[0m collector unregistered; re-evaluating its devices [3mcollector_id[0m[2m=[0mm6f-col-1
+[2m2026-11-22T10:50:05.705277Z[0m [33m WARN[0m [2mbonsai::assignment[0m[2m:[0m failed to clear collector assignment [3maddress[0m[2m=[0m172.100.102.11:57400 [3me[0m[2m=[0mschema-bound device '172.100.102.11:57400' collector assignment is approval-managed; use schema-binding activation/revocation
+[2m2026-11-22T10:50:06.412417Z[0m [32m INFO[0m [2mbonsai::api[0m[2m:[0m collector registered [3mcollector_id[0m[2m=[0mm6f-col-1 [3mcollector_version[0m[2m=[0m6 [3mserver_version[0m[2m=[0m6
+[2m2026-11-22T10:50:06.422648Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"m6f-srlinux","outcome":"success","purpose":"subscribe","timestamp_ns":1795344606422636948}
+[2m2026-11-22T10:50:06.422964Z[0m [32m INFO[0m [2mbonsai::assignment[0m[2m:[0m collector registered, initial assignments sent [3mcollector_id[0m[2m=[0mm6f-col-1 [3mgeneration[0m[2m=[0m2
+[2m2026-11-22T10:50:11.420078Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin","error":"credential alias 'bonsai-admin' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344611420069477}
+[2m2026-11-22T10:50:11.420253Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin-pass","error":"credential alias 'bonsai-admin-pass' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344611420251043}
+[2m2026-11-22T10:50:16.267718Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin","error":"credential alias 'bonsai-admin' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344616267695817}
+[2m2026-11-22T10:50:16.267971Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin-pass","error":"credential alias 'bonsai-admin-pass' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344616267966789}
+[2m2026-11-22T10:50:54.531680Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m683 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:51:33.986375Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin","error":"credential alias 'bonsai-admin' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344693986364420}
+[2m2026-11-22T10:51:33.986575Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin-pass","error":"credential alias 'bonsai-admin-pass' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344693986571754}
+[2m2026-11-22T10:51:37.637203Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin","error":"credential alias 'bonsai-admin' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344697637194899}
+[2m2026-11-22T10:51:37.637389Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin-pass","error":"credential alias 'bonsai-admin-pass' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344697637386142}
+[2m2026-11-22T10:51:54.531913Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-11-22T10:51:54.531931Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m689 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:52:54.531765Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m690 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:53:26.735436Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin","error":"credential alias 'bonsai-admin' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344806735416562}
+[2m2026-11-22T10:53:26.735701Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin-pass","error":"credential alias 'bonsai-admin-pass' not found","outcome":"error","purpose":"internal","timestamp_ns":1795344806735690838}
+[2m2026-11-22T10:53:54.531711Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m685 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:54:54.531675Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m693 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:55:54.531313Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m698 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:56:54.531765Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-11-22T10:56:54.531815Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m700 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:57:45.021577Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin","error":"credential alias 'bonsai-admin' not found","outcome":"error","purpose":"internal","timestamp_ns":1795345065021568576}
+[2m2026-11-22T10:57:45.021763Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin-pass","error":"credential alias 'bonsai-admin-pass' not found","outcome":"error","purpose":"internal","timestamp_ns":1795345065021761074}
+[2m2026-11-22T10:57:45.103336Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m SIGTERM received — shutting down
+[2m2026-11-22T10:57:45.103400Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler stopped
+[2m2026-11-22T10:57:45.103422Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard stopped
+[2m2026-11-22T10:57:45.103428Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor stopped
+[2m2026-11-22T10:57:45.103438Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop stopped
+[2m2026-11-22T10:57:45.103438Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor stopped
+[2m2026-11-22T10:57:45.103445Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m ml_schedule_tick: shutdown received
+[2m2026-11-22T10:57:45.103457Z[0m [32m INFO[0m [2mbonsai::subscription_status[0m[2m:[0m subscription verifier received shutdown
+[2m2026-11-22T10:57:45.104524Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"devices" [3mcount[0m[2m=[0mInt64(1)
+[2m2026-11-22T10:57:45.104907Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"interfaces" [3mcount[0m[2m=[0mInt64(1)
+[2m2026-11-22T10:57:45.105233Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bgp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-22T10:57:45.105553Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"bfd-sessions" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-22T10:57:45.105867Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"lldp-neighbors" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-22T10:57:45.130015Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"connected-to" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-22T10:57:45.133410Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"state-change-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-22T10:57:45.134037Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"detection-events" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-22T10:57:45.134713Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediations" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-22T10:57:45.135382Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"remediation-trust-marks" [3mcount[0m[2m=[0mInt64(0)
+[2m2026-11-22T10:57:45.136099Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph summary [3mlabel[0m[2m=[0m"subscription-status" [3mcount[0m[2m=[0mInt64(1)
+[2m2026-11-22T10:57:45.136129Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m bonsai stopped
+[2m2026-11-22T10:57:45.704662Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m6
+[2m2026-11-22T10:57:45.704748Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-11-22T10:57:45.704871Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m13 [3min_container[0m[2m=[0mtrue [3mmemory_budget_mb[0m[2m=[0m4096
+[2m2026-11-22T10:57:45.704880Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m runtime mode selected [3mmode[0m[2m=[0mCore [3mrun_core[0m[2m=[0mtrue [3mrun_collector[0m[2m=[0mfalse
+[2m2026-11-22T10:57:46.137601Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"runtime/bonsai.db" [3mbuffer_pool_mib[0m[2m=[0m2048
+[2m2026-11-22T10:57:51.243476Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-11-22T10:57:51.243496Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m1285
+[2m2026-11-22T10:57:51.253983Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"bgp_edge_migration" [3melapsed_ms[0m[2m=[0m10
+[2m2026-11-22T10:57:51.258742Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m4
+[2m2026-11-22T10:57:51.258759Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"runtime/bonsai.db"
+[2m2026-11-22T10:57:51.258804Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"graph_open" [3melapsed_ms[0m[2m=[0m5553
+[2m2026-11-22T10:57:51.260415Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m memory pressure governor started [3mbudget_mb[0m[2m=[0m4096 [3msoft_mb[0m[2m=[0m3276 [3mhard_mb[0m[2m=[0m3891
+[2m2026-11-22T10:57:51.260417Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m write pressure governor started
+[2m2026-11-22T10:57:51.260507Z[0m [32m INFO[0m [2mbonsai::resource_governor[0m[2m:[0m rate governance loop started [3mbudget_eps[0m[2m=[0m200000
+[2m2026-11-22T10:57:51.266067Z[0m [33m WARN[0m [2mbonsai::signals::snmp[0m[2m:[0m snmp_oid_patterns dir not readable; fact extraction disabled [3mdir[0m[2m=[0m"config/snmp_oid_patterns" [3merror[0m[2m=[0mNo such file or directory (os error 2)
+[2m2026-11-22T10:57:51.266145Z[0m [32m INFO[0m [2mbonsai::write_coordinator[0m[2m:[0m write coordinator started [3mbatch_size[0m[2m=[0m256 [3mflush_interval[0m[2m=[0m1s
+[2m2026-11-22T10:57:51.268667Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m syslog shun rules loaded [3mcount[0m[2m=[0m0
+[2m2026-11-22T10:57:51.268701Z[0m [32m INFO[0m [2mbonsai::shun[0m[2m:[0m shun rules reloaded [3mcount[0m[2m=[0m0
+[2m2026-11-22T10:57:51.268753Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m opening API registry [3mpath[0m[2m=[0mruntime/bonsai-registry.json
+[2m2026-11-22T10:57:51.268759Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profiler started [3minterval_secs[0m[2m=[0m60 [3moutput_path[0m[2m=[0m"none"
+[2m2026-11-22T10:57:51.268804Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m disk guard started [3mcheck_interval_secs[0m[2m=[0m300 [3mmax_archive_gb[0m[2m=[0m10 [3mmax_graph_gb[0m[2m=[0m5 [3mwarn_threshold_pct[0m[2m=[0m80
+[2m2026-11-22T10:57:51.270209Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m500 [3mbus_depth[0m[2m=[0m0 [3mbus_receivers[0m[2m=[0m1 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:57:51.270174Z[0m [32m INFO[0m [2mbonsai::disk_guard[0m[2m:[0m archive disk check [3mpct[0m[2m=[0m0 [3marchive_gb[0m[2m=[0m"0.00"
+[2m2026-11-22T10:57:51.270219Z[0m [32m INFO[0m [2mbonsai::sqlite_store[0m[2m:[0m config store already has data, skipping JSON migration
+[2m2026-11-22T10:57:51.294307Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m API registry opened [3mpath[0m[2m=[0mruntime/bonsai-registry.json
+[2m2026-11-22T10:57:51.294322Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m opening credential vault [3mpath[0m[2m=[0mcredentials [3mpassphrase_env[0m[2m=[0mBONSAI_VAULT_PASSPHRASE
+[2m2026-11-22T10:57:53.519696Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m credential vault open complete [3mpath[0m[2m=[0mcredentials
+[2m2026-11-22T10:57:53.535249Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m credential vault unlocked [3mpath[0m[2m=[0mcredentials
+[2m2026-11-22T10:57:53.535263Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m syncing registry site labels into graph
+[2m2026-11-22T10:57:53.670680Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m registry site labels synced into graph
+[2m2026-11-22T10:57:53.701372Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m seeding assignment site cache
+[2m2026-11-22T10:57:53.704698Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m gRPC API and telemetry ingest server listening [3mapi_addr[0m[2m=[0m0.0.0.0:50051 [3mingest_compression[0m[2m=[0m"zstd" [3mmtls[0m[2m=[0mtrue
+[2m2026-11-22T10:57:53.704723Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m HTTP UI server listening [3mhttp_addr[0m[2m=[0m0.0.0.0:3000
+[2m2026-11-22T10:57:53.708154Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"m6f-srlinux","outcome":"success","purpose":"enrich","timestamp_ns":1795345073708130029}
+[2m2026-11-22T10:57:53.708709Z[0m [33m WARN[0m [2mbonsai::change_detection[0m[2m:[0m change detection request failed [3merror[0m[2m=[0mall multi-source capture strategies failed for 172.100.102.11:57400 (gnmi_get_config: failed to connect to https://172.100.102.11:57400: transport error: tcp connect error: tcp connect error: Network is unreachable (os error 101); parser_chain_cli: CLI capture helper 'scripts/cli_capture.py' is missing)
+[2m2026-11-22T10:57:53.710788Z[0m [32m INFO[0m [2mbonsai::ha_coordinator[0m[2m:[0m HA mode: standalone, assumed leader
+[2m2026-11-22T10:57:53.711110Z[0m [32m INFO[0m [2mbonsai::sqlite_store[0m[2m:[0m config store already has data, skipping JSON migration
+[2m2026-11-22T10:57:53.711161Z[0m [32m INFO[0m [2mbonsai::enrichment[0m[2m:[0m enricher configs loaded [3mcount[0m[2m=[0m0 [3msource[0m[2m=[0m"sqlite"
+[2m2026-11-22T10:57:53.711563Z[0m [32m INFO[0m [2mbonsai::output::traits[0m[2m:[0m output adapter configs loaded [3mcount[0m[2m=[0m0 [3msource[0m[2m=[0m"sqlite"
+[2m2026-11-22T10:57:53.711587Z[0m [32m INFO[0m [2mbonsai::remediation::trust[0m[2m:[0m trust state records loaded [3mcount[0m[2m=[0m0
+[2m2026-11-22T10:57:53.712800Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m HTTP listener bound [3maddr[0m[2m=[0m0.0.0.0:3000
+[2m2026-11-22T10:57:53.712818Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Initializing security module with selective feature enablement
+[2m2026-11-22T10:57:53.712821Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Database security disabled
+[2m2026-11-22T10:57:53.712823Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m MFA disabled
+[2m2026-11-22T10:57:53.712825Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Session management disabled
+[2m2026-11-22T10:57:53.712828Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Threat intelligence disabled
+[2m2026-11-22T10:57:53.712830Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Incident response disabled
+[2m2026-11-22T10:57:53.712831Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Anomaly detection disabled
+[2m2026-11-22T10:57:53.712833Z[0m [32m INFO[0m [2mbonsai::security[0m[2m:[0m Security module initialization completed
+[2m2026-11-22T10:57:53.713006Z[0m [32m INFO[0m [2mbonsai::reconciler[0m[2m:[0m entity reconciler started (60s poll interval)
+[2m2026-11-22T10:57:53.713020Z[0m [32m INFO[0m [2mbonsai::investigation_trigger[0m[2m:[0m investigation auto-trigger disabled (no ANTHROPIC_API_KEY or config)
+[2m2026-11-22T10:57:53.713008Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"ready" [3melapsed_ms[0m[2m=[0m8008
+[2m2026-11-22T10:57:53.729355Z[0m [32m INFO[0m [2mbonsai::http_server::ml_jobs[0m[2m:[0m seed_default_ml_schedules: cleaned up stale running/pending jobs
+[2m2026-11-22T10:57:53.729420Z[0m [32m INFO[0m [2mbonsai::retention[0m[2m:[0m retention: pruned StateChangeEvents by age [3mdeleted[0m[2m=[0m0
+[2m2026-11-22T10:57:55.143593Z[0m [32m INFO[0m [2mbonsai::api[0m[2m:[0m collector registered [3mcollector_id[0m[2m=[0mm6f-col-1 [3mcollector_version[0m[2m=[0m6 [3mserver_version[0m[2m=[0m6
+[2m2026-11-22T10:57:55.159233Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"m6f-srlinux","outcome":"success","purpose":"subscribe","timestamp_ns":1795345075159222201}
+[2m2026-11-22T10:57:55.159463Z[0m [32m INFO[0m [2mbonsai::assignment[0m[2m:[0m collector registered, initial assignments sent [3mcollector_id[0m[2m=[0mm6f-col-1 [3mgeneration[0m[2m=[0m1
+[2m2026-11-22T10:57:56.159423Z[0m [33m WARN[0m [2mbonsai::api[0m[2m:[0m lifecycle event denied: assignment authority not current [3mcollector_id[0m[2m=[0mm6f-col-1 [3mdevice[0m[2m=[0m172.100.102.11:57400 [3mepoch[0m[2m=[0m1795342315479278990 [3mgeneration[0m[2m=[0m13
+[2m2026-11-22T10:57:56.159479Z[0m [33m WARN[0m [2mbonsai::api[0m[2m:[0m lifecycle event denied: assignment authority not current [3mcollector_id[0m[2m=[0mm6f-col-1 [3mdevice[0m[2m=[0m172.100.102.11:57400 [3mepoch[0m[2m=[0m1795342315479278990 [3mgeneration[0m[2m=[0m13
+[2m2026-11-22T10:57:56.159503Z[0m [33m WARN[0m [2mbonsai::api[0m[2m:[0m lifecycle event denied: assignment authority not current [3mcollector_id[0m[2m=[0mm6f-col-1 [3mdevice[0m[2m=[0m172.100.102.11:57400 [3mepoch[0m[2m=[0m1795342315479278990 [3mgeneration[0m[2m=[0m13
+[2m2026-11-22T10:58:07.464980Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin","error":"credential alias 'bonsai-admin' not found","outcome":"error","purpose":"internal","timestamp_ns":1795345087464971342}
+[2m2026-11-22T10:58:07.465118Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin-pass","error":"credential alias 'bonsai-admin-pass' not found","outcome":"error","purpose":"internal","timestamp_ns":1795345087465116669}
+[2m2026-11-22T10:58:13.261588Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin","error":"credential alias 'bonsai-admin' not found","outcome":"error","purpose":"internal","timestamp_ns":1795345093261580973}
+[2m2026-11-22T10:58:13.261735Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin-pass","error":"credential alias 'bonsai-admin-pass' not found","outcome":"error","purpose":"internal","timestamp_ns":1795345093261733888}
+[2m2026-11-22T10:58:51.270731Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m566 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:59:51.270679Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m574 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0
+[2m2026-11-22T10:59:56.463094Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin","error":"credential alias 'bonsai-admin' not found","outcome":"error","purpose":"internal","timestamp_ns":1795345196463085453}
+[2m2026-11-22T10:59:56.463238Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"bonsai-admin-pass","error":"credential alias 'bonsai-admin-pass' not found","outcome":"error","purpose":"internal","timestamp_ns":1795345196463236500}
+[2m2026-11-22T10:59:56.480285Z[0m [32m INFO[0m [2mbonsai.audit.credentials[0m[2m:[0m {"alias":"m6f-srlinux","outcome":"success","purpose":"subscribe","timestamp_ns":1795345196480278016}
+[2m2026-11-22T10:59:56.481482Z[0m [33m WARN[0m [2mbonsai::api[0m[2m:[0m lifecycle event denied: assignment authority not current [3mcollector_id[0m[2m=[0mm6f-col-1 [3mdevice[0m[2m=[0m172.100.102.11:57400 [3mepoch[0m[2m=[0m1795345073526752455 [3mgeneration[0m[2m=[0m1
+[2m2026-11-22T10:59:56.481526Z[0m [33m WARN[0m [2mbonsai::api[0m[2m:[0m lifecycle event denied: assignment authority not current [3mcollector_id[0m[2m=[0mm6f-col-1 [3mdevice[0m[2m=[0m172.100.102.11:57400 [3mepoch[0m[2m=[0m1795345073526752455 [3mgeneration[0m[2m=[0m2
+[2m2026-11-22T10:59:56.696090Z[0m [32m INFO[0m [2mbonsai::subscription_status[0m[2m:[0m acquisition plan not submitted to device [3mtarget[0m[2m=[0m172.100.102.11:57400 [3mplan_id[0m[2m=[0m33cd78e6f9e27a6b [3mstate[0m[2m=[0mdisabled [3macquisition[0m[2m=[0mdisabled [3mdetail[0m[2m=[0macquisition disabled
+[2m2026-11-22T11:00:25.161228Z[0m [32m INFO[0m [2mbonsai::assignment[0m[2m:[0m collector acknowledged assignment withdrawals [3mcollector_id[0m[2m=[0mm6f-col-1 [3mconfirmed[0m[2m=[0m1 [3mapplied_assignment_generation[0m[2m=[0m2
+[2m2026-11-22T11:00:51.270261Z[0m [32m INFO[0m [2mbonsai::memory_profile[0m[2m:[0m memory profile [3mrss_mb[0m[2m=[0m578 [3mbus_depth[0m[2m=[0m1 [3mbus_receivers[0m[2m=[0m3 [3marchive_buffer_rows[0m[2m=[0m0 [3marchive_lag_ms[0m[2m=[0m0

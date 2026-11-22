@@ -1,0 +1,12 @@
+{
+  "core_to_device_gnmi": "CLOSED",
+  "collector_to_device_gnmi": "OPEN",
+  "collector_to_core_grpc": "OPEN",
+  "core_to_mgmt_gateway": "CLOSED",
+  "topology": {
+    "core_networks": ["m6f-bonsai-e2e"],
+    "collector_networks": ["m6f-bonsai-e2e", "m6f-srlinux-mgmt"],
+    "device": "172.100.102.11:57400"
+  },
+  "note": "re-verified after resilience scenarios; core_to_mgmt_gateway not re-probed this run (unchanged topology)"
+}

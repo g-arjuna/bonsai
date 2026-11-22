@@ -1,0 +1,39 @@
+{
+  "vendor": "nokia_srlinux",
+  "nos": "Nokia SR Linux 26.3.1-410",
+  "image": "ghcr.io/nokia/srlinux@sha256:ad3d4a533674cf2e2e7321fef38806a6c66e3d56a3e8693c45fc2b4206078dd6",
+  "overall": "PASS",
+  "checks": [
+    {
+      "name": "collector_restart",
+      "status": "PASS",
+      "detail": "reconnect + resubscribe same plan, new session, advancing telemetry",
+      "evidence": "api/61-collector-restart-watch.jsonl"
+    },
+    {
+      "name": "device_disconnect_reconnect",
+      "status": "PASS",
+      "detail": "truthful stale degradation, bounded retries, fresh session recovery",
+      "evidence": "api/63-device-down-watch.jsonl + api/64-device-recovery-watch.jsonl"
+    },
+    {
+      "name": "core_restart",
+      "status": "PASS",
+      "detail": "durable state survived, collector reconnected, new session observed",
+      "evidence": "api/66-post-core-restart-t20.json + api/67-post-core-restart-watch.jsonl"
+    },
+    {
+      "name": "revocation_after_recovery",
+      "status": "PASS",
+      "detail": "all seven authoritative withdrawal checks + old_session_rejected",
+      "evidence": "api/43-withdrawal-evidence.json"
+    },
+    {
+      "name": "l4_provenance",
+      "status": "PASS",
+      "detail": "sha=4eb35f08e4a0 dirty=False, binary sha256 080e9000…",
+      "evidence": "api/00-summary.json"
+    }
+  ],
+  "notes": "Stage G bounded resilience run. See README.md for scenarios, timings and unexecuted scope."
+}

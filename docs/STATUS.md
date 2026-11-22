@@ -54,8 +54,18 @@ fabricates child-leaf coverage) and the mgmt0 counter chain
 advancing values. Remaining open items: XRd production-path needs a
 revision-pinned OpenConfig/IETF source closure plus a schema-authority
 policy decision on capabilities `organization` free-text conflicts;
-Junos awaits a gNMI-capable image; Stage G resilience scenarios not
-yet executed.
+Junos awaits a gNMI-capable image. Stage G resilience executed
+PASS on the live SR Linux production chain
+(`docs/merger/evidence/2026-11-23-m6fc-srlinux-g1/`): collector
+restart (reconnect + resubscribe, new session), device
+disconnect/reconnect (truthful `stale` degradation, bounded
+retries, fresh session), Core restart (durable registry/vault,
+collector re-established, new session) and post-recovery
+revocation verified through all seven authoritative withdrawal
+checks including old-session rejection. Not executed: assignment
+withdrawal/reassignment mid-stream, catalogue change during an
+active subscription, expired-evidence aging, revocation during
+the reconnect window.
 
 M6F-B update — **real Nokia SR Linux production-path
 interoperability validated** (branch `feat/m6fb-gnmi-interop`).
