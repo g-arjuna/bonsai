@@ -1,0 +1,42 @@
+{
+  "ok": true,
+  "error": null,
+  "responses": [
+    {
+      "timestamp": "1795308694878693846",
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "Management0"
+                }
+              },
+              {
+                "name": "state"
+              },
+              {
+                "name": "counters"
+              },
+              {
+                "name": "in-octets"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "42118"
+          }
+        }
+      ]
+    },
+    {
+      "sync_response": true
+    }
+  ],
+  "count": 2
+}

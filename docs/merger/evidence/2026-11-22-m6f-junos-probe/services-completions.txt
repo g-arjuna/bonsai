@@ -1,0 +1,43 @@
+root@HOSTNAME> configure 
+Entering configuration mode
+
+[edit]
+root@HOSTNAME# set system services ?
+Possible completions:
+  <[Enter]>            Execute this command
++ apply-groups         Groups from which to inherit configuration data
++ apply-groups-except  Don't inherit configuration data from these groups
+> database-replication  Database replication configuration
+> dhcp                 Configure DHCP server
+> dhcp-local-server    Dynamic Host Configuration Protocol server configuration
+  dtcp-only            Allow subscriber DTCP based lawful intercept only
+> extensible-subscriber-services  Extensible Subscriber Services Configuration
+> extension-service    Enable JUNOS extension services
+> finger               Allow finger requests from remote systems
+> ftp                  Allow FTP file transfers
+> grpc-tunnel          GRPC tunnel configuration for outbound TCP over gRPC
+> http                 HTTP service
+> inband-ztp           Enable in-band ZTP
+> netconf              Allow NETCONF connections
+> netproxy             Netproxy configuration
+> outbound-https       Initiate outbound HTTPS connection
+> outbound-ssh         Initiate outbound SSH connection
+> remote-device-management  Remote device management configuration
+> resource-monitor     Resource monitor configuration
+> rest                 Allow RPC execution over HTTP(S) connection
+> ssh                  Allow ssh access
+> subscriber-management  Subscriber management configuration
+> subscriber-management-helper  Subscriber management helper configuration
+> telnet               Allow telnet login
+> tftp-server          Enable TFTP file transfers
+> xnm-clear-text       Allow clear text-based JUNOScript connections
+> xnm-ssl              Allow SSL-based JUNOScript connections
+  |                    Pipe through a command
+[edit]
+root@HOSTNAME# set system services    
+
+[edit]
+root@HOSTNAME# exit 
+Exiting configuration mode
+
+root@HOSTNAME> 

@@ -97,8 +97,29 @@ pub fn canonical_path_key(origin: &str, raw_path: &str) -> Option<String> {
 /// Exact structured coverage (M5.2B): does `observation` satisfy
 /// `expectation`? Origins must be compatible (a non-empty expectation
 /// origin requires an exact match; empty means unspecified), the
+/// Element-name equality for coverage matching. gNMI PathElem names may
+/// carry a YANG module prefix (`srl_nokia-interfaces:interface`, observed
+/// live on Nokia SR Linux); schema-bound expectations use bare local
+/// names. An observed `prefix:local` name still identifies the same
+/// schema-node local name, so a single prefix qualifier on the OBSERVED
+/// side is tolerated. A prefixed EXPECTATION still requires an exact
+/// match — the operator declared that identity explicitly.
+fn elem_name_matches(expected: &str, observed: &str) -> bool {
+    if expected == observed {
+        return true;
+    }
+    if expected.contains(':') {
+        return false;
+    }
+    match observed.split_once(':') {
+        Some((prefix, local)) => !prefix.is_empty() && !local.contains(':') && local == expected,
+        None => false,
+    }
+}
+
 /// observation path must equal or descend from the expectation path,
-/// and every expectation element must match name-exactly. An
+/// and every expectation element must match name-exactly (module-prefix
+/// tolerant on the observation side — see [`elem_name_matches`]). An
 /// expectation element without keys matches any keyed instance (gNMI
 /// list wildcard semantics); a key whose expectation VALUE is exactly
 /// `*` matches any value for that key (the wildcard convention the
@@ -118,7 +139,7 @@ pub fn observation_covers(expectation: &Path, observation: &Path) -> bool {
         .iter()
         .zip(observation.elem.iter())
         .all(|(e, o)| {
-            e.name == o.name
+            elem_name_matches(&e.name, &o.name)
                 && (e.key.is_empty()
                     || (e.key.len() == o.key.len()
                         && e.key.iter().all(|(k, v)| {
@@ -141,7 +162,8 @@ pub fn observation_covers(expectation: &Path, observation: &Path) -> bool {
 ///   ANCESTOR of it — deleting a parent list instance or container
 ///   invalidates every descendant expectation.
 /// - Every element of the deleted prefix must match the expectation
-///   element NAME- and KEY-EXACTLY. Expectation wildcards (`name=*`,
+///   element name (module-prefix tolerant on the delete side, same as
+///   [`observation_covers`]) and KEY-EXACTLY. Expectation wildcards (`name=*`,
 ///   unkeyed elements) and partially-keyed expectations are NOT covered
 ///   by a single concrete delete: one deleted instance never implies
 ///   exhaustive absence across a wildcard/subtree expectation.
@@ -159,7 +181,7 @@ pub fn delete_covers(expectation: &Path, deletion: &Path) -> bool {
         .elem
         .iter()
         .zip(deletion.elem.iter())
-        .all(|(e, d)| e.name == d.name && e.key == d.key)
+        .all(|(e, d)| elem_name_matches(&e.name, &d.name) && e.key == d.key)
 }
 
 /// Split on '/' separators outside '[' ... ']' key expressions. An unclosed
@@ -415,6 +437,61 @@ mod tests {
     }
 
     #[test]
+    fn observation_covers_tolerates_module_prefixed_element_names() {
+        // Live SR Linux evidence: notifications carry YANG module-prefixed
+        // element names (`srl_nokia-interfaces:interface`) while
+        // schema-bound expectations use bare local names.
+        let exp = parse_path("", "interface[name=mgmt0]/statistics/in-packets").unwrap();
+        let obs = parse_path(
+            "",
+            "srl_nokia-interfaces:interface[name=mgmt0]/statistics/in-packets",
+        )
+        .unwrap();
+        assert!(observation_covers(&exp, &obs));
+        // A descendant under the prefixed container also covers.
+        let obs_deep = parse_path(
+            "",
+            "srl_nokia-interfaces:interface[name=mgmt0]/statistics/in-packets/extra",
+        )
+        .unwrap();
+        assert!(observation_covers(&exp, &obs_deep));
+        // Prefix tolerance never relaxes keys or subtree identity.
+        let obs_other = parse_path(
+            "",
+            "srl_nokia-interfaces:interface[name=eth0]/statistics/in-packets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&exp, &obs_other));
+        let obs_other_mod = parse_path(
+            "",
+            "other-module:interface[name=mgmt0]/statistics/in-packets",
+        )
+        .unwrap();
+        // Any single module prefix qualifies — the subscription itself
+        // is the authority boundary for which module answered.
+        assert!(observation_covers(&exp, &obs_other_mod));
+        // A prefixed EXPECTATION still requires an exact match: the
+        // same prefix covers, a different prefix does not.
+        let exp_prefixed =
+            parse_path("", "srl_nokia-interfaces:interface[name=mgmt0]/statistics").unwrap();
+        let obs_exact_prefixed = parse_path(
+            "",
+            "srl_nokia-interfaces:interface[name=mgmt0]/statistics/in-packets",
+        )
+        .unwrap();
+        assert!(observation_covers(&exp_prefixed, &obs_exact_prefixed));
+        let obs_wrong_prefix = parse_path(
+            "",
+            "other-module:interface[name=mgmt0]/statistics/in-packets",
+        )
+        .unwrap();
+        assert!(!observation_covers(&exp_prefixed, &obs_wrong_prefix));
+        // Malformed double-prefix never matches a bare expectation.
+        let obs_double = parse_path("", "a:b:interface[name=mgmt0]/statistics").unwrap();
+        assert!(!observation_covers(&exp, &obs_double));
+    }
+
+    #[test]
     fn observation_covers_star_key_is_single_value_wildcard() {
         // Automatic subscriptions emit `name=*`; a `*` expectation
         // value matches any instance value for that key — but never a
@@ -490,6 +567,12 @@ mod tests {
         )
         .unwrap();
         assert!(!delete_covers(&container, &sibling));
+        // Module-prefixed delete names (SR Linux style) still invalidate
+        // the bare-local-name expectation.
+        let prefixed =
+            parse_path("", "srl_nokia-interfaces:interface[name=mgmt0]/statistics").unwrap();
+        let bare_exp = parse_path("", "interface[name=mgmt0]/statistics").unwrap();
+        assert!(delete_covers(&bare_exp, &prefixed));
         // Wildcard expectation: ONE concrete instance delete must not
         // imply absence across the whole wildcard scope.
         let wildcard = parse_path(

@@ -1,0 +1,22 @@
+{
+  "assignment_generation": 2,
+  "attempt_count": 1,
+  "authority_epoch": 1795293363289321112,
+  "collector_id": "m6f-col-1",
+  "collector_session_generation": 1,
+  "created_at_ns": 1795293879694971803,
+  "created_by": "admin",
+  "datastore": "ietf-datastores:operational",
+  "deadline_ns": 1795293999694971803,
+  "device_address": "172.100.102.11:57400",
+  "device_key": "<redacted>",
+  "dispatched_at_ns": 1795293882673782267,
+  "evidence_fingerprint": "d527204770e1a1af5fe762fa75e9a27ce36e91de97e52ca52de16f33a58724b4",
+  "finished_at_ns": 1795293883191799819,
+  "job_id": "85896a6b-bc84-486e-99b8-f8d9a2f778aa",
+  "operation": "yang_applicability",
+  "reason_code": null,
+  "result_classification": "completed",
+  "snapshot_id": 2,
+  "state": "completed"
+}

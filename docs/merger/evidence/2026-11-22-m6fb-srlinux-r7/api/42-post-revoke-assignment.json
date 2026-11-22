@@ -1,0 +1,90 @@
+{
+  "collectors": [
+    {
+      "active_subscribers": 1,
+      "assigned_device_count": 1,
+      "assigned_targets": [
+        "172.100.102.11:57400"
+      ],
+      "connected": true,
+      "failed_subscribers": 0,
+      "id": "m6f-col-1",
+      "last_heartbeat_ns": 1795304402733557295,
+      "memory_used_mb": 100,
+      "observed_subscriptions": 1,
+      "pending_subscriptions": 0,
+      "pending_withdrawal_devices": [
+        "172.100.102.11:57400"
+      ],
+      "queue_bytes": 0,
+      "queue_depth_updates": 0,
+      "queue_utilization_pct": 0.0,
+      "receiver_statuses": [
+        {
+          "addr": "127.0.0.1:15071",
+          "error_count": 0,
+          "last_error": null,
+          "name": "bgp_ls",
+          "packet_count": 0,
+          "state": "disabled"
+        },
+        {
+          "addr": "0.0.0.0:5000",
+          "error_count": 0,
+          "last_error": null,
+          "name": "bmp",
+          "packet_count": 0,
+          "state": "disabled"
+        },
+        {
+          "addr": "0.0.0.0:2055",
+          "error_count": 0,
+          "last_error": null,
+          "name": "netflow",
+          "packet_count": 0,
+          "state": "disabled"
+        },
+        {
+          "addr": "0.0.0.0:4318",
+          "error_count": 0,
+          "last_error": null,
+          "name": "otlp",
+          "packet_count": 0,
+          "state": "disabled"
+        },
+        {
+          "addr": "0.0.0.0:6343",
+          "error_count": 0,
+          "last_error": null,
+          "name": "sflow",
+          "packet_count": 0,
+          "state": "disabled"
+        },
+        {
+          "addr": "0.0.0.0:9162",
+          "error_count": 0,
+          "last_error": null,
+          "name": "snmp",
+          "packet_count": 0,
+          "state": "disabled"
+        },
+        {
+          "addr": "0.0.0.0:5514/0.0.0.0:6514",
+          "error_count": 0,
+          "last_error": null,
+          "name": "syslog",
+          "packet_count": 0,
+          "state": "disabled"
+        }
+      ],
+      "recent_error_count": 0,
+      "recent_warn_count": 0,
+      "silent_subscriptions": 2,
+      "streaming_status": {},
+      "subscription_count": 1,
+      "uptime_secs": 450
+    }
+  ],
+  "unassigned_count": 0,
+  "unassigned_devices": []
+}

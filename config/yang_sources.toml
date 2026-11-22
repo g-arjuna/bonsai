@@ -45,9 +45,12 @@ enabled = true
 id = "nokia-srlinux"
 vendor = "nokia_srl"
 repo = "https://github.com/nokia/srlinux-yang-models.git"
-pinned_ref = "97b373e8b6556d17111a5226e0c1cb0795184cf5"
+# Pinned to the v26.3.1 release tag commit: the repository main branch
+# carries only docs/scripts — YANG modules exist only on release tags.
+# 26.3.1 matches the M6F-B lab device (SRLINUX 26.3.1-410).
+pinned_ref = "25013f95ce33cae55896b920239a18e0656c9d28"
 platforms = ["nokia_srlinux"]
-subdirs = ["srlinux"]
+subdirs = ["srlinux-yang-models"]
 license = "proprietary/vendor (see source)"
 enabled = true
 

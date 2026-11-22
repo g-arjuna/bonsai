@@ -1,0 +1,13 @@
+Transport: default
+Enabled: yes
+Server: running on port 6030, in default VRF
+SSL profile: none
+QoS DSCP: none
+Connection limit: 100
+Authorization required: no
+Accounting requests: no
+Notification timestamp: last change time
+Listen addresses: ::
+Authentication username priority: x509-spiffe, metadata, x509-common-name
+Config-commands AAA accounting: enabled
+Config-commands AAA authorization: enabled

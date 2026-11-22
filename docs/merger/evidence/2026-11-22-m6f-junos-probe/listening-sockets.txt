@@ -1,0 +1,309 @@
+tcp        0      0 0.0.0.0:53053           0.0.0.0:*               LISTEN      11814/mib2d
+tcp        0      0 0.0.0.0:57119           0.0.0.0:*               LISTEN      12559/rmopd
+tcp        0      0 0.0.0.0:44829           0.0.0.0:*               LISTEN      14714/jmkad
+tcp        0      0 0.0.0.0:40923           0.0.0.0:*               LISTEN      11675/mgd-api
+tcp        0      0 0.0.0.0:36827           0.0.0.0:*               LISTEN      9755/cconfigd
+tcp        0      0 0.0.0.0:36775           0.0.0.0:*               LISTEN      11191/jinsightd
+tcp        0      0 0.0.0.0:40887           0.0.0.0:*               LISTEN      13720/upgraded
+tcp        0      0 0.0.0.0:44941           0.0.0.0:*               LISTEN      10436/gcd
+tcp        0      0 0.0.0.0:53139           0.0.0.0:*               LISTEN      10713/ifmand
+tcp        0      0 0.0.0.0:7777            0.0.0.0:*               LISTEN      9387/cmdd
+tcp        0      0 0.0.0.0:40527           0.0.0.0:*               LISTEN      13718/timingd
+tcp        0      0 0.0.0.0:61021           0.0.0.0:*               LISTEN      12558/orchestratord
+tcp        0      0 0.0.0.0:61011           0.0.0.0:*               LISTEN      13409/rpcserviced
+tcp        0      0 0.0.0.0:44581           0.0.0.0:*               LISTEN      11316/jstatsd
+tcp        0      0 0.0.0.0:56889           0.0.0.0:*               LISTEN      9752/credz
+tcp        0      0 0.0.0.0:40501           0.0.0.0:*               LISTEN      12352/opstated
+tcp        0      0 0.0.0.0:40451           0.0.0.0:*               LISTEN      10492/grpc-tunnel
+tcp        0      0 0.0.0.0:48865           0.0.0.0:*               LISTEN      13719/transport-ala
+tcp        0      0 0.0.0.0:44793           0.0.0.0:*               LISTEN      9052/aft-sysinfo
+tcp        0      0 0.0.0.0:52981           0.0.0.0:*               LISTEN      13626/sysd
+tcp        0      0 0.0.0.0:36515           0.0.0.0:*               LISTEN      13430/resiliencyd
+tcp        0      0 0.0.0.0:44683           0.0.0.0:*               LISTEN      13507/rpd-agent
+tcp        0      0 0.0.0.0:56987           0.0.0.0:*               LISTEN      12347/nsagentd
+tcp        0      0 0.0.0.0:36213           0.0.0.0:*               LISTEN      12734/pci-agent
+tcp        0      0 0.0.0.0:32037           0.0.0.0:*               LISTEN      10177/dot1xd
+tcp        0      0 0.0.0.0:40195           0.0.0.0:*               LISTEN      13561/snmpd
+tcp        0      0 0.0.0.0:56799           0.0.0.0:*               LISTEN      10443/gnoi-pblq
+tcp        0      0 0.0.0.0:44077           0.0.0.0:*               LISTEN      10430/firewalld
+tcp        0      0 0.0.0.0:35883           0.0.0.0:*               LISTEN      9387/cmdd
+tcp        0      0 0.0.0.0:7210            0.0.0.0:*               LISTEN      13406/eventd
+tcp        0      0 0.0.0.0:7209            0.0.0.0:*               LISTEN      11670/eventd
+tcp        0      0 0.0.0.0:48169           0.0.0.0:*               LISTEN      10629/idmdserver
+tcp        0      0 0.0.0.0:36047           0.0.0.0:*               LISTEN      13719/transport-ala
+tcp        0      0 0.0.0.0:7023            0.0.0.0:*               LISTEN      14468/evo-aftmand-b
+tcp        0      0 0.0.0.0:6996            0.0.0.0:*               LISTEN      13404/ppmd
+tcp        0      0 0.0.0.0:39763           0.0.0.0:*               LISTEN      10176/dot1xd-agent
+tcp        0      0 0.0.0.0:43797           0.0.0.0:*               LISTEN      9009/evo-cda-bt
+tcp        0      0 0.0.0.0:43795           0.0.0.0:*               LISTEN      9428/cosd
+tcp        0      0 0.0.0.0:48109           0.0.0.0:*               LISTEN      10494/hwdre
+tcp        0      0 0.0.0.0:56277           0.0.0.0:*               LISTEN      13618/sysapp-mib
+tcp        0      0 0.0.0.0:43909           0.0.0.0:*               LISTEN      11193/jrhd
+tcp        0      0 0.0.0.0:19055           0.0.0.0:*               LISTEN      10597/idmd-frr-sess
+tcp        0      0 0.0.0.0:19019           0.0.0.0:*               LISTEN      10629/idmdserver
+tcp        0      0 0.0.0.0:19015           0.0.0.0:*               LISTEN      10598/idmd-bd
+tcp        0      0 0.0.0.0:19014           0.0.0.0:*               LISTEN      10624/idmd-sensor
+tcp        0      0 0.0.0.0:43615           0.0.0.0:*               LISTEN      10432/emfd-fpa
+tcp        0      0 0.0.0.0:19005           0.0.0.0:*               LISTEN      10608/idmd-rtb
+tcp        0      0 0.0.0.0:35359           0.0.0.0:*               LISTEN      9009/evo-cda-bt
+tcp        0      0 128.0.0.4:87            0.0.0.0:*               LISTEN      8499/sshd: /usr/sbi
+tcp        0      0 0.0.0.0:47869           0.0.0.0:*               LISTEN      12349/objmon
+tcp        0      0 0.0.0.0:39647           0.0.0.0:*               LISTEN      10494/hwdre
+tcp        0      0 0.0.0.0:43729           0.0.0.0:*               LISTEN      11670/eventd
+tcp        0      0 0.0.0.0:55951           0.0.0.0:*               LISTEN      10491/gnoi-system
+tcp        0      0 0.0.0.0:55959           0.0.0.0:*               LISTEN      9212/fibd
+tcp        0      0 0.0.0.0:43669           0.0.0.0:*               LISTEN      10598/idmd-bd
+tcp        0      0 0.0.0.0:14995           0.0.0.0:*               LISTEN      9755/cconfigd
+tcp        0      0 0.0.0.0:2706            0.0.0.0:*               LISTEN      13561/snmpd
+tcp        0      0 127.0.0.1:6166          0.0.0.0:*               LISTEN      9339/clksyncd
+tcp        0      0 0.0.0.0:39177           0.0.0.0:*               LISTEN      10173/dfwd-junos-re
+tcp        0      0 0.0.0.0:43505           0.0.0.0:*               LISTEN      10438/gnoi-healthz
+tcp        0      0 0.0.0.0:47563           0.0.0.0:*               LISTEN      13430/resiliencyd
+tcp        0      0 0.0.0.0:51615           0.0.0.0:*               LISTEN      9339/clksyncd
+tcp        0      0 0.0.0.0:55703           0.0.0.0:*               LISTEN      13009/picd
+tcp        0      0 0.0.0.0:34927           0.0.0.0:*               LISTEN      13009/picd
+tcp        0      0 0.0.0.0:38989           0.0.0.0:*               LISTEN      10430/firewalld
+tcp        0      0 0.0.0.0:51287           0.0.0.0:*               LISTEN      10437/gnoi-containe
+tcp        0      0 0.0.0.0:55341           0.0.0.0:*               LISTEN      10587/iccpd
+tcp        0      0 0.0.0.0:55339           0.0.0.0:*               LISTEN      10435/fwstatsd
+tcp        0      0 0.0.0.0:55353           0.0.0.0:*               LISTEN      9029/agentd
+tcp        0      0 0.0.0.0:6156            0.0.0.0:*               LISTEN      13408/rpd
+tcp        0      0 0.0.0.0:47133           0.0.0.0:*               LISTEN      14600/evoaft-jvisio
+tcp        0      0 0.0.0.0:6171            0.0.0.0:*               LISTEN      13404/ppmd
+tcp        0      0 0.0.0.0:34843           0.0.0.0:*               LISTEN      12968/pfetokend
+tcp        0      0 0.0.0.0:6161            0.0.0.0:*               LISTEN      9228/bfdd
+tcp        0      0 0.0.0.0:51423           0.0.0.0:*               LISTEN      10308/fabricHub
+tcp        0      0 0.0.0.0:6011            0.0.0.0:*               LISTEN      13404/ppmd
+tcp        0      0 0.0.0.0:46923           0.0.0.0:*               LISTEN      11527/license-check
+tcp        0      0 0.0.0.0:34591           0.0.0.0:*               LISTEN      12350/objping-serve
+tcp        0      0 0.0.0.0:2012            0.0.0.0:*               LISTEN      10494/hwdre
+tcp        0      0 0.0.0.0:46991           0.0.0.0:*               LISTEN      12557/opticmand
+tcp        0      0 0.0.0.0:46987           0.0.0.0:*               LISTEN      10624/idmd-sensor
+tcp        0      0 0.0.0.0:34695           0.0.0.0:*               LISTEN      9285/bios-manager
+tcp        0      0 0.0.0.0:54909           0.0.0.0:*               LISTEN      10176/dot1xd-agent
+tcp        0      0 0.0.0.0:34371           0.0.0.0:*               LISTEN      13509/securityd
+tcp        0      0 0.0.0.0:58883           0.0.0.0:*               LISTEN      13722/xmlproxyd
+tcp        0      0 0.0.0.0:38421           0.0.0.0:*               LISTEN      10173/dfwd-junos-re
+tcp        0      0 0.0.0.0:34517           0.0.0.0:*               LISTEN      12075/ndp
+tcp        0      0 0.0.0.0:34515           0.0.0.0:*               LISTEN      12095/netdefaultsd
+tcp        0      0 0.0.0.0:34445           0.0.0.0:*               LISTEN      10184/ehmd
+tcp        0      0 0.0.0.0:34439           0.0.0.0:*               LISTEN      11671/mcasthostd
+tcp        0      0 0.0.0.0:46747           0.0.0.0:*               LISTEN      10714/ifstatsd
+tcp        0      0 0.0.0.0:46449           0.0.0.0:*               LISTEN      9231/jsd
+tcp        0      0 0.0.0.0:38219           0.0.0.0:*               LISTEN      11968/na-grpcd
+tcp        0      0 0.0.0.0:38217           0.0.0.0:*               LISTEN      10608/idmd-rtb
+tcp        0      0 0.0.0.0:50435           0.0.0.0:*               LISTEN      10597/idmd-frr-sess
+tcp        0      0 0.0.0.0:42485           0.0.0.0:*               LISTEN      13625/syscmdd
+tcp        0      0 0.0.0.0:38349           0.0.0.0:*               LISTEN      14468/evo-aftmand-b
+tcp        0      0 0.0.0.0:58847           0.0.0.0:*               LISTEN      13010/pkid
+tcp        0      0 0.0.0.0:58839           0.0.0.0:*               LISTEN      9190/alarmd
+tcp        0      0 0.0.0.0:42451           0.0.0.0:*               LISTEN      10172/ddosd
+tcp        0      0 0.0.0.0:42099           0.0.0.0:*               LISTEN      9141/aggd
+tcp        0      0 0.0.0.0:33867           0.0.0.0:*               LISTEN      13508/rpdfw
+tcp        0      0 0.0.0.0:46089           0.0.0.0:*               LISTEN      10178/edo
+tcp        0      0 0.0.0.0:46087           0.0.0.0:*               LISTEN      11674/mfilterd
+tcp        0      0 0.0.0.0:33813           0.0.0.0:*               LISTEN      9224/arpd
+tcp        0      0 0.0.0.0:54289           0.0.0.0:*               LISTEN      10310/fabspoked-fch
+tcp        0      0 0.0.0.0:34023           0.0.0.0:*               LISTEN      9230/bfdd-agent
+tcp        0      0 0.0.0.0:54525           0.0.0.0:*               LISTEN      10241/distributord
+tcp        0      0 0.0.0.0:42189           0.0.0.0:*               LISTEN      11361/kfirewall-age
+tcp        0      0 0.0.0.0:50017           0.0.0.0:*               LISTEN      9234/aaasd
+tcp        0      0 0.0.0.0:45867           0.0.0.0:*               LISTEN      13717/sysman-ui
+tcp        0      0 0.0.0.0:9000            0.0.0.0:*               LISTEN      10173/dfwd-junos-re
+tcp        0      0 0.0.0.0:45877           0.0.0.0:*               LISTEN      11189/jdhcpd
+tcp        0      0 0.0.0.0:33561           0.0.0.0:*               LISTEN      13405/ppmd-agent
+tcp        0      0 0.0.0.0:37817           0.0.0.0:*               LISTEN      13036/plat-mra
+tcp        0      0 0.0.0.0:9102            0.0.0.0:*               LISTEN      11359/junos-state-c
+tcp        0      0 0.0.0.0:9101            0.0.0.0:*               LISTEN      11968/na-grpcd
+tcp        0      0 0.0.0.0:33675           0.0.0.0:*               LISTEN      10713/ifmand
+tcp        0      0 0.0.0.0:50078           0.0.0.0:*               LISTEN      14745/cfmman
+tcp        0      0 0.0.0.0:53795           0.0.0.0:*               LISTEN      10184/ehmd
+tcp        0      0 0.0.0.0:62006           0.0.0.0:*               LISTEN      9230/bfdd-agent
+tcp        0      0 0.0.0.0:62004           0.0.0.0:*               LISTEN      10176/dot1xd-agent
+tcp        0      0 0.0.0.0:62000           0.0.0.0:*               LISTEN      13507/rpd-agent
+tcp        0      0 0.0.0.0:705             0.0.0.0:*               LISTEN      13561/snmpd
+tcp        0      0 0.0.0.0:45777           0.0.0.0:*               LISTEN      11316/jstatsd
+tcp        0      0 0.0.0.0:8885            0.0.0.0:*               LISTEN      8861/trace-writer
+tcp        0      0 0.0.0.0:33437           0.0.0.0:*               LISTEN      10311/fabspoked-pfe
+tcp        0      0 0.0.0.0:666             0.0.0.0:*               LISTEN      13408/rpd
+tcp        0      0 0.0.0.0:41317           0.0.0.0:*               LISTEN      9428/cosd
+tcp        0      0 0.0.0.0:45439           0.0.0.0:*               LISTEN      10432/emfd-fpa
+tcp        0      0 0.0.0.0:49469           0.0.0.0:*               LISTEN      9385/clockd
+tcp        0      0 0.0.0.0:33073           0.0.0.0:*               LISTEN      13409/rpcserviced
+tcp        0      0 127.0.0.1:61522         0.0.0.0:*               LISTEN      13430/resiliencyd
+tcp        0      0 0.0.0.0:45563           0.0.0.0:*               LISTEN      12736/pfestatsd
+tcp        0      0 0.0.0.0:49657           0.0.0.0:*               LISTEN      13406/eventd
+tcp        0      0 0.0.0.0:45553           0.0.0.0:*               LISTEN      9142/alarm-mgmtd
+tcp        0      0 0.0.0.0:57735           0.0.0.0:*               LISTEN      10594/icmpd
+tcp        0      0 0.0.0.0:36971           0.0.0.0:*               LISTEN      7618/sysman
+tcp        0      0 0.0.0.0:41079           0.0.0.0:*               LISTEN      9224/arpd
+tcp        0      0 0.0.0.0:53323           0.0.0.0:*               LISTEN      12558/orchestratord
+tcp        0      0 0.0.0.0:61510           0.0.0.0:*               LISTEN      13720/upgraded
+tcp        0      0 0.0.0.0:61508           0.0.0.0:*               LISTEN      10432/emfd-fpa
+tcp        0      0 0.0.0.0:49217           0.0.0.0:*               LISTEN      9212/fibd
+tcp        0      0 0.0.0.0:57435           0.0.0.0:*               LISTEN      11680/mgmt-ethd
+tcp        0      0 0.0.0.0:61526           0.0.0.0:*               LISTEN      13010/pkid
+tcp        0      0 0.0.0.0:61524           0.0.0.0:*               LISTEN      11971/na-mqttd
+tcp        0      0 0.0.0.0:61523           0.0.0.0:*               LISTEN      11971/na-mqttd
+tcp        0      0 0.0.0.0:38              0.0.0.0:*               LISTEN      9419/mgd
+tcp        0      0 0.0.0.0:61503           0.0.0.0:*               LISTEN      9029/agentd
+tcp        0      0 0.0.0.0:61502           0.0.0.0:*               LISTEN      13405/ppmd-agent
+tcp        0      0 0.0.0.0:53              0.0.0.0:*               LISTEN      6323/dnsmasq
+tcp        0      0 0.0.0.0:53273           0.0.0.0:*               LISTEN      12735/pdevmand
+tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      9149/xinetd
+tcp        0      0 0.0.0.0:21              0.0.0.0:*               LISTEN      8876/vsftpd
+tcp        0      0 0.0.0.0:45287           0.0.0.0:*               LISTEN      12075/ndp
+tcp        0      0 0.0.0.0:37091           0.0.0.0:*               LISTEN      13560/snmpd-subagen
+tcp        0      0 0.0.0.0:41169           0.0.0.0:*               LISTEN      10714/ifstatsd
+tcp        0      0 0.0.0.0:49331           0.0.0.0:*               LISTEN      10434/fsmd
+tcp        0      0 0.0.0.0:49281           0.0.0.0:*               LISTEN      11497/lacpd
+tcp        0      0 0.0.0.0:61592           0.0.0.0:*               LISTEN      11968/na-grpcd
+tcp6       0      0 128.0.0.4:61525         :::*                    LISTEN      9231/jsd
+tcp6       0      0 128.0.0.4:61525         :::*                    LISTEN      9231/jsd
+tcp6       0      0 :::35093                :::*                    LISTEN      6374/java
+tcp6       0      0 :::2181                 :::*                    LISTEN      6374/java
+tcp6       0      0 :::2180                 :::*                    LISTEN      6374/java
+tcp6       0      0 :::2179                 :::*                    LISTEN      6374/java
+tcp6       0      0 :::514                  :::*                    LISTEN      6327/xinetd
+tcp6       0      0 :::513                  :::*                    LISTEN      6327/xinetd
+tcp6       0      0 :::53                   :::*                    LISTEN      6323/dnsmasq
+tcp6       0      0 :::22                   :::*                    LISTEN      9149/xinetd
+unix  2      [ ACC ]     STREAM     LISTENING     80189    11497/lacpd          /var/run/lacpd_gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     111827   14731/aft-health-mo  /var/run/aftHAFT-0-AppState-50088
+unix  2      [ ACC ]     STREAM     LISTENING     105289   13649/sysd-openconf  /var/run/sysd-openconfig-render.gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     111840   14731/aft-health-mo  /var/run/aftHAFT-0-AftHm-50086
+unix  2      [ ACC ]     STREAM     LISTENING     112764   14728/ppman          /var/run/aftHAFT-0-Ppman-L2tp-50066
+unix  2      [ ACC ]     STREAM     LISTENING     104240   13561/snmpd          //var/run/snmpd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     112768   14728/ppman          /var/run/aftHAFT-0-Ppman-EvoPfemand-61527
+unix  2      [ ACC ]     STREAM     LISTENING     111446   14728/ppman          /var/run/aftHAFT-0-Ppman-Vbfman-50079
+unix  2      [ ACC ]     STREAM     LISTENING     112778   14728/ppman          /var/run/aftHAFT-0-Ppman-Cfmman-50077
+unix  2      [ ACC ]     STREAM     LISTENING     80239    11815/mplsoamd       /var/run/mplsoamd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     80240    11815/mplsoamd       /var/run/mplsoamd_control
+unix  2      [ ACC ]     STREAM     LISTENING     168104   15853/systemd        /run/user/0/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     167290   15853/systemd        /run/user/0/bus
+unix  2      [ ACC ]     STREAM     LISTENING     80251    11815/mplsoamd       /var/run/mplsoamd_dbgsh
+unix  2      [ ACC ]     STREAM     LISTENING     87910    13009/picd           /var/pfe//var/run/picd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     80254    11527/license-check  /var/run/license-check-source-data.source
+unix  2      [ ACC ]     STREAM     LISTENING     87911    13009/picd           /var/pfe//var/run/vty+picd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     106817   13722/xmlproxyd      //var/run/xmlproxyd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     20017    1/init               /run/systemd/private
+unix  2      [ ACC ]     STREAM     LISTENING     75642    11528/license-check  /var/run/license-check-render.gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     49863    9422/mustd           //var/run/mustd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     20019    1/init               /run/systemd/userdb/io.systemd.DynamicUser
+unix  2      [ ACC ]     STREAM     LISTENING     87758    13010/pkid           //var/run/pkid_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     20020    1/init               /run/systemd/io.system.ManagedOOM
+unix  2      [ ACC ]     STREAM     LISTENING     51439    9339/clksyncd        //var/run/clksyncd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     104954   13430/resiliencyd    /var/pfe//var/run/vty+cmerror_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     49873    9190/alarmd          /var/run/alarmd_gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     105411   11527/license-check  //var/run/license-check_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     105414   11527/license-check  /var/run/japi_license-check-grpc
+unix  2      [ ACC ]     STREAM     LISTENING     20080    1/init               /run/systemd/journal/stdout
+unix  2      [ ACC ]     STREAM     LISTENING     105336   13718/timingd        /var/pfe//var/run/vty+timingd_mgmt
+unix  2      [ ACC ]     SEQPACKET  LISTENING     20082    1/init               /run/udev/control
+unix  2      [ ACC ]     STREAM     LISTENING     15314    3696/@switchd        /data/uswitch/uswitch.sock
+unix  2      [ ACC ]     STREAM     LISTENING     109615   13408/rpd            /var/run/rpd_server_communication
+unix  2      [ ACC ]     STREAM     LISTENING     109622   13408/rpd            /var/run/japi_rpd
+unix  2      [ ACC ]     STREAM     LISTENING     109628   13408/rpd            /var/run/rpd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     107638   13408/rpd            /var/run/rpd_dbgsh
+unix  2      [ ACC ]     STREAM     LISTENING     109630   13408/rpd            /var/run/rpd_mc_svcs_ipc
+unix  2      [ ACC ]     STREAM     LISTENING     50961    9419/mgd             /var/run/mgd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     79539    11675/mgd-api        /var/run/japi_mgd
+unix  2      [ ACC ]     STREAM     LISTENING     51521    9428/cosd            /var/run/cosd_gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     111726   14468/evo-aftmand-b  /var/pfe//var/run/evo-aftmand-bt_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     50981    9231/jsd             /var/run/jsd-source-data.source
+unix  2      [ ACC ]     STREAM     LISTENING     108439   14600/evoaft-jvisio  /var/pfe//var/run/evoaft-jvisiond_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     103270   13410/rpd-sa-agent   /tmp/rpd-sa-agent
+unix  2      [ ACC ]     STREAM     LISTENING     79578    11670/eventd         /var/run/master-eventd-source-data.source
+unix  2      [ ACC ]     STREAM     LISTENING     18246    5395/systemd-journa  /run/systemd/journal/io.systemd.journal
+unix  2      [ ACC ]     STREAM     LISTENING     108462   14655/packetio       /var/pfe//var/run/packetio_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     111205   14745/cfmman         /var/pfe//var/run/cfmman_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     81495    11670/eventd         /var/run/eventd_register_events
+unix  2      [ ACC ]     STREAM     LISTENING     81497    11670/eventd         //var/run/eventd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     111861   14731/aft-health-mo  /var/pfe//var/run/aft-health-monitor_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     80548    10185/eventd-native  /var/run/eventd-native-render.gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     113757   14728/ppman          /var/pfe//var/run/ppman_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     103271   13410/rpd-sa-agent   /var/run/rpd-sa-agent_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     103290   13410/rpd-sa-agent   /var/run/rpd-sa-agent_dbgsh
+unix  2      [ ACC ]     STREAM     LISTENING     58786    10172/ddosd          /var/run/ddosd_gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     81578    9231/jsd             //var/run/jsd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     46061    8549/imgd            /run/imgd.sock
+unix  2      [ ACC ]     STREAM     LISTENING     81611    9231/jsd             /var/run/japi_jsd
+unix  2      [ ACC ]     STREAM     LISTENING     58004    11194/jsd-native-re  /var/run/jsd-native-render.gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     79663    12143/ngx-client-ca  /var/run/cc_service
+unix  2      [ ACC ]     STREAM     LISTENING     81644    12139/ngx-auth-meta  /var/run/AuthMetaService
+unix  2      [ ACC ]     STREAM     LISTENING     81779    10491/gnoi-system    /var/run/gnoi_system
+unix  2      [ ACC ]     STREAM     LISTENING     79763    10443/gnoi-pblq      /var/run/gnoi_pblq
+unix  2      [ ACC ]     STREAM     LISTENING     79789    9752/credz           /var/run/japi_credz
+unix  2      [ ACC ]     STREAM     LISTENING     81828    10587/iccpd          /var/run/iccpd_control
+unix  2      [ ACC ]     STREAM     LISTENING     81830    10587/iccpd          //var/run/iccpd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     58130    11317/jsd-openconfi  /var/run/jsd-openconfig-render.gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     84008    10438/gnoi-healthz   /var/run/gnoi_healthz
+unix  2      [ ACC ]     STREAM     LISTENING     82502    12344/ngx-jnx-login  /var/run/JnxAuthenticationService
+unix  2      [ ACC ]     STREAM     LISTENING     104729   9228/bfdd            //var/run/bfdd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     85016    12346/ngx-login-ser  /var/run/loginService
+unix  2      [ ACC ]     STREAM     LISTENING     50366    8992/dma-fd-server   /var/run/dma-fd-server.sock
+unix  2      [ ACC ]     STREAM     LISTENING     59832    10308/fabricHub      /var/run/fabricHub_gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     55030    10182/ehmd-render    /var/run/ehmd-source-data.source
+unix  2      [ ACC ]     STREAM     LISTENING     83253    9234/aaasd           /var/run/japi_aaasd
+unix  2      [ ACC ]     STREAM     LISTENING     54202    10182/ehmd-render    /var/run/ehmd-render.gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     35936    1/init               /run/dbus/system_bus_socket
+unix  2      [ ACC ]     STREAM     LISTENING     41516    6395/dockerd         /run/docker.sock
+unix  2      [ ACC ]     STREAM     LISTENING     85147    1/init               /run/systemd/journal.verbose/io.systemd.journal
+unix  2      [ ACC ]     STREAM     LISTENING     85149    1/init               /run/systemd/journal.verbose/stdout
+unix  2      [ ACC ]     STREAM     LISTENING     73486    10435/fwstatsd       /var/run/fwstatsd_gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     74952    10437/gnoi-containe  /var/run/gnoi_containerz
+unix  2      [ ACC ]     STREAM     LISTENING     74955    11358/jti-dialoutd   /var/run/jti-dialoutd_stats
+unix  2      [ ACC ]     STREAM     LISTENING     42433    6477/containerd      /run/docker/containerd/containerd-debug.sock
+unix  2      [ ACC ]     STREAM     LISTENING     42434    6477/containerd      /run/docker/containerd/containerd.sock.ttrpc
+unix  2      [ ACC ]     STREAM     LISTENING     74967    11359/junos-state-c  /var/run/junos-state-collector.source
+unix  2      [ ACC ]     STREAM     LISTENING     42435    6477/containerd      /run/docker/containerd/containerd.sock
+unix  2      [ ACC ]     STREAM     LISTENING     41541    6395/dockerd         /run/docker/metrics.sock
+unix  2      [ ACC ]     STREAM     LISTENING     110698   9009/evo-cda-bt      /var/run/aftHAFT-0-cda-triton-asic-aux
+unix  2      [ ACC ]     STREAM     LISTENING     104936   10177/dot1xd         /var/run/dot1xd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     104938   10177/dot1xd         /var/run/dot1xd_dbgsh
+unix  2      [ ACC ]     STREAM     LISTENING     85216    10430/firewalld      /var/run/japi_firewalld
+unix  2      [ ACC ]     STREAM     LISTENING     109304   9009/evo-cda-bt      /var/run/aftHAFT-0-cda-triton-asic-stats
+unix  2      [ ACC ]     STREAM     LISTENING     40400    6395/dockerd         /run/docker/libnetwork/cd0835de4178.sock
+unix  2      [ ACC ]     STREAM     LISTENING     110702   9009/evo-cda-bt      /var/run/aftHAFT-0-cda-triton-asic
+unix  2      [ ACC ]     STREAM     LISTENING     57402    10241/distributord   /var/run/distributord_local_socket
+unix  2      [ ACC ]     STREAM     LISTENING     104996   12559/rmopd          //var/run/rmopd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     105002   12559/rmopd          /var/run/japi_rmopd
+unix  2      [ ACC ]     STREAM     LISTENING     83485    11192/auditd         /var/run/japi_auditd
+unix  2      [ ACC ]     STREAM     LISTENING     105019   12559/rmopd          /var/run/rmopd_gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     78942    10713/ifmand         /var/run/japi_ifmand
+unix  2      [ ACC ]     STREAM     LISTENING     73687    11189/jdhcpd         //var/run/jdhcpd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     83561    11192/auditd         /var/run/auditd_events
+unix  2      [ ACC ]     STREAM     LISTENING     84384    11192/auditd         //var/run/auditd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     104048   13404/ppmd           /var/run/ppmd_control
+unix  2      [ ACC ]     STREAM     LISTENING     49385    8992/dma-fd-server   /var/pfe//var/run/dma-fd-server_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     104051   13404/ppmd           //var/run/ppmd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     73706    11193/jrhd           /var/run/jrhd
+unix  2      [ ACC ]     STREAM     LISTENING     56237    9142/alarm-mgmtd     //var/run/alarm-mgmtd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     109488   14468/evo-aftmand-b  /var/run/aftHAFT-0-em-AftServer
+unix  2      [ ACC ]     STREAM     LISTENING     106707   11968/na-grpcd       /var/run/japi_na-grpcd
+unix  2      [ ACC ]     STREAM     LISTENING     84476    12845/mcelog         /var/run/mcelog-client
+unix  2      [ ACC ]     STREAM     LISTENING     48585    9146/nstackd         /usr/evo/share/nstackd/channel0.socket
+unix  2      [ ACC ]     STREAM     LISTENING     48584    9146/nstackd         /usr/evo/share/nstackd_cli.socket
+unix  2      [ ACC ]     STREAM     LISTENING     47804    9052/aft-sysinfo     /var/pfe//var/run/aft-sysinfo_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     48016    9009/evo-cda-bt      /var/pfe//var/run/evo-cda-bt_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     79033    10629/idmdserver     /var/run/idmdserver_gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     48028    9212/fibd            /usr/evo/share/vrf_name.socket
+unix  2      [ ACC ]     STREAM     LISTENING     50768    9009/evo-cda-bt      /var/pfe//var/run/vty+evo-cda-bt_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     50873    9385/clockd          /var/pfe//var/run/clockd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     41759    6872/containerd-shi  /run/containerd/s/a1e55afe96864713cb41040927dec630aac45ff21ec4f72c24abd5d34c845f62
+unix  2      [ ACC ]     STREAM     LISTENING     50615    9228/bfdd            /var/run/bfdd_control
+unix  2      [ ACC ]     STREAM     LISTENING     58842    10311/fabspoked-pfe  /var/pfe//var/run/vty+fabspoked-pfe0_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     58048    10594/icmpd          /usr/evo/share/icmpd_stats.socket
+unix  2      [ ACC ]     STREAM     LISTENING     57154    10310/fabspoked-fch  /var/pfe//var/run/vty+fabspoked-fchip0_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     79018    10494/hwdre          /var/pfe//var/run/hwdre_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     83909    11968/na-grpcd       /var/run/nagrpcd-source-data.source
+unix  2      [ ACC ]     STREAM     LISTENING     108387   14468/evo-aftmand-b  /var/run/aftHAFT-0-Aftman-50059
+unix  2      [ ACC ]     STREAM     LISTENING     78756    11676/mgd            /var/pfe//var/run/mgd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     104168   13010/pkid           /var/run/japi_pkid
+unix  2      [ ACC ]     STREAM     LISTENING     80065    9387/cmdd            /var/run/cmdd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     87094    11973/nagrpcd-openc  /var/run/nagrpcd-openconfig-render.gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     84772    11972/nagrpcd-nativ  /var/run/nagrpcd-native-render.gnmi
+unix  2      [ ACC ]     STREAM     LISTENING     112668   14655/packetio       /var/run/aftHAFT-0-PacketIo-50065
+unix  2      [ ACC ]     STREAM     LISTENING     106025   13626/sysd           //var/run/sysd_mgmt
+unix  2      [ ACC ]     STREAM     LISTENING     106044   13626/sysd           /var/run/sysd-source-data.source
+unix  2      [ ACC ]     STREAM     LISTENING     75496    11497/lacpd          //var/run/lacpd_mgmt

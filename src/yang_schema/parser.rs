@@ -1209,7 +1209,14 @@ impl Parser {
                         }
                         "presence" => {
                             self.pos += 1;
-                            node.presence = Some(self.ident()?);
+                            // Vendor models (e.g. Nokia SR Linux) write
+                            // `presence "description";`; standard YANG uses a
+                            // bare `presence;`. Accept either.
+                            node.presence = Some(if matches!(self.peek(), Tok::Punct(';')) {
+                                String::new()
+                            } else {
+                                self.ident_or_string()?
+                            });
                             self.expect_punct(';')?;
                         }
                         "ordered-by" => {
@@ -1320,6 +1327,50 @@ impl Parser {
         }
     }
 
+    /// Like `raw_value_until_semi` but stops BEFORE a top-level ';' or '{'
+    /// without consuming it — used for type arguments that may be followed
+    /// by an `{ error-message ...; }` sub-block.
+    fn type_arg_value(&mut self) -> Result<String, String> {
+        let mut parts = Vec::new();
+        let mut depth = 0i32;
+        loop {
+            match self.peek().clone() {
+                Tok::Eof => return Err("unterminated value (no ';')".into()),
+                Tok::Punct('{') if depth == 0 => {
+                    return Ok(parts.join(" ").trim().to_string());
+                }
+                Tok::Punct(';') if depth == 0 => {
+                    return Ok(parts.join(" ").trim().to_string());
+                }
+                Tok::Punct('{') => {
+                    depth += 1;
+                    parts.push("{".to_string());
+                    self.pos += 1;
+                }
+                Tok::Punct('}') => {
+                    if depth == 0 {
+                        return Err("unterminated value (unexpected '}')".into());
+                    }
+                    depth -= 1;
+                    parts.push("}".to_string());
+                    self.pos += 1;
+                }
+                Tok::Ident(s) => {
+                    parts.push(s);
+                    self.pos += 1;
+                }
+                Tok::Str(s) => {
+                    parts.push(format!("\"{}\"", s));
+                    self.pos += 1;
+                }
+                Tok::Punct(c) => {
+                    parts.push(c.to_string());
+                    self.pos += 1;
+                }
+            }
+        }
+    }
+
     /// Parse `type <name> [ { type-substmts } ] ;`
     fn parse_type_spec(&mut self) -> Result<TypeSpec, String> {
         let name = match self.peek() {
@@ -1349,11 +1400,24 @@ impl Parser {
                             "range" | "length" | "pattern" | "base" | "path"
                             | "require-instance" | "fraction-digits" | "default" | "mandatory"
                             | "units" | "status" | "description" | "reference" => {
-                                let value = self.raw_value_until_semi()?;
+                                // These args may carry an
+                                // `{ error-message "..."; }` sub-block (e.g.
+                                // SR Linux `pattern '...' { error-message ...; }`)
+                                // which ends the statement without a ';'.
+                                let value = self.type_arg_value()?;
+                                if self.eat_punct('{') {
+                                    self.skip_balanced()?;
+                                }
+                                // `pattern '...' { error-message ...; }` ends
+                                // at '}' with no trailing ';'.
+                                self.eat_punct(';');
                                 spec.args.push((kw, value));
                             }
                             "enum" => {
-                                // enum <name> { value N; description ...; }
+                                // enum <name> [<value>] ['{' ... '}'] ';'
+                                // — RFC 7950 allows a bare `enum name;` and an
+                                // optional integer value; vendor models (SR
+                                // Linux) use both forms.
                                 let mut ename = String::new();
                                 if matches!(self.peek(), Tok::Ident(_) | Tok::Str(_)) {
                                     ename = match self.next() {
@@ -1361,19 +1425,42 @@ impl Parser {
                                         _ => unreachable!(),
                                     };
                                 }
-                                self.expect_punct('{')?;
-                                loop {
-                                    if self.at_punct('}') || matches!(self.peek(), Tok::Eof) {
-                                        break;
-                                    }
-                                    if self.eat_keyword("value") {
-                                        // enum integer value — metadata only
-                                        self.skip_rest_of_statement()?;
-                                    } else {
-                                        self.skip_statement()?;
+                                // Vendor models use unquoted enum names
+                                // containing '/', e.g. `enum a/b {` — the
+                                // lexer splits it into Ident/Punct('/')/Ident.
+                                while matches!(self.peek(), Tok::Punct('/')) {
+                                    self.pos += 1;
+                                    ename.push('/');
+                                    match self.next() {
+                                        Tok::Ident(s) | Tok::Str(s) => ename.push_str(&s),
+                                        other => {
+                                            return Err(format!(
+                                                "expected enum name segment after '/', found {:?}",
+                                                other
+                                            ));
+                                        }
                                     }
                                 }
-                                self.expect_punct('}')?;
+                                if self.eat_punct('{') {
+                                    loop {
+                                        if self.at_punct('}') || matches!(self.peek(), Tok::Eof) {
+                                            break;
+                                        }
+                                        if self.eat_keyword("value") {
+                                            // enum integer value — metadata only
+                                            self.skip_rest_of_statement()?;
+                                        } else {
+                                            self.skip_statement()?;
+                                        }
+                                    }
+                                    self.expect_punct('}')?;
+                                } else {
+                                    // Optional bare integer value, then ';'.
+                                    if matches!(self.peek(), Tok::Ident(_) | Tok::Str(_)) {
+                                        self.pos += 1;
+                                    }
+                                    self.expect_punct(';')?;
+                                }
                                 spec.enums.push((ename.clone(), ename));
                             }
                             "bit" => {
@@ -1481,7 +1568,11 @@ impl Parser {
                                     r.units = Some(self.ident_or_string()?);
                                     self.expect_punct(';')?;
                                 } else if self.eat_keyword("presence") {
-                                    r.presence = Some(self.ident()?);
+                                    r.presence = Some(if matches!(self.peek(), Tok::Punct(';')) {
+                                        String::new()
+                                    } else {
+                                        self.ident_or_string()?
+                                    });
                                     self.expect_punct(';')?;
                                 } else if self.eat_keyword("min-elements") {
                                     r.min_elements = Some(self.uint_value()?);
@@ -1572,6 +1663,15 @@ impl Parser {
                     }
                     depth -= 1;
                     self.pos += 1;
+                    // A statement that opened a `{ ... }` block ends at
+                    // the matching '}' — YANG has no trailing ';' after
+                    // a block body. Without this, skipping an
+                    // unsupported block statement (e.g. a vendor
+                    // `extension name { ... }`) swallows every following
+                    // sibling statement up to the enclosing '}'.
+                    if depth == 0 {
+                        return Ok(());
+                    }
                 }
                 Tok::Punct(';') if depth == 0 => {
                     self.pos += 1;

@@ -89,6 +89,23 @@ choice/case transparency in canonical paths, status
 current/deprecated/obsolete, quoted/bare/single-quoted strings with
 RFC 7950 §6.1.3 escape rules and `+` concatenation.
 
+Vendor dialects observed in the wild are also accepted where they are
+unambiguous supersets of the standard grammar (M6F-B, Nokia SR Linux
+26.3.1 — the full 11-module `srl_nokia-*` closure compiles to 419
+paths with zero diagnostics, schema `ysc-d7254b6e840b0f0041c4b2458bb509a1`):
+
+- Unquoted `revision 2026-03-31 { ... }` dates.
+- Prefixed extension statements and instances
+  (`srl_nokia-ext:delivery-node-override "true";`).
+- `presence "description";` and bare `presence;` forms.
+- Bare `enum name;`, enum names containing `/`, and optional integer
+  values inside enum blocks.
+- Type arguments carrying `{ error-message "..."; }` sub-blocks
+  (e.g. Nokia `pattern '...' + '...' { error-message ...; }`).
+- Block-form statements skipped as unsupported now terminate at the
+  matching `}` instead of swallowing following sibling statements
+  (regression fixture `tests/fixtures/yang/test-nokia.yang`).
+
 Explicitly unsupported or approximate (diagnosed or documented, never
 silent where detectable):
 

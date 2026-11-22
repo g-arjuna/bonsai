@@ -1,0 +1,15 @@
+{
+  "vendor": "junos",
+  "date": "2026-11-22",
+  "image": "docker.io/library/cjunosevolved:26.2R1.7-EVO",
+  "checks": {
+    "image_boot": "PASS",
+    "gnmi_service_configurable": "UNSUPPORTED",
+    "gnmi_endpoint": "UNSUPPORTED",
+    "capabilities": "NOT_EXECUTED",
+    "yang_library": "NOT_EXECUTED",
+    "telemetry": "NOT_EXECUTED"
+  },
+  "overall": "UNSUPPORTED",
+  "notes": "cJunosEVO 26.2R1.7-EVO (cPTX ptx10001-36mr) boots fully under clab juniper_cjunosevolved but exposes no gNMI service: no system services grpc/gnmi stanza exists and no 57400 listener is present. A different Junos platform image is required for gNMI acceptance."
+}
