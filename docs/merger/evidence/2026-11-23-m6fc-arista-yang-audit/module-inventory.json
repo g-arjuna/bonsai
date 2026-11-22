@@ -1,0 +1,3980 @@
+{
+  "audit": "arista-eos-4.37.0F capabilities vs pinned repo module inventory",
+  "source_commit": "f7fc5de3d80aa32de403f067b625dd8db633ca34",
+  "capabilities_evidence": "docs/merger/evidence/2026-11-22-m6f-ceos-probe/01-capabilities.json",
+  "note": "caps_version is the gNMI ModelData version, NOT a YANG revision; revision_state reflects repo-side revision statements only",
+  "counts": {
+    "advertised": 303,
+    "matched": 286,
+    "unmatched": 17
+  },
+  "modules": [
+    {
+      "name": "arista-l1-open-config-platform-model-augment",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2022-05-12"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-platform",
+      "caps_version": "0.32.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-07-15"
+      ],
+      "revision_count": 30,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-vlan-deviations",
+      "caps_version": "1.0.2",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-platform-psu",
+      "caps_version": "0.2.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-exp-eos-bgp",
+      "caps_version": "1.4.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-mpls-deviations",
+      "caps_version": "1.0.5",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-arnet-rate",
+      "caps_version": "0.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2023-08-15"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-ale-counters-open-config-hardware-drop-counters",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2023-01-01"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "synth-dev-mod-0",
+      "caps_version": "",
+      "caps_org": "",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "openconfig-aft-summary",
+      "caps_version": "0.2.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-03-11"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-l1-open-config-optical-channel-model-augment",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2022-05-12"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-isis-lsdb-types",
+      "caps_version": "0.4.2",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 8,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-bgp-common-bgp-open-config-auto-link-bandwidth-augment",
+      "caps_version": "9.9.1",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-09-22"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-pfc-history-counters-augment",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-05-11"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-qos",
+      "caps_version": "2.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-04-30"
+      ],
+      "revision_count": 22,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "iana-if-type",
+      "caps_version": "",
+      "caps_org": "IANA",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "openconfig-inet-types",
+      "caps_version": "0.8.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-06-18"
+      ],
+      "revision_count": 10,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-flex-algo-augments",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-macsec-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-mirroring-tap-agg-common",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2024-08-12"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-ptp",
+      "caps_version": "1.0.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-bgp",
+      "caps_version": "9.9.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-04-18"
+      ],
+      "revision_count": 31,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-bgp-deviations",
+      "caps_version": "1.34.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-pf-deviations",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-bgp-augments",
+      "caps_version": "2.35.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-mpls-mpls-open-config-static-augment",
+      "caps_version": "3.4.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2024-03-11"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-if-ethernet-ext",
+      "caps_version": "0.1.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-arnet-ip",
+      "caps_version": "0.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2022-03-28"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-dot1x-dot1x",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-08-26"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-hercules-platform",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig Hercules Working Group",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "arista-exp-eos-vxlan",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-sampling-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-ospf-deviations",
+      "caps_version": "4.2.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-license",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2020-04-22"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-mirroring-mirroring-open-config",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2024-08-12"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-system-deviations",
+      "caps_version": "1.4.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "gnsi-credentialz",
+      "caps_version": "",
+      "caps_org": "Google LLC",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-keychain-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-pcep",
+      "caps_version": "0.1.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-04-25"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-l1-open-config-xcvr-oc-types",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2023-12-05"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-aft-global-filter",
+      "caps_version": "3.3.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-03-10"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-bfd-deviations",
+      "caps_version": "1.1.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-policy-types",
+      "caps_version": "3.3.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-05-14"
+      ],
+      "revision_count": 8,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-nexthop-group-deviations",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-alarm-types",
+      "caps_version": "0.2.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-traffic-policy",
+      "caps_version": "1.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2026-02-02"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-gnsi-acctz",
+      "caps_version": "0.4.0",
+      "caps_org": "OpenConfig Working Group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-procmon",
+      "caps_version": "0.4.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2019-03-15"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-yang-types",
+      "caps_version": "1.0.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-05-30"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-if-sdn-ext",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-srte-policy",
+      "caps_version": "0.2.4",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-02-09"
+      ],
+      "revision_count": 6,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "synth-dev-mod-4",
+      "caps_version": "",
+      "caps_org": "",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "openconfig-ptp-types",
+      "caps_version": "1.0.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-interfaces-rates",
+      "caps_version": "0.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-policy-forwarding",
+      "caps_version": "1.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-12-16"
+      ],
+      "revision_count": 15,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-vlan-types",
+      "caps_version": "3.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2022-05-24"
+      ],
+      "revision_count": 7,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-lldp-augments",
+      "caps_version": "1.0.1",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-intf-intf",
+      "caps_version": "0.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2023-08-15"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-inband-telemetry-common-ifa-flow-table-open-config",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2026-06-07"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-ale-counters-open-config-qos-interface-queue-common-types",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2026-04-15"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-xcvr-xcvr-test-pattern",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-08-22"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-l1-open-config-phy-model",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2023-12-05"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-platform-types",
+      "caps_version": "1.12.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-05-19"
+      ],
+      "revision_count": 20,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-stp-deviations",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-platform-fan",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-07-16"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-terminal-device",
+      "caps_version": "1.12.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-01-14"
+      ],
+      "revision_count": 20,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-ospf",
+      "caps_version": "0.1.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-08-10"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-acl-deviations",
+      "caps_version": "1.2.1",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-exp-eos-qos",
+      "caps_version": "",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-isis-augments",
+      "caps_version": "1.14.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-aft-types",
+      "caps_version": "1.3.0",
+      "caps_org": "OpenConfig Working Group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-01-28"
+      ],
+      "revision_count": 7,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-bgp-common-bgp-open-config-global-lbw-options",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2026-02-02"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-qos-types",
+      "caps_version": "1.0.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-01-06"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-gnsi-pathz",
+      "caps_version": "0.3.0",
+      "caps_org": "OpenConfig Working Group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-qos-augments",
+      "caps_version": "0.0.4",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-eos-types",
+      "caps_version": "",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-cli",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-mcast-common-mrib-open-config",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-05-06"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-flexalgo",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-arnet-conn-tuple",
+      "caps_version": "0.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2022-03-28"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-lldp-types",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-12-09"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-if-ethernet",
+      "caps_version": "2.18.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-06-22"
+      ],
+      "revision_count": 25,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-pfc-buffer-counters-augment",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2024-12-11"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-rpol-augments",
+      "caps_version": "1.6.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-intf-deviations",
+      "caps_version": "1.0.6",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-security-ipsec",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "synth-dev-mod-1",
+      "caps_version": "",
+      "caps_org": "",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "arista-ale-counters-open-config-fap-fe-serdes-info-augment",
+      "caps_version": "0.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2024-08-22"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-keychain-types",
+      "caps_version": "0.4.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-12-10"
+      ],
+      "revision_count": 4,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-openflow-types",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2022-05-24"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-dcb-pfc",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-05-28"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-system-logging",
+      "caps_version": "0.7.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-08-20"
+      ],
+      "revision_count": 8,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-ebra-intf-encap",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2021-10-20"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-pim",
+      "caps_version": "0.4.4",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-12-06"
+      ],
+      "revision_count": 8,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-qos-qos-status",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-08-11"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-exp-eos-evpn",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-mpls-types",
+      "caps_version": "3.6.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-12-10"
+      ],
+      "revision_count": 19,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-stp-augments",
+      "caps_version": "0.3.1",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2019-11-28"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-fhrp-lib-varp-status",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2023-03-13"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-management-active-management-active-oc-redundancy-state",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2023-01-06"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-igmp",
+      "caps_version": "0.3.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-02-03"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-vlan",
+      "caps_version": "3.2.2",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-02-07"
+      ],
+      "revision_count": 9,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-gnsi",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig Working Group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-isis",
+      "caps_version": "1.8.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-05-23"
+      ],
+      "revision_count": 29,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-if-tunnel",
+      "caps_version": "0.1.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "ietf-inet-types",
+      "caps_version": "",
+      "caps_org": "IETF Network Modeling (NETMOD) Working Group",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "arista-nat-nat",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2022-03-28"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-local-routing-deviations",
+      "caps_version": "1.0.5",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "gnsi-authz",
+      "caps_version": "",
+      "caps_org": "Google LLC",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-segmentation.v1",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "arista-bfd-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-bgp-policy",
+      "caps_version": "8.3.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-03-17"
+      ],
+      "revision_count": 22,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-defined-sets",
+      "caps_version": "1.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-05-30"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-fap-memory-state",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2026-01-10"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-segment-routing",
+      "caps_version": "0.4.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-08-09"
+      ],
+      "revision_count": 11,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-aft-augments",
+      "caps_version": "1.7.3",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-programming-errors",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2022-10-11"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-platform-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-routing-policy",
+      "caps_version": "3.5.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-11-26"
+      ],
+      "revision_count": 12,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-security",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-routing-policy-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-icmpv4-types",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-01-26"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-sflow-deviations",
+      "caps_version": "1.0.2",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-lanz-lanz-open-config",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-03-17"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-sand-hardware-drop-counters",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-platform-integrated-circuit",
+      "caps_version": "0.3.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2022-04-20"
+      ],
+      "revision_count": 6,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-aft-network-instance",
+      "caps_version": "0.3.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-04-25"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-spanning-tree-types",
+      "caps_version": "0.4.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2021-06-16"
+      ],
+      "revision_count": 7,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-pf-srte",
+      "caps_version": "1.0.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-12-15"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-nat-nat-dynamic",
+      "caps_version": "0.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2022-03-28"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-intf-augments",
+      "caps_version": "1.8.8",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-openflow-deviations",
+      "caps_version": "1.1.1",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-local-routing-network-instance",
+      "caps_version": "1.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-07-01"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-metadata",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-aft",
+      "caps_version": "3.4.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-03-10"
+      ],
+      "revision_count": 25,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-aaa",
+      "caps_version": "1.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2022-07-29"
+      ],
+      "revision_count": 9,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-network-instance-static",
+      "caps_version": "0.3.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-05-12"
+      ],
+      "revision_count": 4,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-p4rt",
+      "caps_version": "1.0.0",
+      "caps_org": "OpenConfig Working Group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-icmpv6-types",
+      "caps_version": "0.1.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-05-02"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-spanning-tree-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-system-terminal",
+      "caps_version": "0.4.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-11-10"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-macsec-macsec-open-config-state-augment",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-02-25"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-l1-open-config-prbs-model",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-07-25"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-l1-types-l1-types",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-07-29"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-system",
+      "caps_version": "3.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-03-31"
+      ],
+      "revision_count": 30,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "ietf-interfaces",
+      "caps_version": "",
+      "caps_org": "IETF NETMOD (Network Modeling) Working Group",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "arista-exp-eos",
+      "caps_version": "",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-exp-eos-l2protocolforwarding",
+      "caps_version": "1.1.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "gnsi-certz",
+      "caps_version": "",
+      "caps_org": "Google LLC",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-packet-match-types",
+      "caps_version": "1.3.4",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-06-10"
+      ],
+      "revision_count": 14,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-relay-agent-deviations",
+      "caps_version": "1.0.3",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-types",
+      "caps_version": "1.0.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-01-31"
+      ],
+      "revision_count": 10,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-messages",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-08-13"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-mpls",
+      "caps_version": "3.6.2",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-12-10"
+      ],
+      "revision_count": 24,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-pseudowire-pseudowire-status",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2021-10-20"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-rcf-rcf-open-config",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2023-09-12"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-tunnel-tunnel-basic-types",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2021-10-20"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-ospf-types",
+      "caps_version": "0.1.4",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-02-13"
+      ],
+      "revision_count": 6,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-arnet-vrf-name",
+      "caps_version": "0.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2022-03-28"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-macsec-deviations",
+      "caps_version": "1.0.1",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-platform-fabric",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2022-07-28"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-isis-flex-algo",
+      "caps_version": "0.6.1",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-system-utilization",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-02-13"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-rpol-deviations",
+      "caps_version": "1.14.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-openflow",
+      "caps_version": "0.1.2",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-pim-types",
+      "caps_version": "0.1.2",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-05-31"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-lacp-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-platform-augments",
+      "caps_version": "1.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-platform-software",
+      "caps_version": "0.1.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2021-06-16"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-lldp",
+      "caps_version": "1.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-04-06"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-keychain",
+      "caps_version": "0.5.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-05-30"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-lldp-deviations",
+      "caps_version": "1.1.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-sensor-client-sysdb-types",
+      "caps_version": "0.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "arista-pim-deviations",
+      "caps_version": "1.2.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-platform-port",
+      "caps_version": "1.0.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-03-22"
+      ],
+      "revision_count": 11,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-fs-types",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-07-08"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-platform-healthz",
+      "caps_version": "0.1.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-04-11"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-connectivity-monitor-types-connectivity-monitor-types",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2024-05-02"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-classification-controller-field-set-open-config",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2024-02-06"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-platform-control-plane-traffic-counters",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-igmp-types",
+      "caps_version": "0.1.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "ietf-yang-metadata",
+      "caps_version": "",
+      "caps_org": "IETF NETMOD (NETCONF Data Modeling Language) Working Group",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "vlan-translation",
+      "caps_version": "1.0.2",
+      "caps_org": "Arista Networks",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-lldp-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-sampling-sflow",
+      "caps_version": "1.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-05-13"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-mpls-rsvp",
+      "caps_version": "4.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-12-10"
+      ],
+      "revision_count": 17,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-qos-deviations",
+      "caps_version": "1.0.2",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-fhrp-fhrp-config",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2023-02-13"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-rpc-netconf",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-sampling",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-ethernet-segments",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-09-06"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-mpls-sr",
+      "caps_version": "3.0.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 12,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-qos-lib-qos-types",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-08-11"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-platform-cpu",
+      "caps_version": "0.1.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-segment-routing-types",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2020-02-04"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-platform-controller-card",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-04-10"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-anic-ctrl-anic-ctrl",
+      "caps_version": "0.0.1",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-03-10"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-arnet-vlan-tpid",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2021-10-20"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-openconfig-ptp-types-aug",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "synth-dev-mod-3",
+      "caps_version": "",
+      "caps_org": "",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "arista-ale-counters-open-config-interrupt-counters",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2021-10-20"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-macsec-types",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-sflow-augments",
+      "caps_version": "1.1.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-macsec",
+      "caps_version": "1.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-01-02"
+      ],
+      "revision_count": 6,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-bfd-augments",
+      "caps_version": "1.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-exp-eos-mlag",
+      "caps_version": "1.0.2",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-dhcp-relay-dhcp-relay-open-config-v4-augment",
+      "caps_version": "0.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2024-08-25"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-dhcp-relay-dhcp-relay-open-config-v6-augment",
+      "caps_version": "0.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2024-08-25"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-netinst-deviations",
+      "caps_version": "1.5.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-transport-types",
+      "caps_version": "1.4.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-04-24"
+      ],
+      "revision_count": 29,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-telemetry",
+      "caps_version": "0.5.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-srte-augments",
+      "caps_version": "1.1.1",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-bfd",
+      "caps_version": "0.5.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-09-03"
+      ],
+      "revision_count": 16,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-lacp-deviations",
+      "caps_version": "1.1.4",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "ietf-netconf-monitoring",
+      "caps_version": "",
+      "caps_org": "IETF NETCONF (Network Configuration) Working Group",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "arista-terminal-device-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-evpn",
+      "caps_version": "0.11.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-08-14"
+      ],
+      "revision_count": 11,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-aaa-types",
+      "caps_version": "0.4.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-hercules-interfaces",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig Hercules Working Group",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "arista-inband-telemetry-ifa-latency-analyzer-open-config",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2026-04-25"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-inband-telemetry-common-inband-telemetry-common",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2026-07-15"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-relay-agent",
+      "caps_version": "0.1.2",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-02-06"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-ale-counters-open-config-specialized-counters",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2021-10-20"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-telemetry-augments",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-platform-pipeline-counters",
+      "caps_version": "0.6.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-04-30"
+      ],
+      "revision_count": 9,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-network-instance-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-spanning-tree",
+      "caps_version": "0.3.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2019-11-28"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-lacp",
+      "caps_version": "2.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-04-09"
+      ],
+      "revision_count": 7,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-pim-augments",
+      "caps_version": "1.4.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-ale-counters-open-config-control-plane-traffic-counters",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2023-02-02"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-ebra-octap-agg-port-config",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2024-08-12"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-isis-policy",
+      "caps_version": "0.8.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-11-02"
+      ],
+      "revision_count": 12,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "synth-dev-mod-2",
+      "caps_version": "",
+      "caps_org": "",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "openconfig-platform-transceiver",
+      "caps_version": "1.0.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-03-25"
+      ],
+      "revision_count": 21,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-alarms",
+      "caps_version": "0.3.2",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2019-07-09"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-network-instance-l3",
+      "caps_version": "2.0.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2022-11-08"
+      ],
+      "revision_count": 16,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-srte-deviations",
+      "caps_version": "1.2.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-rib-bgp-types",
+      "caps_version": "0.5.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2019-03-14"
+      ],
+      "revision_count": 5,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-mpls-ldp",
+      "caps_version": "3.2.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-02-06"
+      ],
+      "revision_count": 16,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-rib-bgp",
+      "caps_version": "0.10.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-03-24"
+      ],
+      "revision_count": 11,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-gnoi-cert",
+      "caps_version": "https://github.com/openconfig/gnoi",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-if-ip",
+      "caps_version": "3.9.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-06-20"
+      ],
+      "revision_count": 16,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-latency-measurement",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-06-30"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-host-inject-ochost-inject-config",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-01-30"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-local-routing",
+      "caps_version": "4.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-07-29"
+      ],
+      "revision_count": 11,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-interfaces-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-isis-deviations",
+      "caps_version": "1.19.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-ira-kernel-ip-counters",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-02-18"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-arnet-vlan-tag",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2021-10-20"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-exp-eos-igmpsnooping",
+      "caps_version": "",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-exp-eos-qos-config",
+      "caps_version": "0.2.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-netinst-augments",
+      "caps_version": "1.5.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-exp-eos-varp-intf",
+      "caps_version": "",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-exp-eos-multicast",
+      "caps_version": "0.0.1",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-system-controlplane",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-03-03"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-bgp-types",
+      "caps_version": "6.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-03-24"
+      ],
+      "revision_count": 20,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-if-aggregate",
+      "caps_version": "2.4.6",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-01-06"
+      ],
+      "revision_count": 12,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-rib-bgp-ext",
+      "caps_version": "0.6.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2019-04-25"
+      ],
+      "revision_count": 6,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-ospfv2",
+      "caps_version": "0.5.2",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-06-17"
+      ],
+      "revision_count": 17,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-network-instance",
+      "caps_version": "4.7.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-03-17"
+      ],
+      "revision_count": 49,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-ebra-sub-intf",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-10-20"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-packet-match",
+      "caps_version": "2.3.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-03-25"
+      ],
+      "revision_count": 13,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-aft-deviations",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-telemetry-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-exp-eos-vxlan-config",
+      "caps_version": "0.2.1",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-defined-sets-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-ospf-augments",
+      "caps_version": "4.2.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-bgp-common-augments",
+      "caps_version": "1.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-06-09"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-ntp-augments",
+      "caps_version": "2.0.0",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-system-augments",
+      "caps_version": "1.8.1",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-isis-types",
+      "caps_version": "0.7.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-05-23"
+      ],
+      "revision_count": 11,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-telemetry-types",
+      "caps_version": "0.4.2",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 4,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-hercules-qos",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig Hercules Working Group",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "arista-system-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-system-grpc",
+      "caps_version": "1.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-05-29"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-acl-spec",
+      "caps_version": "0.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2022-03-28"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-platform-linecard",
+      "caps_version": "1.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2024-04-12"
+      ],
+      "revision_count": 7,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-voq-delete-augment",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2026-04-15"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-ospf-policy",
+      "caps_version": "0.1.3",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 4,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-evpn-types",
+      "caps_version": "0.2.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2021-06-21"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-mpls-augments",
+      "caps_version": "1.4.3",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-acl",
+      "caps_version": "1.3.3",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2023-02-06"
+      ],
+      "revision_count": 14,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "ietf-yang-types",
+      "caps_version": "",
+      "caps_org": "IETF Network Modeling (NETMOD) Working Group",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "arista-exp-eos-qos-acl-config",
+      "caps_version": "",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-lacp-augments",
+      "caps_version": "1.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-network-instance-types",
+      "caps_version": "0.9.3",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2021-07-14"
+      ],
+      "revision_count": 18,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-extensions",
+      "caps_version": "0.7.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2025-01-02"
+      ],
+      "revision_count": 8,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-vlan-augments",
+      "caps_version": "1.1.2",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "ietf-netconf",
+      "caps_version": "",
+      "caps_org": "IETF NETCONF (Network Configuration) Working Group",
+      "repo_classes": [],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": false,
+      "revision_state": "absent"
+    },
+    {
+      "name": "openconfig-if-poe",
+      "caps_version": "0.1.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2018-11-21"
+      ],
+      "revision_count": 2,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-platform-storage",
+      "caps_version": "0.1.2",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-01-06"
+      ],
+      "revision_count": 3,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-acl-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-system-session",
+      "caps_version": "0.1.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-bfd-open-config-session-config",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2024-11-12"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-security-types",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-l1-open-config-transceiver-model-augment",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2022-05-12"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-flex-algo-deviations",
+      "caps_version": "1.0.1",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "openconfig-security-ike",
+      "caps_version": "0.1.0",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-l1-open-config-intf-model",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-09-03"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-if-8021x",
+      "caps_version": "0.0.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2020-01-28"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "arista-qos-notsupported-deviations",
+      "caps_version": "",
+      "caps_org": "Arista Networks, Inc.",
+      "repo_classes": [
+        "release_oc"
+      ],
+      "repo_latest_revisions": [],
+      "revision_count": 0,
+      "matched": true,
+      "revision_state": "unresolved_no_revision_stmt"
+    },
+    {
+      "name": "arista-dot1x-dot1x-open-config-augment",
+      "caps_version": "1.0.0",
+      "caps_org": "Arista Networks <http://arista.com/>",
+      "repo_classes": [
+        "experimental"
+      ],
+      "repo_latest_revisions": [
+        "2025-08-26"
+      ],
+      "revision_count": 1,
+      "matched": true,
+      "revision_state": "consistent"
+    },
+    {
+      "name": "openconfig-interfaces",
+      "caps_version": "3.8.1",
+      "caps_org": "OpenConfig working group",
+      "repo_classes": [
+        "vendored_upstream"
+      ],
+      "repo_latest_revisions": [
+        "2026-01-06"
+      ],
+      "revision_count": 21,
+      "matched": true,
+      "revision_state": "consistent"
+    }
+  ],
+  "revision_state_counts": {
+    "consistent": 180,
+    "unresolved_no_revision_stmt": 106,
+    "absent": 17
+  }
+}

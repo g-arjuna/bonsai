@@ -31,7 +31,7 @@ M6F_DIR="$REPO_ROOT/lab/acceptance/m6f"
 E2E_PY="$M6F_DIR/tools/m6f_e2e.py"
 
 ACTION="all"
-VENDOR="srlinux"
+VENDOR="${M6F_VENDOR:-nokia_srlinux}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --action) ACTION="$2"; shift 2;;
@@ -48,9 +48,24 @@ NET="m6f-bonsai-e2e"
 CORE_CTR="m6f-bonsai-core"
 COL_CTR="m6f-bonsai-collector"
 CORE_HTTP_PORT="${M6F_CORE_HTTP_PORT:-13000}"
-DEVICE_ADDR="172.100.102.11:57400"
-TLS_DOMAIN="srlinux"
-DEVICE_CA="$SRL_LAB/clab-m6f-srlinux/.tls/ca/ca.pem"
+# Device/lab parameters are env-overridable so the same production
+# path can run against other M6F vendors (e.g. XRd on
+# m6f-xrd-mgmt with plaintext gNMI). Defaults preserve the M6F-B
+# SR Linux acceptance values.
+DEVICE_ADDR="${M6F_DEVICE_ADDR:-172.100.102.11:57400}"
+TLS_DOMAIN="${M6F_TLS_DOMAIN:-srlinux}"
+DEVICE_CA="${M6F_DEVICE_CA:-$SRL_LAB/clab-m6f-srlinux/.tls/ca/ca.pem}"
+DEVICE_CA_CONTAINER="${M6F_DEVICE_CA_CONTAINER:-/app/tls/srl-ca.pem}"
+MGMT_NET="${M6F_MGMT_NET:-m6f-srlinux-mgmt}"
+DEVICE_USER_ENV="${M6F_DEVICE_USER_ENV:-M6F_SRL_USER}"
+DEVICE_PASS_ENV="${M6F_DEVICE_PASS_ENV:-M6F_SRL_PASS}"
+DEVICE_SECURITY="${M6F_DEVICE_SECURITY:-tls_verify}"
+YANG_VENDORS="${M6F_YANG_VENDORS:-openconfig ietf nokia_srl}"
+HOSTNAME_LABEL="${M6F_HOSTNAME:-srlinux}"
+CRED_ALIAS="${M6F_CRED_ALIAS:-m6f-srlinux}"
+SITE_LABEL="${M6F_SITE:-m6f-lab}"
+SCOPE_LABEL="${M6F_SCOPE:-m6f-lab}"
+DATASTORE="${M6F_DATASTORE:-ietf-datastores:operational}"
 COLLECTOR_ID="m6f-col-1"
 RUNTIME_IMAGE="bn021d-bonsai:local"
 
@@ -62,15 +77,20 @@ die() { log "ERROR: $*"; exit 1; }
 # ── helpers ──────────────────────────────────────────────────────────
 
 load_device_creds() {
-    # Device creds: prefer env, else read clab inventory (never echoed).
-    if [ -z "${M6F_SRL_USER:-}" ] || [ -z "${M6F_SRL_PASS:-}" ]; then
-        local inv="$SRL_LAB/clab-m6f-srlinux/ansible-inventory.yml"
-        [ -f "$inv" ] || die "no device creds in env and no inventory: $inv"
-        M6F_SRL_USER="$("$PYTHON" -c 'import yaml,sys;print(yaml.safe_load(open(sys.argv[1]))["all"]["children"]["nokia_srlinux"]["vars"]["ansible_user"])' "$inv")"
-        M6F_SRL_PASS="$("$PYTHON" -c 'import yaml,sys;print(yaml.safe_load(open(sys.argv[1]))["all"]["children"]["nokia_srlinux"]["vars"]["ansible_password"])' "$inv")"
-        export M6F_SRL_USER M6F_SRL_PASS
-        log "device credentials loaded from clab inventory (not displayed)"
+    # Device creds: prefer env, else read the SR Linux clab inventory
+    # (never echoed). Non-SR vendors must supply creds via env.
+    local uvar="${!DEVICE_USER_ENV:-}" pvar="${!DEVICE_PASS_ENV:-}"
+    if [ -n "$uvar" ] && [ -n "$pvar" ]; then
+        return 0
     fi
+    [ "$DEVICE_USER_ENV" = "M6F_SRL_USER" ] \
+        || die "no device creds in env ($DEVICE_USER_ENV/$DEVICE_PASS_ENV)"
+    local inv="$SRL_LAB/clab-m6f-srlinux/ansible-inventory.yml"
+    [ -f "$inv" ] || die "no device creds in env and no inventory: $inv"
+    M6F_SRL_USER="$("$PYTHON" -c 'import yaml,sys;print(yaml.safe_load(open(sys.argv[1]))["all"]["children"]["nokia_srlinux"]["vars"]["ansible_user"])' "$inv")"
+    M6F_SRL_PASS="$("$PYTHON" -c 'import yaml,sys;print(yaml.safe_load(open(sys.argv[1]))["all"]["children"]["nokia_srlinux"]["vars"]["ansible_password"])' "$inv")"
+    export M6F_SRL_USER M6F_SRL_PASS
+    log "device credentials loaded from clab inventory (not displayed)"
 }
 
 sha256_of_der() { # PEM cert -> sha256:<hex> of DER (matches collector_auth)
@@ -100,11 +120,11 @@ action_preflight() {
     "$M6F_BIN" --help >/dev/null 2>&1 || log "note: binary started without --help support"
     docker image inspect "$RUNTIME_IMAGE" >/dev/null 2>&1 \
         || die "runtime image $RUNTIME_IMAGE missing"
-    docker network inspect m6f-srlinux-mgmt >/dev/null 2>&1 \
-        || die "clab network m6f-srlinux-mgmt missing — is the SR Linux lab up?"
-    docker ps --format '{{.Names}}' | grep -qx 'clab-m6f-srlinux-srlinux-netns' \
-        || die "SR Linux netns container not running"
-    [ -f "$DEVICE_CA" ] || die "device CA missing: $DEVICE_CA"
+    docker network inspect "$MGMT_NET" >/dev/null 2>&1 \
+        || die "clab network $MGMT_NET missing — is the device lab up?"
+    if [ "$DEVICE_SECURITY" != "plaintext" ]; then
+        [ -f "$DEVICE_CA" ] || die "device CA missing: $DEVICE_CA"
+    fi
     # device creds: prefer env, else read clab inventory (never echoed)
     load_device_creds
     [ -n "${M6F_ADMIN_USER:-}" ] && [ -n "${M6F_ADMIN_PASS:-}" ] \
@@ -168,7 +188,10 @@ action_configs() {
     local cfg="$WORKDIR/config"
     mkdir -p "$cfg"
     # device CA must be readable inside core container — mount lab CA
-    cp "$DEVICE_CA" "$WORKDIR/tls/srl-ca.pem"
+    # (plaintext-security devices have no CA to mount)
+    if [ "$DEVICE_SECURITY" != "plaintext" ]; then
+        cp "$DEVICE_CA" "$WORKDIR/tls/srl-ca.pem"
+    fi
 
     cat > "$cfg/core.toml" <<EOF
 graph_path = "runtime/bonsai.db"
@@ -252,16 +275,12 @@ cache_root   = "$cache"
 EOF
     # cwd must be the repo root: the pinned-source manifest is
     # discovered at the conventional config/yang_sources.toml path.
-    log "syncing pinned YANG sources (openconfig, ietf, nokia_srl)"
-    (cd "$REPO_ROOT" && BONSAI_CONFIG="$WORKDIR/yang-cli.toml" \
-        "$WORKDIR/bonsai" yang sync --vendor openconfig) \
-        2>&1 | tee -a "$LOG"
-    (cd "$REPO_ROOT" && BONSAI_CONFIG="$WORKDIR/yang-cli.toml" \
-        "$WORKDIR/bonsai" yang sync --vendor ietf) \
-        2>&1 | tee -a "$LOG"
-    (cd "$REPO_ROOT" && BONSAI_CONFIG="$WORKDIR/yang-cli.toml" \
-        "$WORKDIR/bonsai" yang sync --vendor nokia_srl) \
-        2>&1 | tee -a "$LOG"
+    log "syncing pinned YANG sources ($YANG_VENDORS)"
+    for v in $YANG_VENDORS; do
+        (cd "$REPO_ROOT" && BONSAI_CONFIG="$WORKDIR/yang-cli.toml" \
+            "$WORKDIR/bonsai" yang sync --vendor "$v") \
+            2>&1 | tee -a "$LOG"
+    done
     local n; n="$(ls "$catdir/modules/blobs" 2>/dev/null | wc -l)"
     log "catalogue module blobs: $n"
     write_result yang_catalogue PREPARED "sync done; compile via API"
@@ -284,7 +303,7 @@ action_deploy() {
             docker rm -f "$c" >/dev/null
         fi
     done
-    # core: ONLY on $NET — provably cannot reach 172.100.102.0/24
+    # core: ONLY on $NET — provably cannot reach the device mgmt subnet
     log "starting core container $CORE_CTR"
     docker run -d --name "$CORE_CTR" \
         --network "$NET" \
@@ -296,10 +315,10 @@ action_deploy() {
         -v "$WORKDIR/core-credentials:/app/credentials" \
         -e RUST_LOG="info,bonsai=debug" \
         -e BONSAI_VAULT_PASSPHRASE="${M6F_VAULT_PASS:-m6f-lab-vault}" \
-        -e BONSAI_ADMIN_USER="${M6F_ADMIN_USER}" \
-        -e BONSAI_ADMIN_PASS="${M6F_ADMIN_PASS}" \
-        -e M6F_SRL_USER="${M6F_SRL_USER}" \
-        -e M6F_SRL_PASS="${M6F_SRL_PASS}" \
+        -e "BONSAI_ADMIN_USER=${M6F_ADMIN_USER}" \
+        -e "BONSAI_ADMIN_PASS=${M6F_ADMIN_PASS}" \
+        -e "$DEVICE_USER_ENV=${!DEVICE_USER_ENV}" \
+        -e "$DEVICE_PASS_ENV=${!DEVICE_PASS_ENV}" \
         -w /app \
         --entrypoint /opt/bonsai \
         "$RUNTIME_IMAGE" \
@@ -318,7 +337,7 @@ action_deploy() {
         "$RUNTIME_IMAGE" \
         --config /etc/bonsai/config/collector.toml \
         > "$WORKDIR/collector.cid"
-    docker network connect m6f-srlinux-mgmt "$COL_CTR"
+    docker network connect "$MGMT_NET" "$COL_CTR"
     # The bonsai network is --internal: no published ports and no
     # external route. The host reaches the core API via the container's
     # bridge IP (user-defined bridges are host-routable).
@@ -369,8 +388,10 @@ action_isolation() {
 
     # 4. core has no route to the device subnet — /dev/tcp connect to the
     # subnet gateway must also fail (no iproute2 in the runtime image)
+    local dev_gw
+    dev_gw="$(echo "$dev_ip" | cut -d. -f1-3).1"
     local gw_probe
-    gw_probe="$(tcp_probe "$CORE_CTR" "172.100.102.1" 22)"
+    gw_probe="$(tcp_probe "$CORE_CTR" "$dev_gw" 22)"
     [ "$gw_probe" = "CLOSED" ] \
         || log "WARN: core reached mgmt gateway: $gw_probe"
     log "core->mgmt-gateway: $gw_probe (expected CLOSED)"
@@ -383,7 +404,7 @@ action_isolation() {
   "core_to_mgmt_gateway": "$gw_probe",
   "topology": {
     "core_networks": ["$NET"],
-    "collector_networks": ["$NET", "m6f-srlinux-mgmt"],
+    "collector_networks": ["$NET", "$MGMT_NET"],
     "device": "$DEVICE_ADDR"
   }
 }
@@ -401,17 +422,29 @@ action_drive() {
     local core_url="${CORE_HTTP:-$(cat "$WORKDIR/core-url" 2>/dev/null || true)}"
     [ -n "$core_url" ] || die "core URL unknown — run deploy first"
     log "=== API drive (core=$core_url evidence: $ev) ==="
-    local -a extra_args=()
+    local -a extra_args=(
+        --device-security "$DEVICE_SECURITY"
+        --device-user-env "$DEVICE_USER_ENV"
+        --device-pass-env "$DEVICE_PASS_ENV"
+    )
+    [ "$DEVICE_SECURITY" != "plaintext" ] && extra_args+=(
+        --tls-domain "$TLS_DOMAIN"
+        --device-ca "$DEVICE_CA_CONTAINER"
+    )
     [ -n "${M6F_PLAN_FILE:-}" ] && extra_args+=(--plan-file "$M6F_PLAN_FILE")
     "$PYTHON" "$E2E_PY" \
         --core "$core_url" \
         --evidence-dir "$ev" \
         --collector-id "$COLLECTOR_ID" \
         --device-addr "$DEVICE_ADDR" \
-        --tls-domain "$TLS_DOMAIN" \
-        --device-ca "/app/tls/srl-ca.pem" \
+        --vendor "$VENDOR" \
+        --hostname "$HOSTNAME_LABEL" \
+        --role "${M6F_ROLE:-leaf}" \
+        --site "$SITE_LABEL" \
+        --scope "$SCOPE_LABEL" \
+        --cred-alias "$CRED_ALIAS" \
         --cert-fingerprint "$fp" \
-        --datastore "${M6F_DATASTORE:-ietf-datastores:operational}" \
+        --datastore "$DATASTORE" \
         --stage "${M6F_E2E_STAGE:-all}" \
         "${extra_args[@]}" \
         --timeout "${M6F_E2E_TIMEOUT:-420}" \
@@ -431,7 +464,7 @@ action_evidence() {
         docker ps -a --filter "name=m6f-bonsai" --format '{{.Names}} {{.Status}} {{.Image}}'
         echo "=== networks ==="
         docker network inspect "$NET" --format '{{json .Containers}}' 2>/dev/null | head -5
-        docker network inspect m6f-srlinux-mgmt --format '{{json .Containers}}' 2>/dev/null | python3 -c 'import json,sys;print(list(json.load(sys.stdin).keys()))' 2>/dev/null
+        docker network inspect "$MGMT_NET" --format '{{json .Containers}}' 2>/dev/null | python3 -c 'import json,sys;print(list(json.load(sys.stdin).keys()))' 2>/dev/null
         echo "=== core log tail ==="; docker logs "$CORE_CTR" --tail 100 2>&1 | tail -60
         echo "=== collector log tail ==="; docker logs "$COL_CTR" --tail 100 2>&1 | tail -60
     } > "$EVIDENCE_DIR/runtime-state.txt" 2>&1 || true

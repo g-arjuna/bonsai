@@ -1,0 +1,132 @@
+{
+  "ok": true,
+  "error": null,
+  "responses": [
+    {
+      "timestamp": "1795324602743000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "Null0"
+                }
+              },
+              {
+                "name": "state"
+              },
+              {
+                "name": "counters"
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJpbi1wa3RzIjoiMCIsImluLW9jdGV0cyI6IjAiLCJpbi1tdWx0aWNhc3QtcGt0cyI6IjAiLCJpbi1icm9hZGNhc3QtcGt0cyI6IjAiLCJpbi11bmljYXN0LXBrdHMiOiIwIiwiaW4tZXJyb3JzIjoiMCIsImluLXVua25vd24tcHJvdG9zIjoiMCIsImluLWZjcy1lcnJvcnMiOiIwIiwiaW4tZGlzY2FyZHMiOiIwIiwib3V0LXBrdHMiOiIwIiwib3V0LW9jdGV0cyI6IjAiLCJvdXQtbXVsdGljYXN0LXBrdHMiOiIwIiwib3V0LWJyb2FkY2FzdC1wa3RzIjoiMCIsIm91dC11bmljYXN0LXBrdHMiOiIwIiwib3V0LWVycm9ycyI6IjAiLCJvdXQtZGlzY2FyZHMiOiIwIiwibGFzdC1yZWFkLXRpbWUiOiIwIn0="
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795324602743000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "MgmtEth0/RP0/CPU0/0"
+                }
+              },
+              {
+                "name": "state"
+              },
+              {
+                "name": "counters"
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJpbi1wa3RzIjoiNTI5IiwiaW4tb2N0ZXRzIjoiNjI2ODciLCJpbi1tdWx0aWNhc3QtcGt0cyI6IjEyIiwiaW4tYnJvYWRjYXN0LXBrdHMiOiIxIiwiaW4tdW5pY2FzdC1wa3RzIjoiNTE2IiwiaW4tZXJyb3JzIjoiMCIsImluLXVua25vd24tcHJvdG9zIjoiMCIsImluLWZjcy1lcnJvcnMiOiIwIiwiaW4tZGlzY2FyZHMiOiIwIiwib3V0LXBrdHMiOiIxNjgxIiwib3V0LW9jdGV0cyI6IjE0OTQ0NDUiLCJvdXQtbXVsdGljYXN0LXBrdHMiOiIwIiwib3V0LWJyb2FkY2FzdC1wa3RzIjoiMyIsIm91dC11bmljYXN0LXBrdHMiOiIxNjc4Iiwib3V0LWVycm9ycyI6IjAiLCJvdXQtZGlzY2FyZHMiOiIwIiwibGFzdC1yZWFkLXRpbWUiOiIwIn0="
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795324602789000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "MgmtEth0/RP0/CPU0/0"
+                }
+              },
+              {
+                "name": "state"
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJjb3VudGVycyI6eyJjYXJyaWVyLXRyYW5zaXRpb25zIjoiMSJ9fQ=="
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795324602789000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "Null0"
+                }
+              },
+              {
+                "name": "state"
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJjb3VudGVycyI6eyJjYXJyaWVyLXRyYW5zaXRpb25zIjoiMSJ9fQ=="
+          }
+        }
+      ]
+    },
+    {
+      "sync_response": true
+    }
+  ],
+  "count": 5
+}

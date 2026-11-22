@@ -1,0 +1,23 @@
+{
+  "stages": [
+    {
+      "name": "preflight",
+      "status": "PASS",
+      "detail": "binary+runtime+lab verified",
+      "utc": "2026-11-22T08:00:01Z"
+    },
+    {
+      "name": "deploy",
+      "status": "PASS",
+      "detail": "core+collector containers up",
+      "utc": "2026-11-22T08:00:27Z"
+    },
+    {
+      "name": "isolation",
+      "status": "PASS",
+      "detail": "core cannot reach device; collector reaches both",
+      "utc": "2026-11-22T08:00:55Z"
+    }
+  ],
+  "overall": "PASS"
+}

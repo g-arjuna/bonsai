@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "notifications": [
+    {
+      "timestamp": "1795324599329598593",
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "modules-state"
+              }
+            ]
+          },
+          "val": {
+            "ascii_val": "Disallowed Commands: modules-state\n"
+          }
+        }
+      ]
+    }
+  ]
+}
+

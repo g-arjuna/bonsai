@@ -1,0 +1,76 @@
+{
+  "activation_permitted": false,
+  "active_schema_id": "ysc-ba690e83a7084df6fa0070b3a5567304",
+  "binding_state": "none",
+  "catalogue_state": null,
+  "config_revision": 1795334462846510849,
+  "current_binding": null,
+  "device_address": "172.100.103.21:9339",
+  "device_key": "<redacted>",
+  "evaluation": {
+    "acquisition_mode": "explicit",
+    "activation_permitted": false,
+    "binding_fingerprint": "7f9437b0acec5307e1cea38ef768e5dd673aea81bef3fb440896c195b26bd88f",
+    "collector_id": "m6f-col-1",
+    "config_revision": 1795334462846510849,
+    "content_id": "IOS-XR 7.5.1",
+    "datastore": "ietf-datastores:running",
+    "decisions": [
+      {
+        "eligible": false,
+        "index": 0,
+        "kind": "unknown_feature_state",
+        "mode": "SAMPLE",
+        "module": "openconfig-interfaces",
+        "origin": "",
+        "reasons": [
+          "unknown"
+        ],
+        "sample_interval_ns": 10000000000,
+        "schema_path": "/interfaces/interface[name]/state/counters",
+        "selected_path": "/interfaces/interface[name=MgmtEth0/RP0/CPU0/0]/state/counters",
+        "warnings": []
+      }
+    ],
+    "device_address": "172.100.103.21:9339",
+    "device_key": "<redacted>",
+    "estimated_initial_collection": {
+      "basis": "count of approved Subscribe paths; not measured bytes or device CPU",
+      "kind": "subscription_entries",
+      "value": 0
+    },
+    "estimated_ongoing_collection": {
+      "basis": "largest approved SAMPLE interval; ON_CHANGE paths have no periodic sample cost",
+      "kind": "max_sample_interval_ns",
+      "value": 0
+    },
+    "evidence_fingerprint": "0fbaeef632f26eef993f831618cbcf3f8037b1cac5ce91d1bb0e69865006a2bf",
+    "plan_id": "bd5f563da472c7c5",
+    "plan_version": 1,
+    "proposed_subscriptions": [],
+    "rejection_reasons": [
+      "snapshot_not_fresh",
+      "freshness:EvidenceTruncated",
+      "overall_status:conflicted",
+      "path[0]:unknown"
+    ],
+    "schema_id": "ysc-ba690e83a7084df6fa0070b3a5567304",
+    "selected_paths": [
+      {
+        "mode": "SAMPLE",
+        "optional": false,
+        "origin": "",
+        "path": "/interfaces/interface[name=MgmtEth0/RP0/CPU0/0]/state/counters",
+        "provenance": "",
+        "rationale": "m6f acceptance: XRd MgmtEth interface counters container; live-verified via wildcard subscribe-once 2026-11-22 (openconfig-interfaces origin, JSON_IETF)",
+        "sample_interval_ns": 10000000000
+      }
+    ],
+    "snapshot_id": 3,
+    "warnings": []
+  },
+  "freshness": "stale",
+  "freshness_reasons": [
+    "evidence_truncated"
+  ]
+}

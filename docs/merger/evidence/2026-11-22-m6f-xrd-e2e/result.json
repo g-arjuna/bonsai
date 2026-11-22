@@ -1,0 +1,46 @@
+{
+  "vendor": "cisco_xrd",
+  "nos": "Cisco XRd 24.4.2 LNT",
+  "image": "ios-xr/xrd-control-plane:24.4.2 sha256:b3bd8e8ea4892d4dd9b0a32c223990965f6f874b6b7ebf732b27dd5ab3ca487f",
+  "overall": "PARTIAL",
+  "checks": [
+    {
+      "name": "probe_capabilities",
+      "status": "PASS",
+      "evidence": "../2026-11-22-m6f-xrd/capabilities.json"
+    },
+    {
+      "name": "probe_yang_library_rfc8525",
+      "status": "PASS",
+      "evidence": "../2026-11-22-m6f-xrd/yang-library-ietf.json"
+    },
+    {
+      "name": "probe_yang_library_legacy",
+      "status": "PASS",
+      "evidence": "../2026-11-22-m6f-xrd/yang-library-legacy.json"
+    },
+    {
+      "name": "probe_subscribe_once",
+      "status": "PASS",
+      "evidence": "../2026-11-22-m6f-xrd/subscribe-once.json"
+    },
+    {
+      "name": "e2e_provision_discovery",
+      "status": "PASS",
+      "evidence": "api/00-summary.json"
+    },
+    {
+      "name": "e2e_applicability",
+      "status": "PARTIAL",
+      "detail": "snapshot 3 overall_status=conflicted",
+      "evidence": "api/12-applicability.json"
+    },
+    {
+      "name": "e2e_schema_bound_plan_preview",
+      "status": "FAIL",
+      "detail": "correctly refused: org conflict + revision mismatch + no operational datastore",
+      "evidence": "api/20-plan-preview.json"
+    }
+  ],
+  "notes": "Production schema-bound acceptance blocked by genuine vendor/library mismatches \u2014 see BLOCKED-FINDINGS.md. No authority weakened."
+}

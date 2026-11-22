@@ -215,19 +215,23 @@ def cmd_provision(api, args, results):
 
     # 4. managed device registration (schema acquisition starts disabled;
     #    the schema-bound approval is the only acquisition authority)
-    code, body = api.post("/api/onboarding/devices", {
+    reg = {
         "address": args.device_addr,
         "enabled": True,
-        "tls_domain": args.tls_domain,
-        "ca_cert": args.device_ca,
         "vendor": args.vendor,
         "credential_alias": args.cred_alias,
         "hostname": args.hostname,
         "role": args.role,
         "site": args.site,
-        "security": "tls_verify",
+        "security": args.device_security,
         "acquisition": "disabled",
-    })
+    }
+    if args.device_security != "plaintext":
+        # plaintext forbids TLS material (SNI/CA are meaningless and
+        # the API rejects the combination)
+        reg["tls_domain"] = args.tls_domain
+        reg["ca_cert"] = args.device_ca
+    code, body = api.post("/api/onboarding/devices", reg)
     ok = code == 200 and body.get("success")
     record(results, "device_register", ok,
            f"http={code} {body.get('error', '')}")
@@ -934,6 +938,10 @@ def main():
     ap.add_argument("--device-addr", required=True)
     ap.add_argument("--tls-domain", default="srlinux")
     ap.add_argument("--device-ca", default="")
+    ap.add_argument("--device-security", default="tls_verify",
+                    choices=["tls_verify", "mtls", "plaintext"],
+                    help="device gNMI transport security; plaintext is "
+                         "the explicit lab-only opt-in (e.g. XRd)")
     ap.add_argument("--vendor", default="nokia_srlinux")
     ap.add_argument("--hostname", default="srlinux")
     ap.add_argument("--role", default="leaf")

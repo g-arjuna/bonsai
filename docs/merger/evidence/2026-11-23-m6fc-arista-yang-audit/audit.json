@@ -1,0 +1,72 @@
+{
+  "audit_date": "2026-11-23",
+  "source": {
+    "repo": "https://github.com/aristanetworks/yang",
+    "pinned_ref": "f7fc5de3d80aa32de403f067b625dd8db633ca34",
+    "tree": "EOS-4.37.0F"
+  },
+  "file_hashes": {
+    "pathreport.csv": "177ad89ce93bb6d209ec2ec4ddc0ab43178e1ec93b9aa588f2ed649ee779c9d3",
+    "LICENSE.txt": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08"
+  },
+  "layout": {
+    "release/openconfig/models": "56 files: arista-*-augments.yang + arista-*-deviations.yang across 23 feature dirs (OpenConfig surface only)",
+    "openconfig/public/release/models": "vendored upstream OpenConfig snapshot (129 device-advertised modules resolve here)",
+    "experimental/eos/models": "123 files / ~101 device-advertised arista-* modules \u2014 NOT release-supported; must not enter authoritative catalogue by default"
+  },
+  "capabilities_comparison": {
+    "device": "cEOS 4.37.0F (cEOS64-lab-4.37.0F.tar.xz, image id in 2026-11-22-m6f-ceos-probe)",
+    "advertised_models": 303,
+    "matched_in_pinned_repo": 286,
+    "unmatched": [
+      "arista-segmentation.v1",
+      "arista-sensor-client-sysdb-types",
+      "iana-if-type",
+      "ietf-inet-types",
+      "ietf-interfaces",
+      "ietf-netconf",
+      "ietf-netconf-monitoring",
+      "ietf-yang-metadata",
+      "ietf-yang-types",
+      "openconfig-hercules-interfaces",
+      "openconfig-hercules-platform",
+      "openconfig-hercules-qos",
+      "synth-dev-mod-0",
+      "synth-dev-mod-1",
+      "synth-dev-mod-2",
+      "synth-dev-mod-3",
+      "synth-dev-mod-4"
+    ],
+    "match_by_source": {
+      "experimental": 101,
+      "release_oc": 56,
+      "vendored_upstream": 129
+    },
+    "notes": [
+      "unmatched ietf-*/iana-if-type resolve via bonsai's ietf-yang source, not this repo",
+      "openconfig-hercules-* are Arista cloud-platform models absent from this snapshot",
+      "arista-segmentation.v1 / arista-sensor-client-sysdb-types / synth-dev-mod-* are device-internal or versioned names"
+    ]
+  },
+  "pathreport": {
+    "rows": 6704,
+    "access": {
+      "": 246,
+      "not-supported": 1317,
+      "read+write": 1381,
+      "read": 3760
+    },
+    "notes_top": {
+      "gNMI-only access": 2757,
+      "Not-supported deviation.": 1109
+    },
+    "interface_counters_supported": true,
+    "example": "interfaces/interface/state/counters/in-octets -> read"
+  },
+  "conclusions": [
+    "release/openconfig is the correct supported closure: arista augment+deviation modules for the OpenConfig surface; upstream OpenConfig models come from bonsai's separate openconfig-public pin (revision compatibility must be verified at compile time \u2014 augments do not pin import revisions)",
+    "experimental/eos must NOT be imported into the authoritative catalogue by default (101 advertised modules live there \u2014 device-advertised != release-supported)",
+    "pathreport.csv is versioned vendor documentation suitable as advisory provenance only; it is NOT device-effective authority (no YANG Library on EOS)",
+    "cEOS has no RFC8525/legacy YANG Library -> schema-bound applicability stays fail-closed; only explicit selective acquisition can proceed, bounded and admin-approved"
+  ]
+}

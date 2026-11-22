@@ -1,0 +1,10 @@
+name: m6f-xrd
+mgmt:
+  network: m6f-xrd-mgmt
+  ipv4-subnet: 172.100.103.0/24
+topology:
+  nodes:
+    xrd:
+      kind: cisco_xrd
+      image: "ios-xr/xrd-control-plane:24.4.2"
+      mgmt-ipv4: 172.100.103.21

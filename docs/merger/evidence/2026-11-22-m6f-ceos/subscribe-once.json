@@ -1,0 +1,302 @@
+{
+  "ok": true,
+  "error": null,
+  "responses": [
+    {
+      "timestamp": "1795337470360171775",
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "Management0"
+                }
+              },
+              {
+                "name": "state"
+              },
+              {
+                "name": "counters"
+              },
+              {
+                "name": "carrier-transitions"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "3"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795337471247589941",
+      "prefix": {
+        "elem": [
+          {
+            "name": "interfaces"
+          },
+          {
+            "name": "interface",
+            "key": {
+              "name": "Management0"
+            }
+          },
+          {
+            "name": "state"
+          },
+          {
+            "name": "counters"
+          }
+        ]
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "in-broadcast-pkts"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "0"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "in-discards"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "0"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "in-errors"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "0"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "in-fcs-errors"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "0"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "in-multicast-pkts"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "0"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "out-broadcast-pkts"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "0"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "out-discards"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "0"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "out-errors"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "0"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "out-multicast-pkts"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "0"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795337848432888711",
+      "prefix": {
+        "elem": [
+          {
+            "name": "interfaces"
+          },
+          {
+            "name": "interface",
+            "key": {
+              "name": "Management0"
+            }
+          },
+          {
+            "name": "state"
+          },
+          {
+            "name": "counters"
+          }
+        ]
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "in-octets"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "21391"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "in-pkts"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "186"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "in-unicast-pkts"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "186"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "out-octets"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "56388"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "out-pkts"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "141"
+          }
+        },
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "out-unicast-pkts"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "141"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795337853435615025",
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "Management0"
+                }
+              },
+              {
+                "name": "state"
+              },
+              {
+                "name": "counters"
+              },
+              {
+                "name": "last-update"
+              }
+            ]
+          },
+          "val": {
+            "uint_val": "1795337853435525655"
+          }
+        }
+      ]
+    },
+    {
+      "sync_response": true
+    }
+  ],
+  "count": 5
+}

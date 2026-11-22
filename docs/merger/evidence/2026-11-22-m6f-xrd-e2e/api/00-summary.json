@@ -1,0 +1,32 @@
+{
+  "evidence_dir": "/home/arjuna/Desktop/bonsai-m6fc-a/docs/merger/evidence/2026-11-22-m6f-xrd-e2e/api",
+  "overall": "FAIL",
+  "stages": [
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "admin_login"
+    },
+    {
+      "detail": "http=202 job=83c1dffb-5126-49cd-ac88-06cfaeaa1942",
+      "ok": true,
+      "stage": "discovery_job_queued"
+    },
+    {
+      "detail": "state=completed class=completed reason=None snapshot=3",
+      "ok": true,
+      "stage": "discovery_job_completed"
+    },
+    {
+      "detail": "http=200 status=conflicted outcome=ok schema=ysc-ba690e83a7084df6fa0070b3a5567304 content_id=IOS-XR 7.5.1 paths=165",
+      "ok": true,
+      "stage": "applicability_snapshot"
+    },
+    {
+      "detail": "http=200 permitted=False plan=bd5f563da472c7c5 reasons=['snapshot_not_fresh', 'freshness:EvidenceTruncated', 'overall_status:conflicted', 'path[0]:unknown']",
+      "ok": false,
+      "stage": "plan_preview"
+    }
+  ],
+  "utc": "2026-11-22T08:38:56Z"
+}

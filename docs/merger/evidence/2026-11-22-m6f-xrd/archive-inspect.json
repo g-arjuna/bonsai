@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "format": "docker-save",
+  "archive": "/tmp/bonsai-m6f-xrd/image-load/xrd-control-plane-container-x64.dockerv1.tgz",
+  "images": [
+    {
+      "config": "b3bd8e8ea4892d4dd9b0a32c223990965f6f874b6b7ebf732b27dd5ab3ca487f.json",
+      "repo_tags": [
+        "ios-xr/xrd-control-plane:24.4.2"
+      ],
+      "repo_digests": []
+    }
+  ],
+  "load_path": "/tmp/bonsai-m6f-xrd/image-load/xrd-control-plane-container-x64.dockerv1.tgz",
+  "nested_member": "./xrd-control-plane-container-x64.dockerv1.tgz",
+  "outer_archive": "/home/arjuna/Desktop/clab-images/xrd-control-plane-container-x86.24.4.2.tgz"
+}

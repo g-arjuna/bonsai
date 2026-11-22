@@ -1,0 +1,10 @@
+name: m6f-ceos
+mgmt:
+  network: m6f-ceos-mgmt
+  ipv4-subnet: 172.100.104.0/24
+topology:
+  nodes:
+    ceos:
+      kind: arista_ceos
+      image: "ceos:4.37.0F"
+      mgmt-ipv4: 172.100.104.11

@@ -51,10 +51,15 @@ vendors:
     image: null
     # operator selects one archive present under ~/Desktop/clab-images/
     image_archive: xrd-control-plane-container-x86.24.4.2.tgz
-    mgmt_ipv4: 172.100.102.21
+    # distinct subnet so m6f-xrd can coexist with the m6f-srlinux lab
+    mgmt_subnet: 172.100.103.0/24
+    mgmt_ipv4: 172.100.103.21
     gnmi:
-      port: 5739
-      tls: insecure         # XRd lab gNMI is typically plaintext or self-signed
+      # containerlab's cisco_xrd kind injects xrd.cfg with
+      # `grpc port 9339 no-tls` + user clab — verified live 2026-11-22
+      # (24.4.2). The manifest's earlier 5739 guess was wrong.
+      port: 9339
+      tls: insecure         # XRd lab gNMI is plaintext (kind-injected cfg)
       tls_server_name: null
       username_env: M6F_XRD_USER
       password_env: M6F_XRD_PASS
@@ -93,18 +98,32 @@ vendors:
     # Owner-supplied cEOS lab image, e.g.
     #   cEOS64-lab-4.36.0F.tar.xz
     #   cEOS64-lab-4.37.0F.tar.xz
-    image: null
-    # operator selects the archive present under ~/Desktop/clab-images/
+    # cEOS lab archives are rootfs tar.xz (docker import), not
+    # docker-save — the archive resolver cannot load them. The verified
+    # imported image is pinned directly; provenance:
+    # image id sha256:0c2645f9ce3c…, archive cEOS64-lab-4.37.0F.tar.xz.
+    image: ceos:4.37.0F
     image_archive: cEOS64-lab-4.37.0F.tar.xz
-    mgmt_ipv4: 172.100.102.41
+    # distinct subnet: 172.100.102.0/24 is SR Linux, .103.0/24 is XRd
+    mgmt_subnet: 172.100.104.0/24
+    mgmt_ipv4: 172.100.104.11
     gnmi:
-      port: 443             # cEOS gNMI typically shares the EOS gNMI TLS port
-      tls: insecure
+      # verified live 2026-11-22 (probe evidence
+      # docs/merger/evidence/2026-11-22-m6f-ceos-probe): EOS gNMI
+      # listens on TCP/6030 plaintext unless an EOS `ssl profile` is
+      # configured; `management api gnmi` is auto-enabled by the clab
+      # arista_ceos kind.
+      port: 6030
+      tls: insecure         # lab-only plaintext; production needs EOS ssl profile + tls_verify
       tls_server_name: null
       username_env: M6F_CEOS_USER
       password_env: M6F_CEOS_PASS
       datastore: RUNNING
     startup_config: null
     notes: >-
-      Pending owner image. cEOS gNMI requires `management api gnmi` enabled
-      in the device config; port and TLS mode must be confirmed live.
+      cEOS exposes NO RFC 8525 / legacy YANG Library (verified
+      2026-11-22): schema-bound applicability cannot reach `applicable`
+      under current Core resolution — fail-closed by design. Only
+      explicit bounded acquisition (operator-selected paths, no
+      schema_binding) is eligible; see
+      docs/merger/evidence/2026-11-23-m6fc-arista-yang-audit/.
