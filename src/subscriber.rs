@@ -702,7 +702,7 @@ impl GnmiSubscriber {
 
         let req = SubscribeRequest {
             request: Some(subscribe_request::Request::Subscribe(SubscriptionList {
-                subscription: subscriptions,
+                subscription: subscriptions.clone(),
                 mode: subscription_list::Mode::Stream as i32,
                 encoding: caps.encoding,
                 ..Default::default()
@@ -856,12 +856,15 @@ impl GnmiSubscriber {
                                     // Structured evidence path: notification
                                     // prefix elements followed by the update's
                                     // own elements (gNMI relative-path rule).
-                                    let gnmi_paths = resolve_notification_path(
-                                        notif.prefix.as_ref(),
-                                        update.path.as_ref(),
-                                    )
-                                    .into_iter()
-                                    .collect::<Vec<_>>();
+                                    let gnmi_paths = apply_session_origins(
+                                        resolve_notification_path(
+                                            notif.prefix.as_ref(),
+                                            update.path.as_ref(),
+                                        )
+                                        .into_iter()
+                                        .collect(),
+                                        &subscriptions,
+                                    );
                                     let val = update
                                         .val
                                         .as_ref()
@@ -934,12 +937,15 @@ impl GnmiSubscriber {
                                     if path.is_empty() {
                                         continue;
                                     }
-                                    let gnmi_paths = resolve_notification_path(
-                                        notif.prefix.as_ref(),
-                                        Some(delete),
-                                    )
-                                    .into_iter()
-                                    .collect::<Vec<_>>();
+                                    let gnmi_paths = apply_session_origins(
+                                        resolve_notification_path(
+                                            notif.prefix.as_ref(),
+                                            Some(delete),
+                                        )
+                                        .into_iter()
+                                        .collect(),
+                                        &subscriptions,
+                                    );
                                     let msg = TelemetryUpdate {
                                         plan_id: submitted_plan_id.clone(),
                                         session_id: session_id.clone(),
@@ -2286,6 +2292,58 @@ fn resolve_notification_path(prefix: Option<&Path>, update: Option<&Path>) -> Op
     }
 }
 
+/// Origin provenance for non-echoing NOS notifications (M6F-D). Some
+/// devices (verified: cEOS 4.37.0F) honor a requested subscription origin
+/// but omit `Path.origin` on streamed notifications. The effective
+/// subscription origin is trusted SESSION context — it is never read from
+/// the telemetry payload. An empty observed origin is filled ONLY when
+/// exactly one non-empty origin among this session's authorized
+/// subscriptions structurally covers the observed path; conflicting or
+/// absent coverage leaves the origin empty (fail closed). A non-empty
+/// observed origin is never overwritten.
+fn apply_session_origins(paths: Vec<Path>, subscriptions: &[Subscription]) -> Vec<Path> {
+    paths
+        .into_iter()
+        .map(|mut path| {
+            if path.origin.is_empty()
+                && let Some(origin) = unique_session_origin(&path, subscriptions)
+            {
+                path.origin = origin.to_string();
+            }
+            path
+        })
+        .collect()
+}
+
+fn unique_session_origin<'a>(
+    observation: &Path,
+    subscriptions: &'a [Subscription],
+) -> Option<&'a str> {
+    let mut origins = std::collections::BTreeSet::new();
+    for sub in subscriptions {
+        let Some(expected) = sub.path.as_ref() else {
+            continue;
+        };
+        if expected.origin.is_empty() {
+            continue;
+        }
+        // Reuse the exact coverage matcher with the candidate origin
+        // stamped onto a probe: element/key/wildcard semantics stay
+        // identical to coverage evaluation, only origin identity is
+        // being resolved here.
+        let mut probe = observation.clone();
+        probe.origin = expected.origin.clone();
+        if crate::gnmi_path::observation_covers(expected, &probe) {
+            origins.insert(expected.origin.as_str());
+        }
+    }
+    if origins.len() == 1 {
+        origins.into_iter().next()
+    } else {
+        None
+    }
+}
+
 pub(crate) fn path_to_string(path: &Path) -> String {
     path.elem
         .iter()
@@ -2628,5 +2686,46 @@ mod tests {
             sample_stream_idle_timeout(&[sample(0)]),
             SAMPLE_STREAM_IDLE_TIMEOUT
         );
+    }
+
+    fn gnmi_sub(origin: &str, raw: &str) -> Subscription {
+        Subscription {
+            path: Some(crate::gnmi_path::parse_path(origin, raw).expect("sub path")),
+            mode: SubscriptionMode::Sample as i32,
+            sample_interval: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn session_origin_fills_only_unique_authorized_origin() {
+        let obs = crate::gnmi_path::parse_path(
+            "",
+            "interfaces/interface[name=Ethernet1]/state/counters/in-octets",
+        )
+        .unwrap();
+        let openconfig = gnmi_sub("openconfig", "interfaces/interface[name=Ethernet1]");
+        let ietf = gnmi_sub("ietf", "interfaces/interface[name=Ethernet1]");
+
+        // Unique authorized origin covering the observed path → filled.
+        let out = apply_session_origins(vec![obs.clone()], &[openconfig.clone()]);
+        assert_eq!(out[0].origin, "openconfig");
+
+        // Two different authorized origins cover the same path →
+        // ambiguous, stays empty (fail closed, never merged).
+        let out = apply_session_origins(vec![obs.clone()], &[openconfig.clone(), ietf]);
+        assert!(out[0].origin.is_empty());
+
+        // A non-empty observed origin is never overwritten by session
+        // context.
+        let mut echoed = obs.clone();
+        echoed.origin = "vendor-native".to_string();
+        let out = apply_session_origins(vec![echoed], &[openconfig.clone()]);
+        assert_eq!(out[0].origin, "vendor-native");
+
+        // No authorized subscription covers this path → stays empty.
+        let other = crate::gnmi_path::parse_path("", "system/state/hostname").unwrap();
+        let out = apply_session_origins(vec![other], &[openconfig]);
+        assert!(out[0].origin.is_empty());
     }
 }
