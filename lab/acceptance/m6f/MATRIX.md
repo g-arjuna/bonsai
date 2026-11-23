@@ -30,18 +30,18 @@ standalone probe only, NOT the production path).
 | YANG Library RFC 8525 | PASS | PASS (probe) | NOT_EXECUTED | UNSUPPORTED | NOT_EXECUTED |
 | Legacy YANG Library | PASS | PASS (probe) | NOT_EXECUTED | UNSUPPORTED | NOT_EXECUTED |
 | JSON_IETF encoding | PASS | PASS (probe) | NOT_EXECUTED | PASS (probe) | NOT_EXECUTED |
-| SAMPLE mode | PASS (production collector, sustained) | PASS (probe) | NOT_EXECUTED | PASS (probe + explicit production) | NOT_EXECUTED |
+| SAMPLE mode | PASS (production collector, sustained) | PASS (probe + production collector, sustained, M6F-F) | NOT_EXECUTED | PASS (probe + explicit production) | NOT_EXECUTED |
 | ON_CHANGE mode | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED | PARTIAL (probe: initial sync only) | NOT_EXECUTED |
 | List-key handling | PASS | PASS (probe) | NOT_EXECUTED | PASS (probe) | NOT_EXECUTED |
 | Initial sync | PASS | PASS (probe) | NOT_EXECUTED | PASS (probe) | NOT_EXECUTED |
 | Delete semantics | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED |
 | TLS authentication | PASS | NOT_EXECUTED (lab plaintext) | NOT_EXECUTED | NOT_EXECUTED (lab plaintext) | NOT_EXECUTED (verified-TLS harness ready; live probe failed before handshake completed) |
-| Remote collector discovery | PASS (Core-issued job, snapshot 8) | PASS (job completed, snapshot 3) | NOT_EXECUTED | NOT_EXECUTED (no YANG Library) | NOT_EXECUTED |
-| Exact plan activation | PASS (schema-bound rev 4/5) | FAIL→refused (conflicted/unknown applicability — see notes) | NOT_EXECUTED | NOT_EXECUTED (explicit mode, no schema binding) | NOT_EXECUTED |
-| Coverage projection | PASS (`observed`, advancing timestamps) | NOT_EXECUTED | NOT_EXECUTED | PASS (explicit: `observed`, advancing) | NOT_EXECUTED |
-| Revocation | PASS (withdrawal verified) | NOT_EXECUTED | NOT_EXECUTED | PASS (explicit empty selection, collector subs=0) | NOT_EXECUTED |
-| Resilience (restart/disconnect/revoke) | PASS (`2026-11-23-m6fc-srlinux-g1`) | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED |
-| Production Core/collector e2e | PASS (`docs/merger/evidence/2026-11-22-m6fb-srlinux-r6`, `-r7`; M6F-C regression `2026-11-23-m6fc-srlinux-r8`) | PARTIAL (provisioning+discovery PASS; plan preview correctly refused — `2026-11-22-m6f-xrd-e2e`) | NOT_EXECUTED | PARTIAL (explicit-mode slice PASS — `2026-11-22-m6f-ceos-e2e`; schema-bound N/A) | NOT_EXECUTED |
+| Remote collector discovery | PASS (Core-issued job, snapshot 8) | PASS (job completed, snapshot 4/5) | NOT_EXECUTED | NOT_EXECUTED (no YANG Library) | NOT_EXECUTED |
+| Exact plan activation | PASS (schema-bound rev 4/5) | PASS (schema-bound rev 1/2 on pinned XRd-revision bundle `ysc-9d38b26e…`, M6F-F `2026-11-23-m6ff-closeout`) | NOT_EXECUTED | NOT_EXECUTED (explicit mode, no schema binding) | NOT_EXECUTED |
+| Coverage projection | PASS (`observed`, advancing timestamps) | PASS (`observed`, advancing timestamps, M6F-F) | NOT_EXECUTED | PASS (explicit: `observed`, advancing) | NOT_EXECUTED |
+| Revocation | PASS (withdrawal verified) | PASS (withdrawal verified all 7 predicates, M6F-F xrd-r4) | NOT_EXECUTED | PASS (explicit empty selection, collector subs=0) | NOT_EXECUTED |
+| Resilience (restart/disconnect/revoke) | PASS (`2026-11-23-m6fc-srlinux-g1`) | PARTIAL (core/collector restart mid-run preserved both device schema selections — `2026-11-23-m6ff-closeout/coexistence.json`) | NOT_EXECUTED | NOT_EXECUTED | NOT_EXECUTED |
+| Production Core/collector e2e | PASS (`docs/merger/evidence/2026-11-22-m6fb-srlinux-r6`, `-r7`; M6F-C regression `2026-11-23-m6fc-srlinux-r8`; M6F-F scoped-schema run `2026-11-23-m6ff-closeout/srl`) | PASS (full production path on revision-pinned scoped bundle — `2026-11-23-m6ff-closeout/xrd-r4`; earlier `2026-11-22-m6f-xrd-e2e` refusal superseded) | NOT_EXECUTED | PARTIAL (explicit-mode slice PASS — `2026-11-22-m6f-ceos-e2e`; schema-bound N/A) | NOT_EXECUTED |
 
 SR Linux notes (v26.3.1-410, gNMI 0.10.0): requires canonical
 `ietf-yang-library` module name for YANG Library paths (rejects
@@ -125,6 +125,25 @@ fail-closed policy); (3) device OpenConfig revisions are 2022-era
 (`module_revision_unresolved`). No authority was weakened; unblocking
 needs a revision-matched source closure and an org-semantics policy
 decision (backlog).
+
+XRd resolution (M6F-F, evidence `2026-11-23-m6ff-closeout/`): the
+revision-matched closure was supplied through the generic
+`module_scope` + `module_revisions` compile path — a 9-module bundle
+pinning every device-reported revision (OpenConfig 2022-era +
+`ietf-interfaces@2014-05-08`, `ietf-yang-types@2013-07-15`,
+`cisco-xr-openconfig-interfaces-deviations@2024-02-21`) compiled
+`complete` and was selected as XRd's device schema
+(`ysc-9d38b26e36ba3474ee1a5be37f3f9a95`). Applicability reached
+`applicable` with `content_id=IOS-XR 7.5.1`, the schema-bound plan
+preview permitted activation, SAMPLE telemetry was observed with
+advancing timestamps, revocation issued and the full withdrawal
+verification passed (`xrd-r4`). Datastore note: XRd advertises
+`running` + misspelled `candiate` — no `operational` datastore
+exists; the approved plan binds `ietf-datastores:running`, which is
+the datastore the device actually reports. Organization free-text
+mismatch remains advisory under YANG-Library-backed evidence
+(PR #61 policy). Simultaneous SR Linux/XRd operation on one core is
+documented in `coexistence.json`.
 
 Junos: `cJunosEvolved-26.2R1.7-EVO.tar.gz` is a docker-save archive
 (`docker.io/library/cjunosevolved:26.2R1.7-EVO`) — loadable; deploy

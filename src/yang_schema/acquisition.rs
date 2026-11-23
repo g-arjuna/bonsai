@@ -789,6 +789,7 @@ mod tests {
             diagnostics: Vec::new(),
             module_selection: Default::default(),
             module_scope: Default::default(),
+            notices: Vec::new(),
         }
     }
 

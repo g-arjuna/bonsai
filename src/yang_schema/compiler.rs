@@ -148,6 +148,16 @@ pub struct CompiledCatalogue {
     /// that created it, not every deduplicated request.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub module_scope: BTreeSet<String>,
+    /// Deterministic provenance notes that are NOT schema defects:
+    /// routine revision/content dedup decisions (e.g. "pinned '2022-10-25',
+    /// dropped '2026-10-05'"). Excluded from `status` and `schema_id` —
+    /// the effective compiled content is identical regardless of which
+    /// alternate revisions coexisted in the library, so identity must not
+    /// depend on them. Real conflicts (unresolvable pins, authority ties
+    /// with distinct content) remain in `diagnostics` and keep the
+    /// catalogue non-authoritative.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
 }
 
 fn unknown_status() -> String {
@@ -301,6 +311,8 @@ fn compile_inner(
     options: &CompileOptions,
     mut diagnostics: Vec<String>,
 ) -> CompiledCatalogue {
+    // Routine dedup/provenance notes — never affect status or schema_id.
+    let mut notices: Vec<String> = Vec::new();
     // Group parsed modules by name; keep highest revision per name.
     let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let mut kept: Vec<Option<ModuleInput>> = Vec::new();
@@ -419,7 +431,7 @@ fn compile_inner(
             if idx != kept_idx {
                 drop_idx.insert(idx);
                 if sorted.contains(&idx) {
-                    diagnostics.push(format!(
+                    notices.push(format!(
                         "module '{}' has conflicting content for pinned revision '{}'; keeping checksum {}, dropped checksum {}",
                         name,
                         revision,
@@ -427,7 +439,7 @@ fn compile_inner(
                         kept[idx].as_ref().unwrap().checksum_sha256
                     ));
                 } else {
-                    diagnostics.push(format!(
+                    notices.push(format!(
                         "module '{}' has multiple revisions; pinned '{}', dropped '{}'",
                         name,
                         revision,
@@ -459,7 +471,7 @@ fn compile_inner(
             });
             for &idx in sorted.iter().skip(1) {
                 drop_idx.insert(idx);
-                diagnostics.push(format!(
+                notices.push(format!(
                     "module '{}' has multiple revisions; keeping {}, dropped {}",
                     kept[idx].as_ref().unwrap().module.name,
                     kept[sorted[0]].as_ref().unwrap().module.latest_revision(),
@@ -746,6 +758,7 @@ fn compile_inner(
         // in the selection/compile call records, not the bundle.
         module_selection: options.module_revisions.clone(),
         module_scope: options.module_scope.clone(),
+        notices,
     }
 }
 

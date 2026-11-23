@@ -1,0 +1,22 @@
+{
+  "activated": false,
+  "diagnostics": [
+    "module 'ietf-interfaces' has multiple revisions; pinned '2014-05-08', dropped '2018-02-20'",
+    "module 'ietf-yang-types' has multiple revisions; pinned '2013-07-15', dropped '2010-09-24'",
+    "module 'ietf-yang-types' has multiple revisions; pinned '2013-07-15', dropped '2025-12-22'",
+    "module 'openconfig-extensions' has multiple revisions; pinned '2020-06-16', dropped '2024-09-19'",
+    "module 'openconfig-extensions' has multiple revisions; pinned '2020-06-16', dropped '2025-01-02'",
+    "module 'openconfig-interfaces' has multiple revisions; pinned '2022-10-25', dropped '2024-12-05'",
+    "module 'openconfig-interfaces' has multiple revisions; pinned '2022-10-25', dropped '2026-10-05'",
+    "module 'openconfig-platform-types' has multiple revisions; pinned '2023-06-27', dropped '2024-11-04'",
+    "module 'openconfig-platform-types' has multiple revisions; pinned '2023-06-27', dropped '2026-08-29'",
+    "module 'openconfig-transport-types' has multiple revisions; pinned '2024-01-16', dropped '2024-07-24'",
+    "module 'openconfig-transport-types' has multiple revisions; pinned '2024-01-16', dropped '2026-10-27'",
+    "module 'openconfig-types' has multiple revisions; pinned '2019-04-16', dropped '2024-01-31'",
+    "module 'openconfig-yang-types' has multiple revisions; pinned '2021-07-14', dropped '2024-05-30'"
+  ],
+  "module_count": 9,
+  "path_count": 120,
+  "schema_id": "ysc-4c1929d4e6f2e361356a6e90e2be3695",
+  "status": "partial"
+}

@@ -1,0 +1,19 @@
+{
+  "activation_permitted": false,
+  "active_schema_id": null,
+  "binding_state": "none",
+  "catalogue_state": "catalogue_unavailable",
+  "config_revision": 1795434050523857463,
+  "current_binding": null,
+  "device_address": "172.100.103.21:9339",
+  "device_key": "<redacted>",
+  "effective_schema_id": null,
+  "evaluation": null,
+  "freshness": "stale",
+  "freshness_reasons": [
+    "catalogue_unavailable",
+    "catalogue_integrity_failure",
+    "evidence_truncated"
+  ],
+  "selected_schema_id": null
+}

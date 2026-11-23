@@ -1,5 +1,36 @@
 # Bonsai current state
 
+M6F-F update — **enterprise multi-version YANG architecture and
+XRd production closeout** (PRs #69 `ede70c9`…hardening `871b1a7`,
+#70 deviation-semantics, #71 scope-load-boundary, closeout fix
+`ecab60d`; canonical L0–L3 PASS on gate-tested SHAs).
+Per-device schema authority is now durable and revision-aware:
+`device_schema_selections` (schema v14) selects one verified complete
+bundle per device, `resolve_effective_catalogue` fails closed on
+missing/corrupt/partial selections (no silent global fallback),
+scoped compiles are bounded by `module_scope`/`module_revisions`
+recorded as provenance (never auto-activated), and retention
+protects selected/active/active-pointer bundles while refusing to
+evict on unreadable reference state. Scoped-compile defects found
+live were fixed and covered by regression tests (scope applied
+before module parse; revision-dedup downgraded to notice so pinned
+compiles stay `complete`). Hardening: malformed binding/policy JSON
+can no longer hide a referenced bundle from retention; selection
+PUT/DELETE runs a post-commit re-sweep so an approval racing the
+mutation cannot survive inconsistent with the committed selection;
+deleted devices cannot resurrect selection authority.
+XRd 24.4.2 production acceptance is now PASS end-to-end
+(`docs/merger/evidence/2026-11-23-m6ff-closeout/`): a 9-module
+XRd-revision-pinned scoped bundle (`ysc-9d38b26e…`, 120 paths)
+selected per-device → discovery → `applicable` (content-id
+`IOS-XR 7.5.1`) → schema-bound preview/activate (rev 1/2) →
+observed SAMPLE telemetry with advancing timestamps → revoke → all
+seven withdrawal predicates verified incl. old-session rejection.
+Simultaneous SR Linux (`ysc-d7254b6e…`) + XRd selections coexist on
+one core with independent lifecycle and restart-persistent
+selections (`coexistence.json`). Cisco DevNet IOS XE remains
+deferred (sandbox backend unavailable); Junos deferred.
+
 M6F-D/E update — **M6F-D recovery merged; multi-vendor
 interoperability extended** (PRs #61 `7192c27`, #62 `a208d43`,
 #63 `8b37839`; Junos deferred). Stage 0: the three interrupted

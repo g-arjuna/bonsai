@@ -2577,6 +2577,58 @@ fn revision_pin_rejects_untrusted_module() {
     );
 }
 
+#[test]
+fn revision_pin_dedup_is_notice_not_diagnostic() {
+    // M6F-F coexistence: a shared library holds several revisions of the
+    // same module. A pinned compile must remain `complete` and selectable —
+    // the routine "pinned X, dropped Y" decisions are provenance notices,
+    // not diagnostics, and must not perturb schema identity: the pinned
+    // bundle's schema_id equals a compile of only the pinned revision.
+    let mk_old = || {
+        pinned_input(
+            "pin-mod",
+            &rev_module("pin-mod", "2020-01-01", ""),
+            "2020-01-01",
+        )
+    };
+    let mk_new = || {
+        pinned_input(
+            "pin-mod",
+            &rev_module("pin-mod", "2024-01-01", "leaf added-2024 { type uint32; }"),
+            "2024-01-01",
+        )
+    };
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-mod".to_string(), "2020-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(vec![mk_new(), mk_old()], &opts);
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    assert!(cat.diagnostics.is_empty());
+    assert!(
+        cat.notices
+            .iter()
+            .any(|n| n.contains("pinned '2020-01-01', dropped '2024-01-01'")),
+        "expected dedup notice, got {:?}",
+        cat.notices
+    );
+    // Unpinned compile of the same pair keeps newest and records its own
+    // notice — also complete, distinct effective content, distinct id.
+    let unpinned = compile_parsed(vec![mk_new(), mk_old()], &CompileOptions::default());
+    assert_eq!(
+        unpinned.status, "complete",
+        "diags={:?}",
+        unpinned.diagnostics
+    );
+    assert_ne!(cat.schema_id, unpinned.schema_id);
+    // A library containing ONLY the pinned revision yields identical
+    // effective content → identical schema_id.
+    let solo = compile_parsed(vec![mk_old()], &CompileOptions::default());
+    assert_eq!(cat.schema_id, solo.schema_id);
+}
+
 // ── M6F-F: retention protects referenced bundles ────────────────────────────
 
 #[test]

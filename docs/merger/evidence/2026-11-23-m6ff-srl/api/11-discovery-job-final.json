@@ -1,0 +1,22 @@
+{
+  "assignment_generation": 2,
+  "attempt_count": 1,
+  "authority_epoch": 1795419871542681979,
+  "collector_id": "m6f-col-1",
+  "collector_session_generation": 1,
+  "created_at_ns": 1795419899246514120,
+  "created_by": "admin",
+  "datastore": "ietf-datastores:operational",
+  "deadline_ns": 1795420019246514120,
+  "device_address": "172.100.102.11:57400",
+  "device_key": "<redacted>",
+  "dispatched_at_ns": 1795419900779988473,
+  "evidence_fingerprint": null,
+  "finished_at_ns": 1795419900790405166,
+  "job_id": "583d091e-8298-4c41-accd-8f4980649b2c",
+  "operation": "yang_applicability",
+  "reason_code": "transport_failure",
+  "result_classification": "transport_failure:connect failed: could not read PEM material from '/app/tls/srl-ca.pem': No such file or directory (os error 2)",
+  "snapshot_id": null,
+  "state": "failed"
+}

@@ -1,0 +1,23 @@
+{
+  "stages": [
+    {
+      "name": "preflight",
+      "status": "PASS",
+      "detail": "binary+runtime+lab verified",
+      "utc": "2026-11-23T07:32:41Z"
+    },
+    {
+      "name": "yang_catalogue",
+      "status": "PREPARED",
+      "detail": "sync done; compile via API",
+      "utc": "2026-11-23T07:42:43Z"
+    },
+    {
+      "name": "deploy",
+      "status": "PASS",
+      "detail": "core+collector containers up",
+      "utc": "2026-11-23T07:44:33Z"
+    }
+  ],
+  "overall": "PASS"
+}

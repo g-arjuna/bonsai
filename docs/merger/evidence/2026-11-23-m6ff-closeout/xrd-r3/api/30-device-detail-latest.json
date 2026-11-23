@@ -1,0 +1,74 @@
+{
+  "acquisition": "explicit",
+  "address": "172.100.103.21:9339",
+  "bgp_neighbors": [],
+  "collector_id": "m6f-col-1",
+  "created_at_ns": 1795434050385836237,
+  "created_by": "api",
+  "credential_alias": "m6f-xrd",
+  "enabled": true,
+  "health": "healthy",
+  "hostname": "xrd",
+  "interfaces": [
+    {
+      "carrier_transitions": 0,
+      "in_errors": 0,
+      "in_octets": 51326,
+      "name": "MgmtEth0/RP0/CPU0/0",
+      "out_errors": 0,
+      "out_octets": 4038632,
+      "updated_at_ns": 1795435731786000000
+    }
+  ],
+  "inventory_only": false,
+  "last_operator_action": "api_schema_binding_activate",
+  "lldp_neighbors": [],
+  "recent_detections": [],
+  "recent_state_changes": [],
+  "resolution_audit": [
+    "Started from profile with 1 paths",
+    "Final path list has 1 paths"
+  ],
+  "role": "leaf",
+  "schema_binding": {
+    "approval_revision": 1,
+    "approved_at_ns": 1795435720108065036,
+    "approved_by": "user:admin",
+    "binding_fingerprint": "97b5e6c9a5ea69c49faf59cc3aad5ad253562ceb5cdc9b3009a5ed9919a9b10a",
+    "collector_id": "m6f-col-1",
+    "content_id": "IOS-XR 7.5.1",
+    "datastore": "ietf-datastores:running",
+    "evidence_fingerprint": "388f4a00dda3e603a772bb76245c4627b49e9790205b8d7ce273a2ff906b69b4",
+    "mode": "schema_bound",
+    "plan_id": "0182acd802e530b7",
+    "schema_id": "ysc-9d38b26e36ba3474ee1a5be37f3f9a95",
+    "snapshot_id": 4
+  },
+  "selected_paths": [
+    {
+      "mode": "SAMPLE",
+      "optional": false,
+      "origin": "",
+      "path": "/interfaces/interface[name=MgmtEth0/RP0/CPU0/0]/state/counters",
+      "provenance": "",
+      "rationale": "m6f-f acceptance: XRd MgmtEth interface counters container; live-verified via wildcard subscribe-once 2026-11-22 (openconfig-interfaces origin, JSON_IETF)",
+      "sample_interval_ns": 10000000000
+    }
+  ],
+  "site": "m6f-lab",
+  "subscription_statuses": [
+    {
+      "first_observed_at_ns": 1795435724212677996,
+      "last_observed_at_ns": 1795435731813150159,
+      "mode": "SAMPLE",
+      "origin": "",
+      "path": "interfaces/interface[name=MgmtEth0/RP0/CPU0/0]/state/counters",
+      "sample_interval_ns": 10000000000,
+      "status": "observed",
+      "updated_at_ns": 1795435734213722573
+    }
+  ],
+  "updated_at_ns": 1795435720119647522,
+  "updated_by": "user:admin",
+  "vendor": "cisco_xrd"
+}

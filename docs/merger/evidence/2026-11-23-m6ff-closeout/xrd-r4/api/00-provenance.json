@@ -1,0 +1,69 @@
+{
+  "acquisition": {
+    "approval_revision": 2,
+    "binding_fingerprint": "4021e10221146b3a7a645a168e5ce8bf3bbfde3775ac6fa43379d2ab37287207",
+    "mode": "disabled",
+    "plan_id": "0182acd802e530b7",
+    "schema_binding": null
+  },
+  "binaries": {
+    "collector": {
+      "path": "/tmp/bonsai-m6ff-run/bonsai",
+      "sha256": "bc1c6ddf39793f285e1cf98cba2543d7c9de581d18037ec580d004f3ee02bc7a"
+    },
+    "core": {
+      "path": "/tmp/bonsai-m6ff-run/bonsai",
+      "sha256": "bc1c6ddf39793f285e1cf98cba2543d7c9de581d18037ec580d004f3ee02bc7a"
+    }
+  },
+  "evidence_references": {
+    "capabilities": "11-discovery-job-final.json / 12-applicability.json (device-advertised models + YANG Library outcome incl. explicit absence)",
+    "observed_telemetry": "31-telemetry-observed.json",
+    "revocation": "40-plan-revoke.json / 41-post-revoke-device.json / 42-post-revoke-assignment.json / 43-withdrawal-evidence.json",
+    "subscription_request": "20-plan-preview.json / preview.json / plan-file",
+    "yang_library": "12-applicability.json yang_library_evidence fields"
+  },
+  "generated_at": "2026-11-23T12:26:07Z",
+  "images": {
+    "collector": "bn021d-bonsai:local",
+    "core": "bn021d-bonsai:local"
+  },
+  "metric_projection": [
+    {
+      "in_octets": 68619,
+      "name": "MgmtEth0/RP0/CPU0/0",
+      "out_octets": 5413050,
+      "updated_at_ns": 1795436710380000000
+    }
+  ],
+  "model_source": {
+    "id": "cisco-iosxr",
+    "pinned_ref": "e13b05c4ddcbfab9170e60dddbbe9eaf6a831964",
+    "repo": "https://github.com/YangModels/yang.git",
+    "status": "PINNED",
+    "subdirs": [
+      "vendor/cisco/xr/7921"
+    ]
+  },
+  "nos": {
+    "vendor": "cisco_xrd",
+    "version": "NOT_PROVIDED"
+  },
+  "resources": "NOT_PROVIDED",
+  "schema": {
+    "applicability_status": "applicable",
+    "catalogue_status": null,
+    "compiled_schema_id": "NOT_PROVIDED",
+    "content_id": "IOS-XR 7.5.1",
+    "datastore": "ietf-datastores:running",
+    "module_count": null,
+    "path_count": null,
+    "snapshot_id": 5
+  },
+  "source": {
+    "commit_sha": "ecab60dd704e29c33dd19fc8b5d0324bfbeb3cd1",
+    "final_sha_acceptance_eligible": true,
+    "repo": "/home/arjuna/Desktop/bonsai-m6ff-dev",
+    "tree_dirty": false
+  }
+}

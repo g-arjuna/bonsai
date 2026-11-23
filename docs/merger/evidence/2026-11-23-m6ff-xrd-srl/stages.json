@@ -1,0 +1,11 @@
+{
+  "stages": [
+    {
+      "name": "isolation",
+      "status": "PASS",
+      "detail": "core cannot reach device; collector reaches both",
+      "utc": "2026-11-23T07:38:07Z"
+    }
+  ],
+  "overall": "PASS"
+}

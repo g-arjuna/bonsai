@@ -361,6 +361,7 @@ pub(crate) fn fixture_catalogue() -> CompiledCatalogue {
         diagnostics: Vec::new(),
         module_selection: Default::default(),
         module_scope: Default::default(),
+        notices: Vec::new(),
     }
 }
 

@@ -1,0 +1,18 @@
+{
+  "active_schema_id": null,
+  "catalogue_state": null,
+  "device_address": "172.100.103.21:9339",
+  "device_key": "<redacted>",
+  "effective_schema_id": "ysc-9d38b26e36ba3474ee1a5be37f3f9a95",
+  "selection": {
+    "created_at_ns": 1795435299549483228,
+    "device_address": "172.100.103.21:9339",
+    "device_key": "<redacted>",
+    "note": null,
+    "schema_id": "ysc-9d38b26e36ba3474ee1a5be37f3f9a95",
+    "selected_by": "user:admin",
+    "selection_revision": 1,
+    "selection_source": "admin",
+    "updated_at_ns": 1795436279173542672
+  }
+}

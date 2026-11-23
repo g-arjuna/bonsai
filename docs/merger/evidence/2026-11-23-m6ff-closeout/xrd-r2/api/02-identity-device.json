@@ -1,0 +1,12 @@
+{
+  "device": {
+    "address": "collector:m6f-col-1",
+    "created_at_ns": 1795435050799278920,
+    "created_by": "user:admin",
+    "device_id": "dev-ef21ebce-c68d-45f4-8619-d8117ef5496f",
+    "hostname": null,
+    "site": "m6f-lab",
+    "updated_at_ns": 1795435050799278920,
+    "updated_by": "user:admin"
+  }
+}
