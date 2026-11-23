@@ -1,0 +1,125 @@
+{
+  "evidence_dir": "/home/arjuna/Desktop/bonsai-m6ff-dev/docs/merger/evidence/2026-11-23-m6ff-closeout/xrd-r3/api",
+  "overall": "FAIL",
+  "stages": [
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "admin_login"
+    },
+    {
+      "detail": "http=200 device_id=dev-35f4e2d1-032a-47ec-b86b-d12b71e4e1b1",
+      "ok": true,
+      "stage": "identity_device"
+    },
+    {
+      "detail": "http=400",
+      "ok": true,
+      "stage": "collector_binding"
+    },
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "device_credential"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_register"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_assignment"
+    },
+    {
+      "detail": "assigned=2",
+      "ok": true,
+      "stage": "collector_registered"
+    },
+    {
+      "detail": "http=200 schema=ysc-9d38b26e36ba3474ee1a5be37f3f9a95 status=complete modules=9 paths=120 activated=False",
+      "ok": true,
+      "stage": "catalogue_compile_scoped"
+    },
+    {
+      "detail": "http=200 selected=ysc-9d38b26e36ba3474ee1a5be37f3f9a95 effective=ysc-9d38b26e36ba3474ee1a5be37f3f9a95",
+      "ok": true,
+      "stage": "schema_selection"
+    },
+    {
+      "detail": "http=202 job=812ac573-7cf8-465a-b176-ea7954360c47",
+      "ok": true,
+      "stage": "discovery_job_queued"
+    },
+    {
+      "detail": "state=completed class=completed reason=None snapshot=4",
+      "ok": true,
+      "stage": "discovery_job_completed"
+    },
+    {
+      "detail": "http=200 status=applicable outcome=ok schema=ysc-9d38b26e36ba3474ee1a5be37f3f9a95 content_id=IOS-XR 7.5.1 paths=120",
+      "ok": true,
+      "stage": "applicability_snapshot"
+    },
+    {
+      "detail": "http=200 permitted=True plan=0182acd802e530b7 reasons=[]",
+      "ok": true,
+      "stage": "plan_preview"
+    },
+    {
+      "detail": "http=200 plan=0182acd802e530b7 rev=1 state=active",
+      "ok": true,
+      "stage": "plan_activate"
+    },
+    {
+      "detail": "1 observed path(s), last_observed advancing (1795435724212677996 -> 1795435731813150159)",
+      "ok": true,
+      "stage": "telemetry_observed"
+    },
+    {
+      "detail": "http=200 state=revoked",
+      "ok": true,
+      "stage": "plan_revoke"
+    },
+    {
+      "detail": "binding_revoked=True; acquisition_disabled=True; withdrawal_issued=True; collector_ack=False; subscription_terminated=True; no_continued_collection=False; old_session_rejected=False",
+      "ok": false,
+      "stage": "withdrawal_verified"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_binding_revoked"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_acquisition_disabled"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_issued"
+    },
+    {
+      "ok": false,
+      "stage": "withdrawal_collector_ack"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_subscription_terminated"
+    },
+    {
+      "ok": false,
+      "stage": "withdrawal_no_continued_collection"
+    },
+    {
+      "ok": false,
+      "stage": "withdrawal_old_session_rejected"
+    },
+    {
+      "detail": "sha=ecab60dd704e dirty=False core_img=bn021d-bonsai:local",
+      "ok": true,
+      "stage": "l4_provenance"
+    }
+  ],
+  "utc": "2026-11-23T12:15:59Z"
+}

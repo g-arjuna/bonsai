@@ -1,0 +1,14 @@
+{
+  "statuses": [
+    {
+      "first_observed_at_ns": 1795436700510326747,
+      "last_observed_at_ns": 1795436710412493305,
+      "mode": "SAMPLE",
+      "origin": "",
+      "path": "interfaces/interface[name=MgmtEth0/RP0/CPU0/0]/state/counters",
+      "sample_interval_ns": 10000000000,
+      "status": "observed",
+      "updated_at_ns": 1795436714212770035
+    }
+  ]
+}

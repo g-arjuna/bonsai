@@ -1,0 +1,55 @@
+{
+  "evidence_dir": "/home/arjuna/Desktop/bonsai-m6ff-dev/docs/merger/evidence/2026-11-23-m6ff-closeout/srl-revoke/api",
+  "overall": "PASS",
+  "stages": [
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "admin_login"
+    },
+    {
+      "detail": "http=200 state=revoked",
+      "ok": true,
+      "stage": "plan_revoke"
+    },
+    {
+      "detail": "binding_revoked=True; acquisition_disabled=True; withdrawal_issued=True; collector_ack=True; subscription_terminated=True; no_continued_collection=True; old_session_rejected=True",
+      "ok": true,
+      "stage": "withdrawal_verified"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_binding_revoked"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_acquisition_disabled"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_issued"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_collector_ack"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_subscription_terminated"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_no_continued_collection"
+    },
+    {
+      "ok": true,
+      "stage": "withdrawal_old_session_rejected"
+    },
+    {
+      "detail": "sha=ecab60dd704e dirty=False core_img=bn021d-bonsai:local",
+      "ok": true,
+      "stage": "l4_provenance"
+    }
+  ],
+  "utc": "2026-11-23T12:17:39Z"
+}

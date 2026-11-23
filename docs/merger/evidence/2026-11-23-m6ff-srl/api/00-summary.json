@@ -1,0 +1,62 @@
+{
+  "evidence_dir": "/home/arjuna/Desktop/bonsai-m6ff-dev/docs/merger/evidence/2026-11-23-m6ff-srl/api",
+  "overall": "FAIL",
+  "stages": [
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "admin_login"
+    },
+    {
+      "detail": "http=200 device_id=dev-0ed875d2-fb91-4405-90aa-3c4c52aafcfa",
+      "ok": true,
+      "stage": "identity_device"
+    },
+    {
+      "detail": "http=400",
+      "ok": true,
+      "stage": "collector_binding"
+    },
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "device_credential"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_register"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_assignment"
+    },
+    {
+      "detail": "assigned=1",
+      "ok": true,
+      "stage": "collector_registered"
+    },
+    {
+      "detail": "http=200 schema=ysc-299b833c392803e4af9df50cdc0fbc98 status=partial modules=11 paths=419 activated=False",
+      "ok": true,
+      "stage": "catalogue_compile_scoped"
+    },
+    {
+      "detail": "http=409 selected=ysc-299b833c392803e4af9df50cdc0fbc98 effective={}",
+      "ok": false,
+      "stage": "schema_selection"
+    },
+    {
+      "detail": "http=202 job=583d091e-8298-4c41-accd-8f4980649b2c",
+      "ok": true,
+      "stage": "discovery_job_queued"
+    },
+    {
+      "detail": "state=failed class=transport_failure:connect failed: could not read PEM material from '/app/tls/srl-ca.pem': No such file or directory (os error 2) reason=transport_failure snapshot=None",
+      "ok": false,
+      "stage": "discovery_job_completed"
+    }
+  ],
+  "utc": "2026-11-23T07:52:00Z"
+}

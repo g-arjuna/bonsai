@@ -1,0 +1,82 @@
+{
+  "acquisition": {
+    "approval_revision": 1,
+    "binding_fingerprint": "171be6b0e7a8f76ad62a6d6dece448bebdb25c431ac37cd3652935e9c951c864",
+    "mode": "explicit",
+    "plan_id": "53a64d7c6aebc133",
+    "schema_binding": {
+      "approval_revision": 1,
+      "approved_at_ns": 1795434021624349868,
+      "approved_by": "user:admin",
+      "binding_fingerprint": "171be6b0e7a8f76ad62a6d6dece448bebdb25c431ac37cd3652935e9c951c864",
+      "collector_id": "m6f-col-1",
+      "content_id": "1lg87tlx1lg87u3{d1",
+      "datastore": "ietf-datastores:operational",
+      "evidence_fingerprint": "099d302a5de480dbb4e58ba1cd1f41cf6ea087194cf85d2971c91cb288a48894",
+      "mode": "schema_bound",
+      "plan_id": "53a64d7c6aebc133",
+      "schema_id": "ysc-d7254b6e840b0f0041c4b2458bb509a1",
+      "snapshot_id": 1
+    }
+  },
+  "binaries": {
+    "collector": {
+      "path": "/tmp/bonsai-m6ff-run/bonsai",
+      "sha256": "051ec88574551556f08cd0b0f4263a6cfe2dadf066bc5fd10c3a1c191675bfdd"
+    },
+    "core": {
+      "path": "/tmp/bonsai-m6ff-run/bonsai",
+      "sha256": "051ec88574551556f08cd0b0f4263a6cfe2dadf066bc5fd10c3a1c191675bfdd"
+    }
+  },
+  "evidence_references": {
+    "capabilities": "11-discovery-job-final.json / 12-applicability.json (device-advertised models + YANG Library outcome incl. explicit absence)",
+    "observed_telemetry": "31-telemetry-observed.json",
+    "revocation": "40-plan-revoke.json / 41-post-revoke-device.json / 42-post-revoke-assignment.json / 43-withdrawal-evidence.json",
+    "subscription_request": "20-plan-preview.json / preview.json / plan-file",
+    "yang_library": "12-applicability.json yang_library_evidence fields"
+  },
+  "generated_at": "2026-11-23T11:40:37Z",
+  "images": {
+    "collector": "bn021d-bonsai:local",
+    "core": "bn021d-bonsai:local"
+  },
+  "metric_projection": [
+    {
+      "in_octets": 31261,
+      "name": "mgmt0",
+      "out_octets": 1991365,
+      "updated_at_ns": 1795434031755313533
+    }
+  ],
+  "model_source": {
+    "id": "nokia-srlinux",
+    "pinned_ref": "25013f95ce33cae55896b920239a18e0656c9d28",
+    "repo": "https://github.com/nokia/srlinux-yang-models.git",
+    "status": "PINNED",
+    "subdirs": [
+      "srlinux-yang-models"
+    ]
+  },
+  "nos": {
+    "vendor": "nokia_srlinux",
+    "version": "NOT_PROVIDED"
+  },
+  "resources": "NOT_PROVIDED",
+  "schema": {
+    "applicability_status": "applicable",
+    "catalogue_status": null,
+    "compiled_schema_id": "NOT_PROVIDED",
+    "content_id": "1lg87tlx1lg87u3{d1",
+    "datastore": "ietf-datastores:operational",
+    "module_count": null,
+    "path_count": null,
+    "snapshot_id": 1
+  },
+  "source": {
+    "commit_sha": "746439024e93fe993cf1b9eaf1da4a63f54b72b6",
+    "final_sha_acceptance_eligible": true,
+    "repo": "/home/arjuna/Desktop/bonsai-m6ff-dev",
+    "tree_dirty": false
+  }
+}

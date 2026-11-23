@@ -1,0 +1,60 @@
+{
+  "acquisition": "disabled",
+  "address": "172.100.103.21:9339",
+  "bgp_neighbors": [],
+  "collector_id": "m6f-col-1",
+  "created_at_ns": 1795434050385836237,
+  "created_by": "api",
+  "credential_alias": "m6f-xrd",
+  "enabled": true,
+  "health": "healthy",
+  "hostname": "xrd",
+  "interfaces": [
+    {
+      "carrier_transitions": 0,
+      "in_errors": 0,
+      "in_octets": 68619,
+      "name": "MgmtEth0/RP0/CPU0/0",
+      "out_errors": 0,
+      "out_octets": 5413050,
+      "updated_at_ns": 1795436710380000000
+    }
+  ],
+  "inventory_only": false,
+  "last_operator_action": "api_schema_binding_revoke",
+  "lldp_neighbors": [],
+  "recent_detections": [],
+  "recent_state_changes": [],
+  "resolution_audit": [
+    "Started from profile with 1 paths",
+    "Final path list has 1 paths"
+  ],
+  "role": "leaf",
+  "selected_paths": [
+    {
+      "mode": "SAMPLE",
+      "optional": false,
+      "origin": "",
+      "path": "/interfaces/interface[name=MgmtEth0/RP0/CPU0/0]/state/counters",
+      "provenance": "",
+      "rationale": "m6f-f acceptance: XRd MgmtEth interface counters container; live-verified via wildcard subscribe-once 2026-11-22 (openconfig-interfaces origin, JSON_IETF)",
+      "sample_interval_ns": 10000000000
+    }
+  ],
+  "site": "m6f-lab",
+  "subscription_statuses": [
+    {
+      "first_observed_at_ns": 1795436700510326747,
+      "last_observed_at_ns": 1795436710412493305,
+      "mode": "SAMPLE",
+      "origin": "",
+      "path": "interfaces/interface[name=MgmtEth0/RP0/CPU0/0]/state/counters",
+      "sample_interval_ns": 10000000000,
+      "status": "superseded",
+      "updated_at_ns": 1795436714975210299
+    }
+  ],
+  "updated_at_ns": 1795436714866289270,
+  "updated_by": "user:admin",
+  "vendor": "cisco_xrd"
+}

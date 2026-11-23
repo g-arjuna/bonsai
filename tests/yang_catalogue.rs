@@ -2617,7 +2617,11 @@ fn revision_pin_dedup_is_notice_not_diagnostic() {
     // Unpinned compile of the same pair keeps newest and records its own
     // notice — also complete, distinct effective content, distinct id.
     let unpinned = compile_parsed(vec![mk_new(), mk_old()], &CompileOptions::default());
-    assert_eq!(unpinned.status, "complete", "diags={:?}", unpinned.diagnostics);
+    assert_eq!(
+        unpinned.status, "complete",
+        "diags={:?}",
+        unpinned.diagnostics
+    );
     assert_ne!(cat.schema_id, unpinned.schema_id);
     // A library containing ONLY the pinned revision yields identical
     // effective content → identical schema_id.

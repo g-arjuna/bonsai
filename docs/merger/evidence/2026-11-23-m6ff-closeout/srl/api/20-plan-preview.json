@@ -1,0 +1,85 @@
+{
+  "activation_permitted": true,
+  "active_schema_id": null,
+  "binding_state": "none",
+  "catalogue_state": null,
+  "config_revision": 1795433600868011143,
+  "current_binding": null,
+  "device_address": "172.100.102.11:57400",
+  "device_key": "<redacted>",
+  "effective_schema_id": "ysc-d7254b6e840b0f0041c4b2458bb509a1",
+  "evaluation": {
+    "acquisition_mode": "explicit",
+    "activation_permitted": true,
+    "binding_fingerprint": "171be6b0e7a8f76ad62a6d6dece448bebdb25c431ac37cd3652935e9c951c864",
+    "collector_id": "m6f-col-1",
+    "config_revision": 1795433600868011143,
+    "content_id": "1lg87tlx1lg87u3{d1",
+    "datastore": "ietf-datastores:operational",
+    "decisions": [
+      {
+        "eligible": true,
+        "index": 0,
+        "kind": "eligible",
+        "mode": "SAMPLE",
+        "module": "srl_nokia-interfaces",
+        "origin": "",
+        "reasons": [],
+        "sample_interval_ns": 10000000000,
+        "schema_path": "/interface[name]/statistics",
+        "selected_path": "/interface[name=mgmt0]/statistics",
+        "warnings": [
+          "origin_unspecified_device_default"
+        ]
+      }
+    ],
+    "device_address": "172.100.102.11:57400",
+    "device_key": "<redacted>",
+    "estimated_initial_collection": {
+      "basis": "count of approved Subscribe paths; not measured bytes or device CPU",
+      "kind": "subscription_entries",
+      "value": 1
+    },
+    "estimated_ongoing_collection": {
+      "basis": "largest approved SAMPLE interval; ON_CHANGE paths have no periodic sample cost",
+      "kind": "max_sample_interval_ns",
+      "value": 10000000000
+    },
+    "evidence_fingerprint": "099d302a5de480dbb4e58ba1cd1f41cf6ea087194cf85d2971c91cb288a48894",
+    "plan_id": "53a64d7c6aebc133",
+    "plan_version": 1,
+    "proposed_subscriptions": [
+      {
+        "mode": "SAMPLE",
+        "module": "srl_nokia-interfaces",
+        "optional": false,
+        "origin": "",
+        "path": "/interface[name=mgmt0]/statistics",
+        "provenance": "",
+        "rationale": "m6f acceptance: mgmt0 statistics container (SR Linux reports leaf counters at container granularity)",
+        "sample_interval_ns": 10000000000,
+        "schema_path": "/interface[name]/statistics"
+      }
+    ],
+    "rejection_reasons": [],
+    "schema_id": "ysc-d7254b6e840b0f0041c4b2458bb509a1",
+    "selected_paths": [
+      {
+        "mode": "SAMPLE",
+        "optional": false,
+        "origin": "",
+        "path": "/interface[name=mgmt0]/statistics",
+        "provenance": "",
+        "rationale": "m6f acceptance: mgmt0 statistics container (SR Linux reports leaf counters at container granularity)",
+        "sample_interval_ns": 10000000000
+      }
+    ],
+    "snapshot_id": 1,
+    "warnings": [
+      "path[0]:origin_unspecified_device_default"
+    ]
+  },
+  "freshness": "fresh",
+  "freshness_reasons": [],
+  "selected_schema_id": "ysc-d7254b6e840b0f0041c4b2458bb509a1"
+}

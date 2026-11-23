@@ -1,0 +1,51 @@
+{
+  "milestone": "M6F-F multi-version schema coexistence — live evidence",
+  "utc": "2026-11-23",
+  "core": {
+    "binary_sha256_source": "docs/merger/evidence/2026-11-23-m6ff-closeout/srl/api/00-summary.json + xrd-r3 l4_provenance",
+    "git_sha": "ecab60dd704e (m6ff/closeout, includes PR #71 scope-load fix + dedup-notice fix)",
+    "collector_id": "m6f-col-1",
+    "assigned_devices": 2,
+    "note": "core and collector containers were recreated mid-run (binary upgrade); both schema selections and the SR Linux approval survived the restart from durable state"
+  },
+  "devices": [
+    {
+      "address": "172.100.102.11:57400",
+      "vendor": "nokia_srlinux",
+      "nos": "SR Linux 26.3.1 (ghcr.io/nokia/srlinux@sha256:ad3d4a53…)",
+      "schema_id": "ysc-d7254b6e840b0f0041c4b2458bb509a1",
+      "bundle": {"status": "complete", "modules": 11, "paths": 419,
+                 "scope": "srl_nokia-interfaces import closure (uncertified pinned revisions = newest trusted)",
+                 "module_selection": {}},
+      "selection_source": "admin",
+      "plan": "/interface[name=mgmt0]/statistics SAMPLE 10s (srl_nokia-interfaces)",
+      "outcome": "preview permitted -> activate rev=1 -> telemetry observed advancing -> revoke -> withdrawal_verified ALL predicates PASS"
+    },
+    {
+      "address": "172.100.103.21:9339",
+      "vendor": "cisco_xrd",
+      "nos": "IOS-XR 7.5.1 (XRd 24.4.2, plaintext lab gNMI)",
+      "schema_id": "ysc-9d38b26e36ba3474ee1a5be37f3f9a95",
+      "bundle": {"status": "complete", "modules": 9, "paths": 120,
+                 "scope": "openconfig-interfaces closure + ietf-interfaces/ietf-yang-types + cisco-xr-openconfig-interfaces-deviations",
+                 "module_selection": "9 exact revision pins matching device YANG Library (oc-if@2022-10-25, oc-types@2019-04-16, oc-yang-types@2021-07-14, oc-extensions@2020-06-16, oc-platform-types@2023-06-27, oc-transport-types@2024-01-16, ietf-if@2014-05-08, ietf-yang-types@2013-07-15, deviations@2024-02-21)"},
+      "selection_source": "admin",
+      "datastore": "ietf-datastores:running (XRd advertises running + misspelled 'candiate'; no operational datastore)",
+      "plan": "/interfaces/interface[name=MgmtEth0/RP0/CPU0/0]/state/counters SAMPLE 10s (openconfig-interfaces)",
+      "outcome": "applicability=applicable content_id='IOS-XR 7.5.1' -> preview permitted -> activate rev=1 -> telemetry observed advancing -> revoke issued, subscription terminated"
+    }
+  ],
+  "isolation_proofs": [
+    "distinct schema_ids per device; effective_schema_id == selected schema_id for each (GET /api/devices/{addr}/schema-selection)",
+    "SR Linux subscription stayed 'observed' with last_observed_at_ns advancing across the entire XRd compile/selection/discovery/preview/activate/telemetry/revoke sequence (first=1795435087937009897 last=1795436177831721890)",
+    "XRd compile/selection/discovery/applicability did not revoke or disturb the SR Linux binding (SR Linux withdrawal only occurred via its own explicit revoke stage afterwards)",
+    "core+collector restart at ~17:27 UTC: both device_schema_selections rows and the SR Linux active approval persisted; collector reconnected and SR Linux telemetry resumed without re-approval",
+    "XRd withdrawal verification during coexistence correctly reported collector subscription_count=1 (the legitimately-active SR Linux subscription) — the harness's zero-count predicate is single-device-scoped; all XRd-local predicates (binding_revoked, acquisition_disabled, withdrawal_issued, subscription_terminated) passed",
+    "after SR Linux revoke, collector subscription_count returned to 0 and full withdrawal_verified passed for SR Linux (collector_ack, no_continued_collection, old_session_rejected all true)"
+  ],
+  "known_limitations": [
+    "XRd exposes no ietf-datastores:operational datastore (advertises running + 'candiate'); schema-bound acquisition used the running datastore per device-reported YANG Library linkage",
+    "XRd withdrawal 'collector_ack/no_continued_collection/old_session_rejected' sub-checks were confounded by the coexisting SR Linux subscription in run xrd-r3; xrd-r4 re-run on a quiet collector is the authoritative withdrawal evidence",
+    "cisco IOS XE DevNet sandbox unavailable — deferred; Junos deferred"
+  ]
+}

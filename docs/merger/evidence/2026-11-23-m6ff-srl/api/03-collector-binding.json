@@ -1,0 +1,21 @@
+{
+  "binding": {
+    "binding_id": "bind-3a39fe04-ef2d-47ac-9978-5164d1557c4f",
+    "created_at_ns": 1795419512351523591,
+    "created_by": "user:admin",
+    "device_id": "dev-51bb96d0-6695-4415-ba53-06a085a275f6",
+    "exporter_id": "m6f-col-1",
+    "match_exporter_claim": null,
+    "match_ingress_credential": "sha256:564798f2cc87f2d2111e905ad7f0dda0a7d33a9c1fa9e004726eb5d0af272ab6",
+    "match_observation_domain": null,
+    "match_reported_identity": null,
+    "match_transport": null,
+    "protocol": "collector",
+    "provenance": "operator_provisioned",
+    "scope": "m6f-lab",
+    "status": "active",
+    "updated_at_ns": 1795419512351523591,
+    "updated_by": "user:admin"
+  },
+  "idempotent": true
+}

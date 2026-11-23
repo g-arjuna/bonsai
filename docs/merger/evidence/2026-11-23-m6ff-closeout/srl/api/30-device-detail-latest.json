@@ -1,0 +1,74 @@
+{
+  "acquisition": "explicit",
+  "address": "172.100.102.11:57400",
+  "bgp_neighbors": [],
+  "collector_id": "m6f-col-1",
+  "created_at_ns": 1795433600698396732,
+  "created_by": "api",
+  "credential_alias": "m6f-srlinux",
+  "enabled": true,
+  "health": "healthy",
+  "hostname": "srlinux",
+  "interfaces": [
+    {
+      "carrier_transitions": 1,
+      "in_errors": 0,
+      "in_octets": 31261,
+      "name": "mgmt0",
+      "out_errors": 0,
+      "out_octets": 1991365,
+      "updated_at_ns": 1795434031755313533
+    }
+  ],
+  "inventory_only": false,
+  "last_operator_action": "api_schema_binding_activate",
+  "lldp_neighbors": [],
+  "recent_detections": [],
+  "recent_state_changes": [],
+  "resolution_audit": [
+    "Started from profile with 1 paths",
+    "Final path list has 1 paths"
+  ],
+  "role": "leaf",
+  "schema_binding": {
+    "approval_revision": 1,
+    "approved_at_ns": 1795434021624349868,
+    "approved_by": "user:admin",
+    "binding_fingerprint": "171be6b0e7a8f76ad62a6d6dece448bebdb25c431ac37cd3652935e9c951c864",
+    "collector_id": "m6f-col-1",
+    "content_id": "1lg87tlx1lg87u3{d1",
+    "datastore": "ietf-datastores:operational",
+    "evidence_fingerprint": "099d302a5de480dbb4e58ba1cd1f41cf6ea087194cf85d2971c91cb288a48894",
+    "mode": "schema_bound",
+    "plan_id": "53a64d7c6aebc133",
+    "schema_id": "ysc-d7254b6e840b0f0041c4b2458bb509a1",
+    "snapshot_id": 1
+  },
+  "selected_paths": [
+    {
+      "mode": "SAMPLE",
+      "optional": false,
+      "origin": "",
+      "path": "/interface[name=mgmt0]/statistics",
+      "provenance": "",
+      "rationale": "m6f acceptance: mgmt0 statistics container (SR Linux reports leaf counters at container granularity)",
+      "sample_interval_ns": 10000000000
+    }
+  ],
+  "site": "m6f-lab",
+  "subscription_statuses": [
+    {
+      "first_observed_at_ns": 1795434026788156143,
+      "last_observed_at_ns": 1795434031769208491,
+      "mode": "SAMPLE",
+      "origin": "",
+      "path": "interface[name=mgmt0]/statistics",
+      "sample_interval_ns": 10000000000,
+      "status": "observed",
+      "updated_at_ns": 1795434031787289761
+    }
+  ],
+  "updated_at_ns": 1795434021672583628,
+  "updated_by": "user:admin",
+  "vendor": "nokia_srlinux"
+}

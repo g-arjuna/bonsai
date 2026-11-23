@@ -1,0 +1,35 @@
+{
+  "detail": {
+    "all_statuses_terminal": true,
+    "collector": {
+      "connected": true,
+      "heartbeat_ns": 1795436227728771254,
+      "pending_withdrawal_devices": [],
+      "subscription_count": 0
+    },
+    "contradictions": [],
+    "monitor_window_secs": 25.0,
+    "non_terminal_statuses": [],
+    "plan_state_event": {
+      "acquisition": "disabled",
+      "detail": "acquisition disabled",
+      "paths": 0,
+      "plan_id": "33cd78e6f9e27a6b",
+      "state": "disabled"
+    },
+    "quiesced": true,
+    "quiesced_at_ns": 1795436231538971392,
+    "sample_interval_secs": 10.0,
+    "saw_plan_state_event": true,
+    "sse_events_seen": 2
+  },
+  "evidence": {
+    "acquisition_disabled": true,
+    "binding_revoked": true,
+    "collector_ack": true,
+    "no_continued_collection": true,
+    "old_session_rejected": true,
+    "subscription_terminated": true,
+    "withdrawal_issued": true
+  }
+}

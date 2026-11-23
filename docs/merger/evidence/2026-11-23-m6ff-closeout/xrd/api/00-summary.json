@@ -1,0 +1,72 @@
+{
+  "evidence_dir": "/home/arjuna/Desktop/bonsai-m6ff-dev/docs/merger/evidence/2026-11-23-m6ff-closeout/xrd/api",
+  "overall": "FAIL",
+  "stages": [
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "admin_login"
+    },
+    {
+      "detail": "http=200 device_id=dev-03546f03-b59e-4bb0-aa90-b1c12d4d3b24",
+      "ok": true,
+      "stage": "identity_device"
+    },
+    {
+      "detail": "http=400",
+      "ok": true,
+      "stage": "collector_binding"
+    },
+    {
+      "detail": "http=200",
+      "ok": true,
+      "stage": "device_credential"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_register"
+    },
+    {
+      "detail": "http=200 ",
+      "ok": true,
+      "stage": "device_assignment"
+    },
+    {
+      "detail": "assigned=2",
+      "ok": true,
+      "stage": "collector_registered"
+    },
+    {
+      "detail": "http=200 schema=ysc-4c1929d4e6f2e361356a6e90e2be3695 status=partial modules=9 paths=120 activated=False",
+      "ok": true,
+      "stage": "catalogue_compile_scoped"
+    },
+    {
+      "detail": "http=409 selected=ysc-4c1929d4e6f2e361356a6e90e2be3695 effective={}",
+      "ok": false,
+      "stage": "schema_selection"
+    },
+    {
+      "detail": "http=202 job=d74dba7d-0b00-47b5-afa2-257c2c948189",
+      "ok": true,
+      "stage": "discovery_job_queued"
+    },
+    {
+      "detail": "state=completed class=completed reason=None snapshot=2",
+      "ok": true,
+      "stage": "discovery_job_completed"
+    },
+    {
+      "detail": "http=200 status=unknown outcome=ok schema=None content_id=None paths=0",
+      "ok": true,
+      "stage": "applicability_snapshot"
+    },
+    {
+      "detail": "http=200 permitted=False plan=None reasons=None",
+      "ok": false,
+      "stage": "plan_preview"
+    }
+  ],
+  "utc": "2026-11-23T11:47:51Z"
+}

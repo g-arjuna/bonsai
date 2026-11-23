@@ -66,9 +66,22 @@ platforms, pinned ref, source id, features) and every schema-path
 entry (path, kind, config/state, mandatory, presence, type names,
 resolved types, units, defaults, keys, element bounds, required
 feature expressions, deviation markers). Nondeterministic metadata
-(`compiled_at_ns`) is excluded. Any change that alters the meaning of
-the compiled schema changes the identity; identical inputs — including
-reordered module sets — produce identical identities.
+(`compiled_at_ns`) is excluded, as are the request-provenance fields
+`module_selection`, `module_scope` and `notices` — they record *how* a
+bundle was requested, not *what* it contains, so identical effective
+content deduplicates to one content-addressed bundle. Any change that
+alters the meaning of the compiled schema changes the identity;
+identical inputs — including reordered module sets — produce
+identical identities.
+
+`notices` are deterministic provenance records that are NOT schema
+defects: routine revision/content dedup decisions (e.g. "module
+'openconfig-interfaces' has multiple revisions; pinned '2022-10-25',
+dropped '2026-10-05'"). They never affect `status` and never enter
+`schema_id` — a pinned compile inside a shared multi-revision library
+is `complete` and selectable exactly like a single-revision compile.
+Real conflicts (unresolvable pins, same-authority distinct content)
+remain in `diagnostics` and keep the catalogue non-authoritative.
 
 ## Supported YANG subset
 
@@ -136,8 +149,17 @@ silent where detectable):
   `filter_by_features`; cross-module feature references are canonicalized
   to `declared_prefix:local` form.
 - Import `revision` pins are diagnosed when they differ from the
-  selected (newest) module revision; per-revision module selection is
-  not implemented — compile keeps the newest revision per module name.
+  selected revision. Per-revision module selection IS implemented
+  (M6F-F): `CompileOptions.module_revisions` pins a module name to an
+  exact revision date — unresolvable pins fail closed, and pins never
+  substitute a different revision. `CompileOptions.module_scope`
+  restricts compilation to named modules; out-of-scope library records
+  are skipped before read/parse so unrelated malformed modules cannot
+  poison a device-scoped bundle, while in-scope failures still
+  diagnose. Both are exposed on `POST /api/yang/compile` via the
+  optional `{module_revisions, module_scope}` body and recorded as
+  bundle provenance; scoped compiles are never auto-activated — they
+  become device authority only through the admin schema-selection API.
 - `anyxml`/`anydata` are indexed; rpc/action/notification/input/output
   are parsed but not emitted as data-path entries (they are not
   instance-data nodes).

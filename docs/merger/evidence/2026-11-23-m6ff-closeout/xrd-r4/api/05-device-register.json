@@ -1,0 +1,45 @@
+{
+  "device": {
+    "acquisition": "disabled",
+    "acquisition_plan_detail": "acquisition disabled",
+    "acquisition_plan_id": "33cd78e6f9e27a6b",
+    "acquisition_plan_state": "disabled",
+    "address": "172.100.103.21:9339",
+    "ca_cert": "",
+    "client_cert": "",
+    "client_key": "<redacted>",
+    "collector_id": "",
+    "credential_alias": "m6f-xrd",
+    "enabled": true,
+    "hostname": "xrd",
+    "inventory_only": false,
+    "password_env": "<redacted>",
+    "resolution_audit": [
+      "Started with 0 paths (no base profile selected)",
+      "Final path list has 0 paths"
+    ],
+    "resolved_selected_paths": [],
+    "role": "leaf",
+    "security": "plaintext",
+    "selected_paths": [],
+    "site": "m6f-lab",
+    "subscription_statuses": [
+      {
+        "first_observed_at_ns": 1795435724212677996,
+        "last_observed_at_ns": 1795435731813150159,
+        "mode": "SAMPLE",
+        "origin": "",
+        "path": "interfaces/interface[name=MgmtEth0/RP0/CPU0/0]/state/counters",
+        "sample_interval_ns": 10000000000,
+        "status": "superseded",
+        "updated_at_ns": 1795435735367721469
+      }
+    ],
+    "tls_domain": "",
+    "updated_at_ns": 1795436278941023339,
+    "username_env": "",
+    "vendor": "cisco_xrd"
+  },
+  "error": "",
+  "success": true
+}
