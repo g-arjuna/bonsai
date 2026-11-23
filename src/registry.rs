@@ -390,6 +390,7 @@ impl ApiRegistry {
         expected_config_revision: i64,
         actor: &str,
         action: &str,
+        expected_effective_schema_id: Option<&str>,
     ) -> Result<TargetConfig> {
         let address = normalize_address(&target.address)?;
         if self.sqlite_store.is_none() {
@@ -448,6 +449,7 @@ impl ApiRegistry {
                         expected_revision,
                         actor,
                         action,
+                        expected_effective_schema_id,
                     )
                     .map(|_| ())
             },

@@ -1,0 +1,32 @@
+{
+  "vendor": "frr",
+  "date": "2026-11-22",
+  "checks": {
+    "deploy_bgp_peering": "PASS",
+    "route_monitoring_announce": "PASS",
+    "route_withdrawal": "PASS",
+    "route_reannounce": "PASS",
+    "peer_down_up_events": "PASS",
+    "bmp_session_reconnect": "PASS",
+    "exporter_identity": "PASS",
+    "bgp_ls": "UNSUPPORTED",
+    "gnmi": "UNSUPPORTED"
+  },
+  "overall": "PARTIAL",
+  "detail": "FRR 10.6.2 BMP/BGP route-monitoring acceptance PASS (peering, announce/withdraw/re-announce, peer events, reconnect, exporter identity). BGP-LS UNSUPPORTED: bgpd 10.6.2 exposes no BGP-LS AFI/SAFI. gNMI UNSUPPORTED: FRR exposes no OpenConfig gNMI endpoint. See README.md for evidence-class and operational caveats.",
+  "evidence_class": "local_virtual_nos",
+  "outcome_states": {
+    "executed_pass": [
+      "deploy_bgp_peering",
+      "route_monitoring_announce",
+      "route_withdrawal",
+      "route_reannounce",
+      "peer_down_up_events",
+      "bmp_session_reconnect",
+      "exporter_identity"
+    ],
+    "unsupported": ["bgp_ls", "gnmi"],
+    "not_executed": [],
+    "failed": []
+  }
+}

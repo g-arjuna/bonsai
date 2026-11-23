@@ -1686,6 +1686,7 @@ async fn t16_evidence_invalidation_preserves_newer_approval() {
             eval.config_revision,
             "admin",
             "test_activate_a",
+            None,
         )
         .unwrap();
 
@@ -1774,6 +1775,7 @@ async fn t16_evidence_invalidation_preserves_newer_approval() {
             eval_b.config_revision,
             "admin",
             "test_activate_b",
+            None,
         )
         .unwrap();
 

@@ -14,7 +14,6 @@ use crate::registry::{ApiRegistry, device_identity_key};
 use crate::sqlite_store::{SchemaBindingRecord, SqliteStore};
 use crate::yang::YangLibrary;
 use crate::yang_applicability::{self, SnapshotFreshness};
-use crate::yang_schema;
 use crate::yang_schema::acquisition::{self, SchemaPlanEvaluation, SchemaPlanInput};
 use crate::yang_schema::applicability::ReasonCode;
 
@@ -47,7 +46,16 @@ pub struct SchemaPlanPreview {
     pub evaluation: Option<SchemaPlanEvaluation>,
     pub activation_permitted: bool,
     pub catalogue_state: Option<ReasonCode>,
+    /// schema_id of the globally active catalogue — context only; the
+    /// plan is evaluated against the device's EFFECTIVE catalogue.
     pub active_schema_id: Option<String>,
+    /// schema_id the device is effectively bound to (explicit selection
+    /// or active catalogue fallback) — the authority for this preview.
+    #[serde(default)]
+    pub effective_schema_id: Option<String>,
+    /// The durable device selection's schema_id, when one exists.
+    #[serde(default)]
+    pub selected_schema_id: Option<String>,
     pub freshness: Option<SnapshotFreshness>,
     pub freshness_reasons: Vec<ReasonCode>,
     pub current_binding: Option<SchemaBindingConfig>,
@@ -63,6 +71,11 @@ pub struct SchemaBindingActivation {
     pub device: TargetConfig,
     pub record: SchemaBindingRecord,
     pub evaluation: SchemaPlanEvaluation,
+    /// schema_id of the device-effective catalogue this approval was
+    /// evaluated against — carried to the durable commit boundary so a
+    /// concurrent schema-selection change can never slip an approval
+    /// derived from a superseded schema past the check (M6F-F).
+    pub effective_schema_id: Option<String>,
 }
 
 /// Evaluate the current explicit selection (or a request override)
@@ -81,7 +94,12 @@ pub fn evaluate_preview(
         .clone()
         .unwrap_or_else(|| target.selected_paths.clone());
     let datastore = request.datastore.as_deref();
-    let state = yang_schema::active_catalogue_state(library);
+    let device_key = device_identity_key(target);
+    // M6F-F: the plan evaluates against the device's EFFECTIVE catalogue —
+    // an explicit durable selection wins over the global active catalogue.
+    // A selected bundle that fails verification is an explicit
+    // non-authoritative state, never a silent global fallback.
+    let effective = yang_applicability::resolve_effective_catalogue(library, store, &device_key)?;
     let view = yang_applicability::load_snapshot_view(store, library, target, now_ns)?;
 
     let freshness = view.as_ref().map(|v| v.freshness);
@@ -89,14 +107,13 @@ pub fn evaluate_preview(
         .as_ref()
         .map(|v| v.freshness_reasons.clone())
         .unwrap_or_default();
-    let active_schema_id = state
-        .schema_id()
-        .map(str::to_string)
-        .or_else(|| view.as_ref().and_then(|v| v.active_schema_id.clone()));
-    let catalogue_state = state.reason_code();
+    let active_schema_id = effective.active_schema_id.clone();
+    let effective_schema_id = effective.effective_schema_id.clone();
+    let selected_schema_id = effective.selection.as_ref().map(|s| s.schema_id.clone());
+    let catalogue_state = effective.catalogue_state;
 
     let mut evaluation = None;
-    if let Some(catalogue) = state.catalogue() {
+    if let Some(catalogue) = &effective.catalogue {
         let input = SchemaPlanInput {
             catalogue,
             snapshot: view.as_ref().map(|v| &v.snapshot),
@@ -114,7 +131,7 @@ pub fn evaluate_preview(
         evaluation = Some(acquisition::evaluate_schema_plan(&input));
     }
 
-    let binding_state = match store.get_schema_binding(&device_identity_key(target))? {
+    let binding_state = match store.get_schema_binding(&device_key)? {
         Some(record) if record.state == "active" => "active".to_string(),
         Some(record) if record.state == "revoked" => "revoked".to_string(),
         Some(_) => "inactive".to_string(),
@@ -122,7 +139,7 @@ pub fn evaluate_preview(
     };
 
     Ok(SchemaPlanPreview {
-        device_key: device_identity_key(target),
+        device_key,
         device_address: target.address.clone(),
         activation_permitted: evaluation
             .as_ref()
@@ -131,6 +148,8 @@ pub fn evaluate_preview(
         evaluation,
         catalogue_state,
         active_schema_id,
+        effective_schema_id,
+        selected_schema_id,
         freshness,
         freshness_reasons,
         current_binding: target.schema_binding.clone(),
@@ -253,20 +272,26 @@ pub fn activate(
         device,
         record,
         evaluation,
+        effective_schema_id: preview.effective_schema_id.clone(),
     })
 }
 
 /// Revoke every active schema-bound approval whose approved schema is not
-/// the currently active compiled catalogue. Catalogue activation is an
-/// authority mutation: a binding derived from a different schema_id can
-/// never remain executable. Returns the revoked device targets so callers
-/// can resync collectors.
+/// the currently active compiled catalogue — for devices that follow the
+/// GLOBAL catalogue. M6F-F: a device with an explicit durable schema
+/// selection is bound to ITS selected bundle, not the global one, so
+/// global activation must never revoke it; selection changes invalidate
+/// through [`revoke_binding_for_device_schema_change`] instead. When the
+/// selection store is unavailable the check fails closed and the
+/// previous revoke-all-mismatched behavior applies. Returns the revoked
+/// device targets so callers can resync collectors.
 pub fn revoke_bindings_for_schema_change(
     registry: &ApiRegistry,
     active_schema_id: &str,
     actor: &str,
     action: &str,
 ) -> Result<Vec<TargetConfig>> {
+    let store = registry.sqlite_store();
     let mut revoked = Vec::new();
     for target in registry.list_all_targets()? {
         let stale = target
@@ -275,6 +300,20 @@ pub fn revoke_bindings_for_schema_change(
             .is_some_and(|b| b.mode == "schema_bound" && b.schema_id != active_schema_id);
         if !stale {
             continue;
+        }
+        if let Some(store) = store.as_deref() {
+            let device_key = device_identity_key(&target);
+            // A selection that cannot be read cannot exempt the device:
+            // fail toward revocation, never toward preserving authority
+            // derived from a schema this activation just superseded.
+            if store
+                .get_device_schema_selection(&device_key)
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                continue;
+            }
         }
         if let Some(updated) = registry.revoke_schema_binding(
             &target.address,
@@ -286,6 +325,37 @@ pub fn revoke_bindings_for_schema_change(
         }
     }
     Ok(revoked)
+}
+
+/// Device-scoped invalidation for schema-selection changes (M6F-F):
+/// revoke THIS device's schema-bound approval when it was derived from a
+/// different schema than the newly effective bundle. Other devices are
+/// never touched. The revocation is fingerprint-guarded so a concurrent
+/// newer approval is never clobbered. Returns the updated target for
+/// collector resync when a revocation happened.
+pub fn revoke_binding_for_device_schema_change(
+    registry: &ApiRegistry,
+    address: &str,
+    new_schema_id: &str,
+    actor: &str,
+    action: &str,
+) -> Result<Option<TargetConfig>> {
+    let Some(target) = registry.get_device(address)? else {
+        return Ok(None);
+    };
+    let Some(binding) = target.schema_binding.clone() else {
+        return Ok(None);
+    };
+    if binding.mode != "schema_bound" || binding.schema_id == new_schema_id {
+        return Ok(None);
+    }
+    registry.revoke_schema_binding_if_current(
+        address,
+        actor,
+        "device_schema_changed",
+        action,
+        &binding.binding_fingerprint,
+    )
 }
 
 /// Outcome of evidence-supersession invalidation after a new
@@ -729,6 +799,7 @@ mod tests {
                 config_revision,
                 "admin",
                 "activate",
+                None,
             )
             .unwrap();
         (registry, store, target, snapshot_id)
@@ -968,6 +1039,7 @@ mod tests {
                 device.updated_at_ns + 1,
                 "admin",
                 "activate",
+                None,
             )
             .expect_err("stale config revision must reject");
         assert!(
@@ -1008,6 +1080,7 @@ mod tests {
                 previewed_revision,
                 "admin",
                 "activate",
+                None,
             )
             .expect_err("activation against a superseded configuration must reject");
         assert!(err.to_string().contains("configuration changed"));

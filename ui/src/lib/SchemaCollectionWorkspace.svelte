@@ -75,6 +75,15 @@
   let refreshMessage = $state('');
   let notice = $state('');
 
+  // ── M6F-F per-device schema selection ──────────────────────────────
+  let schemaSel = $state(null);   // GET /schema-selection payload
+  let schemaBundles = $state([]); // verified compiled bundles
+  let schemaSelBusy = $state(false);
+  let schemaSelMessage = $state('');
+  let schemaSelError = $state('');
+  let schemaSelChoice = $state('');
+  let confirmSchemaSel = $state(false);
+
   const address = $derived(device?.address || '');
   const binding = $derived(device?.schema_binding || null);
   const snapshot = $derived(applicability?.snapshot || null);
@@ -92,7 +101,10 @@
     if (!addr) return;
     const f = filters;
     const off = pathOffset;
-    const timer = setTimeout(() => loadApplicability(addr, f, off), f.q ? 250 : 0);
+    const timer = setTimeout(() => {
+      loadApplicability(addr, f, off);
+      loadSchemaSelection(addr);
+    }, f.q ? 250 : 0);
     return () => clearTimeout(timer);
   });
 
@@ -502,6 +514,58 @@
     }
   }
 
+  // M6F-F: load the device's schema selection + verified bundle list.
+  async function loadSchemaSelection(addr) {
+    if (!addr) return;
+    try {
+      const [selR, bundlesR] = await Promise.all([
+        fetch('/api/devices/' + encodeURIComponent(addr) + '/schema-selection'),
+        fetch('/api/yang/compiled')
+      ]);
+      if (selR.ok) schemaSel = await selR.json();
+      if (bundlesR.ok) {
+        const payload = await bundlesR.json();
+        schemaBundles = (payload.bundles || []).filter((b) => b.schema_id);
+      }
+    } catch { /* selection view is advisory; backend remains authority */ }
+  }
+
+  async function applySchemaSelection(clear) {
+    if (schemaSelBusy) return;
+    schemaSelBusy = true;
+    schemaSelMessage = '';
+    schemaSelError = '';
+    try {
+      const url = '/api/devices/' + encodeURIComponent(address) + '/schema-selection';
+      const r = await fetch(url, {
+        method: clear ? 'DELETE' : 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: clear ? undefined : JSON.stringify({ schema_id: schemaSelChoice })
+      });
+      const payload = await r.json().catch(() => ({}));
+      if (r.status === 403) {
+        schemaSelError = 'Forbidden: schema selection requires an admin role.';
+        return;
+      }
+      if (!r.ok) {
+        schemaSelError = payload.error || payload.message || ('Schema selection failed (HTTP ' + r.status + ')');
+        return;
+      }
+      schemaSel = payload;
+      schemaSelMessage = clear
+        ? 'Schema selection cleared — device follows the active catalogue.'
+        : 'Schema selection updated to ' + shortId(payload.effective_schema_id) +
+          '. Approvals bound to a different schema were revoked.';
+      confirmSchemaSel = false;
+      if (onchanged) onchanged();
+      await loadApplicability(address, filters, pathOffset);
+    } catch (e) {
+      schemaSelError = e.message || 'Schema selection request failed';
+    } finally {
+      schemaSelBusy = false;
+    }
+  }
+
   // M6E: poll remote discovery job status until terminal, then reload
   // the authoritative snapshot. Bounded attempts — the durable job
   // deadline is the outer bound.
@@ -764,6 +828,10 @@
         <div><span class="muted">Overall</span><strong class="status-{statusClass(snapshot.overall_status)}">{snapshot.overall_status}</strong></div>
         <div><span class="muted">Freshness</span><strong class="status-{freshnessClass()}">{freshnessLabel()}</strong></div>
         <div><span class="muted">Active schema</span><strong title={snapshot.active_schema_id || ''}>{shortId(snapshot.active_schema_id)}</strong></div>
+        <div><span class="muted">Effective schema</span><strong title={snapshot.effective_schema_id || ''} data-testid="effective-schema">{shortId(snapshot.effective_schema_id)}</strong></div>
+        {#if snapshot.selected_schema_id}
+          <div><span class="muted">Selected schema</span><strong title={snapshot.selected_schema_id}>{shortId(snapshot.selected_schema_id)}</strong></div>
+        {/if}
         <div><span class="muted">Snapshot</span><strong>#{snapshot.snapshot_id}</strong></div>
         <div><span class="muted">Observed</span><strong title={absoluteTime(snapshot.observed_at_ns)}>{relativeTime(snapshot.observed_at_ns)}</strong></div>
         <div><span class="muted">Datastore</span><strong>{snapshot.datastore || '—'}</strong></div>
@@ -790,7 +858,67 @@
     {/if}
   </div>
 
-  <!-- ── 3. Module browser ──────────────────────────────────────────── -->
+  <!-- ── 3. Schema selection (M6F-F) ────────────────────────────────── -->
+  {#if schemaSel}
+    <div class="card" data-testid="schema-selection">
+      <div class="card-head">
+        <h4>Device schema</h4>
+        <span class="muted">
+          {#if schemaSel.selection}
+            explicit · rev {schemaSel.selection.selection_revision} · {schemaSel.selection.selection_source}
+          {:else}
+            default (active catalogue)
+          {/if}
+        </span>
+      </div>
+      <div class="evidence-grid">
+        <div><span class="muted">Selected</span><strong class="mono-sm" title={schemaSel.selection?.schema_id || ''}>{schemaSel.selection ? shortId(schemaSel.selection.schema_id) : '—'}</strong></div>
+        <div><span class="muted">Effective</span><strong class="mono-sm" title={schemaSel.effective_schema_id || ''}>{shortId(schemaSel.effective_schema_id)}</strong></div>
+        <div><span class="muted">Active catalogue</span><strong class="mono-sm" title={schemaSel.active_schema_id || ''}>{shortId(schemaSel.active_schema_id)}</strong></div>
+        <div><span class="muted">Catalogue state</span><strong>{schemaSel.catalogue_state ? schemaSel.catalogue_state.replace(/_/g, ' ') : 'verified complete'}</strong></div>
+      </div>
+      {#if isAdmin}
+        <div class="filters" style="margin-top: 0.75rem;">
+          <select aria-label="Compiled schema bundle" bind:value={schemaSelChoice} data-testid="schema-bundle-select">
+            <option value="">— choose verified bundle —</option>
+            {#each schemaBundles as b}
+              <option value={b.schema_id}>{shortId(b.schema_id)} · {b.module_count} modules · {b.path_count} paths{b.active ? ' · active' : ''}</option>
+            {/each}
+          </select>
+          <button
+            class="btn"
+            disabled={!schemaSelChoice || schemaSelBusy || schemaSelChoice === schemaSel?.selection?.schema_id}
+            onclick={() => { confirmSchemaSel = true; }}
+            data-testid="schema-select-apply"
+          >Select schema</button>
+          {#if schemaSel.selection}
+            <button
+              class="btn"
+              disabled={schemaSelBusy}
+              onclick={() => applySchemaSelection(true)}
+              data-testid="schema-select-clear"
+            >Clear (use active)</button>
+          {/if}
+        </div>
+        {#if confirmSchemaSel}
+          <div class="notice warn" role="alert" data-testid="schema-select-confirm">
+            Bind this device to the selected schema? Approvals derived from a
+            different schema will be revoked; other devices are unaffected.
+            <button class="btn" disabled={schemaSelBusy} onclick={() => applySchemaSelection(false)}>Confirm</button>
+            <button class="btn" onclick={() => { confirmSchemaSel = false; }}>Cancel</button>
+          </div>
+        {/if}
+      {/if}
+      {#if schemaSelMessage}
+        <div class="notice info" role="status" data-testid="schema-select-message">{schemaSelMessage}</div>
+      {/if}
+      {#if schemaSelError}
+        <div class="notice error" role="alert" data-testid="schema-select-error">{schemaSelError}</div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- ── 4. Module browser ──────────────────────────────────────────── -->
   {#if modules.length > 0}
     <div class="card" data-testid="module-browser">
       <h4>Modules ({modules.length})</h4>

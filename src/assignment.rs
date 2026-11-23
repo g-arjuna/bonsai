@@ -1523,7 +1523,7 @@ mod tests {
         let (bound, record) = schema_bound_activation(&stored);
         let config_revision = bound.updated_at_ns;
         registry
-            .activate_schema_binding(bound, record, 0, config_revision, "admin", "activate")
+            .activate_schema_binding(bound, record, 0, config_revision, "admin", "activate", None)
             .unwrap();
 
         // v4 understands lifecycle/credential contracts but predates the

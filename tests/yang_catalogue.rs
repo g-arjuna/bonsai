@@ -2051,7 +2051,15 @@ fn forged_bundle_metadata_cannot_evict_verified_bundles() {
             &CompileOptions::default(),
         );
         cat.compiled_at_ns = 1_000 + i as i64;
-        persist_compiled(&library, &cat).unwrap();
+        // These tests assert retention semantics, so they opt in to
+        // enforcement with an explicitly empty reference set — the
+        // caller asserts no device selections or approvals exist.
+        bonsai::yang_schema::persist_compiled_with_references(
+            &library,
+            &cat,
+            Some(&std::collections::BTreeSet::new()),
+        )
+        .unwrap();
         legit_ids.push(cat.schema_id.clone());
     }
     let cdir = dir.path().join("lib").join("compiled");
@@ -2072,8 +2080,20 @@ fn forged_bundle_metadata_cannot_evict_verified_bundles() {
     )
     .unwrap();
 
-    // Trigger a retention pass.
-    list_compiled(&library).unwrap();
+    // Trigger a retention pass. Read paths never evict (M6F-F: browsing
+    // must not destroy device-referenced bundles), so retention runs on
+    // the write path — re-persisting an already-verified bundle triggers
+    // the same index+retention refresh without adding a file.
+    let trigger = compile_parsed(
+        vec![inline_input("legit39", &tiny_yang("urn:legit39"))],
+        &CompileOptions::default(),
+    );
+    bonsai::yang_schema::persist_compiled_with_references(
+        &library,
+        &trigger,
+        Some(&std::collections::BTreeSet::new()),
+    )
+    .unwrap();
 
     // The forged bundle must not survive retention: it is proven invalid
     // and evicted rather than trusted.
@@ -2125,7 +2145,12 @@ fn unreadable_bundle_beyond_retention_cutoff_is_preserved() {
             )],
             &CompileOptions::default(),
         );
-        persist_compiled(&library, &cat).unwrap();
+        bonsai::yang_schema::persist_compiled_with_references(
+            &library,
+            &cat,
+            Some(&std::collections::BTreeSet::new()),
+        )
+        .unwrap();
     }
 
     // An unreadable "bundle": a directory named like a compiled bundle.
@@ -2138,8 +2163,25 @@ fn unreadable_bundle_beyond_retention_cutoff_is_preserved() {
     let invalid_id = format!("ysc-{}", "e".repeat(32));
     std::fs::write(cdir.join(format!("{invalid_id}.json")), b"not json").unwrap();
 
-    // Trigger the retention pass.
-    list_compiled(&library).unwrap();
+    // Trigger the retention pass via the write path (reads never evict —
+    // M6F-F). Re-persisting an existing verified bundle refreshes the
+    // index and runs retention without adding a file.
+    let trigger = compile_parsed(
+        vec![inline_input(
+            &format!("keep{}", bonsai::yang_schema::MAX_COMPILED_BUNDLES - 1),
+            &tiny_yang(&format!(
+                "urn:keep{}",
+                bonsai::yang_schema::MAX_COMPILED_BUNDLES - 1
+            )),
+        )],
+        &CompileOptions::default(),
+    );
+    bonsai::yang_schema::persist_compiled_with_references(
+        &library,
+        &trigger,
+        Some(&std::collections::BTreeSet::new()),
+    )
+    .unwrap();
 
     assert!(
         cdir.join(format!("{unreadable_id}.json")).exists(),
@@ -2234,4 +2276,441 @@ fn nokia_dialect_fixture_parses_and_compiles() {
             cat.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>()
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// M6F-F PR1 — explicit module-revision selection
+// ---------------------------------------------------------------------------
+
+fn rev_module(name: &str, revision: &str, extra_leaf: &str) -> String {
+    format!(
+        r#"module {name} {{
+  yang-version "1.1";
+  namespace "urn:example:{name}";
+  prefix "{name}";
+  organization "Example Org";
+  revision "{revision}" {{
+    description "rev";
+  }}
+  container state {{
+    leaf marker {{
+      type string;
+    }}
+    {extra_leaf}
+  }}
+}}"#
+    )
+}
+
+fn pinned_input(name: &str, yang: &str, tag: &str) -> ModuleInput {
+    let module = bonsai::yang_schema::parse_module(yang).expect("pin fixture parses");
+    ModuleInput {
+        module,
+        vendor_scope: "test".to_string(),
+        source_kind: "inline".to_string(),
+        source_ref: format!("{name}@{tag}"),
+        trust: "trusted".to_string(),
+        checksum_sha256: format!("pin-{name}-{tag}"),
+        approved: false,
+        license: String::new(),
+        platforms: Vec::new(),
+        pinned_ref: String::new(),
+        source_id: String::new(),
+    }
+}
+
+#[test]
+fn revision_pin_selects_exact_older_revision() {
+    let old = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2020-01-01", ""),
+        "2020-01-01",
+    );
+    let new = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2024-01-01", "leaf added-2024 { type uint32; }"),
+        "2024-01-01",
+    );
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-mod".to_string(), "2020-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins.clone(),
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(vec![new, old], &opts);
+    assert_eq!(cat.modules.len(), 1);
+    assert_eq!(cat.modules[0].name, "pin-mod");
+    assert_eq!(cat.modules[0].revision, "2020-01-01");
+    assert_eq!(cat.module_selection, pins);
+    // The 2024-only leaf must not appear in the pinned catalogue.
+    assert!(
+        !cat.paths.iter().any(|p| p.path.contains("added-2024")),
+        "pinned catalogue leaked newer-revision content: {:?}",
+        cat.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn revision_pin_absent_keeps_default_newest_policy() {
+    // Compatibility: no pins => identical behavior to before M6F-F.
+    let old = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2020-01-01", ""),
+        "2020-01-01",
+    );
+    let new = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2024-01-01", ""),
+        "2024-01-01",
+    );
+    let cat = compile_parsed(vec![old, new], &CompileOptions::default());
+    assert_eq!(cat.modules[0].revision, "2024-01-01");
+    assert!(cat.module_selection.is_empty());
+}
+
+#[test]
+fn revision_pin_missing_revision_fails_closed() {
+    let only = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2024-01-01", ""),
+        "2024-01-01",
+    );
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-mod".to_string(), "1999-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(vec![only], &opts);
+    assert!(
+        cat.diagnostics
+            .iter()
+            .any(|d| d.contains("pinned to revision '1999-01-01'")),
+        "expected pin diagnostic, got {:?}",
+        cat.diagnostics
+    );
+    assert!(
+        cat.modules.is_empty(),
+        "unpinned revision must not substitute"
+    );
+    assert_ne!(cat.status, "complete");
+}
+
+#[test]
+fn revision_pin_absent_module_fails_closed() {
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("ghost-mod".to_string(), "2020-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(
+        vec![pinned_input(
+            "real-mod",
+            &rev_module("real-mod", "2024-01-01", ""),
+            "2024-01-01",
+        )],
+        &opts,
+    );
+    assert!(
+        cat.diagnostics
+            .iter()
+            .any(|d| d.contains("'ghost-mod' pinned to revision '2020-01-01'")),
+        "got {:?}",
+        cat.diagnostics
+    );
+    // The unrelated module still compiles; the pin itself is diagnostic.
+    assert_eq!(cat.modules.len(), 1);
+    assert_ne!(cat.status, "complete");
+}
+
+#[test]
+fn revision_pin_enforces_import_revision_match() {
+    let child_yang = r#"module pin-child {
+  yang-version "1.1";
+  namespace "urn:example:pin-child";
+  prefix "pc";
+  import pin-base {
+    prefix "pb";
+    revision "2020-01-01";
+  }
+  container state {
+    leaf marker { type string; }
+  }
+}"#;
+    let mk_inputs = || {
+        vec![
+            pinned_input(
+                "pin-base",
+                &rev_module("pin-base", "2024-01-01", ""),
+                "2024-01-01",
+            ),
+            pinned_input(
+                "pin-base",
+                &rev_module("pin-base", "2020-01-01", ""),
+                "2020-01-01",
+            ),
+            pinned_input("pin-child", child_yang, "child"),
+        ]
+    };
+
+    // Pinning the import-declared revision resolves cleanly.
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-base".to_string(), "2020-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(mk_inputs(), &opts);
+    assert!(
+        !cat.diagnostics
+            .iter()
+            .any(|d| d.contains("imports 'pin-base'")),
+        "compatible pin must not produce import diagnostics: {:?}",
+        cat.diagnostics
+    );
+    assert_eq!(cat.modules.len(), 2);
+
+    // Pinning a different revision makes the declared import revision
+    // mismatch explicit — never silently satisfied.
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-base".to_string(), "2024-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(mk_inputs(), &opts);
+    assert!(
+        cat.diagnostics.iter().any(|d| d.contains(
+            "imports 'pin-base'@'2020-01-01' but compiled set provides revision '2024-01-01'"
+        )),
+        "expected import revision mismatch, got {:?}",
+        cat.diagnostics
+    );
+    assert_ne!(cat.status, "complete");
+}
+
+#[test]
+fn revision_pin_is_deterministic_across_input_order() {
+    let mk = || {
+        vec![
+            pinned_input(
+                "pin-mod",
+                &rev_module("pin-mod", "2020-01-01", ""),
+                "2020-01-01",
+            ),
+            pinned_input(
+                "pin-mod",
+                &rev_module("pin-mod", "2024-01-01", ""),
+                "2024-01-01",
+            ),
+            pinned_input(
+                "pin-other",
+                &rev_module("pin-other", "2019-05-05", ""),
+                "2019-05-05",
+            ),
+        ]
+    };
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-mod".to_string(), "2020-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let a = compile_parsed(mk(), &opts);
+    let mut reversed = mk();
+    reversed.reverse();
+    let b = compile_parsed(reversed, &opts);
+    assert_eq!(a.schema_id, b.schema_id);
+    assert_eq!(a.diagnostics, b.diagnostics);
+}
+
+#[test]
+fn revision_pin_matching_default_dedups_schema_id() {
+    // A pin that selects exactly what the default policy would keep, on a
+    // single-revision module, adds no diagnostics — the compiled content
+    // is identical and must share the same content-addressed schema_id.
+    let mk = || {
+        pinned_input(
+            "pin-mod",
+            &rev_module("pin-mod", "2024-01-01", ""),
+            "2024-01-01",
+        )
+    };
+    let unpinned = compile_parsed(vec![mk()], &CompileOptions::default());
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-mod".to_string(), "2024-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        ..CompileOptions::default()
+    };
+    let pinned = compile_parsed(vec![mk()], &opts);
+    assert_eq!(unpinned.schema_id, pinned.schema_id);
+    assert_eq!(unpinned.status, pinned.status);
+}
+
+#[test]
+fn revision_pin_rejects_untrusted_module() {
+    // trusted_only compile: an untrusted pinned module is absent, so the
+    // pin is unresolvable — fail closed, never compile untrusted content.
+    let mut untrusted = pinned_input(
+        "pin-mod",
+        &rev_module("pin-mod", "2020-01-01", ""),
+        "2020-01-01",
+    );
+    untrusted.trust = "experimental".to_string();
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("pin-mod".to_string(), "2020-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        trusted_only: true,
+    };
+    let cat = compile_parsed(vec![untrusted], &opts);
+    assert!(cat.modules.is_empty());
+    assert!(
+        cat.diagnostics
+            .iter()
+            .any(|d| d.contains("pinned to revision '2020-01-01'")),
+        "got {:?}",
+        cat.diagnostics
+    );
+}
+
+// ── M6F-F: retention protects referenced bundles ────────────────────────────
+
+#[test]
+fn m6ff_retention_protects_referenced_bundles() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let bound = bonsai::yang_schema::MAX_COMPILED_BUNDLES + 2;
+
+    // The first (oldest) bundle is the one a device selection would pin.
+    let mut protected = std::collections::BTreeSet::new();
+    let mut first_id = String::new();
+    for i in 0..bound {
+        let yang = format!(
+            "module m{i} {{ yang-version 1.1; namespace \"urn:example:m{i}\"; \
+             prefix m; revision 2024-01-01; container c{i} {{ leaf l {{ type string; }} }} }}"
+        );
+        let cat = compile_parsed(
+            vec![inline_input(&format!("m{i}"), &yang)],
+            &CompileOptions::default(),
+        );
+        if i == 0 {
+            first_id = cat.schema_id.clone();
+            protected.insert(first_id.clone());
+        }
+        bonsai::yang_schema::persist_compiled_with_references(&library, &cat, Some(&protected))
+            .unwrap();
+    }
+
+    // 34 bundles > bound 32: the unprotected overflow is evicted, but the
+    // referenced bundle survives regardless of age.
+    let infos = list_compiled(&library).unwrap();
+    assert_eq!(infos.len(), bonsai::yang_schema::MAX_COMPILED_BUNDLES + 1);
+    assert!(infos.iter().any(|i| i.schema_id == first_id));
+    assert!(bonsai::yang_schema::load_compiled(&library, &first_id).is_ok());
+
+    // Unknown reference state → retention skipped entirely (fail closed:
+    // never evict on unverifiable references).
+    let yang = "module mz { yang-version 1.1; namespace \"urn:example:mz\"; \
+                prefix mz; revision 2024-01-01; container cz { leaf l { type string; } } }";
+    let extra = compile_parsed(vec![inline_input("mz", yang)], &CompileOptions::default());
+    bonsai::yang_schema::persist_compiled_with_references(&library, &extra, None).unwrap();
+    assert_eq!(
+        list_compiled(&library).unwrap().len(),
+        bonsai::yang_schema::MAX_COMPILED_BUNDLES + 2
+    );
+}
+
+#[test]
+fn revision_pin_respects_authority_and_fails_closed_on_unresolved_ties() {
+    // A4: pinned same-(name,revision) conflicts resolve by approval/trust
+    // authority — never by checksum ordering alone. ModuleInput is not
+    // Clone, so each compile gets freshly built fixtures.
+    let build =
+        |trusted_leaf: &str, exp_leaf: &str, exp_trust: &str, exp_sum: &str, exp_approved: bool| {
+            let trusted = pinned_input(
+                "conf-mod",
+                &rev_module("conf-mod", "2024-01-01", trusted_leaf),
+                "trusted-src",
+            );
+            let mut experimental = pinned_input(
+                "conf-mod",
+                &rev_module("conf-mod", "2024-01-01", exp_leaf),
+                "aaa-sorts-first",
+            );
+            experimental.trust = exp_trust.to_string();
+            experimental.checksum_sha256 = exp_sum.to_string();
+            experimental.approved = exp_approved;
+            (trusted, experimental)
+        };
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("conf-mod".to_string(), "2024-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        trusted_only: false,
+    };
+
+    // Trusted content wins regardless of checksum order or input order.
+    for reverse in [false, true] {
+        let (trusted, experimental) = build(
+            "leaf trusted_leaf { type string; }",
+            "leaf experimental_leaf { type string; }",
+            "experimental",
+            "aaa",
+            false,
+        );
+        let inputs = if reverse {
+            vec![experimental, trusted]
+        } else {
+            vec![trusted, experimental]
+        };
+        let cat = compile_parsed(inputs, &opts);
+        assert_eq!(cat.modules.len(), 1, "exactly one conf-mod compiled");
+        assert_eq!(cat.modules[0].trust, "trusted");
+        assert_eq!(cat.modules[0].source_ref, "conf-mod@trusted-src");
+        assert!(
+            !cat.diagnostics
+                .iter()
+                .any(|d| d.contains("unresolved") || d.contains("refusing to select"))
+        );
+    }
+
+    // Two same-authority candidates with DISTINCT content are an
+    // unresolved conflict — fail closed: module absent, diagnostic,
+    // non-authoritative catalogue. Never silently pick by checksum.
+    let (trusted, rival) = {
+        let (t, mut r) = build(
+            "leaf trusted_leaf { type string; }",
+            "leaf rival_leaf { type string; }",
+            "trusted",
+            "zzz",
+            false,
+        );
+        r.source_ref = "conf-mod@zzz-sorts-last".to_string();
+        (t, r)
+    };
+    let cat = compile_parsed(vec![trusted, rival], &opts);
+    assert!(cat.modules.is_empty(), "unresolved tie must not compile");
+    assert!(
+        cat.diagnostics
+            .iter()
+            .any(|d| d.contains("conflicting contents at the same approval/trust authority"))
+    );
+    assert_ne!(cat.status, "complete");
+
+    // Operator approval outranks trust: an approved experimental record
+    // beats an unapproved trusted one.
+    let (trusted, approved_exp) = build(
+        "leaf trusted_leaf { type string; }",
+        "leaf experimental_leaf { type string; }",
+        "experimental",
+        "aaa",
+        true,
+    );
+    let cat = compile_parsed(vec![trusted, approved_exp], &opts);
+    assert_eq!(cat.modules.len(), 1);
+    assert!(cat.modules[0].approved);
+    assert_eq!(cat.modules[0].trust, "experimental");
 }

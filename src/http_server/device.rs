@@ -988,6 +988,13 @@ pub(super) async fn yang_compile_handler(
     let (lib, cache, key) = yang_roots(&state);
     let all_trust = params.all_trust;
     let activate = params.activate;
+    // M6F-F: bundles referenced by device selections or active approvals
+    // are retention-protected — a compile must never evict them.
+    // Unavailable reference state fails closed (retention skipped).
+    let references = state
+        .registry
+        .sqlite_store()
+        .and_then(|store| store.compiled_schema_references().ok());
     // Compilation is CPU/IO-bound filesystem work — keep it off the async
     // executor so admin compiles cannot stall live collection/control plane.
     let (catalogue, activated) = tokio::task::spawn_blocking(move || {
@@ -997,8 +1004,13 @@ pub(super) async fn yang_compile_handler(
             &key,
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let catalogue = crate::yang_schema::compile_library(&library, !all_trust)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let catalogue = crate::yang_schema::compile_library_with_selection(
+            &library,
+            !all_trust,
+            &std::collections::BTreeMap::new(),
+            references.as_ref(),
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         // Activation policy: only a `complete` catalogue may be activated
         // implicitly. Partial/failed catalogues remain browsable as
         // diagnostics but are never promoted to active authoritative state
@@ -1244,6 +1256,8 @@ pub(super) async fn device_yang_applicability_handler(
                 freshness: v.freshness,
                 freshness_reasons: v.freshness_reasons.clone(),
                 active_schema_id: v.active_schema_id.clone(),
+                effective_schema_id: v.effective_schema_id.clone(),
+                selected_schema_id: v.selected_schema_id.clone(),
                 catalogue_state: v.catalogue_state,
             };
             let config_filter = match params.config.as_deref() {
@@ -1769,6 +1783,7 @@ pub(super) async fn schema_binding_activate_handler(
     };
     let expected_revision = activation.record.approval_revision - 1;
     let expected_config_revision = activation.evaluation.config_revision;
+    let effective_schema_id = activation.effective_schema_id.clone();
     let updated = state
         .registry
         .activate_schema_binding(
@@ -1778,6 +1793,7 @@ pub(super) async fn schema_binding_activate_handler(
             expected_config_revision,
             &actor,
             "api_schema_binding_activate",
+            effective_schema_id.as_deref(),
         )
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
 
@@ -1839,6 +1855,333 @@ pub(super) async fn schema_binding_revoke_handler(
         binding_fingerprint: None,
         state: "revoked".to_string(),
     }))
+}
+
+// ── M6F-F per-device schema selection ────────────────────────────────
+
+#[derive(Serialize)]
+pub(super) struct DeviceSchemaSelectionResponse {
+    device_key: String,
+    device_address: String,
+    /// Durable explicit selection, when the device has one.
+    selection: Option<crate::sqlite_store::DeviceSchemaSelection>,
+    /// schema_id the device is effectively bound to (selection or the
+    /// globally active catalogue fallback).
+    effective_schema_id: Option<String>,
+    /// schema_id of the globally active catalogue — context only.
+    active_schema_id: Option<String>,
+    /// Why the effective catalogue is not authoritative, when it is not.
+    catalogue_state: Option<crate::yang_schema::applicability::ReasonCode>,
+}
+
+fn device_schema_selection_response(
+    store: &crate::sqlite_store::SqliteStore,
+    library: &YangLibrary,
+    target: &TargetConfig,
+) -> Result<DeviceSchemaSelectionResponse, (StatusCode, String)> {
+    let device_key = crate::registry::device_identity_key(target);
+    let selection = store
+        .get_device_schema_selection(&device_key)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let effective =
+        crate::yang_applicability::resolve_effective_catalogue(library, store, &device_key)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(DeviceSchemaSelectionResponse {
+        device_key,
+        device_address: target.address.clone(),
+        selection,
+        effective_schema_id: effective.effective_schema_id,
+        active_schema_id: effective.active_schema_id,
+        catalogue_state: effective.catalogue_state,
+    })
+}
+
+/// Read the device's schema selection and effective catalogue identity.
+/// Viewer-readable; never mutates state.
+pub(super) async fn device_schema_selection_get_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<DeviceSchemaSelectionResponse>, (StatusCode, String)> {
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+    let store = state.registry.sqlite_store().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "schema-selection store unavailable".to_string(),
+    ))?;
+    let (lib, cache, key) = yang_roots(&state);
+    tokio::task::spawn_blocking(move || {
+        let library = YangLibrary::open(
+            std::path::Path::new(&lib),
+            std::path::Path::new(&cache),
+            &key,
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        device_schema_selection_response(store.as_ref(), &library, &target)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+}
+
+#[derive(Deserialize)]
+pub(super) struct DeviceSchemaSelectionRequest {
+    schema_id: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Admin: bind the device to an explicitly selected verified compiled
+/// bundle. The bundle must exist and pass integrity verification as a
+/// COMPLETE catalogue — partial catalogues are never selectable
+/// authority. A schema-bound approval derived from a different schema is
+/// revoked through the fingerprint-guarded device-scoped path before the
+/// selection commits ordering-wise (revoke first, then select: the
+/// device can never hold an approval whose schema differs from its
+/// effective catalogue).
+pub(super) async fn device_schema_selection_put_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    role: Option<axum::Extension<crate::http_server::auth::Role>>,
+    subject: Option<axum::Extension<crate::http_server::auth::AuthenticatedSubject>>,
+    Json(req): Json<DeviceSchemaSelectionRequest>,
+) -> Result<Json<DeviceSchemaSelectionResponse>, (StatusCode, String)> {
+    require_schema_binding_admin(role)?;
+    let actor = schema_binding_actor(subject)?;
+    let schema_id = req.schema_id.trim().to_string();
+    if schema_id.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "schema_id is required".to_string()));
+    }
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+    let store = state.registry.sqlite_store().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "schema-selection store unavailable".to_string(),
+    ))?;
+    let (lib, cache, key) = yang_roots(&state);
+
+    // Verify the bundle is a complete, integrity-checked catalogue
+    // BEFORE mutating any authority.
+    let bundle_state = {
+        let (l, c, k) = (lib.clone(), cache.clone(), key.clone());
+        let sid = schema_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let library = YangLibrary::open(std::path::Path::new(&l), std::path::Path::new(&c), &k)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            Ok::<_, (StatusCode, String)>(crate::yang_schema::compiled_bundle_state(&library, &sid))
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??
+    };
+    match bundle_state {
+        crate::yang_schema::ActiveCatalogueState::Verified(_) => {}
+        crate::yang_schema::ActiveCatalogueState::Partial(_) => {
+            return Err((
+                StatusCode::CONFLICT,
+                "selected bundle is not a complete catalogue; partial schemas are not selectable authority".to_string(),
+            ));
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "schema bundle '{schema_id}' is not present or fails integrity verification"
+                ),
+            ));
+        }
+    }
+
+    // Revoke-first ordering: an approval derived from a different schema
+    // is withdrawn before the selection commits, so the device can never
+    // sit in a state where its binding schema differs from its effective
+    // catalogue. Fingerprint-guarded — a concurrent newer approval wins.
+    let revoked = crate::schema_binding::revoke_binding_for_device_schema_change(
+        state.registry.as_ref(),
+        &target.address,
+        &schema_id,
+        &actor,
+        "api_device_schema_select",
+    )
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+
+    let device_key = crate::registry::device_identity_key(&target);
+    let selection = crate::sqlite_store::DeviceSchemaSelection {
+        device_key: device_key.clone(),
+        device_address: target.address.clone(),
+        schema_id: schema_id.clone(),
+        selection_source: "admin".to_string(),
+        selected_by: Some(actor.clone()),
+        note: req
+            .note
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty()),
+        selection_revision: 0,
+        created_at_ns: 0,
+        updated_at_ns: 0,
+    };
+    let store_for_write = store.clone();
+    let actor_for_write = actor.clone();
+    tokio::task::spawn_blocking(move || {
+        store_for_write
+            .set_device_schema_selection(&selection, &actor_for_write, "api_device_schema_select")
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+
+    // Post-commit sweep: an approval evaluated against the OLD selection
+    // may have committed between the pre-revoke and this write (the
+    // in-transaction check only sees the selection state at its own
+    // commit time). Re-run the fingerprint-guarded device-scoped revoke
+    // against the NEW effective schema so no inconsistent approval can
+    // survive the mutation window.
+    let post_revoked = crate::schema_binding::revoke_binding_for_device_schema_change(
+        state.registry.as_ref(),
+        &target.address,
+        &schema_id,
+        &actor,
+        "api_device_schema_select_post",
+    )
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+
+    for updated in revoked.into_iter().chain(post_revoked) {
+        if let Some(cid) = updated.collector_id.as_deref()
+            && let Some(manager) = state.collector_manager.as_ref()
+        {
+            manager.resync_collector(cid).await;
+        }
+    }
+
+    let response = {
+        let (l, c, k) = (lib.clone(), cache.clone(), key.clone());
+        let target = target.clone();
+        let store = store.clone();
+        tokio::task::spawn_blocking(move || {
+            let library = YangLibrary::open(std::path::Path::new(&l), std::path::Path::new(&c), &k)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            device_schema_selection_response(store.as_ref(), &library, &target)
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??
+    };
+    Ok(Json(response))
+}
+
+/// Admin: clear the device's explicit selection — the device reverts to
+/// the globally active catalogue. A schema-bound approval whose schema
+/// differs from the now-effective catalogue is revoked first (same
+/// fail-closed ordering as selection).
+pub(super) async fn device_schema_selection_delete_handler(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    role: Option<axum::Extension<crate::http_server::auth::Role>>,
+    subject: Option<axum::Extension<crate::http_server::auth::AuthenticatedSubject>>,
+) -> Result<Json<DeviceSchemaSelectionResponse>, (StatusCode, String)> {
+    require_schema_binding_admin(role)?;
+    let actor = schema_binding_actor(subject)?;
+    let target = state
+        .registry
+        .get_device(&address)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("device '{address}' not found"),
+            )
+        })?;
+    let store = state.registry.sqlite_store().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "schema-selection store unavailable".to_string(),
+    ))?;
+    let (lib, cache, key) = yang_roots(&state);
+
+    // The now-effective schema after clearing is the global active
+    // catalogue (empty string when none — revokes any schema-bound
+    // approval, which cannot be authoritative without a catalogue).
+    let effective_after_clear = {
+        let (l, c, k) = (lib.clone(), cache.clone(), key.clone());
+        tokio::task::spawn_blocking(move || {
+            let library = YangLibrary::open(std::path::Path::new(&l), std::path::Path::new(&c), &k)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            Ok::<_, (StatusCode, String)>(
+                crate::yang_schema::active_catalogue_state(&library)
+                    .schema_id()
+                    .unwrap_or("")
+                    .to_string(),
+            )
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??
+    };
+
+    let revoked = crate::schema_binding::revoke_binding_for_device_schema_change(
+        state.registry.as_ref(),
+        &target.address,
+        &effective_after_clear,
+        &actor,
+        "api_device_schema_clear",
+    )
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+
+    let device_key = crate::registry::device_identity_key(&target);
+    let store_for_write = store.clone();
+    let dk = device_key.clone();
+    let actor_for_write = actor.clone();
+    tokio::task::spawn_blocking(move || {
+        store_for_write
+            .clear_device_schema_selection(&dk, &actor_for_write, "api_device_schema_clear")
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+
+    // Post-commit sweep against the now-effective (global active)
+    // catalogue — same mutation-window coverage as selection PUT.
+    let post_revoked = crate::schema_binding::revoke_binding_for_device_schema_change(
+        state.registry.as_ref(),
+        &target.address,
+        &effective_after_clear,
+        &actor,
+        "api_device_schema_clear_post",
+    )
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+
+    for updated in revoked.into_iter().chain(post_revoked) {
+        if let Some(cid) = updated.collector_id.as_deref()
+            && let Some(manager) = state.collector_manager.as_ref()
+        {
+            manager.resync_collector(cid).await;
+        }
+    }
+
+    let response = {
+        let (l, c, k) = (lib.clone(), cache.clone(), key.clone());
+        let target = target.clone();
+        let store = store.clone();
+        tokio::task::spawn_blocking(move || {
+            let library = YangLibrary::open(std::path::Path::new(&l), std::path::Path::new(&c), &k)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            device_schema_selection_response(store.as_ref(), &library, &target)
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??
+    };
+    Ok(Json(response))
 }
 
 /// True when another registered device shares this device's canonical

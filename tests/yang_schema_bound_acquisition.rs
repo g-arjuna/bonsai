@@ -1047,6 +1047,7 @@ async fn setup_bound_fixture() -> BoundFixture {
             eval.config_revision,
             "admin",
             "test_activate",
+            None,
         )
         .expect("durable activation");
 
@@ -1688,6 +1689,7 @@ async fn schema_bound_expiry_withdraws_active_execution() {
         schema_binding::activate(&fx.library, &fx.lab.sqlite, &target, &act_req, "admin", now)
             .expect("reapproval");
     let rev2 = activation2.record.approval_revision;
+    let activation2_effective = activation2.effective_schema_id.clone();
     fx.lab
         .registry
         .activate_schema_binding(
@@ -1697,6 +1699,7 @@ async fn schema_bound_expiry_withdraws_active_execution() {
             eval2.config_revision,
             "admin",
             "test_reapprove",
+            activation2_effective.as_deref(),
         )
         .unwrap();
     fx.lab.manager.resync_collector("e2e-col").await;
@@ -1797,6 +1800,7 @@ async fn schema_bound_expiry_disconnected_collector() {
             eval.config_revision,
             "admin",
             "test_activate",
+            None,
         )
         .unwrap();
 
@@ -1947,6 +1951,7 @@ async fn schema_bound_expired_evidence_blocks_activation_and_restart() {
             eval.config_revision,
             "admin",
             "test_activate",
+            None,
         )
         .unwrap();
     let _ = snapshot_fresh;

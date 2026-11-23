@@ -402,6 +402,13 @@ pub fn evaluate_schema_plan(input: &SchemaPlanInput<'_>) -> SchemaPlanEvaluation
                 snap.result.overall_status.as_str()
             ));
         }
+        // M6F-F defense in depth: the snapshot's resolved schema must be
+        // exactly the catalogue this plan evaluates against. Freshness is
+        // never the only schema-identity fence — a snapshot resolved
+        // under schema X can never authorize a plan against catalogue Y.
+        if snap.schema_id.as_deref() != Some(input.catalogue.schema_id.as_str()) {
+            rejection_reasons.push("schema_snapshot_mismatch".to_string());
+        }
     } else {
         rejection_reasons.push("missing_snapshot".to_string());
     }
@@ -780,6 +787,7 @@ mod tests {
                 status: None,
             }],
             diagnostics: Vec::new(),
+            module_selection: Default::default(),
         }
     }
 
