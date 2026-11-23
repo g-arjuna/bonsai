@@ -589,6 +589,13 @@ struct EffectiveSet {
     datastore_linked: bool,
     /// Selected datastore identity, when resolved.
     datastore: Option<String>,
+    /// (supports_config, supports_state) across the device's declared
+    /// datastores. For an explicit `requested_datastore` this is that
+    /// datastore's own axes; for default resolution it is the union
+    /// over every declared datastore — a state node is only provably
+    /// served when SOME declared datastore carries state. `Unknown`
+    /// axes (unrecognized identities) never collapse to `No`.
+    datastore_axes: (DatastoreAxis, DatastoreAxis),
     content_id: Option<String>,
     /// Set when datastore/schema resolution failed — every module is
     /// then `unknown`, never `not_applicable` (absence of evidence is
@@ -651,8 +658,7 @@ pub fn resolve_applicability(input: &ApplicabilityInput<'_>) -> ApplicabilityRes
 
     // ── C/D. Module + path evaluation ─────────────────────────────────
     let feature_states = build_feature_states(catalogue, &effective.modules);
-    let (ds_config, ds_state) =
-        datastore_capabilities(effective.datastore.as_deref(), &mut diagnostics);
+    let (ds_config, ds_state) = effective.datastore_axes;
 
     let mut module_results: Vec<ModuleResult> = Vec::new();
     let mut path_results: Vec<PathResult> = Vec::new();
@@ -800,6 +806,7 @@ fn build_effective_set(
         authoritative: false,
         datastore_linked: false,
         datastore: None,
+        datastore_axes: (DatastoreAxis::Yes, DatastoreAxis::Yes),
         content_id: None,
         blocked: None,
     };
@@ -860,6 +867,14 @@ fn build_effective_set(
             YangLibraryTree::Nmda => {
                 match resolve_nmda_datastore(evidence, input.requested_datastore, diagnostics) {
                     Ok((datastore_name, schema)) => {
+                        set.datastore_axes = datastore_axes(
+                            evidence,
+                            input
+                                .requested_datastore
+                                .is_some()
+                                .then(|| datastore_name.as_str()),
+                            diagnostics,
+                        );
                         set.datastore = Some(datastore_name);
                         set.module_set_names = schema.module_sets.clone();
                         set.datastore_linked = true;
@@ -1452,37 +1467,95 @@ enum DatastoreAxis {
     Unknown,
 }
 
-/// (supports_config, supports_state) for a datastore identity.
+/// (supports_config, supports_state) for ONE datastore identity.
 ///
-/// RFC 8342/NMDA semantics: `running` carries both configuration and
-/// operational state; `operational` carries state only;
-/// `candidate`/`startup`/`intended` carry configuration only. An
-/// UNRECOGNIZED datastore identity (including vendor misspellings such as
-/// XRd's `candiate`) gets `Unknown` on both axes — the datastore→schema
-/// link may still be verified, but assuming combined config+state scope
-/// would manufacture positive applicability the evidence does not
-/// support. `None` (no NMDA datastore resolved, e.g. legacy
-/// modules-state) keeps the historical permissive pair because
-/// `datastore_linked == false` already caps every path below
-/// `applicable` — the axes are moot there.
-fn datastore_capabilities(
-    name: Option<&str>,
-    diagnostics: &mut Vec<String>,
-) -> (DatastoreAxis, DatastoreAxis) {
-    let Some(name) = name else {
-        return (DatastoreAxis::Yes, DatastoreAxis::Yes);
-    };
+/// RFC 8342 §5: `running` is a *configuration* datastore (config only —
+/// state data is NOT stored in `running`); `operational` holds ALL
+/// config-true and config-false nodes (config + state, a superset of the
+/// configuration datastores' schemas); `candidate`/`startup`/`intended`
+/// are configuration datastores (config only). An UNRECOGNIZED identity
+/// (including vendor misspellings such as XRd's `candiate`) gets
+/// `Unknown` on both axes — never silently assumed.
+fn single_datastore_capabilities(name: &str) -> (DatastoreAxis, DatastoreAxis) {
     match local_name(name) {
-        "running" => (DatastoreAxis::Yes, DatastoreAxis::Yes),
-        "operational" => (DatastoreAxis::No, DatastoreAxis::Yes),
+        "running" => (DatastoreAxis::Yes, DatastoreAxis::No),
+        "operational" => (DatastoreAxis::Yes, DatastoreAxis::Yes),
         "candidate" | "startup" | "intended" => (DatastoreAxis::Yes, DatastoreAxis::No),
-        other => {
-            diagnostics.push(format!(
-                "unrecognized datastore identity '{other}' — config/state applicability stays unverified"
-            ));
-            (DatastoreAxis::Unknown, DatastoreAxis::Unknown)
+        _ => (DatastoreAxis::Unknown, DatastoreAxis::Unknown),
+    }
+}
+
+/// Combine per-axis tri-state answers across values: `Yes` if any
+/// contributor proves it, else `Unknown` if any contributor is
+/// unproven, else `No` only when EVERY contributor provably lacks it.
+fn union_axis(values: impl IntoIterator<Item = DatastoreAxis>) -> DatastoreAxis {
+    let mut saw_yes = false;
+    let mut saw_unknown = false;
+    for v in values {
+        match v {
+            DatastoreAxis::Yes => saw_yes = true,
+            DatastoreAxis::Unknown => saw_unknown = true,
+            DatastoreAxis::No => {}
         }
     }
+    if saw_yes {
+        DatastoreAxis::Yes
+    } else if saw_unknown {
+        DatastoreAxis::Unknown
+    } else {
+        DatastoreAxis::No
+    }
+}
+
+/// Device-level datastore capability axes for applicability.
+///
+/// `strict_selected` (an explicit `requested_datastore` was supplied)
+/// evaluates ONLY the selected datastore — asking about `running`
+/// specifically must not be answered by `operational`'s coverage.
+/// Otherwise the axes are the union over every datastore the device
+/// declares: a node class is provably served iff some declared
+/// datastore carries it, unproven iff the only candidates are
+/// unrecognized, and provably absent iff every declared datastore
+/// lacks it. Module membership remains bound to the selected
+/// datastore's schema; these axes describe data-class coverage only.
+/// `None`/legacy (no NMDA datastore resolved) keeps the historical
+/// permissive pair because `datastore_linked == false` already caps
+/// every path below `applicable` — the axes are moot there.
+fn datastore_axes(
+    evidence: &YangLibraryEvidence,
+    strict_selected: Option<&str>,
+    diagnostics: &mut Vec<String>,
+) -> (DatastoreAxis, DatastoreAxis) {
+    if let Some(selected) = strict_selected {
+        // Explicit datastore request: only THAT datastore's own axes
+        // answer the query — `operational` coverage must not leak into
+        // a `running` evaluation.
+        let (c, s) = single_datastore_capabilities(selected);
+        if matches!(c, DatastoreAxis::Unknown) {
+            diagnostics.push(format!(
+                "unrecognized datastore identity '{}' — config/state applicability stays unverified",
+                local_name(selected)
+            ));
+        }
+        return (c, s);
+    }
+    let mut unrecognized = BTreeSet::new();
+    let mut config = Vec::new();
+    let mut state = Vec::new();
+    for d in &evidence.datastores {
+        let (c, s) = single_datastore_capabilities(&d.name);
+        if matches!(c, DatastoreAxis::Unknown) {
+            unrecognized.insert(local_name(&d.name).to_string());
+        }
+        config.push(c);
+        state.push(s);
+    }
+    for name in unrecognized {
+        diagnostics.push(format!(
+            "unrecognized datastore identity '{name}' — config/state applicability stays unverified"
+        ));
+    }
+    (union_axis(config), union_axis(state))
 }
 
 // ── overall status ─────────────────────────────────────────────────────
@@ -1494,7 +1567,7 @@ fn overall_status(
     module_results: &[ModuleResult],
     input: &ApplicabilityInput<'_>,
     reasons: &mut BTreeSet<ReasonCode>,
-    diagnostics: &mut Vec<String>,
+    _diagnostics: &mut Vec<String>,
 ) -> ApplicabilityStatus {
     if input.device.identity_ambiguous {
         reasons.insert(ReasonCode::IdentityAmbiguity);
@@ -1525,12 +1598,11 @@ fn overall_status(
     // Unrecognized datastore semantics: module-schema membership may be
     // fully verified while config/state applicability stays unproven —
     // the overall result must not claim `applicable` on that basis.
-    if let Some(ds) = effective.datastore.as_deref() {
-        let (dc, dstate) = datastore_capabilities(Some(ds), diagnostics);
-        if matches!(dc, DatastoreAxis::Unknown) || matches!(dstate, DatastoreAxis::Unknown) {
-            reasons.insert(ReasonCode::DatastoreSemanticsUnverified);
-            return ApplicabilityStatus::Candidate;
-        }
+    if matches!(effective.datastore_axes.0, DatastoreAxis::Unknown)
+        || matches!(effective.datastore_axes.1, DatastoreAxis::Unknown)
+    {
+        reasons.insert(ReasonCode::DatastoreSemanticsUnverified);
+        return ApplicabilityStatus::Candidate;
     }
     // Authoritative complete resolution: verified catalogue + complete
     // NMDA library + established datastore link.
