@@ -2257,3 +2257,134 @@ fn m6g_conflict_within_one_schema_still_rejected() {
     });
     assert!(yang_library::parse_nmda_library(&tree, 0).is_ok());
 }
+
+#[test]
+fn m6g_import_only_modules_never_conflict() {
+    // RFC 8525: a module-set may carry multiple import-only revisions
+    // of the same module name — different modules legitimately import
+    // different revisions. Only IMPLEMENTED modules can conflict.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "io",
+            "module-set": [{
+                "name": "ms1",
+                "module": [
+                    {"name": "impl-mod", "revision": "2024-01-01",
+                     "namespace": "urn:example:impl"},
+                    {"name": "dep", "revision": "2020-01-01",
+                     "namespace": "urn:example:dep"}
+                ],
+                "import-only-module": [
+                    {"name": "dep", "revision": "2019-01-01",
+                     "namespace": "urn:example:dep"},
+                    {"name": "dep", "revision": "2021-06-01",
+                     "namespace": "urn:example:dep"},
+                    {"name": "other-dep", "revision": "2018-01-01"}
+                ]
+            }],
+            "schema": [{"name": "s1", "module-set": ["ms1"]}],
+            "datastore": [{"name": "ietf-datastores:running", "schema": "s1"}]
+        }
+    });
+    let ev = yang_library::parse_nmda_library(&tree, 0).expect("import-only revisions must parse");
+    assert_eq!(ev.module_sets[0].import_only_modules.len(), 3);
+
+    // An import-only revision differing from the IMPLEMENTED revision
+    // of the same name is also legitimate.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "io2",
+            "module-set": [{
+                "name": "ms1",
+                "module": [
+                    {"name": "dep", "revision": "2024-01-01",
+                     "namespace": "urn:example:dep"}
+                ],
+                "import-only-module": [
+                    {"name": "dep", "revision": "2019-01-01",
+                     "namespace": "urn:example:dep"}
+                ]
+            }],
+            "schema": [{"name": "s1", "module-set": ["ms1"]}],
+            "datastore": [{"name": "ietf-datastores:running", "schema": "s1"}]
+        }
+    });
+    assert!(yang_library::parse_nmda_library(&tree, 0).is_ok());
+}
+
+#[test]
+fn m6g_implemented_module_conflicts_still_rejected() {
+    // Two implemented revisions of the same module inside ONE schema —
+    // rejected, whether duplicated within one module-set or merged
+    // across two module-sets referenced by the same schema.
+    for (sets, schema_refs) in [
+        (
+            serde_json::json!([{
+                "name": "ms1",
+                "module": [
+                    {"name": "m", "revision": "2020-01-01"},
+                    {"name": "m", "revision": "2021-01-01"}
+                ]
+            }]),
+            serde_json::json!(["ms1"]),
+        ),
+        (
+            serde_json::json!([
+                {"name": "a", "module": [{"name": "m", "revision": "2020-01-01"}]},
+                {"name": "b", "module": [{"name": "m", "revision": "2021-01-01"}]}
+            ]),
+            serde_json::json!(["a", "b"]),
+        ),
+    ] {
+        let tree = serde_json::json!({
+            "yang-library": {
+                "content-id": "x",
+                "module-set": sets,
+                "schema": [{"name": "s", "module-set": schema_refs}],
+                "datastore": [{"name": "ietf-datastores:running", "schema": "s"}]
+            }
+        });
+        let err = yang_library::parse_nmda_library(&tree, 0).unwrap_err();
+        assert!(err.contains("conflicting"), "{err}");
+    }
+
+    // Same name + same revision but DIFFERENT namespaces is an
+    // identity conflict.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "ns",
+            "module-set": [{
+                "name": "ms1",
+                "module": [
+                    {"name": "m", "revision": "2020-01-01",
+                     "namespace": "urn:example:one"},
+                    {"name": "m", "revision": "2020-01-01",
+                     "namespace": "urn:example:two"}
+                ]
+            }],
+            "schema": [{"name": "s", "module-set": ["ms1"]}],
+            "datastore": [{"name": "ietf-datastores:running", "schema": "s"}]
+        }
+    });
+    let err = yang_library::parse_nmda_library(&tree, 0).unwrap_err();
+    assert!(err.contains("conflicting"), "{err}");
+
+    // Identical duplicates remain tolerated (dedup, not conflict).
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "dup",
+            "module-set": [{
+                "name": "ms1",
+                "module": [
+                    {"name": "m", "revision": "2020-01-01",
+                     "namespace": "urn:example:one"},
+                    {"name": "m", "revision": "2020-01-01",
+                     "namespace": "urn:example:one"}
+                ]
+            }],
+            "schema": [{"name": "s", "module-set": ["ms1"]}],
+            "datastore": [{"name": "ietf-datastores:running", "schema": "s"}]
+        }
+    });
+    assert!(yang_library::parse_nmda_library(&tree, 0).is_ok());
+}
