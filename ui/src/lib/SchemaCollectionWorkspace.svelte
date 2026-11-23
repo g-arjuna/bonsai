@@ -537,7 +537,9 @@
     schemaSelError = '';
     try {
       const url = '/api/devices/' + encodeURIComponent(address) + '/schema-selection';
-      const expectedRev = schemaSel?.selection?.selection_revision ?? 0;
+      // Durable epoch survives clears — never the row revision alone.
+      const expectedRev = schemaSel?.selection_epoch
+        ?? schemaSel?.selection?.selection_revision ?? 0;
       const r = await fetch(clear
         ? url + '?expected_selection_revision=' + expectedRev
         : url, {

@@ -25,7 +25,7 @@ const DB_FILE: &str = CONFIG_DB_FILE_NAME;
 /// Schema version the management service migrates to. Read-only
 /// consumers (routing service) compare against this and fail closed
 /// when the database is older.
-pub const CURRENT_SCHEMA_VERSION: i64 = 14;
+pub const CURRENT_SCHEMA_VERSION: i64 = 15;
 
 /// True when an `ALTER TABLE ... ADD COLUMN` failed only because the
 /// column already exists (i.e. a previous migration attempt partially
@@ -766,6 +766,30 @@ impl SqliteStore {
             )
             .context("schema v14 device-schema-selection migration failed")?;
             db.execute("PRAGMA user_version=14", [])
+                .context("failed to set schema version")?;
+        }
+
+        // Version 15: M6G durable selection epoch. `selection_revision`
+        // lived on the selection row, so clearing a selection reset the
+        // observable revision to 0 — an ABA hole where a stale client
+        // holding expected=0 could overwrite a newer selection after
+        // select → clear → reselect. The epoch table survives row
+        // deletion and increments on EVERY committed selection mutation
+        // (set or clear), making the fencing token monotonic for the
+        // life of the device identity.
+        if user_version < 15 {
+            db.execute_batch(
+                "CREATE TABLE IF NOT EXISTS device_schema_selection_epochs (
+                    device_key TEXT PRIMARY KEY,
+                    epoch INTEGER NOT NULL
+                );
+                INSERT OR IGNORE INTO device_schema_selection_epochs
+                    (device_key, epoch)
+                SELECT device_key, selection_revision
+                FROM device_schema_selections;",
+            )
+            .context("schema v15 selection-epoch migration failed")?;
+            db.execute("PRAGMA user_version=15", [])
                 .context("failed to set schema version")?;
         }
 
@@ -2213,6 +2237,43 @@ impl SqliteStore {
         )
     }
 
+    /// Current durable selection epoch for `device_key` inside `tx`:
+    /// the epochs table is authoritative; a selection row's
+    /// `selection_revision` is the fallback for rows predating v15;
+    /// 0 means the device has never had a selection mutation.
+    fn selection_epoch_tx(
+        tx: &rusqlite::Transaction<'_>,
+        device_key: &str,
+        row_revision: Option<i64>,
+    ) -> Result<i64> {
+        let epoch = tx
+            .query_row(
+                "SELECT epoch FROM device_schema_selection_epochs WHERE device_key = ?1",
+                [device_key],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(epoch.or(row_revision).unwrap_or(0))
+    }
+
+    /// Durable selection epoch for `device_key` — the fencing token
+    /// clients must echo as `expected_selection_revision`. Monotonic
+    /// across select → clear → reselect (never resets to 0).
+    pub fn selection_epoch(&self, device_key: &str) -> Result<i64> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        let row_rev = tx
+            .query_row(
+                "SELECT selection_revision FROM device_schema_selections WHERE device_key = ?1",
+                [device_key],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+        let epoch = Self::selection_epoch_tx(&tx, device_key, row_rev)?;
+        tx.commit()?;
+        Ok(epoch)
+    }
+
     fn upsert_device_schema_selection(
         &self,
         selection: &DeviceSchemaSelection,
@@ -2234,10 +2295,15 @@ impl SqliteStore {
                 None => None,
             }
         };
+        let current_epoch =
+            Self::selection_epoch_tx(&tx, &selection.device_key, existing.map(|(rev, _)| rev))?;
         if let Some(expected) = expected_revision {
-            let current = existing.map(|(rev, _)| rev).unwrap_or(0);
-            if current != expected {
-                return Err(SelectionRevisionConflict { expected, current }.into());
+            if current_epoch != expected {
+                return Err(SelectionRevisionConflict {
+                    expected,
+                    current: current_epoch,
+                }
+                .into());
             }
         }
         let (revision, created_at) = match existing {
@@ -2268,11 +2334,20 @@ impl SqliteStore {
                     {
                         (rev, created)
                     }
-                    _ => (rev + 1, created),
+                    _ => (current_epoch + 1, created),
                 }
             }
-            None => (1, now),
+            None => (current_epoch + 1, now),
         };
+        if revision != current_epoch {
+            tx.execute(
+                "INSERT INTO device_schema_selection_epochs (device_key, epoch)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(device_key) DO UPDATE SET epoch = excluded.epoch",
+                params![selection.device_key, revision],
+            )
+            .context("upsert device schema selection epoch")?;
+        }
         tx.execute(
             "INSERT INTO device_schema_selections (
                 device_key, device_address, schema_id, selection_source,
@@ -2372,10 +2447,15 @@ impl SqliteStore {
                 },
             )
             .optional()?;
+        let current_epoch =
+            Self::selection_epoch_tx(&tx, device_key, existing.as_ref().map(|(_, _, rev)| *rev))?;
         if let Some(expected) = expected_revision {
-            let current = existing.as_ref().map(|(_, _, rev)| *rev).unwrap_or(0);
-            if current != expected {
-                return Err(SelectionRevisionConflict { expected, current }.into());
+            if current_epoch != expected {
+                return Err(SelectionRevisionConflict {
+                    expected,
+                    current: current_epoch,
+                }
+                .into());
             }
         }
         let deleted = tx.execute(
@@ -2383,6 +2463,15 @@ impl SqliteStore {
             [device_key],
         )?;
         if deleted > 0 {
+            // The epoch survives the row deletion — a later stale
+            // request fenced on the pre-clear epoch still conflicts.
+            tx.execute(
+                "INSERT INTO device_schema_selection_epochs (device_key, epoch)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(device_key) DO UPDATE SET epoch = excluded.epoch",
+                params![device_key, current_epoch + 1],
+            )
+            .context("bump device schema selection epoch")?;
             audit_row(
                 &tx,
                 "device_schema_selections",

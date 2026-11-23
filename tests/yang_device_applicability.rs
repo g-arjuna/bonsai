@@ -2284,11 +2284,13 @@ fn m6g_selection_fenced_clear() {
             .is_none()
     );
 
-    // Clearing an absent selection expects revision 0 and reports no
-    // row deleted (false), while a wrong precondition still conflicts.
+    // Clearing an absent selection expects the CURRENT durable epoch
+    // (2 after the clear — it does not reset to 0) and reports no row
+    // deleted (false), while a wrong precondition still conflicts.
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 2);
     assert!(
         !store
-            .clear_device_schema_selection_fenced("10.0.0.9", 0, "admin", "test")
+            .clear_device_schema_selection_fenced("10.0.0.9", 2, "admin", "test")
             .unwrap()
     );
     let err = store
@@ -2298,4 +2300,48 @@ fn m6g_selection_fenced_clear() {
         err.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
             .is_some()
     );
+}
+
+#[test]
+fn m6g_selection_epoch_is_durable_across_clear() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(dir.path()).unwrap();
+    let sel = selection("10.0.0.9", "10.0.0.9:57400", "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    // Never mutated → epoch 0.
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 0);
+
+    // Unfenced internal write still advances the durable epoch.
+    store
+        .set_device_schema_selection(&sel, "admin", "test")
+        .unwrap();
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 1);
+
+    // Idempotent resubmit does not burn an epoch.
+    store
+        .set_device_schema_selection(&sel, "admin", "test")
+        .unwrap();
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 1);
+
+    // Clear deletes the row but the epoch advances and survives.
+    assert!(store.clear_device_schema_selection("10.0.0.9", "admin", "test").unwrap());
+    assert!(store.get_device_schema_selection("10.0.0.9").unwrap().is_none());
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 2);
+
+    // ABA: expected=0 no longer matches — the stale pre-clear client
+    // cannot overwrite post-clear state.
+    let err = store
+        .set_device_schema_selection_fenced(&sel, 0, "stale", "test")
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+            .is_some()
+    );
+
+    // Reselect lands on epoch 3, never resetting to 1.
+    let stored = store
+        .set_device_schema_selection_fenced(&sel, 2, "admin", "test")
+        .unwrap();
+    assert_eq!(stored.selection_revision, 3);
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 3);
 }

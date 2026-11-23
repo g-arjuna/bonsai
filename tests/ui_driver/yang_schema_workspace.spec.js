@@ -823,10 +823,14 @@ const SCHEMA_B = 'd'.repeat(64);
 const SEL_URL = `/api/devices/${ENC_ADDR}/schema-selection`;
 
 function selectionBody(overrides = {}) {
+  const selection = overrides.selection !== undefined ? overrides.selection : null;
   return {
     device_key: 'edge-1',
     device_address: DEVICE_ADDR,
-    selection: null,
+    selection,
+    // M6G: durable epoch — defaults to the row revision when a
+    // selection exists, 0 otherwise; survives clears (no ABA reset).
+    selection_epoch: overrides.selection_epoch ?? selection?.selection_revision ?? 0,
     effective_schema_id: SCHEMA_A,
     active_schema_id: SCHEMA_A,
     catalogue_state: null,
@@ -888,7 +892,8 @@ async function installSelectionFixtures(page, state) {
       state.selectionDeletes++;
       state.selectionDeleteUrls = state.selectionDeleteUrls || [];
       state.selectionDeleteUrls.push(route.request().url());
-      state.selection = selectionBody();
+      // Server truth: the durable epoch survives the row deletion.
+      state.selection = selectionBody({ selection_epoch: 2 });
       return route.fulfill({ json: state.selection });
     }
     return route.fallback();
