@@ -1261,7 +1261,10 @@ mod tests {
         // Approval state identical to before the stale request.
         let after = registry.get_device(address).unwrap().unwrap();
         assert_eq!(
-            after.schema_binding.as_ref().map(|b| b.binding_fingerprint.clone()),
+            after
+                .schema_binding
+                .as_ref()
+                .map(|b| b.binding_fingerprint.clone()),
             before_binding.map(|b| b.binding_fingerprint),
             "stale request must not revoke or replace the approval"
         );

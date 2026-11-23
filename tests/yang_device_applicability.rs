@@ -158,7 +158,9 @@ fn lib_module(
 
 /// Build a complete NMDA library covering `test-app` (revision
 /// 2024-01-01, namespace urn:example:test-app) with the given feature
-/// set, plus `test-baselib`. Datastore running → schema s1 → ms1.
+/// set, plus `test-baselib`. Datastores running+operational → schema
+/// s1 → ms1, matching real NMDA devices (e.g. SR Linux declares all
+/// five conventional datastores on one schema).
 fn nmda_outcome(
     app_features: &[&str],
     app_deviations: &[&str],
@@ -191,10 +193,16 @@ fn nmda_outcome(
             name: "s1".to_string(),
             module_sets: vec!["ms1".to_string()],
         }],
-        datastores: vec![YangLibraryDatastore {
-            name: "ietf-datastores:running".to_string(),
-            schema: "s1".to_string(),
-        }],
+        datastores: vec![
+            YangLibraryDatastore {
+                name: "ietf-datastores:running".to_string(),
+                schema: "s1".to_string(),
+            },
+            YangLibraryDatastore {
+                name: "ietf-datastores:operational".to_string(),
+                schema: "s1".to_string(),
+            },
+        ],
         origin: "ietf".to_string(),
         path: "/yang-library".to_string(),
         fetched_at_ns: 2_000,
@@ -622,8 +630,8 @@ fn t5_import_only_and_datastore_semantics() {
     assert_eq!(bl.status, ApplicabilityStatus::NotApplicable);
     assert!(bl.reasons.contains(&ReasonCode::ImportOnlyModule));
 
-    // Datastore mismatch: evaluate against operational datastore →
-    // config paths not applicable there.
+    // Datastore coverage: default evaluation unions all declared
+    // datastores — running+operational covers config AND state.
     let mut ev2 = match nmda_outcome(&["base-f"], &[], None) {
         YangLibraryOutcome::Complete { evidence } => evidence,
         _ => unreachable!(),
@@ -644,10 +652,21 @@ fn t5_import_only_and_datastore_semantics() {
         Some(&YangLibraryOutcome::Complete { evidence: ev2 }),
         &device,
     );
-    // Default selection prefers running → still applicable.
+    // Default selection prefers running → still applicable for both
+    // config and state paths (operational is declared).
     assert_eq!(r.datastore.as_deref(), Some("ietf-datastores:running"));
+    assert_eq!(
+        path_status(&r, "oper-status").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
 
-    // Explicit operational request → config paths mismatch.
+    // RFC 8342 §5: `operational` holds ALL config-true and config-false
+    // nodes — an explicit operational request covers config paths too
+    // (previously mis-modeled as state-only).
     let lib = YangLibraryOutcome::Complete {
         evidence: match nmda_outcome(&["base-f"], &[], None) {
             YangLibraryOutcome::Complete { evidence } => {
@@ -676,14 +695,14 @@ fn t5_import_only_and_datastore_semantics() {
         result.datastore.as_deref(),
         Some("ietf-datastores:operational")
     );
-    // config=true leaf (domain) → datastore mismatch.
+    // config=true leaf (domain) is covered by operational's superset
+    // schema semantics.
     let domain = result
         .paths
         .iter()
         .find(|p| p.path.ends_with("/domain"))
         .expect("domain path");
-    assert_eq!(domain.status, ApplicabilityStatus::NotApplicable);
-    assert!(domain.reasons.contains(&ReasonCode::DatastoreMismatch));
+    assert_eq!(domain.status, ApplicabilityStatus::Applicable);
     // state leaf stays applicable.
     let hostname = result
         .paths
@@ -691,6 +710,39 @@ fn t5_import_only_and_datastore_semantics() {
         .find(|p| p.path.ends_with("/hostname"))
         .expect("hostname path");
     assert_eq!(hostname.status, ApplicabilityStatus::Applicable);
+
+    // Explicit `running` request on a dual-datastore device: running is
+    // a configuration datastore — state paths provably mismatch even
+    // though operational exists (strict per-datastore view).
+    let lib = YangLibraryOutcome::Complete {
+        evidence: match nmda_outcome(&["base-f"], &[], None) {
+            YangLibraryOutcome::Complete { evidence } => evidence,
+            _ => unreachable!(),
+        },
+    };
+    let result = applicability::resolve_applicability(&ApplicabilityInput {
+        catalogue: Some(&catalogue),
+        catalogue_diagnostics: Vec::new(),
+        capabilities: None,
+        yang_library: Some(&lib),
+        requested_datastore: Some("running"),
+        platform: None,
+        device: &device,
+        now_ns: 10_000,
+    });
+    let hostname = result
+        .paths
+        .iter()
+        .find(|p| p.path.ends_with("/hostname"))
+        .expect("hostname path");
+    assert_eq!(hostname.status, ApplicabilityStatus::NotApplicable);
+    assert!(hostname.reasons.contains(&ReasonCode::DatastoreMismatch));
+    let domain = result
+        .paths
+        .iter()
+        .find(|p| p.path.ends_with("/domain"))
+        .expect("domain path");
+    assert_eq!(domain.status, ApplicabilityStatus::Applicable);
 }
 
 // ── T6: missing or damaged catalogue ─────────────────────────────────────────
@@ -1749,7 +1801,23 @@ fn t12_vendor_release_skew_stays_unresolved() {
     // (c) Requested datastore absent from the device library (XRd declares
     // only `running`/`candiate`; a plan asking for `operational` must fail
     // closed, never fall back silently).
-    let lib = nmda_outcome(&["base-f"], &[], None);
+    let lib = {
+        let mut ev = match nmda_outcome(&["base-f"], &[], None) {
+            YangLibraryOutcome::Complete { evidence } => evidence,
+            _ => unreachable!(),
+        };
+        ev.datastores = vec![
+            YangLibraryDatastore {
+                name: "ietf-datastores:running".to_string(),
+                schema: "s1".to_string(),
+            },
+            YangLibraryDatastore {
+                name: "ietf-datastores:candiate".to_string(),
+                schema: "s1".to_string(),
+            },
+        ];
+        YangLibraryOutcome::Complete { evidence: ev }
+    };
     let r = applicability::resolve_applicability(&ApplicabilityInput {
         catalogue: Some(&catalogue),
         catalogue_diagnostics: Vec::new(),
@@ -2209,11 +2277,12 @@ fn m6g_unrecognized_datastore_never_grants_positive_applicability() {
 }
 
 #[test]
-fn m6g_recognized_datastore_semantics_unchanged() {
+fn m6g_recognized_datastore_semantics_rfc8342() {
     let catalogue = compile_app();
     let device = binding();
 
-    // running → config+state (RFC 8342 merged view).
+    // Dual running+operational device (the nmda_outcome default): union
+    // coverage → config AND state paths applicable.
     let lib = nmda_outcome(&["base-f", "fancy-f"], &[], None);
     let r = resolve(Some(&catalogue), None, Some(&lib), &device);
     assert_eq!(r.overall_status, ApplicabilityStatus::Applicable);
@@ -2226,8 +2295,31 @@ fn m6g_recognized_datastore_semantics_unchanged() {
         ApplicabilityStatus::Applicable
     );
 
-    // operational-only device → state paths applicable, config paths
-    // provably mismatched (not merely unknown).
+    // running-ONLY device (RFC 8342: running is a configuration
+    // datastore — it does NOT store operational state): config paths
+    // applicable, state paths provably mismatch.
+    let mut ev = match nmda_outcome(&["base-f", "fancy-f"], &[], None) {
+        YangLibraryOutcome::Complete { evidence } => evidence,
+        _ => unreachable!(),
+    };
+    ev.datastores = vec![YangLibraryDatastore {
+        name: "ietf-datastores:running".to_string(),
+        schema: "s1".to_string(),
+    }];
+    let lib = YangLibraryOutcome::Complete { evidence: ev };
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable,
+        "config leaf applicable on running"
+    );
+    let hostname = path_status(&r, "hostname").unwrap();
+    assert_eq!(hostname.status, ApplicabilityStatus::NotApplicable);
+    assert!(hostname.reasons.contains(&ReasonCode::DatastoreMismatch));
+
+    // operational-only device → BOTH config and state paths applicable
+    // (operational's schema is a superset of the configuration
+    // datastores').
     let mut ev = match nmda_outcome(&["base-f", "fancy-f"], &[], None) {
         YangLibraryOutcome::Complete { evidence } => evidence,
         _ => unreachable!(),
@@ -2241,11 +2333,13 @@ fn m6g_recognized_datastore_semantics_unchanged() {
     assert_eq!(
         path_status(&r, "hostname").unwrap().status,
         ApplicabilityStatus::Applicable,
-        "state leaf stays applicable on operational"
+        "state leaf applicable on operational"
     );
-    let domain = path_status(&r, "domain").unwrap();
-    assert_eq!(domain.status, ApplicabilityStatus::NotApplicable);
-    assert!(domain.reasons.contains(&ReasonCode::DatastoreMismatch));
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable,
+        "config leaf applicable on operational's superset schema"
+    );
 }
 
 // ── M6G: schema-selection optimistic concurrency ────────────────────────
@@ -2414,7 +2508,11 @@ fn m6g_selection_fenced_clear() {
 fn m6g_selection_epoch_is_durable_across_clear() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(dir.path()).unwrap();
-    let sel = selection("10.0.0.9", "10.0.0.9:57400", "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let sel = selection(
+        "10.0.0.9",
+        "10.0.0.9:57400",
+        "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
 
     // Never mutated → epoch 0.
     assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 0);
@@ -2432,8 +2530,17 @@ fn m6g_selection_epoch_is_durable_across_clear() {
     assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 1);
 
     // Clear deletes the row but the epoch advances and survives.
-    assert!(store.clear_device_schema_selection("10.0.0.9", "admin", "test").unwrap());
-    assert!(store.get_device_schema_selection("10.0.0.9").unwrap().is_none());
+    assert!(
+        store
+            .clear_device_schema_selection("10.0.0.9", "admin", "test")
+            .unwrap()
+    );
+    assert!(
+        store
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 2);
 
     // ABA: expected=0 no longer matches — the stale pre-clear client
@@ -2768,10 +2875,16 @@ fn feats_outcome(feats_features: &[&str]) -> YangLibraryOutcome {
             name: "sf".to_string(),
             module_sets: vec!["msf".to_string()],
         }],
-        datastores: vec![YangLibraryDatastore {
-            name: "ietf-datastores:running".to_string(),
-            schema: "sf".to_string(),
-        }],
+        datastores: vec![
+            YangLibraryDatastore {
+                name: "ietf-datastores:running".to_string(),
+                schema: "sf".to_string(),
+            },
+            YangLibraryDatastore {
+                name: "ietf-datastores:operational".to_string(),
+                schema: "sf".to_string(),
+            },
+        ],
         origin: "ietf".to_string(),
         path: "/yang-library".to_string(),
         fetched_at_ns: 2_000,
@@ -2911,10 +3024,16 @@ fn m6g_circular_feature_dependencies_are_compile_time_invalid() {
                 name: "sc".to_string(),
                 module_sets: vec!["msc".to_string()],
             }],
-            datastores: vec![YangLibraryDatastore {
-                name: "ietf-datastores:running".to_string(),
-                schema: "sc".to_string(),
-            }],
+            datastores: vec![
+                YangLibraryDatastore {
+                    name: "ietf-datastores:running".to_string(),
+                    schema: "sc".to_string(),
+                },
+                YangLibraryDatastore {
+                    name: "ietf-datastores:operational".to_string(),
+                    schema: "sc".to_string(),
+                },
+            ],
             origin: "ietf".to_string(),
             path: "/yang-library".to_string(),
             fetched_at_ns: 2_000,
@@ -2930,4 +3049,52 @@ fn m6g_circular_feature_dependencies_are_compile_time_invalid() {
             p.path
         );
     }
+}
+
+/// XRd's recorded evidence: YANG Library declares `running` plus the
+/// misspelled `ietf-datastores:candiate`. running provably lacks state;
+/// the unrecognized identity is Unknown — the union can prove neither
+/// presence nor absence of state coverage, so state paths cap at
+/// `unknown` (never positive, never a fabricated negative). Config
+/// paths remain provably covered by `running`.
+#[test]
+fn m6g_xrd_running_plus_unrecognized_datastore_state_stays_unknown() {
+    let catalogue = compile_app();
+    let device = binding();
+
+    let mut ev = match nmda_outcome(&["base-f", "fancy-f"], &[], None) {
+        YangLibraryOutcome::Complete { evidence } => evidence,
+        _ => unreachable!(),
+    };
+    ev.datastores = vec![
+        YangLibraryDatastore {
+            name: "ietf-datastores:running".to_string(),
+            schema: "s1".to_string(),
+        },
+        YangLibraryDatastore {
+            name: "ietf-datastores:candiate".to_string(),
+            schema: "s1".to_string(),
+        },
+    ];
+    let lib = YangLibraryOutcome::Complete { evidence: ev };
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable,
+        "config coverage proven by running"
+    );
+    let hostname = path_status(&r, "hostname").unwrap();
+    assert_eq!(
+        hostname.status,
+        ApplicabilityStatus::Unknown,
+        "state coverage unproven: running lacks state, candiate unrecognized: {hostname:?}"
+    );
+    assert!(
+        hostname
+            .reasons
+            .contains(&ReasonCode::DatastoreSemanticsUnverified)
+    );
+    // Overall must not claim applicable while an axis is unverified.
+    assert_ne!(r.overall_status, ApplicabilityStatus::Applicable);
 }
