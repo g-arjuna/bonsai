@@ -1783,6 +1783,7 @@ pub(super) async fn schema_binding_activate_handler(
     };
     let expected_revision = activation.record.approval_revision - 1;
     let expected_config_revision = activation.evaluation.config_revision;
+    let effective_schema_id = activation.effective_schema_id.clone();
     let updated = state
         .registry
         .activate_schema_binding(
@@ -1792,6 +1793,7 @@ pub(super) async fn schema_binding_activate_handler(
             expected_config_revision,
             &actor,
             "api_schema_binding_activate",
+            effective_schema_id.as_deref(),
         )
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
 
@@ -2033,19 +2035,36 @@ pub(super) async fn device_schema_selection_put_handler(
         updated_at_ns: 0,
     };
     let store_for_write = store.clone();
+    let actor_for_write = actor.clone();
     tokio::task::spawn_blocking(move || {
         store_for_write
-            .set_device_schema_selection(&selection, &actor, "api_device_schema_select")
+            .set_device_schema_selection(&selection, &actor_for_write, "api_device_schema_select")
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
 
-    if let Some(updated) = revoked
-        && let Some(cid) = updated.collector_id.as_deref()
-        && let Some(manager) = state.collector_manager.as_ref()
-    {
-        manager.resync_collector(cid).await;
+    // Post-commit sweep: an approval evaluated against the OLD selection
+    // may have committed between the pre-revoke and this write (the
+    // in-transaction check only sees the selection state at its own
+    // commit time). Re-run the fingerprint-guarded device-scoped revoke
+    // against the NEW effective schema so no inconsistent approval can
+    // survive the mutation window.
+    let post_revoked = crate::schema_binding::revoke_binding_for_device_schema_change(
+        state.registry.as_ref(),
+        &target.address,
+        &schema_id,
+        &actor,
+        "api_device_schema_select_post",
+    )
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+
+    for updated in revoked.into_iter().chain(post_revoked) {
+        if let Some(cid) = updated.collector_id.as_deref()
+            && let Some(manager) = state.collector_manager.as_ref()
+        {
+            manager.resync_collector(cid).await;
+        }
     }
 
     let response = {
@@ -2131,11 +2150,23 @@ pub(super) async fn device_schema_selection_delete_handler(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
 
-    if let Some(updated) = revoked
-        && let Some(cid) = updated.collector_id.as_deref()
-        && let Some(manager) = state.collector_manager.as_ref()
-    {
-        manager.resync_collector(cid).await;
+    // Post-commit sweep against the now-effective (global active)
+    // catalogue — same mutation-window coverage as selection PUT.
+    let post_revoked = crate::schema_binding::revoke_binding_for_device_schema_change(
+        state.registry.as_ref(),
+        &target.address,
+        &effective_after_clear,
+        &actor,
+        "api_device_schema_clear_post",
+    )
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+
+    for updated in revoked.into_iter().chain(post_revoked) {
+        if let Some(cid) = updated.collector_id.as_deref()
+            && let Some(manager) = state.collector_manager.as_ref()
+        {
+            manager.resync_collector(cid).await;
+        }
     }
 
     let response = {

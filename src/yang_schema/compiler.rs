@@ -340,32 +340,61 @@ fn compile_inner(
             }
             continue;
         }
-        // Same name+revision content conflicts resolve deterministically:
-        // lowest checksum, then lowest source ref — independent of input
-        // order. Every other candidate is dropped with a diagnostic.
+        // Same name+revision content conflicts resolve by the same
+        // authority hierarchy as library record selection
+        // (`select_active_records`): operator approval, then trust rank,
+        // then content checksum, then source ref — never input order.
+        // Candidates that TIE on approval and trust but carry distinct
+        // content are an unresolved authority conflict: fail closed
+        // (diagnostic + module absent → non-authoritative catalogue)
+        // rather than letting checksum ordering silently pick a winner.
         let mut sorted = matching;
         sorted.sort_by(|a, b| {
             let ia = kept[*a].as_ref().unwrap();
             let ib = kept[*b].as_ref().unwrap();
-            ia.checksum_sha256
-                .cmp(&ib.checksum_sha256)
+            ib.approved
+                .cmp(&ia.approved)
+                .then_with(|| {
+                    crate::yang::trust_rank(&ib.trust).cmp(&crate::yang::trust_rank(&ia.trust))
+                })
+                .then_with(|| ia.checksum_sha256.cmp(&ib.checksum_sha256))
                 .then_with(|| ia.source_ref.cmp(&ib.source_ref))
         });
-        for &idx in sorted.iter().skip(1) {
-            drop_idx.insert(idx);
+        let top = kept[sorted[0]].as_ref().unwrap();
+        let top_authority = (top.approved, crate::yang::trust_rank(&top.trust));
+        let top_checksums: BTreeSet<&str> = sorted
+            .iter()
+            .map(|&i| kept[i].as_ref().unwrap())
+            .filter(|input| {
+                (input.approved, crate::yang::trust_rank(&input.trust)) == top_authority
+            })
+            .map(|input| input.checksum_sha256.as_str())
+            .collect();
+        if top_checksums.len() > 1 {
             diagnostics.push(format!(
-                "module '{}' has conflicting content for pinned revision '{}'; keeping checksum {}, dropped checksum {}",
+                "module '{}' pinned to revision '{}' has {} conflicting contents at the same approval/trust authority; refusing to select",
                 name,
                 revision,
-                kept[sorted[0]].as_ref().unwrap().checksum_sha256,
-                kept[idx].as_ref().unwrap().checksum_sha256
+                top_checksums.len()
             ));
+            for &idx in idxs {
+                drop_idx.insert(idx);
+            }
+            continue;
         }
         let kept_idx = sorted[0];
         for &idx in idxs {
             if idx != kept_idx {
                 drop_idx.insert(idx);
-                if !sorted.contains(&idx) {
+                if sorted.contains(&idx) {
+                    diagnostics.push(format!(
+                        "module '{}' has conflicting content for pinned revision '{}'; keeping checksum {}, dropped checksum {}",
+                        name,
+                        revision,
+                        kept[kept_idx].as_ref().unwrap().checksum_sha256,
+                        kept[idx].as_ref().unwrap().checksum_sha256
+                    ));
+                } else {
                     diagnostics.push(format!(
                         "module '{}' has multiple revisions; pinned '{}', dropped '{}'",
                         name,
@@ -668,6 +697,13 @@ fn compile_inner(
         modules: modules_out,
         paths,
         diagnostics,
+        // Provenance of THIS compile request only. Deliberately excluded
+        // from `schema_id`: authorization depends on the compiled
+        // modules/paths/diagnostics, not on how they were requested —
+        // identical effective closures deduplicate to one bundle. The
+        // stored value describes the first writer's request, NOT every
+        // later request that deduplicated here; per-request audit lives
+        // in the selection/compile call records, not the bundle.
         module_selection: options.module_revisions.clone(),
     }
 }

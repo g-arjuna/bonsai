@@ -2051,7 +2051,15 @@ fn forged_bundle_metadata_cannot_evict_verified_bundles() {
             &CompileOptions::default(),
         );
         cat.compiled_at_ns = 1_000 + i as i64;
-        persist_compiled(&library, &cat).unwrap();
+        // These tests assert retention semantics, so they opt in to
+        // enforcement with an explicitly empty reference set — the
+        // caller asserts no device selections or approvals exist.
+        bonsai::yang_schema::persist_compiled_with_references(
+            &library,
+            &cat,
+            Some(&std::collections::BTreeSet::new()),
+        )
+        .unwrap();
         legit_ids.push(cat.schema_id.clone());
     }
     let cdir = dir.path().join("lib").join("compiled");
@@ -2080,7 +2088,12 @@ fn forged_bundle_metadata_cannot_evict_verified_bundles() {
         vec![inline_input("legit39", &tiny_yang("urn:legit39"))],
         &CompileOptions::default(),
     );
-    persist_compiled(&library, &trigger).unwrap();
+    bonsai::yang_schema::persist_compiled_with_references(
+        &library,
+        &trigger,
+        Some(&std::collections::BTreeSet::new()),
+    )
+    .unwrap();
 
     // The forged bundle must not survive retention: it is proven invalid
     // and evicted rather than trusted.
@@ -2132,7 +2145,12 @@ fn unreadable_bundle_beyond_retention_cutoff_is_preserved() {
             )],
             &CompileOptions::default(),
         );
-        persist_compiled(&library, &cat).unwrap();
+        bonsai::yang_schema::persist_compiled_with_references(
+            &library,
+            &cat,
+            Some(&std::collections::BTreeSet::new()),
+        )
+        .unwrap();
     }
 
     // An unreadable "bundle": a directory named like a compiled bundle.
@@ -2158,7 +2176,12 @@ fn unreadable_bundle_beyond_retention_cutoff_is_preserved() {
         )],
         &CompileOptions::default(),
     );
-    persist_compiled(&library, &trigger).unwrap();
+    bonsai::yang_schema::persist_compiled_with_references(
+        &library,
+        &trigger,
+        Some(&std::collections::BTreeSet::new()),
+    )
+    .unwrap();
 
     assert!(
         cdir.join(format!("{unreadable_id}.json")).exists(),
@@ -2598,4 +2621,96 @@ fn m6ff_retention_protects_referenced_bundles() {
         list_compiled(&library).unwrap().len(),
         bonsai::yang_schema::MAX_COMPILED_BUNDLES + 2
     );
+}
+
+#[test]
+fn revision_pin_respects_authority_and_fails_closed_on_unresolved_ties() {
+    // A4: pinned same-(name,revision) conflicts resolve by approval/trust
+    // authority — never by checksum ordering alone. ModuleInput is not
+    // Clone, so each compile gets freshly built fixtures.
+    let build =
+        |trusted_leaf: &str, exp_leaf: &str, exp_trust: &str, exp_sum: &str, exp_approved: bool| {
+            let trusted = pinned_input(
+                "conf-mod",
+                &rev_module("conf-mod", "2024-01-01", trusted_leaf),
+                "trusted-src",
+            );
+            let mut experimental = pinned_input(
+                "conf-mod",
+                &rev_module("conf-mod", "2024-01-01", exp_leaf),
+                "aaa-sorts-first",
+            );
+            experimental.trust = exp_trust.to_string();
+            experimental.checksum_sha256 = exp_sum.to_string();
+            experimental.approved = exp_approved;
+            (trusted, experimental)
+        };
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert("conf-mod".to_string(), "2024-01-01".to_string());
+    let opts = CompileOptions {
+        module_revisions: pins,
+        trusted_only: false,
+    };
+
+    // Trusted content wins regardless of checksum order or input order.
+    for reverse in [false, true] {
+        let (trusted, experimental) = build(
+            "leaf trusted_leaf { type string; }",
+            "leaf experimental_leaf { type string; }",
+            "experimental",
+            "aaa",
+            false,
+        );
+        let inputs = if reverse {
+            vec![experimental, trusted]
+        } else {
+            vec![trusted, experimental]
+        };
+        let cat = compile_parsed(inputs, &opts);
+        assert_eq!(cat.modules.len(), 1, "exactly one conf-mod compiled");
+        assert_eq!(cat.modules[0].trust, "trusted");
+        assert_eq!(cat.modules[0].source_ref, "conf-mod@trusted-src");
+        assert!(
+            !cat.diagnostics
+                .iter()
+                .any(|d| d.contains("unresolved") || d.contains("refusing to select"))
+        );
+    }
+
+    // Two same-authority candidates with DISTINCT content are an
+    // unresolved conflict — fail closed: module absent, diagnostic,
+    // non-authoritative catalogue. Never silently pick by checksum.
+    let (trusted, rival) = {
+        let (t, mut r) = build(
+            "leaf trusted_leaf { type string; }",
+            "leaf rival_leaf { type string; }",
+            "trusted",
+            "zzz",
+            false,
+        );
+        r.source_ref = "conf-mod@zzz-sorts-last".to_string();
+        (t, r)
+    };
+    let cat = compile_parsed(vec![trusted, rival], &opts);
+    assert!(cat.modules.is_empty(), "unresolved tie must not compile");
+    assert!(
+        cat.diagnostics
+            .iter()
+            .any(|d| d.contains("conflicting contents at the same approval/trust authority"))
+    );
+    assert_ne!(cat.status, "complete");
+
+    // Operator approval outranks trust: an approved experimental record
+    // beats an unapproved trusted one.
+    let (trusted, approved_exp) = build(
+        "leaf trusted_leaf { type string; }",
+        "leaf experimental_leaf { type string; }",
+        "experimental",
+        "aaa",
+        true,
+    );
+    let cat = compile_parsed(vec![trusted, approved_exp], &opts);
+    assert_eq!(cat.modules.len(), 1);
+    assert!(cat.modules[0].approved);
+    assert_eq!(cat.modules[0].trust, "experimental");
 }

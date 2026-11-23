@@ -386,8 +386,15 @@ fn read_verified_bundle(library: &YangLibrary, schema_id: &str) -> Result<Compil
 /// Retention protects only the active bundle — callers that know durable
 /// device/schema references MUST use [`persist_compiled_with_references`]
 /// so referenced bundles can never be evicted as "oldest".
+/// Persist a compiled bundle and refresh the index WITHOUT retention
+/// enforcement. This low-level primitive cannot know which bundles are
+/// referenced by device selections or active approvals, so it must
+/// never evict: callers that have established reference authority use
+/// [`persist_compiled_with_references`] (or the compile entry points,
+/// which resolve references from the store). Destructive retention
+/// requires complete reference knowledge or it does not run (M6F-F).
 pub fn persist_compiled(library: &YangLibrary, catalogue: &CompiledCatalogue) -> Result<()> {
-    persist_compiled_impl(library, catalogue, true, &BTreeSet::new())
+    persist_compiled_impl(library, catalogue, false, &BTreeSet::new())
 }
 
 /// Persist with reference-aware retention (M6F-F). `references` is the

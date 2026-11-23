@@ -815,3 +815,187 @@ test.describe('M6D schema collection workspace', () => {
     await expect(page.getByTestId('refresh-message')).not.toContainText('snapshot #');
   });
 });
+
+// ── M6F-F: per-device schema selection ─────────────────────────────────────
+
+const SCHEMA_A = 'a'.repeat(64);
+const SCHEMA_B = 'd'.repeat(64);
+const SEL_URL = `/api/devices/${ENC_ADDR}/schema-selection`;
+
+function selectionBody(overrides = {}) {
+  return {
+    device_key: 'edge-1',
+    device_address: DEVICE_ADDR,
+    selection: null,
+    effective_schema_id: SCHEMA_A,
+    active_schema_id: SCHEMA_A,
+    catalogue_state: null,
+    ...overrides,
+  };
+}
+
+function selectionRow(schemaId, rev = 1) {
+  return {
+    device_key: 'edge-1',
+    device_address: DEVICE_ADDR,
+    schema_id: schemaId,
+    selection_source: 'admin',
+    selected_by: 'op',
+    note: null,
+    selection_revision: rev,
+    created_at_ns: 1,
+    updated_at_ns: 1,
+  };
+}
+
+function compiledBundlesBody() {
+  return {
+    bundles: [
+      { schema_id: SCHEMA_A, compiled_at_ns: 2, module_count: 10, path_count: 100, diagnostics: 0, active: true },
+      { schema_id: SCHEMA_B, compiled_at_ns: 1, module_count: 8, path_count: 90, diagnostics: 0, active: false },
+    ],
+  };
+}
+
+async function installSelectionFixtures(page, state) {
+  state.selection = state.selection || selectionBody();
+  state.selectionPuts = state.selectionPuts || [];
+  state.selectionDeletes = state.selectionDeletes || 0;
+  state.selectionPutStatus = state.selectionPutStatus || 200;
+
+  await page.route('**/api/yang/compiled**', (route) =>
+    route.fulfill({ json: compiledBundlesBody() })
+  );
+  await page.route(`**${SEL_URL}`, (route) => {
+    const method = route.request().method();
+    if (method === 'GET') {
+      return route.fulfill({ json: state.selection });
+    }
+    if (method === 'PUT') {
+      state.selectionPuts.push(route.request().postDataJSON() || {});
+      if (state.selectionPutStatus !== 200) {
+        return route.fulfill({ status: state.selectionPutStatus, json: { error: 'forbidden' } });
+      }
+      const sid = (route.request().postDataJSON() || {}).schema_id;
+      state.selection = selectionBody({
+        selection: selectionRow(sid, 2),
+        effective_schema_id: sid,
+      });
+      return route.fulfill({ json: state.selection });
+    }
+    if (method === 'DELETE') {
+      state.selectionDeletes++;
+      state.selection = selectionBody();
+      return route.fulfill({ json: state.selection });
+    }
+    return route.fallback();
+  });
+}
+
+test.describe('M6F-F device schema selection', () => {
+  test('admin sees default selection and can bind a verified bundle', async ({ page }) => {
+    const state = {};
+    await installFixtures(page, state);
+    await installSelectionFixtures(page, state);
+    await openSchemaWorkspace(page);
+
+    const card = page.locator('[data-testid="schema-selection"]');
+    await expect(card).toBeVisible();
+    await expect(card).toContainText('default (active catalogue)');
+
+    await page.locator('[data-testid="schema-bundle-select"]').selectOption(SCHEMA_B);
+    await page.locator('[data-testid="schema-select-apply"]').click();
+    await page.locator('[data-testid="schema-select-confirm"]').getByRole('button', { name: 'Confirm' }).click();
+
+    await expect.poll(() => state.selectionPuts.length).toBe(1);
+    expect(state.selectionPuts[0].schema_id).toBe(SCHEMA_B);
+    await expect(page.locator('[data-testid="schema-select-message"]')).toContainText('Schema selection updated');
+    await expect(card).toContainText('explicit');
+  });
+
+  test('explicit selection shows selected, effective and active identities', async ({ page }) => {
+    const state = {
+      selection: selectionBody({
+        selection: selectionRow(SCHEMA_B, 3),
+        effective_schema_id: SCHEMA_B,
+      }),
+      applicability: applicabilityBody({
+        snapshot: snapshot({
+          active_schema_id: SCHEMA_A,
+          effective_schema_id: SCHEMA_B,
+          selected_schema_id: SCHEMA_B,
+        }),
+      }),
+    };
+    await installFixtures(page, state);
+    await installSelectionFixtures(page, state);
+    await openSchemaWorkspace(page);
+
+    const card = page.locator('[data-testid="schema-selection"]');
+    await expect(card).toContainText('explicit');
+    await expect(card).toContainText('rev 3');
+    await expect(page.locator('[data-testid="effective-schema"]')).toBeVisible();
+    // Evidence grid distinguishes the three identities.
+    const grid = page.locator('.evidence-grid').first();
+    await expect(grid).toContainText('Selected schema');
+    await expect(grid).toContainText('Effective schema');
+    await expect(grid).toContainText('Active schema');
+  });
+
+  test('viewer sees the card read-only with no mutation controls', async ({ page }) => {
+    const state = { role: 'viewer' };
+    await installFixtures(page, state);
+    await installSelectionFixtures(page, state);
+    await openSchemaWorkspace(page);
+
+    await expect(page.locator('[data-testid="schema-selection"]')).toBeVisible();
+    await expect(page.locator('[data-testid="schema-bundle-select"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="schema-select-clear"]')).toHaveCount(0);
+  });
+
+  test('admin clears an explicit selection back to the active catalogue', async ({ page }) => {
+    const state = {
+      selection: selectionBody({
+        selection: selectionRow(SCHEMA_B, 1),
+        effective_schema_id: SCHEMA_B,
+      }),
+    };
+    await installFixtures(page, state);
+    await installSelectionFixtures(page, state);
+    await openSchemaWorkspace(page);
+
+    await page.locator('[data-testid="schema-select-clear"]').click();
+    await expect.poll(() => state.selectionDeletes).toBe(1);
+    await expect(page.locator('[data-testid="schema-select-message"]')).toContainText('cleared');
+    await expect(page.locator('[data-testid="schema-selection"]')).toContainText('default (active catalogue)');
+  });
+
+  test('selection API errors surface truthfully', async ({ page }) => {
+    const state = { selectionPutStatus: 403 };
+    await installFixtures(page, state);
+    await installSelectionFixtures(page, state);
+    await openSchemaWorkspace(page);
+
+    await page.locator('[data-testid="schema-bundle-select"]').selectOption(SCHEMA_B);
+    await page.locator('[data-testid="schema-select-apply"]').click();
+    await page.locator('[data-testid="schema-select-confirm"]').getByRole('button', { name: 'Confirm' }).click();
+
+    await expect(page.locator('[data-testid="schema-select-error"]')).toContainText('Forbidden');
+    await expect(page.locator('[data-testid="schema-select-message"]')).toHaveCount(0);
+  });
+
+  test('non-authoritative effective catalogue state is displayed', async ({ page }) => {
+    const state = {
+      selection: selectionBody({
+        selection: selectionRow(SCHEMA_B, 1),
+        effective_schema_id: SCHEMA_B,
+        catalogue_state: 'catalogue_failed',
+      }),
+    };
+    await installFixtures(page, state);
+    await installSelectionFixtures(page, state);
+    await openSchemaWorkspace(page);
+
+    await expect(page.locator('[data-testid="schema-selection"]')).toContainText('catalogue failed');
+  });
+});

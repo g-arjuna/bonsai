@@ -1148,9 +1148,10 @@ impl SqliteStore {
     }
 
     pub fn delete_device(&self, address: &str, actor: &str) -> Result<()> {
-        let old = self
-            .get_device(address)?
-            .map(|d| serde_json::to_string(&d).unwrap());
+        let old_device = self.get_device(address)?;
+        let old = old_device
+            .as_ref()
+            .map(|d| serde_json::to_string(d).unwrap());
         let rows = {
             let db = self.db.lock().unwrap();
             let rows = db.execute("DELETE FROM devices WHERE address = ?1", params![address])?;
@@ -1159,6 +1160,20 @@ impl SqliteStore {
                     "DELETE FROM schema_bindings WHERE device_address = ?1",
                     params![address],
                 )?;
+                // M6F-F: the durable schema selection is device authority —
+                // it must not outlive the device row, or a re-enrolled
+                // device would silently inherit a stale schema binding
+                // (and retention would protect its bundle forever).
+                if let Some(device) = &old_device {
+                    let device_key = device
+                        .external_id
+                        .clone()
+                        .unwrap_or_else(|| crate::registry::canonical_device_key(&device.address));
+                    db.execute(
+                        "DELETE FROM device_schema_selections WHERE device_key = ?1",
+                        params![device_key],
+                    )?;
+                }
             }
             rows
         };
@@ -2322,32 +2337,57 @@ impl SqliteStore {
                 out.insert(row.get::<_, String>(0)?);
             }
         }
-        // Active approvals pin their approved schema: the durable policy
-        // row and the device-row runtime binding must agree, but either
-        // source alone is sufficient reason to retain the bundle.
+        // Active approvals pin their approved schema. Reference discovery
+        // fails CLOSED: an active schema-bound record whose schema
+        // identity cannot be established is corrupt authority state —
+        // retention must suspend (error → callers skip eviction) rather
+        // than infer the bundle is unreferenced. Legitimately absent
+        // bindings (no row / revoked / non-schema_bound mode) are simply
+        // skipped; they carry no schema authority.
         for record in self.list_schema_bindings(usize::MAX)? {
-            if record.state != "active" {
+            if record.state != "active" || record.mode != "schema_bound" {
                 continue;
             }
-            if let Ok(policy) = serde_json::from_str::<serde_json::Value>(&record.policy_json)
-                && let Some(sid) = policy.get("schema_id").and_then(|v| v.as_str())
-            {
-                out.insert(sid.to_string());
-            }
+            let policy: serde_json::Value = serde_json::from_str(&record.policy_json)
+                .with_context(|| {
+                    format!(
+                        "active schema binding for '{}' has unparseable policy_json",
+                        record.device_key
+                    )
+                })?;
+            let sid = policy
+                .get("schema_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .with_context(|| {
+                    format!(
+                        "active schema binding for '{}' policy lacks a schema_id",
+                        record.device_key
+                    )
+                })?;
+            out.insert(sid.to_string());
         }
         {
             let db = self.db.lock().unwrap();
             let mut stmt = db.prepare(
-                "SELECT schema_binding_json FROM devices WHERE schema_binding_json IS NOT NULL",
+                "SELECT address, schema_binding_json FROM devices WHERE schema_binding_json IS NOT NULL",
             )?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
-                let raw: Option<String> = row.get(0)?;
-                if let Some(raw) = raw
-                    && let Ok(binding) = serde_json::from_str::<serde_json::Value>(&raw)
-                    && let Some(sid) = binding.get("schema_id").and_then(|v| v.as_str())
-                {
-                    out.insert(sid.to_string());
+                let address: String = row.get(0)?;
+                let raw: String = row.get(1)?;
+                // Typed decode — the runtime authority column must satisfy
+                // the SchemaBindingConfig contract. A malformed value is
+                // corrupt authority state, not an absent reference.
+                let binding: crate::config::SchemaBindingConfig = serde_json::from_str(&raw)
+                    .with_context(|| {
+                        format!("device '{address}' has unparseable schema_binding_json")
+                    })?;
+                if binding.mode == "schema_bound" {
+                    if binding.schema_id.is_empty() {
+                        anyhow::bail!("device '{address}' schema binding lacks a schema_id");
+                    }
+                    out.insert(binding.schema_id);
                 }
             }
         }
@@ -2368,6 +2408,7 @@ impl SqliteStore {
         expected_revision: i64,
         actor: &str,
         action: &str,
+        expected_effective_schema_id: Option<&str>,
     ) -> Result<SchemaBindingRecord> {
         if record.device_key != device_key || record.device_address != device.address {
             anyhow::bail!("schema binding record does not match target device");
@@ -2403,6 +2444,32 @@ impl SqliteStore {
 
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
+        // M6F-F durable authority boundary: an approval may only commit
+        // while its schema identity equals the device's CURRENT effective
+        // schema — the durable selection row when present, else the
+        // caller-supplied active-catalogue identity. This closes the
+        // selection-change/approval-activation race inside the same
+        // serialized transaction domain as the selection write itself.
+        if let Some(default_schema_id) = expected_effective_schema_id
+            && let Some(binding) = device.schema_binding.as_ref()
+            && binding.mode == "schema_bound"
+        {
+            let selected: Option<String> = tx
+                .query_row(
+                    "SELECT schema_id FROM device_schema_selections WHERE device_key = ?1",
+                    [device_key],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let effective = selected.as_deref().unwrap_or(default_schema_id);
+            if binding.schema_id != effective {
+                anyhow::bail!(
+                    "schema-bound activation rejected: device effective schema is '{}' but approval derives from '{}'",
+                    effective,
+                    binding.schema_id
+                );
+            }
+        }
         let current_revision: Option<i64> = tx
             .query_row(
                 "SELECT approval_revision FROM schema_bindings WHERE device_key = ?1",
@@ -3993,7 +4060,7 @@ mod tests {
             updated_at_ns: 1,
         };
         store
-            .activate_schema_binding("10.0.0.30", &device, &record, 0, "admin", "activate")
+            .activate_schema_binding("10.0.0.30", &device, &record, 0, "admin", "activate", None)
             .expect("activate");
         let reread = store.get_device("10.0.0.30").expect("get").expect("some");
         assert_eq!(reread.schema_binding, Some(binding.clone()));
@@ -4013,7 +4080,7 @@ mod tests {
         let stale = record.clone();
         assert!(
             store
-                .activate_schema_binding("10.0.0.30", &device, &stale, 0, "admin", "activate")
+                .activate_schema_binding("10.0.0.30", &device, &stale, 0, "admin", "activate", None)
                 .is_err(),
             "stale expected_revision must fail closed"
         );
@@ -4059,5 +4126,245 @@ mod tests {
         // empty rather than fabricating values or crashing the read.
         assert!(devices[0].selected_paths.is_empty());
         assert!(devices[0].extra_ips.is_empty());
+    }
+
+    // ── M6F-F Phase A: retention reference integrity + commit boundary ──
+
+    fn bound_device(address: &str, schema_id: &str) -> TargetConfig {
+        TargetConfig {
+            address: address.to_string(),
+            enabled: true,
+            collector_id: Some("c1".to_string()),
+            acquisition: crate::config::AcquisitionMode::Explicit,
+            schema_binding: Some(crate::config::SchemaBindingConfig {
+                mode: "schema_bound".to_string(),
+                schema_id: schema_id.to_string(),
+                snapshot_id: 1,
+                content_id: None,
+                datastore: None,
+                evidence_fingerprint: "fp".to_string(),
+                plan_id: "p".to_string(),
+                binding_fingerprint: format!("bf-{schema_id}"),
+                approval_revision: 1,
+                collector_id: Some("c1".to_string()),
+                approved_by: "admin".to_string(),
+                approved_at_ns: 1,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn binding_record(address: &str, schema_id: &str) -> SchemaBindingRecord {
+        SchemaBindingRecord {
+            device_key: crate::registry::canonical_device_key(address),
+            device_address: address.to_string(),
+            mode: "schema_bound".to_string(),
+            policy_json: format!("{{\"schema_id\":\"{schema_id}\"}}"),
+            approved_plan_json: None,
+            approval_revision: 1,
+            approval_fingerprint: Some(format!("bf-{schema_id}")),
+            state: "active".to_string(),
+            approved_by: Some("admin".to_string()),
+            approved_at_ns: Some(1),
+            revoked_by: None,
+            revoked_at_ns: None,
+            revoke_reason: None,
+            created_at_ns: 1,
+            updated_at_ns: 1,
+        }
+    }
+
+    fn insert_binding_row(store: &SqliteStore, policy_json: &str, state: &str, mode: &str) {
+        let db = store.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO schema_bindings (
+                device_key, device_address, mode, policy_json, approved_plan_json,
+                approval_revision, approval_fingerprint, state, approved_by,
+                approved_at_ns, revoked_by, revoked_at_ns, revoke_reason,
+                created_at_ns, updated_at_ns
+             ) VALUES ('10.0.0.41', '10.0.0.41', ?1, ?2, NULL, 1, 'fp', ?3,
+                       'admin', 1, NULL, NULL, NULL, 1, 1)",
+            params![mode, policy_json, state],
+        )
+        .expect("insert binding row");
+    }
+
+    #[test]
+    fn compiled_schema_references_fails_closed_on_corrupt_authority() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_at(&dir).expect("open");
+        assert!(store.compiled_schema_references().expect("refs").is_empty());
+
+        // Malformed device-row runtime binding → error, never a silent skip.
+        let device = bound_device("10.0.0.40", "ysc-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        store.upsert_device(&device, "test", "seed").expect("seed");
+        {
+            let db = store.db.lock().unwrap();
+            db.execute(
+                "UPDATE devices SET schema_binding_json = '{corrupt' WHERE address = '10.0.0.40'",
+                [],
+            )
+            .expect("corrupt device binding");
+        }
+        assert!(
+            store.compiled_schema_references().is_err(),
+            "malformed device-row binding must suspend reference discovery"
+        );
+        {
+            let db = store.db.lock().unwrap();
+            db.execute(
+                "UPDATE devices SET schema_binding_json = NULL WHERE address = '10.0.0.40'",
+                [],
+            )
+            .expect("restore");
+        }
+        assert!(store.compiled_schema_references().expect("refs").is_empty());
+
+        // Valid device-row binding contributes its schema_id.
+        store
+            .upsert_device(&device, "test", "seed")
+            .expect("reseed");
+        let refs = store.compiled_schema_references().expect("refs");
+        assert!(refs.contains("ysc-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+
+        // Malformed ACTIVE durable policy → error.
+        insert_binding_row(&store, "{not json", "active", "schema_bound");
+        assert!(store.compiled_schema_references().is_err());
+        {
+            let db = store.db.lock().unwrap();
+            db.execute(
+                "DELETE FROM schema_bindings WHERE device_key = '10.0.0.41'",
+                [],
+            )
+            .expect("clean");
+        }
+
+        // Active durable record missing schema_id → error.
+        insert_binding_row(&store, "{}", "active", "schema_bound");
+        assert!(store.compiled_schema_references().is_err());
+        {
+            let db = store.db.lock().unwrap();
+            db.execute(
+                "UPDATE schema_bindings SET state = 'revoked' WHERE device_key = '10.0.0.41'",
+                [],
+            )
+            .expect("revoke");
+        }
+        // Revoked records carry no authority — discovery succeeds again.
+        let refs = store.compiled_schema_references().expect("refs");
+        assert_eq!(refs.len(), 1);
+        assert!(refs.contains("ysc-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+
+        // Active durable policy contributes a SECOND distinct reference —
+        // policy and device-row authority are unioned, never reconciled
+        // by guessing which one is right.
+        {
+            let db = store.db.lock().unwrap();
+            db.execute(
+                "UPDATE schema_bindings SET state = 'active', policy_json = ?1 \
+                 WHERE device_key = '10.0.0.41'",
+                params!["{\"schema_id\":\"ysc-cccccccccccccccccccccccccccccccc\"}"],
+            )
+            .expect("reactivate");
+        }
+        let refs = store.compiled_schema_references().expect("refs");
+        assert!(refs.contains("ysc-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        assert!(refs.contains("ysc-cccccccccccccccccccccccccccccccc"));
+    }
+
+    #[test]
+    fn schema_activation_rejects_binding_diverging_from_effective_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_at(&dir).expect("open");
+        let address = "10.0.0.42";
+        let schema_a = "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let schema_b = "ysc-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let schema_c = "ysc-cccccccccccccccccccccccccccccccc";
+        let device = bound_device(address, schema_a);
+        store.upsert_device(&device, "test", "seed").expect("seed");
+        let record = binding_record(address, schema_a);
+
+        // No selection row: the caller-supplied active identity is the
+        // effective schema. Mismatch → reject; match → commit.
+        assert!(
+            store
+                .activate_schema_binding(
+                    &crate::registry::canonical_device_key(address),
+                    &device,
+                    &record,
+                    0,
+                    "admin",
+                    "activate",
+                    Some(schema_b),
+                )
+                .is_err(),
+            "approval diverging from effective schema must fail closed"
+        );
+        store
+            .activate_schema_binding(
+                &crate::registry::canonical_device_key(address),
+                &device,
+                &record,
+                0,
+                "admin",
+                "activate",
+                Some(schema_a),
+            )
+            .expect("matching effective schema commits");
+
+        // A durable selection row overrides the supplied default INSIDE
+        // the transaction — the commit boundary, not caller sequencing.
+        let mut approval2 = record.clone();
+        approval2.approval_revision = 2;
+        approval2.state = "active".to_string();
+        let device2 = bound_device(address, schema_c);
+        store
+            .set_device_schema_selection(
+                &DeviceSchemaSelection {
+                    device_key: crate::registry::canonical_device_key(address),
+                    device_address: address.to_string(),
+                    schema_id: schema_b.to_string(),
+                    selection_source: "admin".to_string(),
+                    selected_by: Some("admin".to_string()),
+                    note: None,
+                    selection_revision: 0,
+                    created_at_ns: 0,
+                    updated_at_ns: 0,
+                },
+                "admin",
+                "test",
+            )
+            .expect("select");
+        // Binding claims schema_c; selection says schema_b; supplied
+        // default says schema_a — the durable row wins and rejects.
+        assert!(
+            store
+                .activate_schema_binding(
+                    &crate::registry::canonical_device_key(address),
+                    &device2,
+                    &approval2,
+                    1,
+                    "admin",
+                    "activate",
+                    Some(schema_a),
+                )
+                .is_err(),
+            "durable selection must override the caller-supplied default"
+        );
+        // Binding matching the selection commits.
+        let device3 = bound_device(address, schema_b);
+        let mut approval3 = record.clone();
+        approval3.approval_revision = 2;
+        store
+            .activate_schema_binding(
+                &crate::registry::canonical_device_key(address),
+                &device3,
+                &approval3,
+                1,
+                "admin",
+                "activate",
+                Some(schema_a),
+            )
+            .expect("binding matching durable selection commits");
     }
 }

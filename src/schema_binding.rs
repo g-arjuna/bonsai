@@ -71,6 +71,11 @@ pub struct SchemaBindingActivation {
     pub device: TargetConfig,
     pub record: SchemaBindingRecord,
     pub evaluation: SchemaPlanEvaluation,
+    /// schema_id of the device-effective catalogue this approval was
+    /// evaluated against — carried to the durable commit boundary so a
+    /// concurrent schema-selection change can never slip an approval
+    /// derived from a superseded schema past the check (M6F-F).
+    pub effective_schema_id: Option<String>,
 }
 
 /// Evaluate the current explicit selection (or a request override)
@@ -267,6 +272,7 @@ pub fn activate(
         device,
         record,
         evaluation,
+        effective_schema_id: preview.effective_schema_id.clone(),
     })
 }
 
@@ -793,6 +799,7 @@ mod tests {
                 config_revision,
                 "admin",
                 "activate",
+                None,
             )
             .unwrap();
         (registry, store, target, snapshot_id)
@@ -1032,6 +1039,7 @@ mod tests {
                 device.updated_at_ns + 1,
                 "admin",
                 "activate",
+                None,
             )
             .expect_err("stale config revision must reject");
         assert!(
@@ -1072,6 +1080,7 @@ mod tests {
                 previewed_revision,
                 "admin",
                 "activate",
+                None,
             )
             .expect_err("activation against a superseded configuration must reject");
         assert!(err.to_string().contains("configuration changed"));
