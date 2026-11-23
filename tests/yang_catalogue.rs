@@ -2564,6 +2564,7 @@ fn revision_pin_rejects_untrusted_module() {
     let opts = CompileOptions {
         module_revisions: pins,
         trusted_only: true,
+        ..CompileOptions::default()
     };
     let cat = compile_parsed(vec![untrusted], &opts);
     assert!(cat.modules.is_empty());
@@ -2650,6 +2651,7 @@ fn revision_pin_respects_authority_and_fails_closed_on_unresolved_ties() {
     let opts = CompileOptions {
         module_revisions: pins,
         trusted_only: false,
+        ..CompileOptions::default()
     };
 
     // Trusted content wins regardless of checksum order or input order.
@@ -2713,4 +2715,290 @@ fn revision_pin_respects_authority_and_fails_closed_on_unresolved_ties() {
     assert_eq!(cat.modules.len(), 1);
     assert!(cat.modules[0].approved);
     assert_eq!(cat.modules[0].trust, "experimental");
+}
+
+// ── M6F-F PR3: deviation semantics ────────────────────────────────────
+
+const DEVIATION_BASE: &str = r#"module dbase {
+  yang-version "1.1";
+  namespace "urn:t:db";
+  prefix db;
+  revision "2024-01-01";
+  container iface {
+    leaf enabled { type boolean; }
+    leaf hold-up { type uint8; }
+    container counters {
+      leaf in-octets { type uint64; }
+    }
+  }
+}
+"#;
+
+fn deviation_module(deviates_body: &str) -> String {
+    format!(
+        r#"module ddev {{
+  yang-version "1.1";
+  namespace "urn:t:dd";
+  prefix dd;
+  revision "2024-01-01";
+  import dbase {{ prefix db; }}
+  deviation "/db:iface/enabled" {{
+{deviates_body}
+  }}
+}}
+"#
+    )
+}
+
+#[test]
+fn deviate_delete_block_form_prunes_without_semicolon() {
+    // Real-world deviation modules (e.g. cisco-xr-*-deviations) write
+    // `deviate delete { ... }` with NO trailing ';' — the parser must
+    // accept the block form and the compiler must prune the node.
+    let dev = deviation_module("    deviate delete {\n        default true;\n    }");
+    let cat = compile_parsed(
+        vec![
+            inline_input("dbase", DEVIATION_BASE),
+            inline_input("ddev", &dev),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    assert!(cat.paths.iter().any(|p| p.path == "/iface/hold-up"));
+    assert!(
+        cat.paths
+            .iter()
+            .any(|p| p.path == "/iface/counters/in-octets")
+    );
+    assert!(
+        !cat.paths.iter().any(|p| p.path == "/iface/enabled"),
+        "deviate delete must prune the node from the effective schema"
+    );
+    let base = cat.modules.iter().find(|m| m.name == "dbase").unwrap();
+    assert!(
+        base.deviation_modules.contains("ddev"),
+        "applied deviation module must be recorded on the target module"
+    );
+}
+
+#[test]
+fn deviate_replace_annotation_only_is_applied() {
+    // `deviate replace { default 10; }` only annotates — path identity is
+    // unchanged, so the deviation is fully applied without diagnostics.
+    let dev = r#"module ddev {
+  yang-version "1.1";
+  namespace "urn:t:dd";
+  prefix dd;
+  revision "2024-01-01";
+  import dbase { prefix db; }
+  deviation "/db:iface/hold-up" {
+    deviate replace {
+      default 10;
+    }
+  }
+}
+"#;
+    let cat = compile_parsed(
+        vec![
+            inline_input("dbase", DEVIATION_BASE),
+            inline_input("ddev", dev),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    assert!(cat.paths.iter().any(|p| p.path == "/iface/hold-up"));
+    let base = cat.modules.iter().find(|m| m.name == "dbase").unwrap();
+    assert!(base.deviation_modules.contains("ddev"));
+    let dev_mod = cat.modules.iter().find(|m| m.name == "ddev").unwrap();
+    assert_eq!(
+        dev_mod.node_count, 0,
+        "deviation module contributes no paths"
+    );
+}
+
+#[test]
+fn deviate_replace_structural_is_diagnosed_not_applied() {
+    // A replace that changes the node's type is real restructuring —
+    // must produce a diagnostic (partial catalogue), never a silent mark.
+    let dev = r#"module ddev {
+  yang-version "1.1";
+  namespace "urn:t:dd";
+  prefix dd;
+  revision "2024-01-01";
+  import dbase { prefix db; }
+  deviation "/db:iface/hold-up" {
+    deviate replace {
+      type uint32;
+    }
+  }
+}
+"#;
+    let cat = compile_parsed(
+        vec![
+            inline_input("dbase", DEVIATION_BASE),
+            inline_input("ddev", dev),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "partial");
+    assert!(
+        cat.diagnostics
+            .iter()
+            .any(|d| d.contains("deviate replace"))
+    );
+    let base = cat.modules.iter().find(|m| m.name == "dbase").unwrap();
+    assert!(
+        !base.deviation_modules.contains("ddev"),
+        "unsupported deviation must not count as applied"
+    );
+}
+
+#[test]
+fn deviate_add_is_diagnosed() {
+    let dev = r#"module ddev {
+  yang-version "1.1";
+  namespace "urn:t:dd";
+  prefix dd;
+  revision "2024-01-01";
+  import dbase { prefix db; }
+  deviation "/db:iface" {
+    deviate add {
+      leaf injected { type string; }
+    }
+  }
+}
+"#;
+    let cat = compile_parsed(
+        vec![
+            inline_input("dbase", DEVIATION_BASE),
+            inline_input("ddev", dev),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "partial");
+    assert!(cat.diagnostics.iter().any(|d| d.contains("deviate add")));
+    assert!(
+        !cat.paths.iter().any(|p| p.path == "/iface/injected"),
+        "deviate add must never synthesize nodes"
+    );
+}
+
+#[test]
+fn deviation_module_coverage_requires_application() {
+    // A deviation module that fails to resolve its target is NOT
+    // coverage — the target module records nothing.
+    let dev = r#"module ddev {
+  yang-version "1.1";
+  namespace "urn:t:dd";
+  prefix dd;
+  revision "2024-01-01";
+  import dbase { prefix db; }
+  deviation "/db:iface/nonexistent-node" {
+    deviate not-supported;
+  }
+}
+"#;
+    let cat = compile_parsed(
+        vec![
+            inline_input("dbase", DEVIATION_BASE),
+            inline_input("ddev", dev),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "partial");
+    let base = cat.modules.iter().find(|m| m.name == "dbase").unwrap();
+    assert!(!base.deviation_modules.contains("ddev"));
+}
+
+#[test]
+fn module_scope_restricts_compile_to_named_closure() {
+    // M6F-F PR3: an explicit scope compiles ONLY the named modules out of
+    // a shared library — unrelated modules cannot leak diagnostics into
+    // a device-scoped bundle, and a scoped-out import fails closed.
+    let base = r#"module sc-base {
+  yang-version "1.1";
+  namespace "urn:t:scb";
+  prefix sb;
+  revision "2024-01-01";
+  container root { leaf a { type string; } }
+}
+"#;
+    let dep = r#"module sc-dep {
+  yang-version "1.1";
+  namespace "urn:t:scd";
+  prefix sd;
+  revision "2024-01-01";
+  container dep-root { leaf b { type string; } }
+}
+"#;
+    let user = r#"module sc-user {
+  yang-version "1.1";
+  namespace "urn:t:scu";
+  prefix su;
+  revision "2024-01-01";
+  import sc-dep { prefix sd; }
+  container user-root { leaf c { type string; } }
+}
+"#;
+    let unrelated = r#"module sc-other {
+  yang-version "1.1";
+  namespace "urn:t:sco";
+  prefix so;
+  revision "2024-01-01";
+  container other-root { leaf d { type string; } }
+}
+"#;
+    // Full closure scoped: base+dep+user, unrelated excluded.
+    let scope: std::collections::BTreeSet<String> = ["sc-base", "sc-dep", "sc-user"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let opts = CompileOptions {
+        module_scope: scope,
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(
+        vec![
+            inline_input("sc-base", base),
+            inline_input("sc-dep", dep),
+            inline_input("sc-user", user),
+            inline_input("sc-other", unrelated),
+        ],
+        &opts,
+    );
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    let names: Vec<&str> = cat.modules.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, vec!["sc-base", "sc-dep", "sc-user"]);
+    assert!(cat.module_scope.contains("sc-user"));
+    assert!(cat.module_scope.contains("sc-base"));
+    assert!(!cat.module_scope.contains("sc-other"));
+    // Scoped-out module leaves no paths.
+    assert!(!cat.paths.iter().any(|p| p.module == "sc-other"));
+
+    // Scope that omits a required import fails closed (partial), never
+    // silently substitutes.
+    let narrow: std::collections::BTreeSet<String> = ["sc-base", "sc-user"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let opts = CompileOptions {
+        module_scope: narrow,
+        ..CompileOptions::default()
+    };
+    let cat = compile_parsed(
+        vec![
+            inline_input("sc-base", base),
+            inline_input("sc-dep", dep),
+            inline_input("sc-user", user),
+        ],
+        &opts,
+    );
+    assert_eq!(cat.status, "partial");
+    assert!(
+        cat.diagnostics
+            .iter()
+            .any(|d| d.contains("sc-dep") || d.contains("import")),
+        "diags={:?}",
+        cat.diagnostics
+    );
 }

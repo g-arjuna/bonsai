@@ -288,8 +288,8 @@ pub struct Deviation {
     pub reference: Option<String>,
     pub status: Option<String>,
     /// `deviate add|delete|replace|not-supported` statements in this
-    /// deviation body. `has_block` records whether a `{ ... }` data-def
-    /// block followed the kind (contents are not interpreted).
+    /// deviation body; block contents are scanned for their top-level
+    /// statement keywords (`Deviate::body_kinds`).
     pub deviates: Vec<Deviate>,
     pub children: Vec<Deviation>,
 }
@@ -298,6 +298,12 @@ pub struct Deviation {
 pub struct Deviate {
     pub kind: String,
     pub has_block: bool,
+    /// Top-level statement keywords inside a `{ ... }` deviate block
+    /// (e.g. `default`, `type`, `leaf`). Empty when the deviate has no
+    /// block. Recorded so the compiler can distinguish annotation-only
+    /// replacements (`default`/`status`/`description`/`reference`) from
+    /// structural replacements it must diagnose rather than apply.
+    pub body_kinds: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -973,23 +979,80 @@ impl Parser {
     }
 
     /// `deviate <kind> [ { data-defs } ] ;` inside a deviation body.
-    /// The kind is recorded; block contents are consumed but not
-    /// interpreted (add/delete/replace semantics are partial — see
-    /// docs/YANG_CATALOGUE.md).
+    /// The kind is recorded; block contents are scanned for their
+    /// top-level statement keywords (add/delete/replace semantics are
+    /// partial — see docs/YANG_CATALOGUE.md). The block form carries no
+    /// trailing `;` in real-world deviation modules (e.g. Cisco
+    /// cisco-xr-*-deviations); a `;` after the block is tolerated.
     fn parse_deviate(&mut self) -> Result<Deviate, String> {
         let kind = self.ident()?;
         let has_block = self.eat_punct('{');
+        let mut body_kinds = Vec::new();
         if has_block {
             self.depth += 1;
             if self.depth > MAX_NESTING_DEPTH {
                 return Err("maximum nesting depth exceeded".into());
             }
-            self.skip_balanced()?;
+            body_kinds = self.deviate_block_kinds()?;
             self.depth -= 1;
+            // Tolerate (but do not require) a stray ';' after the block.
+            let _ = self.eat_punct(';');
+        } else {
+            self.expect_punct(';')?;
         }
-        // Both forms end with ';' — `deviate kind;` and `deviate kind {…};`.
-        self.expect_punct(';')?;
-        Ok(Deviate { kind, has_block })
+        Ok(Deviate {
+            kind,
+            has_block,
+            body_kinds,
+        })
+    }
+
+    /// Consume a `deviate ... { ... }` block body (caller already ate
+    /// '{'), recording the leading keyword of each top-level statement.
+    /// Statements may end with ';' (e.g. `default 10;`) or with a
+    /// balanced `{ ... }` group (data-defs like `leaf`, `container`).
+    fn deviate_block_kinds(&mut self) -> Result<Vec<String>, String> {
+        let mut kinds = Vec::new();
+        let mut depth = 1i32; // the deviate block itself
+        let mut at_stmt_start = true;
+        loop {
+            match self.peek() {
+                Tok::Eof => return Err("unterminated deviate block".into()),
+                Tok::Punct('}') => {
+                    self.pos += 1;
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    if depth == 1 {
+                        at_stmt_start = true;
+                    }
+                    continue;
+                }
+                Tok::Punct('{') => {
+                    self.pos += 1;
+                    depth += 1;
+                    at_stmt_start = false;
+                    continue;
+                }
+                Tok::Punct(';') => {
+                    self.pos += 1;
+                    if depth == 1 {
+                        at_stmt_start = true;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            if at_stmt_start && depth == 1 {
+                if let Tok::Ident(kw) = self.peek() {
+                    kinds.push(kw.clone());
+                }
+                at_stmt_start = false;
+            }
+            self.pos += 1;
+        }
+        Ok(kinds)
     }
 
     /// Parse statements until '}' or EOF. Does not consume the closing '}'.

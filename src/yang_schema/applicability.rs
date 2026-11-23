@@ -1221,8 +1221,19 @@ fn evaluate_module(
         ApplicabilityStatus::Candidate
     };
 
+    // Device-advertised deviations: semantics are supported only for
+    // deviation modules that were actually compiled into this catalogue
+    // AND fully applied to this module's effective schema (recorded in
+    // `deviation_modules`). A reported deviation we never evaluated
+    // keeps every path fail-closed.
     if !ev.deviations.is_empty() {
-        reasons.insert(ReasonCode::DeviationSemanticsUnsupported);
+        let uncovered = ev
+            .deviations
+            .iter()
+            .any(|d| !cm.deviation_modules.contains(d));
+        if uncovered {
+            reasons.insert(ReasonCode::DeviationSemanticsUnsupported);
+        }
     }
     if !ev.features_state_known {
         reasons.insert(ReasonCode::FeatureStateUnknown);

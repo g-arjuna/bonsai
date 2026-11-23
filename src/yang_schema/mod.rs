@@ -160,6 +160,7 @@ pub fn compile_library(library: &YangLibrary, trusted_only: bool) -> Result<Comp
         library,
         trusted_only,
         &BTreeMap::new(),
+        &BTreeSet::new(),
         // This entry point has no access to device-selection/approval
         // state, so it cannot prove which bundles are referenced.
         // Unknown references fail closed: retention is skipped rather
@@ -171,9 +172,11 @@ pub fn compile_library(library: &YangLibrary, trusted_only: bool) -> Result<Comp
 /// Compile with an explicit operator-approved module-revision selection
 /// (M6F-F): `module_revisions` maps module name -> exact revision date.
 /// Pinned modules keep only inputs declaring that revision; unresolvable
-/// pins are diagnostics, never silent newest-revision substitution. The
-/// resulting bundle is content-addressed like any other — identical
-/// effective closures deduplicate to the same `schema_id`.
+/// pins are diagnostics, never silent newest-revision substitution.
+/// `module_scope` optionally restricts compilation to the named modules
+/// (empty = all). The resulting bundle is content-addressed like any
+/// other — identical effective closures deduplicate to the same
+/// `schema_id`.
 ///
 /// `references` protects already-referenced bundles from retention
 /// eviction (see [`persist_compiled_with_references`]); `None` skips
@@ -182,12 +185,14 @@ pub fn compile_library_with_selection(
     library: &YangLibrary,
     trusted_only: bool,
     module_revisions: &BTreeMap<String, String>,
+    module_scope: &BTreeSet<String>,
     references: Option<&BTreeSet<String>>,
 ) -> Result<CompiledCatalogue> {
     let (inputs, pre_diagnostics) = load_module_inputs(library, !trusted_only)?;
     let options = CompileOptions {
         trusted_only,
         module_revisions: module_revisions.clone(),
+        module_scope: module_scope.clone(),
     };
     // Pre-compilation diagnostics (unreadable/mislabeled/corrupt records)
     // participate in status and schema identity — they can never be

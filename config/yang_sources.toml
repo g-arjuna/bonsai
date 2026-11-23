@@ -121,3 +121,72 @@ platforms = ["arista_eos"]
 subdirs = ["EOS-4.37.0F/release/openconfig"]
 license = "Apache-2.0"
 enabled = true
+
+# --- OpenConfig XRd 24.4.2 closure (IOS-XR 7.5.1) --------------------------
+# Device-reported module revisions from the XRd 24.4.2 RFC 8525 YANG
+# Library (content-id "IOS-XR 7.5.1", captured 2026-11-22, evidence
+# docs/merger/evidence/2026-11-22-m6f-xrd/). Each entry pins the immutable
+# openconfig/public commit where that module's newest declared revision
+# equals the device-reported revision. These records COEXIST with the
+# newer v5.11.0 modules — per-device compile selection
+# (module_scope + module_revisions) chooses the XRd revisions for XRd
+# while unpinned/newest-revision compilation is unchanged for everyone
+# else. Never point these at moving refs.
+[[source]]
+id = "openconfig-xrd-types"
+vendor = "openconfig"
+repo = "https://github.com/openconfig/public.git"
+pinned_ref = "af9d6b6b477f3d01fe55d4dc7eb26ec43f989c7a" # release v3.0.0
+platforms = ["cisco_iosxr"]
+subdirs = ["release/models/types", "release/models/platform"]
+prefixes = ["openconfig-types", "openconfig-yang-types", "openconfig-platform-types"]
+license = "Apache-2.0"
+enabled = true
+
+[[source]]
+id = "openconfig-xrd-interfaces"
+vendor = "openconfig"
+repo = "https://github.com/openconfig/public.git"
+pinned_ref = "9182a9baa9c77af93d73e77733316decb7807c63"
+platforms = ["cisco_iosxr"]
+subdirs = ["release/models/interfaces"]
+prefixes = ["openconfig-interfaces"]
+license = "Apache-2.0"
+enabled = true
+
+[[source]]
+id = "openconfig-xrd-extensions"
+vendor = "openconfig"
+repo = "https://github.com/openconfig/public.git"
+pinned_ref = "6369ec2997f36208a7f18a4225cfb3e5b20510f6"
+platforms = ["cisco_iosxr"]
+subdirs = ["release/models"]
+prefixes = ["openconfig-extensions"]
+license = "Apache-2.0"
+enabled = true
+
+[[source]]
+id = "openconfig-xrd-transport-types"
+vendor = "openconfig"
+repo = "https://github.com/openconfig/public.git"
+pinned_ref = "f3daa9d46f8b907bdab5a4cbe7eca4beee23519b"
+platforms = ["cisco_iosxr"]
+subdirs = ["release/models/optical-transport"]
+prefixes = ["openconfig-transport-types"]
+license = "Apache-2.0"
+enabled = true
+
+# Cisco XR 24.4.2 deviation module — the 7921 dir carries the stale
+# 2016-05-16 revision; 2442 carries the device-reported 2024-02-21 file
+# (verified byte-identical to the module XRd publishes in its YANG
+# Library). Scoped to exactly that filename.
+[[source]]
+id = "cisco-iosxr-xrd-deviations"
+vendor = "cisco_xrd"
+repo = "https://github.com/YangModels/yang.git"
+pinned_ref = "e13b05c4ddcbfab9170e60dddbbe9eaf6a831964"
+platforms = ["cisco_iosxr"]
+subdirs = ["vendor/cisco/xr/2442"]
+prefixes = ["cisco-xr-openconfig-interfaces-deviations"]
+license = "proprietary/vendor (see source)"
+enabled = true
