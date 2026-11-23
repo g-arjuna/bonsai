@@ -358,6 +358,95 @@ pub fn revoke_binding_for_device_schema_change(
     )
 }
 
+/// Commit a device schema selection AND invalidate any incompatible
+/// schema-bound approval as one logical authority transition (M6G).
+///
+/// Ordering is load-bearing: the fenced selection write runs FIRST, so
+/// a stale `expected_selection_revision` fails with
+/// [`crate::sqlite_store::SelectionRevisionConflict`] before ANY
+/// authority-changing action — a rejected request can never revoke a
+/// valid approval. Only after the selection durably commits does the
+/// fingerprint-guarded device-scoped revocation run against the new
+/// effective schema. The residual window keeps the previously
+/// authorized schema alive for milliseconds (fail-safe direction:
+/// authority is never expanded); approval activation remains fenced
+/// by `effective_schema_id` at its own commit boundary, so no approval
+/// derived from a superseded schema can be created in the window.
+///
+/// Returns the stored selection and the revoked target (for collector
+/// resync) when an incompatible approval was withdrawn.
+pub fn commit_device_schema_selection(
+    registry: &ApiRegistry,
+    store: &SqliteStore,
+    target: &TargetConfig,
+    schema_id: &str,
+    expected_selection_revision: i64,
+    note: Option<String>,
+    actor: &str,
+) -> Result<(
+    crate::sqlite_store::DeviceSchemaSelection,
+    Option<TargetConfig>,
+)> {
+    let device_key = device_identity_key(target);
+    let selection = crate::sqlite_store::DeviceSchemaSelection {
+        device_key,
+        device_address: target.address.clone(),
+        schema_id: schema_id.to_string(),
+        selection_source: "admin".to_string(),
+        selected_by: Some(actor.to_string()),
+        note: note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()),
+        selection_revision: 0,
+        created_at_ns: 0,
+        updated_at_ns: 0,
+    };
+    let stored = store.set_device_schema_selection_fenced(
+        &selection,
+        expected_selection_revision,
+        actor,
+        "api_device_schema_select",
+    )?;
+    let revoked = revoke_binding_for_device_schema_change(
+        registry,
+        &target.address,
+        schema_id,
+        actor,
+        "api_device_schema_select_post",
+    )?;
+    Ok((stored, revoked))
+}
+
+/// Clear-variant of [`commit_device_schema_selection`]: the fenced
+/// delete commits first (stale requests conflict with zero side
+/// effects), then any approval not derived from the post-clear
+/// effective schema is revoked. `effective_schema_id_after` is the
+/// schema the device falls back to (global active catalogue, or ""
+/// when none — which revokes every schema-bound approval).
+pub fn commit_device_schema_selection_clear(
+    registry: &ApiRegistry,
+    store: &SqliteStore,
+    target: &TargetConfig,
+    expected_selection_revision: i64,
+    effective_schema_id_after: &str,
+    actor: &str,
+) -> Result<(bool, Option<TargetConfig>)> {
+    let device_key = device_identity_key(target);
+    let deleted = store.clear_device_schema_selection_fenced(
+        &device_key,
+        expected_selection_revision,
+        actor,
+        "api_device_schema_clear",
+    )?;
+    let revoked = revoke_binding_for_device_schema_change(
+        registry,
+        &target.address,
+        effective_schema_id_after,
+        actor,
+        "api_device_schema_clear_post",
+    )?;
+    let _ = deleted;
+    Ok((deleted, revoked))
+}
+
 /// Outcome of evidence-supersession invalidation after a new
 /// applicability snapshot is persisted (M6E-A1).
 #[derive(Debug)]
@@ -1090,5 +1179,188 @@ mod tests {
         assert_eq!(after.collector_id.as_deref(), Some("c2"));
         assert!(after.schema_binding.is_none());
         assert_ne!(after.updated_at_ns, previewed_revision);
+    }
+
+    /// M6G Stage 1: a stale selection request must have ZERO authority
+    /// side effects — the fenced write commits before any revocation,
+    /// so a 409-equivalent conflict cannot withdraw a valid approval.
+    #[tokio::test]
+    async fn stale_selection_commit_preserves_approval_and_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let address = "10.0.0.30";
+        let schema_a = "a".repeat(64);
+        let key_target = bound_target(address);
+        let key = crate::registry::device_identity_key(&key_target);
+        let row = snapshot_row(&key, address, 0, "ev-fp", Some(NOW - 1000));
+        let (registry, store, _target, _id) = bound_device(&dir, address, &row).await;
+
+        // Admin 1 selects schema A (same as the approval's schema) —
+        // commits epoch 1; the matching approval is NOT revoked.
+        let current = registry.get_device(address).unwrap().unwrap();
+        let (_sel, revoked) = commit_device_schema_selection(
+            registry.as_ref(),
+            store.as_ref(),
+            &current,
+            &schema_a,
+            0,
+            None,
+            "admin-1",
+        )
+        .unwrap();
+        assert!(revoked.is_none(), "matching-schema approval must survive");
+        assert_eq!(store.selection_epoch(&key).unwrap(), 1);
+
+        // Admin 2 legitimately moves the selection to schema B — epoch 2.
+        let schema_b = "b".repeat(64);
+        let current = registry.get_device(address).unwrap().unwrap();
+        commit_device_schema_selection(
+            registry.as_ref(),
+            store.as_ref(),
+            &current,
+            &schema_b,
+            1,
+            None,
+            "admin-2",
+        )
+        .unwrap();
+        // The schema-A approval was incompatible with B → revoked.
+        assert!(
+            registry
+                .get_device(address)
+                .unwrap()
+                .unwrap()
+                .schema_binding
+                .is_none(),
+            "approval on superseded schema must be revoked after commit"
+        );
+
+        // STALE request: Admin 1 echoes epoch 1 (pre-Admin-2) with yet
+        // another schema. Must conflict AND must not touch authority.
+        let current = registry.get_device(address).unwrap().unwrap();
+        let before_binding = current.schema_binding.clone();
+        let err = commit_device_schema_selection(
+            registry.as_ref(),
+            store.as_ref(),
+            &current,
+            &"c".repeat(64),
+            1,
+            None,
+            "admin-1-stale",
+        )
+        .unwrap_err();
+        assert!(
+            err.downcast_ref::<crate::sqlite_store::SelectionRevisionConflict>()
+                .is_some(),
+            "expected SelectionRevisionConflict, got {err:#}"
+        );
+        // Selection unchanged (still B @ epoch 2).
+        let sel = store.get_device_schema_selection(&key).unwrap().unwrap();
+        assert_eq!(sel.schema_id, schema_b);
+        assert_eq!(sel.selection_revision, 2);
+        assert_eq!(store.selection_epoch(&key).unwrap(), 2);
+        // Approval state identical to before the stale request.
+        let after = registry.get_device(address).unwrap().unwrap();
+        assert_eq!(
+            after.schema_binding.as_ref().map(|b| b.binding_fingerprint.clone()),
+            before_binding.map(|b| b.binding_fingerprint),
+            "stale request must not revoke or replace the approval"
+        );
+
+        // Same for the clear path: stale epoch cannot delete.
+        let err = commit_device_schema_selection_clear(
+            registry.as_ref(),
+            store.as_ref(),
+            &after,
+            1,
+            &schema_b,
+            "admin-1-stale",
+        )
+        .unwrap_err();
+        assert!(
+            err.downcast_ref::<crate::sqlite_store::SelectionRevisionConflict>()
+                .is_some()
+        );
+        assert!(store.get_device_schema_selection(&key).unwrap().is_some());
+    }
+
+    /// ABA regression: select → clear → the row disappears, but the
+    /// durable epoch must NOT reset — a client fenced on epoch 0 can
+    /// never overwrite the post-clear state.
+    #[tokio::test]
+    async fn selection_epoch_survives_clear_aba() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry =
+            Arc::new(ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap());
+        let store = registry.sqlite_store().unwrap();
+        let address = "10.0.0.31";
+        let mut target = bound_target(address);
+        target.schema_binding = None;
+        registry
+            .add_device_with_audit(target.clone(), "test", "test_add")
+            .unwrap();
+        let key = crate::registry::device_identity_key(&target);
+
+        // Never mutated → epoch 0.
+        assert_eq!(store.selection_epoch(&key).unwrap(), 0);
+
+        // Select A → epoch 1.
+        let current = registry.get_device(address).unwrap().unwrap();
+        commit_device_schema_selection(
+            registry.as_ref(),
+            store.as_ref(),
+            &current,
+            &"a".repeat(64),
+            0,
+            None,
+            "admin",
+        )
+        .unwrap();
+        assert_eq!(store.selection_epoch(&key).unwrap(), 1);
+
+        // Clear → row gone, epoch advances to 2.
+        let current = registry.get_device(address).unwrap().unwrap();
+        let (_d, _r) = commit_device_schema_selection_clear(
+            registry.as_ref(),
+            store.as_ref(),
+            &current,
+            1,
+            "",
+            "admin",
+        )
+        .unwrap();
+        assert!(store.get_device_schema_selection(&key).unwrap().is_none());
+        assert_eq!(store.selection_epoch(&key).unwrap(), 2);
+
+        // ABA: stale client still holding epoch 0 must conflict —
+        // previously the deleted row made expected=0 look valid.
+        let current = registry.get_device(address).unwrap().unwrap();
+        let err = commit_device_schema_selection(
+            registry.as_ref(),
+            store.as_ref(),
+            &current,
+            &"d".repeat(64),
+            0,
+            None,
+            "stale-admin",
+        )
+        .unwrap_err();
+        assert!(
+            err.downcast_ref::<crate::sqlite_store::SelectionRevisionConflict>()
+                .is_some()
+        );
+        assert!(store.get_device_schema_selection(&key).unwrap().is_none());
+
+        // Fresh client holding epoch 2 succeeds → epoch 3.
+        commit_device_schema_selection(
+            registry.as_ref(),
+            store.as_ref(),
+            &current,
+            &"d".repeat(64),
+            2,
+            None,
+            "fresh-admin",
+        )
+        .unwrap();
+        assert_eq!(store.selection_epoch(&key).unwrap(), 3);
     }
 }
