@@ -122,21 +122,36 @@ paths with zero diagnostics, schema `ysc-d7254b6e840b0f0041c4b2458bb509a1`):
 Explicitly unsupported or approximate (diagnosed or documented, never
 silent where detectable):
 
-- `deviate add` and structural `deviate replace` (type/config/keys/
-  mandatory/must/when/units changes) — real YANG restructuring Bonsai
-  does not implement. They mark the subtree `deviated` with
-  notes/status AND emit an explicit diagnostic that keeps the
-  catalogue `partial` — affected definitions must not be treated as
-  authoritative.
-- `deviate delete` and `deviate not-supported` ARE interpreted: the
-  target subtree is pruned from the effective schema (path index,
-  feature gates and all). Both block (`deviate delete { ... }`, no
-  trailing `;` — the form real-world vendor deviation modules such as
+- `deviate not-supported` removes the target node and its whole subtree
+  from the effective schema (path index, feature gates and all).
+- `deviate delete` removes only the listed PROPERTIES of the target
+  node — the node itself stays (RFC 7950 §7.20.3.2; `delete` and
+  `not-supported` are distinct operations). Deletion is implemented for
+  the properties Bonsai represents accurately (`default`, `units`,
+  `mandatory`, `config`, `presence`, `description`, `reference`,
+  `status`, `ordered-by`, `min-elements`, `max-elements`, `must`,
+  `when`); deleting anything else (`type`, `key`, `if-feature`,
+  `unique`, extensions, ...) preserves the node, emits a diagnostic and
+  keeps the catalogue `partial` — the deviation is NOT counted as
+  applied. Both block (`deviate delete { ... }`, no trailing `;` — the
+  form real-world vendor deviation modules such as
   `cisco-xr-openconfig-interfaces-deviations` use) and semicolon forms
   parse correctly.
-- `deviate replace` is applied only when its block is annotation-only
-  (`default`, `status`, `description`, `reference`) — statements that
-  cannot change path identity. Anything else is diagnosed as above.
+- `deviate replace` writes the replacement VALUE into the effective
+  node for the represented scalar properties (`default`, `units`,
+  `status`, `description`, `reference`, `mandatory`, `config`,
+  `min-elements`, `max-elements`, `presence`, `ordered-by`). Anything
+  else — including `type`, `key`, `must`/`when` restructuring and
+  sub-block forms — is diagnosed and keeps the catalogue `partial`.
+- `deviate add` applies the same scalar-property subset plus flag
+  `mandatory` and `must`/`when` expressions, but only when the property
+  is absent — adding an existing property or an unimplemented property
+  is diagnosed and keeps the catalogue `partial`. Data-definition
+  additions (`leaf`, `container`, ...) are never synthesized.
+- Malformed deviation bodies are diagnosed, never silently applied:
+  `deviate delete`/`add`/`replace` without a non-empty block,
+  `deviate not-supported` carrying a block, and unknown `deviate`
+  kinds all keep the catalogue `partial`.
 - Applied deviation coverage is recorded per target module in
   `CompiledModule.deviation_modules` (deviation-module names whose
   `deviate` statements were fully honored). Applicability treats a
@@ -252,9 +267,10 @@ which evidence, and with which uncertainty?"
   `applicable` (all true), `not_applicable` (a required feature is
   provably disabled), or `unknown`/`feature_state_unknown` — unknown
   feature state is never interpreted as enabled.
-- `deviate not-supported`/`delete` pruning and annotation-only
-  `deviate replace` are honoured (pruned nodes never appear); a
-  device-advertised deviation module caps affected paths at `unknown`
+- `deviate not-supported` pruning and property-level `deviate
+  delete`/`add`/`replace` are honoured for the implemented property
+  subset; a device-advertised deviation module caps affected paths at
+  `unknown`
   with `deviation_semantics_unsupported` ONLY when that deviation
   module was not compiled into and fully applied against the target
   module (`CompiledModule.deviation_modules`). Compiled-and-applied

@@ -298,12 +298,28 @@ pub struct Deviation {
 pub struct Deviate {
     pub kind: String,
     pub has_block: bool,
-    /// Top-level statement keywords inside a `{ ... }` deviate block
-    /// (e.g. `default`, `type`, `leaf`). Empty when the deviate has no
-    /// block. Recorded so the compiler can distinguish annotation-only
-    /// replacements (`default`/`status`/`description`/`reference`) from
-    /// structural replacements it must diagnose rather than apply.
-    pub body_kinds: Vec<String>,
+    /// Statements inside a `{ ... }` deviate block, each recorded as
+    /// (keyword, raw argument text, had-sub-block). The compiler needs the
+    /// property NAMES for `delete` and the argument VALUES for
+    /// `add`/`replace` — RFC 7950 §7.20.3 gives the four kinds distinct
+    /// semantics, so a bare keyword list is not enough.
+    pub body_props: Vec<DeviateProp>,
+}
+
+/// One top-level statement inside a `deviate <kind> { ... }` block.
+#[derive(Clone, Debug)]
+pub struct DeviateProp {
+    /// Statement keyword (`default`, `mandatory`, `leaf`, `type`, ...).
+    pub name: String,
+    /// Raw argument text for `;`-terminated statements — `""` when the
+    /// statement carries no argument (e.g. `mandatory;`). Rendered in the
+    /// same convention as `Node::default` (quoted strings keep quotes).
+    /// Meaningless when `has_block` is true.
+    pub value: String,
+    /// True when the statement body was a `{ ... }` sub-block (data-defs
+    /// like `leaf`, or `must`/`when` error-message blocks) rather than a
+    /// `;`-terminated property.
+    pub has_block: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -987,13 +1003,13 @@ impl Parser {
     fn parse_deviate(&mut self) -> Result<Deviate, String> {
         let kind = self.ident()?;
         let has_block = self.eat_punct('{');
-        let mut body_kinds = Vec::new();
+        let mut body_props = Vec::new();
         if has_block {
             self.depth += 1;
             if self.depth > MAX_NESTING_DEPTH {
                 return Err("maximum nesting depth exceeded".into());
             }
-            body_kinds = self.deviate_block_kinds()?;
+            body_props = self.deviate_block_props()?;
             self.depth -= 1;
             // Tolerate (but do not require) a stray ';' after the block.
             let _ = self.eat_punct(';');
@@ -1003,16 +1019,17 @@ impl Parser {
         Ok(Deviate {
             kind,
             has_block,
-            body_kinds,
+            body_props,
         })
     }
 
     /// Consume a `deviate ... { ... }` block body (caller already ate
-    /// '{'), recording the leading keyword of each top-level statement.
-    /// Statements may end with ';' (e.g. `default 10;`) or with a
-    /// balanced `{ ... }` group (data-defs like `leaf`, `container`).
-    fn deviate_block_kinds(&mut self) -> Result<Vec<String>, String> {
-        let mut kinds = Vec::new();
+    /// '{'), recording each top-level statement as a [`DeviateProp`].
+    /// Statements may end with ';' (e.g. `default 10;`, `mandatory;`) or
+    /// with a balanced `{ ... }` group (data-defs like `leaf`, or
+    /// `must`/`when` error-message blocks).
+    fn deviate_block_props(&mut self) -> Result<Vec<DeviateProp>, String> {
+        let mut props = Vec::new();
         let mut depth = 1i32; // the deviate block itself
         let mut at_stmt_start = true;
         loop {
@@ -1045,14 +1062,67 @@ impl Parser {
                 _ => {}
             }
             if at_stmt_start && depth == 1 {
-                if let Tok::Ident(kw) = self.peek() {
-                    kinds.push(kw.clone());
+                if let Tok::Ident(kw) = self.peek().clone() {
+                    self.pos += 1;
+                    let (value, has_block) = self.deviate_prop_tail()?;
+                    props.push(DeviateProp {
+                        name: kw,
+                        value,
+                        has_block,
+                    });
+                    at_stmt_start = true;
+                    continue;
                 }
-                at_stmt_start = false;
+                // Tolerate stray tokens between statements (comments are
+                // already stripped by the lexer).
             }
             self.pos += 1;
         }
-        Ok(kinds)
+        Ok(props)
+    }
+
+    /// Consume the argument portion of one deviate-block statement after
+    /// its keyword: tokens up to a top-level ';' (value kept verbatim in
+    /// the same quoting convention as `raw_value_until_semi`), or a
+    /// balanced `{ ... }` sub-block (value discarded — data-defs are only
+    /// needed by name for unsupported-semantics diagnosis).
+    /// A '}' terminating the deviate block without a preceding ';' is
+    /// tolerated: the statement ends and '}' is left for the outer scan.
+    fn deviate_prop_tail(&mut self) -> Result<(String, bool), String> {
+        let mut parts = Vec::new();
+        loop {
+            match self.peek().clone() {
+                Tok::Eof => return Err("unterminated deviate block".into()),
+                Tok::Punct(';') => {
+                    self.pos += 1;
+                    return Ok((parts.join(" ").trim().to_string(), false));
+                }
+                Tok::Punct('{') => {
+                    self.pos += 1;
+                    // `skip_balanced` assumes the '{' is already consumed.
+                    self.skip_balanced()?;
+                    // Tolerate (but do not require) a stray ';' after the
+                    // block, matching `parse_deviate`.
+                    let _ = self.eat_punct(';');
+                    return Ok((String::new(), true));
+                }
+                Tok::Punct('}') => {
+                    return Ok((parts.join(" ").trim().to_string(), false));
+                }
+                Tok::Ident(s) => {
+                    parts.push(s);
+                    self.pos += 1;
+                }
+                Tok::Str(s) => {
+                    parts.push(format!("\"{}\"", s));
+                    self.pos += 1;
+                }
+                Tok::Punct(c) => {
+                    parts.push(c.to_string());
+                    self.pos += 1;
+                }
+            }
+        }
     }
 
     /// Parse statements until '}' or EOF. Does not consume the closing '}'.

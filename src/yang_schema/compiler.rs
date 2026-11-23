@@ -11,9 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::parser::{Module, Node, Stmt, TypeSpec};
+use super::parser::{DeviateProp, Module, Node, Stmt, TypeSpec};
 
-pub const COMPILED_SCHEMA_VERSION: u32 = 1;
+pub const COMPILED_SCHEMA_VERSION: u32 = 2;
 /// Bound on resolution passes for nested augments.
 const MAX_RESOLUTION_PASSES: usize = 8;
 /// Bound on uses-expansion depth (grouping cycles).
@@ -1808,17 +1808,11 @@ fn apply_deviation(
     }
 }
 
-/// `deviate replace` bodies that only annotate the node — they cannot
-/// change path identity (existence, kind, keys, type, config flag), so
-/// applying them as deviation notes is honest. Anything else (type,
-/// config, mandatory, leaf/list/container restructuring, must/when,
-/// units, ...) is real YANG restructuring we do not implement.
-const SAFE_DEVIATE_REPLACE_KINDS: &[&str] = &["default", "status", "description", "reference"];
-
-/// Apply one located deviation's `deviate` statements. Returns true when
-/// all of them were honored; false when at least one required semantics
-/// Bonsai does not implement (diagnostic emitted — catalogue stays
-/// partial and can never pose as authoritative).
+/// `deviate not-supported` removes support for the target node — the node
+/// and its whole subtree leave the effective schema. `deviate delete`
+/// removes only the listed PROPERTIES of the target node; the node itself
+/// stays. `deviate add`/`replace` change or add property values. RFC 7950
+/// §7.20.3.2 — the four kinds are not interchangeable.
 fn apply_deviation_kinds(
     roots: &mut BTreeMap<String, Vec<ResolvedNode>>,
     dw: &DeviationWork,
@@ -1826,46 +1820,304 @@ fn apply_deviation_kinds(
     path: &[usize],
     diagnostics: &mut Vec<String>,
 ) -> bool {
-    let mut fully_applied = true;
-    // `not-supported` and `delete` share the same effective-schema
-    // result for the path index: the node MUST NOT be part of the
-    // compiled data tree, so the subtree is pruned. `replace` is only
-    // honored when its body is annotation-only; `add` and structural
-    // replacements are diagnosed, never silently approximated.
-    let prune = dw
-        .deviates
-        .iter()
-        .any(|d| d.kind == "not-supported" || d.kind == "delete");
-    for d in &dw.deviates {
-        match d.kind.as_str() {
-            "not-supported" | "delete" => {}
-            "replace"
-                if d.has_block
-                    && !d.body_kinds.is_empty()
-                    && d.body_kinds
-                        .iter()
-                        .all(|k| SAFE_DEVIATE_REPLACE_KINDS.contains(&k.as_str())) => {}
-            other => {
-                fully_applied = false;
-                diagnostics.push(format!(
-                    "deviation '{}' in module '{}' uses 'deviate {}' — only not-supported/delete pruning and annotation-only replace are applied, not full deviation semantics",
-                    dw.target, dw.module, other
-                ));
-            }
-        }
-    }
     let Some(nodes) = roots.get_mut(module_name) else {
         return false;
     };
     let Some(node) = node_at_mut(nodes, path) else {
         return false;
     };
-    if prune {
-        mark_pruned(node, dw);
-    } else {
+    let mut fully_applied = true;
+    for d in &dw.deviates {
+        match d.kind.as_str() {
+            "not-supported" => {
+                if d.has_block || !d.body_props.is_empty() {
+                    fully_applied = false;
+                    diagnostics.push(format!(
+                        "deviation '{}' in module '{}': 'deviate not-supported' must not carry a property block",
+                        dw.target, dw.module
+                    ));
+                } else {
+                    mark_pruned(node, dw);
+                }
+            }
+            "delete" => {
+                if !d.has_block {
+                    fully_applied = false;
+                    diagnostics.push(format!(
+                        "deviation '{}' in module '{}': 'deviate delete' requires a property block",
+                        dw.target, dw.module
+                    ));
+                    continue;
+                }
+                if d.body_props.is_empty() {
+                    fully_applied = false;
+                    diagnostics.push(format!(
+                        "deviation '{}' in module '{}': 'deviate delete' block is empty",
+                        dw.target, dw.module
+                    ));
+                    continue;
+                }
+                for prop in &d.body_props {
+                    if !delete_deviate_property(&mut node.node, &prop.name) {
+                        fully_applied = false;
+                        diagnostics.push(format!(
+                            "deviation '{}' in module '{}': 'deviate delete' of '{}' is not implemented — property preserved, catalogue stays non-authoritative",
+                            dw.target, dw.module, prop.name
+                        ));
+                    }
+                }
+            }
+            "replace" => {
+                if !d.has_block || d.body_props.is_empty() {
+                    fully_applied = false;
+                    diagnostics.push(format!(
+                        "deviation '{}' in module '{}': 'deviate replace' requires a non-empty property block",
+                        dw.target, dw.module
+                    ));
+                    continue;
+                }
+                for prop in &d.body_props {
+                    if let Err(why) = replace_deviate_property(&mut node.node, prop) {
+                        fully_applied = false;
+                        diagnostics.push(format!(
+                            "deviation '{}' in module '{}': deviate replace {{{}}}: {}",
+                            dw.target, dw.module, prop.name, why
+                        ));
+                    }
+                }
+            }
+            "add" => {
+                if !d.has_block || d.body_props.is_empty() {
+                    fully_applied = false;
+                    diagnostics.push(format!(
+                        "deviation '{}' in module '{}': 'deviate add' requires a non-empty property block",
+                        dw.target, dw.module
+                    ));
+                    continue;
+                }
+                for prop in &d.body_props {
+                    if let Err(why) = add_deviate_property(&mut node.node, prop) {
+                        fully_applied = false;
+                        diagnostics.push(format!(
+                            "deviation '{}' in module '{}': deviate add {{{}}}: {}",
+                            dw.target, dw.module, prop.name, why
+                        ));
+                    }
+                }
+            }
+            other => {
+                fully_applied = false;
+                diagnostics.push(format!(
+                    "deviation '{}' in module '{}' uses 'deviate {}' — unknown deviation kind",
+                    dw.target, dw.module, other
+                ));
+            }
+        }
+    }
+    // Property-level deviations annotate the target node itself — children
+    // keep their own (un-deviated) properties. `not-supported` already
+    // pruned the subtree via `mark_pruned`; do not double-record notes.
+    if !node.pruned {
         mark_deviated(node, dw);
     }
     fully_applied
+}
+
+/// Properties `deviate delete` can remove because the compiled model
+/// represents them accurately. Anything else (`type`, `key`, `if-feature`,
+/// `unique`, extensions, ...) either changes path/type identity we cannot
+/// represent post-resolution or is not modeled at all — deleting it must
+/// fail closed rather than pretend the property is gone.
+fn delete_deviate_property(node: &mut Node, name: &str) -> bool {
+    match name {
+        "description" => node.description = None,
+        "reference" => node.reference = None,
+        "status" => node.status = None,
+        "config" => node.config = None,
+        "mandatory" => node.mandatory = None,
+        "presence" => node.presence = None,
+        "default" => node.default = None,
+        "units" => node.units = None,
+        "ordered-by" => node.ordered_by = None,
+        "min-elements" => node.min_elements = None,
+        "max-elements" => node.max_elements = None,
+        "must" => node.musts.clear(),
+        "when" => node.whens.clear(),
+        _ => return false,
+    }
+    true
+}
+
+/// `deviate replace` property application. Only properties whose values
+/// Bonsai represents AND whose replacement cannot change path identity in
+/// ways we cannot recompute are honored; the replacement VALUE is written
+/// into the node — a recorded-but-unapplied replacement would be a false
+/// authoritative schema.
+fn replace_deviate_property(node: &mut Node, prop: &DeviateProp) -> Result<(), String> {
+    if prop.has_block {
+        return Err("sub-block form is not a property replacement".to_string());
+    }
+    let v = prop.value.trim();
+    match prop.name.as_str() {
+        "default" => {
+            if v.is_empty() {
+                return Err("missing value".to_string());
+            }
+            node.default = Some(prop.value.clone());
+        }
+        "units" => {
+            node.units = Some(unquote_deviate_string(v)?);
+        }
+        "status" => {
+            node.status = Some(single_ident(v, "status")?);
+        }
+        "description" | "reference" => {
+            let s = dequote_concat(v)?;
+            if prop.name == "description" {
+                node.description = Some(s);
+            } else {
+                node.reference = Some(s);
+            }
+        }
+        "mandatory" => node.mandatory = Some(deviate_bool(v, "mandatory")?),
+        "config" => node.config = Some(deviate_bool(v, "config")?),
+        "min-elements" => node.min_elements = Some(deviate_uint(v, "min-elements")?),
+        "max-elements" => node.max_elements = Some(deviate_uint(v, "max-elements")?),
+        "presence" => {
+            node.presence = Some(if v.is_empty() {
+                String::new()
+            } else {
+                unquote_deviate_string(v)?
+            });
+        }
+        "ordered-by" => {
+            node.ordered_by = Some(single_ident(v, "ordered-by")?);
+        }
+        other => {
+            return Err(format!(
+                "replacement of '{}' is not implemented",
+                other
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `deviate add` property application for the read-only-planning subset:
+/// scalar properties we represent, plus flag `mandatory` and `must`/`when`
+/// expressions (stored, never evaluated — same fidelity as the base
+/// parser). Adding a property the node already carries is a deviation
+/// conflict and fails closed.
+fn add_deviate_property(node: &mut Node, prop: &DeviateProp) -> Result<(), String> {
+    if prop.has_block {
+        return Err("sub-block form is not a property addition".to_string());
+    }
+    let v = prop.value.trim();
+    match prop.name.as_str() {
+        "mandatory" => {
+            // `deviate add { mandatory; }` is the common flag form.
+            let val = if v.is_empty() { true } else { deviate_bool(v, "mandatory")? };
+            if node.mandatory.is_some() {
+                return Err("mandatory already present".to_string());
+            }
+            node.mandatory = Some(val);
+        }
+        "must" | "when" => {
+            if v.is_empty() {
+                return Err("missing expression".to_string());
+            }
+            let exprs = if prop.name == "must" {
+                &mut node.musts
+            } else {
+                &mut node.whens
+            };
+            exprs.push(dequote_concat(v)?);
+        }
+        _ => {
+            // Scalar additions share the replace machinery, but only when
+            // the property is absent — `deviate add` of an existing
+            // property is a conflict, not an overwrite.
+            let occupied = match prop.name.as_str() {
+                "default" => node.default.is_some(),
+                "units" => node.units.is_some(),
+                "status" => node.status.is_some(),
+                "description" => node.description.is_some(),
+                "reference" => node.reference.is_some(),
+                "config" => node.config.is_some(),
+                "min-elements" => node.min_elements.is_some(),
+                "max-elements" => node.max_elements.is_some(),
+                "presence" => node.presence.is_some(),
+                "ordered-by" => node.ordered_by.is_some(),
+                _ => return Err(format!("addition of '{}' is not implemented", prop.name)),
+            };
+            if occupied {
+                return Err(format!("'{}' already present", prop.name));
+            }
+            replace_deviate_property(node, prop)?;
+        }
+    }
+    Ok(())
+}
+
+fn deviate_bool(v: &str, what: &str) -> Result<bool, String> {
+    match v {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("{} expects true|false, found '{}'", what, v)),
+    }
+}
+
+fn deviate_uint(v: &str, what: &str) -> Result<u64, String> {
+    v.parse::<u64>()
+        .map_err(|_| format!("{} expects an unsigned integer, found '{}'", what, v))
+}
+
+/// A single identifier/keyword argument (`status current`, `ordered-by
+/// user`). Quoted or multi-token values are rejected.
+fn single_ident(v: &str, what: &str) -> Result<String, String> {
+    if v.is_empty() || v.contains(char::is_whitespace) || v.starts_with('"') {
+        return Err(format!("{} expects a single identifier, found '{}'", what, v));
+    }
+    Ok(v.to_string())
+}
+
+/// Unquote a `"..."`-quoted argument; bare identifiers pass through.
+fn unquote_deviate_string(v: &str) -> Result<String, String> {
+    if let Some(inner) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        if inner.contains('"') {
+            return Err(format!("malformed quoted string '{}'", v));
+        }
+        Ok(inner.to_string())
+    } else if v.contains('"') {
+        Err(format!("malformed string value '{}'", v))
+    } else {
+        Ok(v.to_string())
+    }
+}
+
+/// Decode a `"..." + "..."` concatenated string argument into its content,
+/// matching `Parser::string_concat` semantics.
+fn dequote_concat(v: &str) -> Result<String, String> {
+    let mut out = String::new();
+    let mut rest = v.trim();
+    loop {
+        if !rest.starts_with('"') {
+            return Err(format!("expected quoted string, found '{}'", rest));
+        }
+        let end = rest[1..]
+            .find('"')
+            .map(|i| i + 1)
+            .ok_or_else(|| format!("unterminated string in '{}'", v))?;
+        out.push_str(&rest[1..end]);
+        rest = rest[end + 1..].trim();
+        if rest.is_empty() {
+            return Ok(out);
+        }
+        rest = rest
+            .strip_prefix('+')
+            .ok_or_else(|| format!("expected '+' or end of string, found '{}'", rest))?
+            .trim_start();
+    }
 }
 
 fn mark_pruned(node: &mut ResolvedNode, dw: &DeviationWork) {
@@ -1885,9 +2137,6 @@ fn mark_deviated(node: &mut ResolvedNode, dw: &DeviationWork) {
     }
     if !dw.status.is_empty() {
         node.node.status = Some(dw.status.clone());
-    }
-    for child in &mut node.children {
-        mark_deviated(child, dw);
     }
 }
 

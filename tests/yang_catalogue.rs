@@ -610,10 +610,15 @@ fn augments_and_deviations_apply_with_provenance() {
     let note = find_path(&catalogue, "/ports/admin-note").expect("augmented note");
     assert_eq!(note.module, "test-aug");
 
-    // Deviation on /tb:ports/speed marks the whole choice subtree.
+    // Deviation on /tb:ports/speed marks only the resolved target node —
+    // deviation semantics never propagate to children. The target is a
+    // choice (not an indexable path entry), so the observable contract is
+    // that descendant paths are NOT marked deviated.
     let fast = find_path(&catalogue, "/ports/fast-mbps").unwrap();
-    assert!(fast.deviated);
-    assert!(fast.deviation_notes.iter().any(|n| n.contains("deviated")));
+    assert!(
+        !fast.deviated,
+        "property deviation must not propagate deviated to child nodes"
+    );
 
     // Deviation on leaf marks it + status obsolete.
     let server = find_path(&catalogue, "/system/ntp/server").unwrap();
@@ -2803,10 +2808,12 @@ fn deviation_module(deviates_body: &str) -> String {
 }
 
 #[test]
-fn deviate_delete_block_form_prunes_without_semicolon() {
+fn deviate_delete_block_form_applies_without_semicolon() {
     // Real-world deviation modules (e.g. cisco-xr-*-deviations) write
     // `deviate delete { ... }` with NO trailing ';' — the parser must
-    // accept the block form and the compiler must prune the node.
+    // accept the block form. RFC 7950 §7.20.3.2: `delete` removes the
+    // listed PROPERTIES of the target node — it does NOT remove the node
+    // (that is `not-supported`).
     let dev = deviation_module("    deviate delete {\n        default true;\n    }");
     let cat = compile_parsed(
         vec![
@@ -2816,15 +2823,18 @@ fn deviate_delete_block_form_prunes_without_semicolon() {
         &CompileOptions::default(),
     );
     assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    let enabled = cat
+        .paths
+        .iter()
+        .find(|p| p.path == "/iface/enabled")
+        .expect("deviate delete must NOT prune the node");
+    assert_eq!(enabled.kind, "leaf");
+    assert!(enabled.deviated, "deviated node must be marked");
     assert!(cat.paths.iter().any(|p| p.path == "/iface/hold-up"));
     assert!(
         cat.paths
             .iter()
             .any(|p| p.path == "/iface/counters/in-octets")
-    );
-    assert!(
-        !cat.paths.iter().any(|p| p.path == "/iface/enabled"),
-        "deviate delete must prune the node from the effective schema"
     );
     let base = cat.modules.iter().find(|m| m.name == "dbase").unwrap();
     assert!(
@@ -2834,18 +2844,212 @@ fn deviate_delete_block_form_prunes_without_semicolon() {
 }
 
 #[test]
-fn deviate_replace_annotation_only_is_applied() {
-    // `deviate replace { default 10; }` only annotates — path identity is
-    // unchanged, so the deviation is fully applied without diagnostics.
+fn deviate_delete_removes_only_listed_properties() {
+    // `deviate delete` removes exactly the named properties; every other
+    // property of the node is preserved.
+    let base = r#"module dbase {
+  yang-version "1.1";
+  namespace "urn:t:db";
+  prefix db;
+  revision "2024-01-01";
+  container iface {
+    leaf speed {
+      type uint32;
+      units "Mbps";
+      default 1000;
+      mandatory true;
+      min-elements 1;
+      max-elements 8;
+      description "port speed";
+      status current;
+    }
+  }
+}
+"#;
     let dev = r#"module ddev {
   yang-version "1.1";
   namespace "urn:t:dd";
   prefix dd;
   revision "2024-01-01";
   import dbase { prefix db; }
+  deviation "/db:iface/speed" {
+    deviate delete {
+      default 9999;
+      units "Gbps";
+      mandatory true;
+      min-elements 1;
+      max-elements 8;
+      description "whatever";
+      status obsolete;
+    }
+  }
+}
+"#;
+    let cat = compile_parsed(
+        vec![
+            inline_input("dbase", base),
+            inline_input("ddev", dev),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    let speed = cat
+        .paths
+        .iter()
+        .find(|p| p.path == "/iface/speed")
+        .expect("node must survive property deletion");
+    assert_eq!(speed.default, None, "default must be deleted");
+    assert_eq!(speed.units, None, "units must be deleted");
+    assert!(!speed.mandatory, "mandatory must be deleted");
+    assert_eq!(speed.min_elements, None);
+    assert_eq!(speed.max_elements, None);
+    assert_eq!(speed.description, None);
+    assert_eq!(speed.status, None, "status must be deleted");
+    assert_eq!(speed.type_name.as_deref(), Some("uint32"), "type preserved");
+    assert_eq!(speed.kind, "leaf");
+}
+
+#[test]
+fn deviate_delete_unimplemented_property_fails_closed() {
+    // `deviate delete` of a property Bonsai cannot remove accurately
+    // (type/key/if-feature/unique/extensions) preserves the node and
+    // marks the catalogue non-authoritative — never a silent success.
+    for prop in ["type uint16;", "key \"name\";", "if-feature \"db:f\";", "unique \"u\";"] {
+        let dev = format!(
+            r#"module ddev {{
+  yang-version "1.1";
+  namespace "urn:t:dd";
+  prefix dd;
+  revision "2024-01-01";
+  import dbase {{ prefix db; }}
+  deviation "/db:iface/enabled" {{
+    deviate delete {{
+      {prop}
+    }}
+  }}
+}}
+"#
+        );
+        let cat = compile_parsed(
+            vec![
+                inline_input("dbase", DEVIATION_BASE),
+                inline_input("ddev", &dev),
+            ],
+            &CompileOptions::default(),
+        );
+        assert_eq!(cat.status, "partial", "prop={prop} diags={:?}", cat.diagnostics);
+        assert!(
+            cat.diagnostics.iter().any(|d| d.contains("deviate delete")),
+            "prop={prop} must diagnose: {:?}",
+            cat.diagnostics
+        );
+        assert!(
+            cat.paths.iter().any(|p| p.path == "/iface/enabled"),
+            "node must be preserved when deletion is unimplemented"
+        );
+        let base = cat.modules.iter().find(|m| m.name == "dbase").unwrap();
+        assert!(
+            !base.deviation_modules.contains("ddev"),
+            "partially-applied deviation must not count as coverage"
+        );
+    }
+}
+
+#[test]
+fn deviate_delete_malformed_bodies_are_diagnosed() {
+    // `deviate delete` without a block, `deviate not-supported` with a
+    // block, and an empty delete block are all malformed — diagnosed,
+    // never silently applied.
+    let cases: &[(&str, &str)] = &[
+        ("    deviate delete;", "requires a property block"),
+        ("    deviate delete {\n    }", "block is empty"),
+        ("    deviate not-supported {\n        default true;\n    }", "must not carry"),
+    ];
+    for (body, expect) in cases {
+        let dev = deviation_module(body);
+        let cat = compile_parsed(
+            vec![
+                inline_input("dbase", DEVIATION_BASE),
+                inline_input("ddev", &dev),
+            ],
+            &CompileOptions::default(),
+        );
+        assert_eq!(cat.status, "partial", "body={body:?} diags={:?}", cat.diagnostics);
+        assert!(
+            cat.diagnostics.iter().any(|d| d.contains(expect)),
+            "body={body:?} expected '{}' in {:?}",
+            expect,
+            cat.diagnostics
+        );
+    }
+}
+
+#[test]
+fn deviate_not_supported_and_delete_are_distinct() {
+    // Same target shape, two deviation modules: not-supported prunes the
+    // node entirely; delete preserves it minus the named property.
+    let dev_ns = r#"module dns {
+  yang-version "1.1";
+  namespace "urn:t:dns";
+  prefix dn;
+  revision "2024-01-01";
+  import dbase { prefix db; }
+  deviation "/db:iface/enabled" {
+    deviate not-supported;
+  }
+}
+"#;
+    let dev_del = deviation_module("    deviate delete {\n        default true;\n    }");
+    let cat_ns = compile_parsed(
+        vec![
+            inline_input("dbase", DEVIATION_BASE),
+            inline_input("dns", dev_ns),
+        ],
+        &CompileOptions::default(),
+    );
+    assert!(
+        !cat_ns.paths.iter().any(|p| p.path == "/iface/enabled"),
+        "not-supported must prune"
+    );
+    let cat_del = compile_parsed(
+        vec![
+            inline_input("dbase", DEVIATION_BASE),
+            inline_input("ddev", &dev_del),
+        ],
+        &CompileOptions::default(),
+    );
+    assert!(
+        cat_del.paths.iter().any(|p| p.path == "/iface/enabled"),
+        "delete must preserve the node"
+    );
+}
+
+#[test]
+fn multiple_deviations_on_one_node_compose() {
+    // Two deviation modules may target the same node; each applies its
+    // own property operations and both are recorded as coverage.
+    let dev_a = r#"module dea {
+  yang-version "1.1";
+  namespace "urn:t:dea";
+  prefix da;
+  revision "2024-01-01";
+  import dbase { prefix db; }
+  deviation "/db:iface/hold-up" {
+    deviate delete {
+      default 5;
+    }
+  }
+}
+"#;
+    let dev_b = r#"module deb {
+  yang-version "1.1";
+  namespace "urn:t:deb";
+  prefix db2;
+  revision "2024-01-01";
+  import dbase { prefix db; }
   deviation "/db:iface/hold-up" {
     deviate replace {
-      default 10;
+      units "seconds";
     }
   }
 }
@@ -2853,19 +3057,218 @@ fn deviate_replace_annotation_only_is_applied() {
     let cat = compile_parsed(
         vec![
             inline_input("dbase", DEVIATION_BASE),
-            inline_input("ddev", dev),
+            inline_input("dea", dev_a),
+            inline_input("deb", dev_b),
         ],
         &CompileOptions::default(),
     );
     assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
-    assert!(cat.paths.iter().any(|p| p.path == "/iface/hold-up"));
+    let hold = cat
+        .paths
+        .iter()
+        .find(|p| p.path == "/iface/hold-up")
+        .expect("node preserved");
+    assert_eq!(hold.default, None, "delete removed default");
+    assert_eq!(hold.units.as_deref(), Some("seconds"), "replace set units");
     let base = cat.modules.iter().find(|m| m.name == "dbase").unwrap();
-    assert!(base.deviation_modules.contains("ddev"));
-    let dev_mod = cat.modules.iter().find(|m| m.name == "ddev").unwrap();
-    assert_eq!(
-        dev_mod.node_count, 0,
-        "deviation module contributes no paths"
+    assert!(base.deviation_modules.contains("dea"));
+    assert!(base.deviation_modules.contains("deb"));
+}
+
+#[test]
+fn deviation_on_augmented_node_resolves() {
+    // Deviations may target nodes introduced by an augment in another
+    // module — augments apply before deviations in the compile pipeline.
+    let base = r#"module abase {
+  yang-version "1.1";
+  namespace "urn:t:ab";
+  prefix ab;
+  revision "2024-01-01";
+  container system { leaf name { type string; } }
+}
+"#;
+    let aug = r#"module aaug {
+  yang-version "1.1";
+  namespace "urn:t:aa";
+  prefix aa;
+  revision "2024-01-01";
+  import abase { prefix ab; }
+  augment "/ab:system" {
+    leaf injected { type uint32; default 7; }
+  }
+}
+"#;
+    let dev = r#"module adev {
+  yang-version "1.1";
+  namespace "urn:t:ad";
+  prefix ad;
+  revision "2024-01-01";
+  import abase { prefix ab; }
+  import aaug { prefix aa; }
+  deviation "/ab:system/aa:injected" {
+    deviate delete {
+      default 7;
+    }
+  }
+}
+"#;
+    let cat = compile_parsed(
+        vec![
+            inline_input("abase", base),
+            inline_input("aaug", aug),
+            inline_input("adev", dev),
+        ],
+        &CompileOptions::default(),
     );
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    let injected = cat
+        .paths
+        .iter()
+        .find(|p| p.path == "/system/injected")
+        .expect("augmented node present");
+    assert_eq!(injected.default, None, "deviation removed augmented default");
+    assert_eq!(injected.module, "aaug");
+}
+
+#[test]
+fn deviate_replace_applies_property_values() {
+    // `deviate replace` writes the replacement VALUE into the effective
+    // node — recording the deviation without applying it would produce a
+    // false authoritative schema.
+    let base = r#"module rbase {
+  yang-version "1.1";
+  namespace "urn:t:rb";
+  prefix rb;
+  revision "2024-01-01";
+  container iface {
+    leaf hold-up {
+      type uint8;
+      units "seconds";
+      default 3;
+      description "old desc";
+      status current;
+    }
+  }
+}
+"#;
+    let dev = r#"module rdev {
+  yang-version "1.1";
+  namespace "urn:t:rd";
+  prefix rd;
+  revision "2024-01-01";
+  import rbase { prefix rb; }
+  deviation "/rb:iface/hold-up" {
+    deviate replace {
+      default 10;
+      units "minutes";
+      description "new desc";
+      status deprecated;
+    }
+  }
+}
+"#;
+    let cat = compile_parsed(
+        vec![
+            inline_input("rbase", base),
+            inline_input("rdev", dev),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    let hold = cat
+        .paths
+        .iter()
+        .find(|p| p.path == "/iface/hold-up")
+        .expect("node present");
+    assert_eq!(hold.default.as_deref(), Some("10"));
+    assert_eq!(hold.units.as_deref(), Some("minutes"));
+    assert_eq!(hold.description.as_deref(), Some("new desc"));
+    assert_eq!(hold.status.as_deref(), Some("deprecated"));
+    let rbase = cat.modules.iter().find(|m| m.name == "rbase").unwrap();
+    assert!(rbase.deviation_modules.contains("rdev"));
+}
+
+#[test]
+fn deviate_add_scalar_properties() {
+    // `deviate add` of representable scalar properties applies them;
+    // adding an already-present property or an unimplemented property
+    // fails closed.
+    let base = r#"module abase2 {
+  yang-version "1.1";
+  namespace "urn:t:ab2";
+  prefix ab2;
+  revision "2024-01-01";
+  container iface {
+    leaf speed { type uint32; }
+  }
+}
+"#;
+    let dev = r#"module adev2 {
+  yang-version "1.1";
+  namespace "urn:t:ad2";
+  prefix ad2;
+  revision "2024-01-01";
+  import abase2 { prefix ab2; }
+  deviation "/ab2:iface/speed" {
+    deviate add {
+      mandatory;
+      units "Mbps";
+      default 100;
+    }
+  }
+}
+"#;
+    let cat = compile_parsed(
+        vec![
+            inline_input("abase2", base),
+            inline_input("adev2", dev),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    let speed = cat
+        .paths
+        .iter()
+        .find(|p| p.path == "/iface/speed")
+        .expect("node present");
+    assert!(speed.mandatory, "added mandatory must apply");
+    assert_eq!(speed.units.as_deref(), Some("Mbps"));
+    assert_eq!(speed.default.as_deref(), Some("100"));
+
+    // Conflict: `deviate add` of a property the node already carries is a
+    // deviation conflict — diagnosed, catalogue non-authoritative.
+    let dev_has_default = r#"module adev4 {
+  yang-version "1.1";
+  namespace "urn:t:ad4";
+  prefix ad4;
+  revision "2024-01-01";
+  import rbase2 { prefix rb2; }
+  deviation "/rb2:iface/speed" {
+    deviate add {
+      default 5;
+    }
+  }
+}
+"#;
+    let base_with_default = r#"module rbase2 {
+  yang-version "1.1";
+  namespace "urn:t:rb2";
+  prefix rb2;
+  revision "2024-01-01";
+  container iface {
+    leaf speed { type uint32; default 1; }
+  }
+}
+"#;
+    let cat2 = compile_parsed(
+        vec![
+            inline_input("rbase2", base_with_default),
+            inline_input("adev4", dev_has_default),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat2.status, "partial", "diags={:?}", cat2.diagnostics);
+    assert!(cat2.diagnostics.iter().any(|d| d.contains("already present")));
 }
 
 #[test]

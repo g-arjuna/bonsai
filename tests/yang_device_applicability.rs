@@ -2120,13 +2120,15 @@ fn t4b_covered_deviation_does_not_block_applicability() {
         path_status(&r, "oper-status").unwrap().status,
         ApplicabilityStatus::Applicable
     );
-    // The deviated node itself is pruned from the effective schema.
+    // `deviate delete { default ""; }` removes only the `default`
+    // property (RFC 7950 §7.20.3.2) — the node itself remains in the
+    // effective schema and stays applicable.
     assert!(
         r.paths
             .iter()
             .filter(|p| p.module == "test-app")
-            .all(|p| !p.path.contains("hostname")),
-        "deviate delete must remove the node from compiled paths"
+            .any(|p| p.path.contains("hostname")),
+        "deviate delete must preserve the node, removing only the property"
     );
 
     // Uncovered: a DIFFERENT reported deviation was never compiled.
