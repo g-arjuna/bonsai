@@ -2886,10 +2886,7 @@ fn deviate_delete_removes_only_listed_properties() {
 }
 "#;
     let cat = compile_parsed(
-        vec![
-            inline_input("dbase", base),
-            inline_input("ddev", dev),
-        ],
+        vec![inline_input("dbase", base), inline_input("ddev", dev)],
         &CompileOptions::default(),
     );
     assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
@@ -2914,7 +2911,12 @@ fn deviate_delete_unimplemented_property_fails_closed() {
     // `deviate delete` of a property Bonsai cannot remove accurately
     // (type/key/if-feature/unique/extensions) preserves the node and
     // marks the catalogue non-authoritative — never a silent success.
-    for prop in ["type uint16;", "key \"name\";", "if-feature \"db:f\";", "unique \"u\";"] {
+    for prop in [
+        "type uint16;",
+        "key \"name\";",
+        "if-feature \"db:f\";",
+        "unique \"u\";",
+    ] {
         let dev = format!(
             r#"module ddev {{
   yang-version "1.1";
@@ -2937,7 +2939,11 @@ fn deviate_delete_unimplemented_property_fails_closed() {
             ],
             &CompileOptions::default(),
         );
-        assert_eq!(cat.status, "partial", "prop={prop} diags={:?}", cat.diagnostics);
+        assert_eq!(
+            cat.status, "partial",
+            "prop={prop} diags={:?}",
+            cat.diagnostics
+        );
         assert!(
             cat.diagnostics.iter().any(|d| d.contains("deviate delete")),
             "prop={prop} must diagnose: {:?}",
@@ -2963,7 +2969,10 @@ fn deviate_delete_malformed_bodies_are_diagnosed() {
     let cases: &[(&str, &str)] = &[
         ("    deviate delete;", "requires a property block"),
         ("    deviate delete {\n    }", "block is empty"),
-        ("    deviate not-supported {\n        default true;\n    }", "must not carry"),
+        (
+            "    deviate not-supported {\n        default true;\n    }",
+            "must not carry",
+        ),
     ];
     for (body, expect) in cases {
         let dev = deviation_module(body);
@@ -2974,7 +2983,11 @@ fn deviate_delete_malformed_bodies_are_diagnosed() {
             ],
             &CompileOptions::default(),
         );
-        assert_eq!(cat.status, "partial", "body={body:?} diags={:?}", cat.diagnostics);
+        assert_eq!(
+            cat.status, "partial",
+            "body={body:?} diags={:?}",
+            cat.diagnostics
+        );
         assert!(
             cat.diagnostics.iter().any(|d| d.contains(expect)),
             "body={body:?} expected '{}' in {:?}",
@@ -3126,7 +3139,10 @@ fn deviation_on_augmented_node_resolves() {
         .iter()
         .find(|p| p.path == "/system/injected")
         .expect("augmented node present");
-    assert_eq!(injected.default, None, "deviation removed augmented default");
+    assert_eq!(
+        injected.default, None,
+        "deviation removed augmented default"
+    );
     assert_eq!(injected.module, "aaug");
 }
 
@@ -3168,10 +3184,7 @@ fn deviate_replace_applies_property_values() {
 }
 "#;
     let cat = compile_parsed(
-        vec![
-            inline_input("rbase", base),
-            inline_input("rdev", dev),
-        ],
+        vec![inline_input("rbase", base), inline_input("rdev", dev)],
         &CompileOptions::default(),
     );
     assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
@@ -3219,10 +3232,7 @@ fn deviate_add_scalar_properties() {
 }
 "#;
     let cat = compile_parsed(
-        vec![
-            inline_input("abase2", base),
-            inline_input("adev2", dev),
-        ],
+        vec![inline_input("abase2", base), inline_input("adev2", dev)],
         &CompileOptions::default(),
     );
     assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
@@ -3268,7 +3278,11 @@ fn deviate_add_scalar_properties() {
         &CompileOptions::default(),
     );
     assert_eq!(cat2.status, "partial", "diags={:?}", cat2.diagnostics);
-    assert!(cat2.diagnostics.iter().any(|d| d.contains("already present")));
+    assert!(
+        cat2.diagnostics
+            .iter()
+            .any(|d| d.contains("already present"))
+    );
 }
 
 #[test]

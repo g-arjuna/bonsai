@@ -388,6 +388,22 @@ fn verify_bundle(
             catalogue.schema_id
         )));
     }
+    // Compiler-version gate: a bundle produced under different compile
+    // semantics must NEVER be reinterpreted by this binary, even though
+    // its embedded id is self-consistent. The version participates in
+    // schema identity, so a genuine older bundle would also fail the
+    // recompute below — but rejecting here gives an honest "unsupported
+    // version" diagnostic instead of a misleading integrity failure, and
+    // prevents a doctored `schema_version` field from riding a valid
+    // current-version hash.
+    if catalogue.schema_version != compiler::COMPILED_SCHEMA_VERSION {
+        return Err(VerifyFailure::Invalid(anyhow::anyhow!(
+            "compiled bundle '{}' was produced under compiler schema_version {} (expected {}) — refusing to reinterpret under changed semantics",
+            schema_id,
+            catalogue.schema_version,
+            compiler::COMPILED_SCHEMA_VERSION
+        )));
+    }
     let recomputed = compiler::recompute_schema_id(&catalogue);
     if recomputed != schema_id {
         return Err(VerifyFailure::Invalid(anyhow::anyhow!(
@@ -994,4 +1010,117 @@ pub fn collect_module_features(catalogue: &CompiledCatalogue) -> BTreeSet<String
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LEGACY_YANG: &str = r#"
+module legacy-mod {
+  yang-version 1.1;
+  namespace "urn:example:legacy-mod";
+  prefix lm;
+  revision 2024-01-01;
+  container system { leaf mtu { type uint32; } }
+}
+"#;
+
+    fn legacy_input() -> ModuleInput {
+        ModuleInput {
+            module: parse_module(LEGACY_YANG).expect("fixture parses"),
+            vendor_scope: "test".to_string(),
+            source_kind: "inline".to_string(),
+            source_ref: "legacy-mod".to_string(),
+            trust: "trusted".to_string(),
+            checksum_sha256: "inline-legacy-mod".to_string(),
+            approved: false,
+            license: String::new(),
+            platforms: vec!["*".to_string()],
+            pinned_ref: String::new(),
+            source_id: String::new(),
+        }
+    }
+
+    /// Upgrade behavior (M6G Stage 2): a bundle compiled under an older
+    /// COMPILED_SCHEMA_VERSION must never be silently reinterpreted by
+    /// the new binary. Its identity is self-consistent, so only the
+    /// version gate and the versioned hash keep it out of the active
+    /// catalogue; recompilation produces a NEW schema_id that must be
+    /// selected explicitly — no automatic authority transfer.
+    #[test]
+    fn pre_upgrade_compiler_version_bundles_are_never_reinterpreted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K")
+            .expect("library");
+
+        let catalogue = compile_parsed(vec![legacy_input()], &CompileOptions::default());
+        assert_eq!(catalogue.schema_version, compiler::COMPILED_SCHEMA_VERSION);
+        assert_eq!(catalogue.status, "complete");
+
+        // Fabricate a genuine pre-upgrade bundle: identical semantic
+        // content, but schema_version=1 and an identity hashed under
+        // compiler_version 1 — exactly what a v1 binary would have
+        // persisted.
+        let legacy_id = compiler::compute_schema_id_with_version(
+            1,
+            &catalogue.modules,
+            &catalogue.paths,
+            &catalogue.status,
+            &catalogue.diagnostics,
+        );
+        assert_ne!(legacy_id, catalogue.schema_id);
+        let mut legacy_json = serde_json::to_value(&catalogue).expect("serialize");
+        legacy_json["schema_version"] = serde_json::json!(1);
+        legacy_json["schema_id"] = serde_json::json!(&legacy_id);
+        let cdir = compiled_dir(&library);
+        std::fs::create_dir_all(&cdir).expect("compiled dir");
+        std::fs::write(
+            cdir.join(format!("{legacy_id}.json")),
+            serde_json::to_vec_pretty(&legacy_json).expect("legacy json"),
+        )
+        .expect("write legacy bundle");
+        std::fs::write(
+            active_pointer_path(&library),
+            serde_json::to_vec(&ActivePointer {
+                schema_id: legacy_id.clone(),
+            })
+            .expect("pointer json"),
+        )
+        .expect("write active pointer");
+
+        // The active pointer names an old-version bundle: explicit
+        // invalid state — never a usable catalogue, never a silent
+        // fallback to "whatever verifies".
+        assert!(matches!(
+            active_catalogue_state(&library),
+            ActiveCatalogueState::InvalidBundle
+        ));
+        assert!(load_active_catalogue(&library).is_err());
+        // Direct activation and per-id inspection (the path device
+        // schema selection uses) both refuse the old identity.
+        assert!(activate_compiled(&library, &legacy_id).is_err());
+        assert!(matches!(
+            compiled_bundle_state(&library, &legacy_id),
+            ActiveCatalogueState::InvalidBundle
+        ));
+
+        // Recompile under current semantics: a NEW schema_id, verified
+        // cleanly. The old bundle stays on disk but remains rejected —
+        // upgrade never transfers authority between semantic identities.
+        let current = compile_parsed(vec![legacy_input()], &CompileOptions::default());
+        assert_ne!(current.schema_id, legacy_id);
+        persist_compiled(&library, &current).expect("persist current");
+        activate_compiled(&library, &current.schema_id).expect("activate current");
+        match active_catalogue_state(&library) {
+            ActiveCatalogueState::Verified(c) => {
+                assert_eq!(c.schema_id, current.schema_id)
+            }
+            other => panic!("expected verified active catalogue, got {other:?}"),
+        }
+        assert!(matches!(
+            compiled_bundle_state(&library, &legacy_id),
+            ActiveCatalogueState::InvalidBundle
+        ));
+    }
 }

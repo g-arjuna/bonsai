@@ -1994,10 +1994,7 @@ fn replace_deviate_property(node: &mut Node, prop: &DeviateProp) -> Result<(), S
             node.ordered_by = Some(single_ident(v, "ordered-by")?);
         }
         other => {
-            return Err(format!(
-                "replacement of '{}' is not implemented",
-                other
-            ));
+            return Err(format!("replacement of '{}' is not implemented", other));
         }
     }
     Ok(())
@@ -2016,7 +2013,11 @@ fn add_deviate_property(node: &mut Node, prop: &DeviateProp) -> Result<(), Strin
     match prop.name.as_str() {
         "mandatory" => {
             // `deviate add { mandatory; }` is the common flag form.
-            let val = if v.is_empty() { true } else { deviate_bool(v, "mandatory")? };
+            let val = if v.is_empty() {
+                true
+            } else {
+                deviate_bool(v, "mandatory")?
+            };
             if node.mandatory.is_some() {
                 return Err("mandatory already present".to_string());
             }
@@ -2076,7 +2077,10 @@ fn deviate_uint(v: &str, what: &str) -> Result<u64, String> {
 /// user`). Quoted or multi-token values are rejected.
 fn single_ident(v: &str, what: &str) -> Result<String, String> {
     if v.is_empty() || v.contains(char::is_whitespace) || v.starts_with('"') {
-        return Err(format!("{} expects a single identifier, found '{}'", what, v));
+        return Err(format!(
+            "{} expects a single identifier, found '{}'",
+            what, v
+        ));
     }
     Ok(v.to_string())
 }
@@ -2292,6 +2296,20 @@ fn compute_schema_id(
     status: &str,
     diagnostics: &[String],
 ) -> String {
+    compute_schema_id_with_version(COMPILED_SCHEMA_VERSION, modules, paths, status, diagnostics)
+}
+
+/// Identity under an explicit compiler version. `pub(crate)` so the
+/// store layer's upgrade tests can fabricate genuine pre-upgrade
+/// (older-version) bundle identities — production callers must use
+/// [`compute_schema_id`], which always binds the current version.
+pub(crate) fn compute_schema_id_with_version(
+    compiler_version: u32,
+    modules: &[CompiledModule],
+    paths: &[SchemaPathEntry],
+    status: &str,
+    diagnostics: &[String],
+) -> String {
     // Canonical semantic identity: serialize the deterministic semantic
     // content (compiler version, completeness status, module metadata,
     // features, full path entries, diagnostics) and hash it. Nondeterministic
@@ -2307,7 +2325,7 @@ fn compute_schema_id(
         diagnostics: &'a [String],
     }
     let identity = Identity {
-        compiler_version: COMPILED_SCHEMA_VERSION,
+        compiler_version,
         status,
         modules,
         paths,
