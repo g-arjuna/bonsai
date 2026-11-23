@@ -2139,3 +2139,121 @@ fn t4b_covered_deviation_does_not_block_applicability() {
         "uncovered reported deviation must fail closed"
     );
 }
+#[test]
+fn m6g_multi_datastore_library_scopes_revision_conflicts() {
+    // RFC 8525: different datastore schemas may legitimately pin different
+    // revisions of the same module. Conflict detection is scoped to each
+    // schema's module-set union — the parse must NOT reject the library.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "multi-ds",
+            "module-set": [
+                {"name": "ms-run", "module": [
+                    {"name": "test-app", "revision": "2024-01-01",
+                     "namespace": "urn:example:test-app"},
+                    {"name": "test-baselib", "revision": "2023-06-01",
+                     "namespace": "urn:example:test-baselib"}
+                ]},
+                {"name": "ms-cand", "module": [
+                    {"name": "test-app", "revision": "2025-06-01",
+                     "namespace": "urn:example:test-app"},
+                    {"name": "test-baselib", "revision": "2023-06-01",
+                     "namespace": "urn:example:test-baselib"}
+                ]}
+            ],
+            "schema": [
+                {"name": "s-run", "module-set": ["ms-run"]},
+                {"name": "s-cand", "module-set": ["ms-cand"]}
+            ],
+            "datastore": [
+                {"name": "ietf-datastores:running", "schema": "s-run"},
+                {"name": "ietf-datastores:candidate", "schema": "s-cand"}
+            ]
+        }
+    });
+    let evidence =
+        yang_library::parse_nmda_library(&tree, 1).expect("per-datastore revisions must parse");
+    assert_eq!(evidence.module_sets.len(), 2);
+    assert_eq!(evidence.datastores.len(), 2);
+
+    let catalogue = compile_app();
+    let device = binding();
+    let lib = YangLibraryOutcome::Complete { evidence };
+
+    // running → revision 2024-01-01 matches the compiled catalogue.
+    let result = applicability::resolve_applicability(&ApplicabilityInput {
+        catalogue: Some(&catalogue),
+        catalogue_diagnostics: Vec::new(),
+        capabilities: None,
+        yang_library: Some(&lib),
+        requested_datastore: Some("running"),
+        platform: None,
+        device: &device,
+        now_ns: 10_000,
+    });
+    assert_eq!(result.datastore.as_deref(), Some("ietf-datastores:running"));
+    assert_eq!(
+        module_status(&result, "test-app").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+
+    // candidate → revision 2025-06-01 does NOT match — module stays
+    // unresolved, never silently applicable.
+    let result = applicability::resolve_applicability(&ApplicabilityInput {
+        catalogue: Some(&catalogue),
+        catalogue_diagnostics: Vec::new(),
+        capabilities: None,
+        yang_library: Some(&lib),
+        requested_datastore: Some("candidate"),
+        platform: None,
+        device: &device,
+        now_ns: 10_000,
+    });
+    assert_eq!(
+        result.datastore.as_deref(),
+        Some("ietf-datastores:candidate")
+    );
+    let app = module_status(&result, "test-app").unwrap();
+    assert_ne!(app.status, ApplicabilityStatus::Applicable);
+    assert!(app.reasons.contains(&ReasonCode::ModuleRevisionUnresolved));
+}
+
+#[test]
+fn m6g_conflict_within_one_schema_still_rejected() {
+    // Two module-sets combined into the SAME schema disagreeing on a
+    // module revision is a real conflict — rejected at parse time.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "x",
+            "module-set": [
+                {"name": "a", "module": [{"name": "m", "revision": "2020-01-01"}]},
+                {"name": "b", "module": [{"name": "m", "revision": "2021-01-01"}]}
+            ],
+            "schema": [{"name": "s", "module-set": ["a", "b"]}],
+            "datastore": [{"name": "ietf-datastores:running", "schema": "s"}]
+        }
+    });
+    let err = yang_library::parse_nmda_library(&tree, 0).unwrap_err();
+    assert!(err.contains("conflicting"), "{err}");
+
+    // Same disagreement but in sets referenced by DIFFERENT schemas is
+    // legitimate — parses cleanly.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "x",
+            "module-set": [
+                {"name": "a", "module": [{"name": "m", "revision": "2020-01-01"}]},
+                {"name": "b", "module": [{"name": "m", "revision": "2021-01-01"}]}
+            ],
+            "schema": [
+                {"name": "s1", "module-set": ["a"]},
+                {"name": "s2", "module-set": ["b"]}
+            ],
+            "datastore": [
+                {"name": "ietf-datastores:running", "schema": "s1"},
+                {"name": "ietf-datastores:candidate", "schema": "s2"}
+            ]
+        }
+    });
+    assert!(yang_library::parse_nmda_library(&tree, 0).is_ok());
+}
