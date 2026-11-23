@@ -2158,15 +2158,12 @@ module test-feats {
   feature b { if-feature "tf:a"; }
   feature c { if-feature "tf:b"; }
   feature d { if-feature "tf:missing"; }
-  feature p { if-feature "tf:q"; }
-  feature q { if-feature "tf:p"; }
   feature e { if-feature "ta:fancy-f"; }
 
   container system {
     leaf open { type string; }
     leaf gated-c { type string; config false; if-feature "tf:c"; }
     leaf gated-d { type string; config false; if-feature "tf:d"; }
-    leaf gated-p { type string; config false; if-feature "tf:p"; }
     leaf gated-e { type string; config false; if-feature "tf:e"; }
   }
 }
@@ -2273,26 +2270,9 @@ fn m6g_feature_unproven_dependency_is_unknown_never_positive() {
 }
 
 #[test]
-fn m6g_feature_dependency_cycle_and_cross_module() {
+fn m6g_feature_dependency_cross_module_transitive() {
     let catalogue = compile_feats();
     let device = binding();
-
-    // Mutually-dependent p/q both reported: each dependency is
-    // satisfied by the other — effectively enabled.
-    let lib = feats_outcome(&["p", "q"]);
-    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
-    assert_eq!(
-        path_status(&r, "gated-p").unwrap().status,
-        ApplicabilityStatus::Applicable
-    );
-
-    // Only p reported: q is provably absent → p cannot be enabled.
-    let lib = feats_outcome(&["p"]);
-    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
-    assert_eq!(
-        path_status(&r, "gated-p").unwrap().status,
-        ApplicabilityStatus::NotApplicable
-    );
 
     // Cross-module: e depends on test-app's fancy-f, which itself
     // depends on base-f. test-app reports both enabled in feats_outcome,
@@ -2303,4 +2283,92 @@ fn m6g_feature_dependency_cycle_and_cross_module() {
         path_status(&r, "gated-e").unwrap().status,
         ApplicabilityStatus::Applicable
     );
+}
+
+// RFC 7950 §7.20.1: circular if-feature dependency graphs are invalid
+// YANG — detected at compile time; the module is partial and can never
+// be authoritative.
+const MODULE_CYCLE: &str = r#"
+module test-cycle {
+  yang-version 1.1;
+  namespace "urn:example:test-cycle";
+  prefix tc;
+  revision 2024-01-01;
+
+  feature p { if-feature "tc:q"; }
+  feature q { if-feature "tc:p"; }
+  feature selfref { if-feature "tc:selfref"; }
+
+  container system {
+    leaf gated { type string; config false; if-feature "tc:p"; }
+    leaf gated-self { type string; config false; if-feature "tc:selfref"; }
+  }
+}
+"#;
+
+#[test]
+fn m6g_circular_feature_dependencies_are_compile_time_invalid() {
+    let catalogue = yang_schema::compile_parsed(
+        vec![module_input("test-cycle", MODULE_CYCLE)],
+        &CompileOptions::default(),
+    );
+    let module = catalogue
+        .modules
+        .iter()
+        .find(|m| m.name == "test-cycle")
+        .expect("module compiled");
+    assert_eq!(
+        module.resolution, "partial",
+        "circular dependency must mark the module partial: {:?}",
+        catalogue.diagnostics
+    );
+    assert!(
+        catalogue
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("circular if-feature")),
+        "expected circular-dependency diagnostic: {:?}",
+        catalogue.diagnostics
+    );
+
+    // Even with every feature reported enabled, no gated path of an
+    // invalid module may be applicable.
+    let lib = YangLibraryOutcome::Complete {
+        evidence: YangLibraryEvidence {
+            tree: YangLibraryTree::Nmda,
+            content_id: Some("cid-c".to_string()),
+            module_sets: vec![YangLibraryModuleSet {
+                name: "msc".to_string(),
+                modules: vec![lib_module(
+                    "test-cycle",
+                    Some("2024-01-01"),
+                    Some("urn:example:test-cycle"),
+                    &["p", "q", "selfref"],
+                    &[],
+                )],
+                import_only_modules: Vec::new(),
+            }],
+            schemas: vec![YangLibrarySchema {
+                name: "sc".to_string(),
+                module_sets: vec!["msc".to_string()],
+            }],
+            datastores: vec![YangLibraryDatastore {
+                name: "ietf-datastores:running".to_string(),
+                schema: "sc".to_string(),
+            }],
+            origin: "ietf".to_string(),
+            path: "/yang-library".to_string(),
+            fetched_at_ns: 2_000,
+            diagnostics: Vec::new(),
+        },
+    };
+    let r = resolve(Some(&catalogue), None, Some(&lib), &binding());
+    for p in r.paths.iter().filter(|p| p.module == "test-cycle") {
+        assert_ne!(
+            p.status,
+            ApplicabilityStatus::Applicable,
+            "invalid dependency graph must not authorize {}: {p:?}",
+            p.path
+        );
+    }
 }

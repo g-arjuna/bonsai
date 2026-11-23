@@ -13,7 +13,11 @@ use sha2::{Digest, Sha256};
 
 use super::parser::{Module, Node, Stmt, TypeSpec};
 
-pub const COMPILED_SCHEMA_VERSION: u32 = 1;
+/// v3: RFC 7950 deviation semantics (#73, v2) plus compile-time
+/// circular if-feature dependency diagnostics — both alter compiled
+/// module content/diagnostics and therefore schema identity. Old
+/// bundles must never be interpreted under the new semantics.
+pub const COMPILED_SCHEMA_VERSION: u32 = 3;
 /// Bound on resolution passes for nested augments.
 const MAX_RESOLUTION_PASSES: usize = 8;
 /// Bound on uses-expansion depth (grouping cycles).
@@ -655,6 +659,13 @@ fn compile_inner(
         }
     }
 
+    // RFC 7950 §7.20.1: a feature must not reference itself directly or
+    // indirectly — circular if-feature dependency graphs are invalid
+    // YANG. Detected at compile time through each module's lexical
+    // import scope; affected modules are marked partial via diagnostics
+    // so no path they gate can be authoritative.
+    validate_feature_dependency_cycles(&ctxs, &mut diagnostics);
+
     // Feature-gate evaluation helper data is embedded per node; build index.
     let mut paths = Vec::new();
     let mut modules_out = Vec::new();
@@ -976,6 +987,99 @@ fn canonicalize_if_feature_expr(
         return expr.trim().to_string();
     }
     normalized
+}
+
+/// RFC 7950 §7.20.1 cycle check over feature `if-feature` dependencies.
+/// Each dependency atom is resolved through the REFERENCING module's
+/// lexical scope (`resolve_module_ref`: own prefix, imports, module
+/// name) to an exact `(module, feature)` identity — prefix strings are
+/// never compared globally, so two modules reusing a prefix cannot
+/// produce a false cycle or mask a real one. Unresolvable references
+/// create no edge: they already fail closed as `Unknown` at
+/// applicability time. Every feature lying on a cycle (including
+/// self-reference) yields a diagnostic naming its module, which marks
+/// that module `partial` — invalid dependency graphs can never
+/// authorize schema paths.
+fn validate_feature_dependency_cycles(
+    ctxs: &BTreeMap<String, ModuleCtx>,
+    diagnostics: &mut Vec<String>,
+) {
+    // (module, feature) -> resolved dependency (module, feature) edges.
+    let mut deps: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
+    for (mname, ctx) in ctxs {
+        for (fname, f) in &ctx.features {
+            let mut edges = Vec::new();
+            for expr in &f.if_features {
+                let atom = expr.trim();
+                if atom.is_empty() {
+                    continue;
+                }
+                if let Some((dm, df)) = resolve_module_ref(atom, ctx, ctxs) {
+                    edges.push((dm.to_string(), df.to_string()));
+                }
+            }
+            deps.insert((mname.clone(), fname.clone()), edges);
+        }
+    }
+
+    // Iterative DFS from every node; report each distinct cycle once.
+    // State: 0=unvisited, 1=in-stack, 2=done.
+    let mut state: BTreeMap<(String, String), u8> = BTreeMap::new();
+    let mut reported: BTreeSet<String> = BTreeSet::new();
+    let nodes: Vec<(String, String)> = deps.keys().cloned().collect();
+    for start in nodes {
+        if state.get(&start).copied().unwrap_or(0) != 0 {
+            continue;
+        }
+        // Explicit stack of (node, child index).
+        let mut stack: Vec<((String, String), usize)> = vec![(start.clone(), 0)];
+        state.insert(start.clone(), 1);
+        while let Some((node, idx)) = stack.last_mut() {
+            let edges = deps.get(node).cloned().unwrap_or_default();
+            if *idx >= edges.len() {
+                state.insert(node.clone(), 2);
+                stack.pop();
+                continue;
+            }
+            let next = edges[*idx].clone();
+            *idx += 1;
+            match state.get(&next).copied().unwrap_or(0) {
+                0 => {
+                    state.insert(next.clone(), 1);
+                    stack.push((next, 0));
+                }
+                1 => {
+                    // Back edge → cycle. Collect the cycle members from
+                    // the stack (from `next` to top); every module on
+                    // the cycle must be marked partial.
+                    let pos = stack.iter().position(|(n, _)| n == &next);
+                    if let Some(pos) = pos {
+                        let mut members: Vec<String> = stack[pos..]
+                            .iter()
+                            .map(|(n, _)| format!("{}.{}", n.0, n.1))
+                            .collect();
+                        members.sort();
+                        members.dedup();
+                        let mut cycle_modules: Vec<&str> =
+                            members.iter().filter_map(|m| m.split('.').next()).collect();
+                        cycle_modules.sort();
+                        cycle_modules.dedup();
+                        let key = members.join("|");
+                        if reported.insert(key) {
+                            for m in cycle_modules {
+                                diagnostics.push(format!(
+                                    "module '{}': circular if-feature dependency involving {}",
+                                    m,
+                                    members.join(", ")
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -1389,11 +1389,14 @@ fn build_feature_states(
     let mut deps: Vec<BTreeMap<String, Vec<String>>> = Vec::with_capacity(n);
     // module idx -> declared local feature names
     let mut declared: Vec<BTreeSet<String>> = Vec::with_capacity(n);
-    // prefix -> module idx (first declaration wins; duplicates resolve
-    // conservatively through the bare-name agreement rule anyway)
-    let mut by_prefix: BTreeMap<String, usize> = BTreeMap::new();
+    // prefix -> module indices. YANG prefixes are scoped to the
+    // declaring module's imports — two modules may legitimately reuse
+    // the same lexical prefix, so resolution collects ALL candidates
+    // and requires agreement (ambiguous references resolve Unknown,
+    // never a guessed module).
+    let mut by_prefix: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, cm) in catalogue.modules.iter().enumerate() {
-        by_prefix.entry(cm.prefix.clone()).or_insert(i);
+        by_prefix.entry(cm.prefix.clone()).or_default().push(i);
         let mut d = BTreeMap::new();
         let mut names = BTreeSet::new();
         for f in &cm.features {
@@ -1446,13 +1449,24 @@ fn build_feature_states(
             // agreement rules.
             let atom_truth = |atom: &str| -> FeatureTruth {
                 if let Some((prefix, local)) = atom.split_once(':') {
-                    let Some(&i) = by_prefix.get(prefix) else {
+                    let Some(candidates) = by_prefix.get(prefix) else {
                         return FeatureTruth::Unknown;
                     };
-                    return truth[i]
-                        .get(local)
-                        .map(|t| t.ft())
-                        .unwrap_or(FeatureTruth::Unknown);
+                    // Every module carrying this prefix that declares
+                    // the feature must agree — disagreement is Unknown.
+                    let mut acc: Option<FeatureTruth> = None;
+                    for &i in candidates {
+                        let Some(v) = truth[i].get(local) else {
+                            continue;
+                        };
+                        let ft = v.ft();
+                        acc = Some(match acc {
+                            None => ft,
+                            Some(a) if a == ft => a,
+                            Some(_) => return FeatureTruth::Unknown,
+                        });
+                    }
+                    return acc.unwrap_or(FeatureTruth::Unknown);
                 }
                 let mut acc: Option<FeatureTruth> = None;
                 for t in &truth {
@@ -1511,9 +1525,7 @@ fn build_feature_states(
     for (i, cm) in catalogue.modules.iter().enumerate() {
         let ev = device_modules.get(&cm.name);
         let known = ev.is_some_and(|e| e.features_state_known);
-        let reported: BTreeSet<String> = ev
-            .map(|e| e.enabled_features.clone())
-            .unwrap_or_default();
+        let reported: BTreeSet<String> = ev.map(|e| e.enabled_features.clone()).unwrap_or_default();
         let mut enabled = BTreeSet::new();
         let mut unproven = BTreeSet::new();
         for (name, t) in &truth[i] {
@@ -1569,12 +1581,22 @@ fn module_feature_truth(st: &ModuleFeatureState, local: &str) -> FeatureTruth {
 
 fn feature_atom_truth(atom: &str, states: &BTreeMap<String, ModuleFeatureState>) -> FeatureTruth {
     if let Some((prefix, local)) = atom.split_once(':') {
+        // Prefixes are lexically scoped per module — collect every
+        // module carrying this prefix that declares the feature and
+        // require agreement. An ambiguous reference resolves Unknown.
+        let mut acc: Option<FeatureTruth> = None;
         for st in states.values() {
-            if st.prefix == prefix && st.declared.contains(local) {
-                return module_feature_truth(st, local);
+            if st.prefix != prefix || !st.declared.contains(local) {
+                continue;
             }
+            let t = module_feature_truth(st, local);
+            acc = Some(match acc {
+                None => t,
+                Some(a) if a == t => a,
+                Some(_) => return FeatureTruth::Unknown,
+            });
         }
-        return FeatureTruth::Unknown;
+        return acc.unwrap_or(FeatureTruth::Unknown);
     }
     // Bare local name: every module declaring it must agree, and
     // unknown state anywhere makes the atom unproven.
