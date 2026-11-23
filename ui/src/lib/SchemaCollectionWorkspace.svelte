@@ -537,10 +537,18 @@
     schemaSelError = '';
     try {
       const url = '/api/devices/' + encodeURIComponent(address) + '/schema-selection';
-      const r = await fetch(url, {
+      // Durable epoch survives clears — never the row revision alone.
+      const expectedRev = schemaSel?.selection_epoch
+        ?? schemaSel?.selection?.selection_revision ?? 0;
+      const r = await fetch(clear
+        ? url + '?expected_selection_revision=' + expectedRev
+        : url, {
         method: clear ? 'DELETE' : 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: clear ? undefined : JSON.stringify({ schema_id: schemaSelChoice })
+        body: clear ? undefined : JSON.stringify({
+          schema_id: schemaSelChoice,
+          expected_selection_revision: expectedRev
+        })
       });
       const payload = await r.json().catch(() => ({}));
       if (r.status === 403) {

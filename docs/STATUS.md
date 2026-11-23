@@ -1,5 +1,60 @@
 # Bonsai current state
 
+M6G update — **standards-correctness review and hardening of the
+YANG architecture** (integration PR #79 `m6g/integration`; focused
+PRs #73–#78; canonical L0–L3 PASS on the gate-tested tree, L4
+live-NOS acceptance NOT_EXECUTED). Adversarial review of the M6F-F
+pipeline corrected only confirmed defects:
+
+- RFC 7950 deviation semantics: `deviate not-supported` removes the
+  target node and complete subtree; `deviate delete`/`replace`/`add`
+  operate at property level with diagnostics for unsupported forms —
+  unsupported deviation semantics can no longer produce a falsely
+  complete catalogue (catalogue stays `partial`). Applied-deviation
+  provenance is tracked per compiled module.
+- Compiled-schema identity now embeds `COMPILED_SCHEMA_VERSION`
+  (v3 on the combined tree): pre-upgrade bundles fail verification
+  closed and require explicit recompilation plus reselection — no
+  silent reinterpretation of old semantics, and devices never lose
+  authority silently (selections fail closed until re-approved).
+- RFC 8342 datastore interpretation corrected: `running` is
+  configuration-only, `operational` is the config+state superset,
+  `candidate`/`startup`/`intended` are configuration-only. Default
+  evaluation unions coverage across declared datastores; explicit
+  `requested_datastore` is strict; unrecognized datastore identities
+  (e.g. XRd's misspelled `ietf-datastores:candiate`) yield `unknown`
+  axes and `datastore_semantics_unverified` — never positive
+  applicability.
+- RFC 8525 YANG Library: revision conflicts are scoped to each
+  schema's module-set union (different datastores may legitimately
+  pin different revisions; same-schema conflicts still rejected);
+  `import-only-module` entries never conflict.
+- YANG 1.1 feature `if-feature` dependencies are evaluated
+  device-side with three-valued logic — unproven dependencies cap
+  applicability at `unknown`, never positive. Circular dependency
+  graphs (direct, multi-node, cross-module) are invalid per
+  RFC 7950 §7.20.1 and diagnosed at compile time. Feature atoms
+  resolve ambiguity-aware across all modules carrying a lexical
+  prefix.
+- Schema selection mutations are commit-first with a durable
+  selection epoch (schema v15): stale `expected_selection_revision`
+  requests return 409 with zero authority side effects (no approval
+  revocation, no audit entry, no collector withdrawal), DELETE
+  requires the precondition, and select→clear→reselect cannot reset
+  the observable revision (ABA closed). Concurrent writers have a
+  single winner.
+- Device-scoped withdrawal verified across two devices with
+  independent schema bundles on one core (`multi_device_withdrawal_
+  is_device_scoped`).
+
+M6F-F vendor acceptance evidence is unchanged — M6G changed
+deterministic semantics only and was validated by unit/integration
+suites plus canonical gates; no live NOS rerun was performed, so the
+`lab/acceptance/m6f/MATRIX.md` statuses stand as recorded. Upgrade
+note: existing compiled bundles and device selections from pre-M6G
+builds fail closed on schema-identity mismatch and require explicit
+recompilation/reselection — see `docs/YANG_CATALOGUE.md`.
+
 M6F-F update — **enterprise multi-version YANG architecture and
 XRd production closeout** (PRs #69 `ede70c9`…hardening `871b1a7`,
 #70 deviation-semantics, #71 scope-load-boundary, closeout fix

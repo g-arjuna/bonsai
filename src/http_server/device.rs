@@ -1891,6 +1891,10 @@ pub(super) struct DeviceSchemaSelectionResponse {
     device_address: String,
     /// Durable explicit selection, when the device has one.
     selection: Option<crate::sqlite_store::DeviceSchemaSelection>,
+    /// Durable monotonic selection epoch — the fencing token clients
+    /// must echo as `expected_selection_revision` on PUT/DELETE. Unlike
+    /// the row's revision it survives selection clears (no ABA reset).
+    selection_epoch: i64,
     /// schema_id the device is effectively bound to (selection or the
     /// globally active catalogue fallback).
     effective_schema_id: Option<String>,
@@ -1912,10 +1916,14 @@ fn device_schema_selection_response(
     let effective =
         crate::yang_applicability::resolve_effective_catalogue(library, store, &device_key)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let selection_epoch = store
+        .selection_epoch(&device_key)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(DeviceSchemaSelectionResponse {
         device_key,
         device_address: target.address.clone(),
         selection,
+        selection_epoch,
         effective_schema_id: effective.effective_schema_id,
         active_schema_id: effective.active_schema_id,
         catalogue_state: effective.catalogue_state,
@@ -1960,6 +1968,12 @@ pub(super) async fn device_schema_selection_get_handler(
 #[derive(Deserialize)]
 pub(super) struct DeviceSchemaSelectionRequest {
     schema_id: String,
+    /// Optimistic-concurrency precondition: the `selection_revision`
+    /// the client last observed (0 when no explicit selection exists).
+    /// REQUIRED — schema selection is an authority grant, so a stale
+    /// admin request must conflict rather than silently overwrite a
+    /// newer selection.
+    expected_selection_revision: i64,
     #[serde(default)]
     note: Option<String>,
 }
@@ -2032,65 +2046,50 @@ pub(super) async fn device_schema_selection_put_handler(
         }
     }
 
-    // Revoke-first ordering: an approval derived from a different schema
-    // is withdrawn before the selection commits, so the device can never
-    // sit in a state where its binding schema differs from its effective
-    // catalogue. Fingerprint-guarded — a concurrent newer approval wins.
-    let revoked = crate::schema_binding::revoke_binding_for_device_schema_change(
-        state.registry.as_ref(),
-        &target.address,
-        &schema_id,
-        &actor,
-        "api_device_schema_select",
-    )
-    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
-
+    // One logical authority transition (M6G): the fenced selection
+    // write commits FIRST — a stale expected_selection_revision fails
+    // here with zero authority side effects (no approval is revoked by
+    // a rejected request). Only after the selection is durable does the
+    // fingerprint-guarded device-scoped revocation run against the new
+    // effective schema, so no approval derived from a different schema
+    // survives the mutation.
     let device_key = crate::registry::device_identity_key(&target);
-    let selection = crate::sqlite_store::DeviceSchemaSelection {
-        device_key: device_key.clone(),
-        device_address: target.address.clone(),
-        schema_id: schema_id.clone(),
-        selection_source: "admin".to_string(),
-        selected_by: Some(actor.clone()),
-        note: req
-            .note
-            .map(|n| n.trim().to_string())
-            .filter(|n| !n.is_empty()),
-        selection_revision: 0,
-        created_at_ns: 0,
-        updated_at_ns: 0,
-    };
     let store_for_write = store.clone();
+    let registry_for_write = state.registry.clone();
+    let target_for_write = target.clone();
     let actor_for_write = actor.clone();
-    tokio::task::spawn_blocking(move || {
-        store_for_write
-            .set_device_schema_selection(&selection, &actor_for_write, "api_device_schema_select")
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    let expected_revision = req.expected_selection_revision;
+    let note = req.note.clone();
+    let (stored, revoked) = tokio::task::spawn_blocking(move || {
+        crate::schema_binding::commit_device_schema_selection(
+            registry_for_write.as_ref(),
+            store_for_write.as_ref(),
+            &target_for_write,
+            &schema_id,
+            expected_revision,
+            note,
+            &actor_for_write,
+        )
+        .map_err(|e| {
+            if e.downcast_ref::<crate::sqlite_store::SelectionRevisionConflict>()
+                .is_some()
+            {
+                (StatusCode::CONFLICT, e.to_string())
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            }
+        })
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    let _ = stored;
+    let _ = device_key;
 
-    // Post-commit sweep: an approval evaluated against the OLD selection
-    // may have committed between the pre-revoke and this write (the
-    // in-transaction check only sees the selection state at its own
-    // commit time). Re-run the fingerprint-guarded device-scoped revoke
-    // against the NEW effective schema so no inconsistent approval can
-    // survive the mutation window.
-    let post_revoked = crate::schema_binding::revoke_binding_for_device_schema_change(
-        state.registry.as_ref(),
-        &target.address,
-        &schema_id,
-        &actor,
-        "api_device_schema_select_post",
-    )
-    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
-
-    for updated in revoked.into_iter().chain(post_revoked) {
-        if let Some(cid) = updated.collector_id.as_deref()
-            && let Some(manager) = state.collector_manager.as_ref()
-        {
-            manager.resync_collector(cid).await;
-        }
+    if let Some(updated) = revoked
+        && let Some(cid) = updated.collector_id.as_deref()
+        && let Some(manager) = state.collector_manager.as_ref()
+    {
+        manager.resync_collector(cid).await;
     }
 
     let response = {
@@ -2109,12 +2108,23 @@ pub(super) async fn device_schema_selection_put_handler(
 }
 
 /// Admin: clear the device's explicit selection — the device reverts to
-/// the globally active catalogue. A schema-bound approval whose schema
-/// differs from the now-effective catalogue is revoked first (same
-/// fail-closed ordering as selection).
+/// the globally active catalogue. `expected_selection_revision` is a
+/// REQUIRED fencing precondition (the durable selection epoch the
+/// client last observed): admin mutations are never unfenced, and a
+/// stale clear conflicts with zero authority side effects.
+#[derive(Deserialize)]
+pub(super) struct DeviceSchemaSelectionClearQuery {
+    /// Optimistic-concurrency precondition: the durable
+    /// `selection_epoch` the client last observed (0 when the device has
+    /// never had a selection mutation). A mismatched epoch fails with
+    /// 409 instead of silently clearing a newer selection.
+    expected_selection_revision: i64,
+}
+
 pub(super) async fn device_schema_selection_delete_handler(
     State(state): State<AppState>,
     Path(address): Path<String>,
+    Query(query): Query<DeviceSchemaSelectionClearQuery>,
     role: Option<axum::Extension<crate::http_server::auth::Role>>,
     subject: Option<axum::Extension<crate::http_server::auth::AuthenticatedSubject>>,
 ) -> Result<Json<DeviceSchemaSelectionResponse>, (StatusCode, String)> {
@@ -2155,44 +2165,43 @@ pub(super) async fn device_schema_selection_delete_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??
     };
 
-    let revoked = crate::schema_binding::revoke_binding_for_device_schema_change(
-        state.registry.as_ref(),
-        &target.address,
-        &effective_after_clear,
-        &actor,
-        "api_device_schema_clear",
-    )
-    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
-
-    let device_key = crate::registry::device_identity_key(&target);
+    // One logical authority transition (M6G): the fenced delete commits
+    // FIRST — a stale epoch fails with zero side effects — then any
+    // approval not derived from the post-clear effective schema is
+    // revoked (fingerprint-guarded, device-scoped).
     let store_for_write = store.clone();
-    let dk = device_key.clone();
+    let registry_for_write = state.registry.clone();
+    let target_for_write = target.clone();
     let actor_for_write = actor.clone();
-    tokio::task::spawn_blocking(move || {
-        store_for_write
-            .clear_device_schema_selection(&dk, &actor_for_write, "api_device_schema_clear")
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    let expected_revision = query.expected_selection_revision;
+    let effective_after = effective_after_clear.clone();
+    let (_deleted, revoked) = tokio::task::spawn_blocking(move || {
+        crate::schema_binding::commit_device_schema_selection_clear(
+            registry_for_write.as_ref(),
+            store_for_write.as_ref(),
+            &target_for_write,
+            expected_revision,
+            &effective_after,
+            &actor_for_write,
+        )
+        .map_err(|e| {
+            if e.downcast_ref::<crate::sqlite_store::SelectionRevisionConflict>()
+                .is_some()
+            {
+                (StatusCode::CONFLICT, e.to_string())
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            }
+        })
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
 
-    // Post-commit sweep against the now-effective (global active)
-    // catalogue — same mutation-window coverage as selection PUT.
-    let post_revoked = crate::schema_binding::revoke_binding_for_device_schema_change(
-        state.registry.as_ref(),
-        &target.address,
-        &effective_after_clear,
-        &actor,
-        "api_device_schema_clear_post",
-    )
-    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
-
-    for updated in revoked.into_iter().chain(post_revoked) {
-        if let Some(cid) = updated.collector_id.as_deref()
-            && let Some(manager) = state.collector_manager.as_ref()
-        {
-            manager.resync_collector(cid).await;
-        }
+    if let Some(updated) = revoked
+        && let Some(cid) = updated.collector_id.as_deref()
+        && let Some(manager) = state.collector_manager.as_ref()
+    {
+        manager.resync_collector(cid).await;
     }
 
     let response = {

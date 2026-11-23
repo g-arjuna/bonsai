@@ -359,7 +359,13 @@ fn nmda_json() -> serde_json::Value {
             ]
         }],
         "schema": [{"name": "s1", "module-set": ["ms1"]}],
-        "datastore": [{"name": "ietf-datastores:running", "schema": "s1"}]
+        // RFC 8342: the selected paths are config-false operational
+        // state — a device serving them must declare a state-bearing
+        // datastore. `running` alone is configuration-only.
+        "datastore": [
+            {"name": "ietf-datastores:running", "schema": "s1"},
+            {"name": "ietf-datastores:operational", "schema": "s1"}
+        ]
     })
 }
 

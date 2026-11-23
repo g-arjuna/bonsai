@@ -867,3 +867,78 @@ async fn execution_counter_survives_all_recreation_paths() {
         "expected >=5 minted executions across recreations, got {final_val}"
     );
 }
+
+// ── M6G: multi-device withdrawal & isolation ──────────────────────────────
+
+/// Two devices assigned to the SAME collector: withdrawing device B must
+/// terminate only B's stream. Device A keeps streaming with no new
+/// Subscribe RPC, B's re-approval restores only B, and subscriber state
+/// is keyed by device identity — never a collector-wide zero count.
+/// This is the device-scoped withdrawal contract M6F-F could not
+/// isolate when a second legitimate subscription shared the collector.
+#[tokio::test]
+async fn multi_device_withdrawal_is_device_scoped() {
+    let lab_a = start_lab().await;
+    let lab_b = start_lab().await;
+    let mut rig = Rig::new();
+    let target_a = lab_target(&lab_a, vec![selected("/system")]);
+    let target_b = lab_target(&lab_b, vec![selected("/interfaces")]);
+
+    // Generation 1: both devices assigned to the same collector.
+    rig.apply(update(
+        1,
+        vec![
+            assignment_for(&target_a, "u", "p"),
+            assignment_for(&target_b, "u", "p"),
+        ],
+    ))
+    .await;
+    assert!(wait_subscribes(&lab_a, 1).await, "A never subscribed");
+    assert!(wait_subscribes(&lab_b, 1).await, "B never subscribed");
+    assert!(wait_streams(&lab_a, 1).await);
+    assert!(wait_streams(&lab_b, 1).await);
+    assert_eq!(rig.subscribers.len(), 2);
+
+    // Generation 2: B withdrawn; A's assignment byte-identical.
+    rig.apply(update(2, vec![assignment_for(&target_a, "u", "p")]))
+        .await;
+    assert!(
+        wait_streams(&lab_b, 0).await,
+        "B's stream must terminate on withdrawal"
+    );
+    // Give any erroneous teardown/resubscribe time to manifest.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        lab_a.active_streams.load(Ordering::SeqCst),
+        1,
+        "A's stream must survive B's withdrawal"
+    );
+    assert_eq!(
+        lab_a.subscribe_calls.load(Ordering::SeqCst),
+        1,
+        "A must not resubscribe when B is withdrawn"
+    );
+    assert_eq!(lab_b.subscribe_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.subscribers.len(), 1, "only A remains authorized");
+
+    // Generation 3: B re-approved with fresh authority — only B
+    // resubscribes; A is untouched.
+    rig.apply(update(
+        3,
+        vec![
+            assignment_for(&target_a, "u", "p"),
+            assignment_for(&target_b, "u", "p"),
+        ],
+    ))
+    .await;
+    assert!(wait_subscribes(&lab_b, 2).await, "B never resubscribed");
+    assert!(wait_streams(&lab_b, 1).await);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        lab_a.subscribe_calls.load(Ordering::SeqCst),
+        1,
+        "A must not resubscribe on B's re-approval"
+    );
+    assert_eq!(lab_a.active_streams.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.subscribers.len(), 2);
+}

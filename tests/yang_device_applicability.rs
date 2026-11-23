@@ -158,7 +158,9 @@ fn lib_module(
 
 /// Build a complete NMDA library covering `test-app` (revision
 /// 2024-01-01, namespace urn:example:test-app) with the given feature
-/// set, plus `test-baselib`. Datastore running → schema s1 → ms1.
+/// set, plus `test-baselib`. Datastores running+operational → schema
+/// s1 → ms1, matching real NMDA devices (e.g. SR Linux declares all
+/// five conventional datastores on one schema).
 fn nmda_outcome(
     app_features: &[&str],
     app_deviations: &[&str],
@@ -191,10 +193,16 @@ fn nmda_outcome(
             name: "s1".to_string(),
             module_sets: vec!["ms1".to_string()],
         }],
-        datastores: vec![YangLibraryDatastore {
-            name: "ietf-datastores:running".to_string(),
-            schema: "s1".to_string(),
-        }],
+        datastores: vec![
+            YangLibraryDatastore {
+                name: "ietf-datastores:running".to_string(),
+                schema: "s1".to_string(),
+            },
+            YangLibraryDatastore {
+                name: "ietf-datastores:operational".to_string(),
+                schema: "s1".to_string(),
+            },
+        ],
         origin: "ietf".to_string(),
         path: "/yang-library".to_string(),
         fetched_at_ns: 2_000,
@@ -509,17 +517,21 @@ fn t4_feature_states_and_deviations_gate_paths() {
         ApplicabilityStatus::Applicable
     );
 
-    // fancy-f enabled but its if-feature base-f absent → expression
-    // "fancy-f" is the leaf gate itself; fancy-f enabled requires base-f
-    // per YANG semantics? The leaf gate is only fancy-f; base-f absence
-    // doesn't disable fancy-f at this layer — but feature state is
-    // device-reported: fancy-f enabled while base-f disabled is device
-    // evidence we record as-is.
+    // fancy-f reported enabled while its if-feature dependency base-f
+    // is provably absent: YANG 1.1 forbids the feature being effectively
+    // enabled, so the evidence is contradictory — fancy-f is not
+    // effectively enabled and the gated leaf must NOT be applicable.
     let lib = nmda_outcome(&["fancy-f"], &[], None);
     let r = resolve(Some(&catalogue), None, Some(&lib), &device);
     assert_eq!(
         path_status(&r, "mtu").unwrap().status,
-        ApplicabilityStatus::Applicable
+        ApplicabilityStatus::NotApplicable
+    );
+    assert!(
+        path_status(&r, "mtu")
+            .unwrap()
+            .reasons
+            .contains(&ReasonCode::FeatureDisabled)
     );
 
     // Unknown feature state (caps-only) → never applicable.
@@ -618,8 +630,8 @@ fn t5_import_only_and_datastore_semantics() {
     assert_eq!(bl.status, ApplicabilityStatus::NotApplicable);
     assert!(bl.reasons.contains(&ReasonCode::ImportOnlyModule));
 
-    // Datastore mismatch: evaluate against operational datastore →
-    // config paths not applicable there.
+    // Datastore coverage: default evaluation unions all declared
+    // datastores — running+operational covers config AND state.
     let mut ev2 = match nmda_outcome(&["base-f"], &[], None) {
         YangLibraryOutcome::Complete { evidence } => evidence,
         _ => unreachable!(),
@@ -640,10 +652,21 @@ fn t5_import_only_and_datastore_semantics() {
         Some(&YangLibraryOutcome::Complete { evidence: ev2 }),
         &device,
     );
-    // Default selection prefers running → still applicable.
+    // Default selection prefers running → still applicable for both
+    // config and state paths (operational is declared).
     assert_eq!(r.datastore.as_deref(), Some("ietf-datastores:running"));
+    assert_eq!(
+        path_status(&r, "oper-status").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
 
-    // Explicit operational request → config paths mismatch.
+    // RFC 8342 §5: `operational` holds ALL config-true and config-false
+    // nodes — an explicit operational request covers config paths too
+    // (previously mis-modeled as state-only).
     let lib = YangLibraryOutcome::Complete {
         evidence: match nmda_outcome(&["base-f"], &[], None) {
             YangLibraryOutcome::Complete { evidence } => {
@@ -672,14 +695,14 @@ fn t5_import_only_and_datastore_semantics() {
         result.datastore.as_deref(),
         Some("ietf-datastores:operational")
     );
-    // config=true leaf (domain) → datastore mismatch.
+    // config=true leaf (domain) is covered by operational's superset
+    // schema semantics.
     let domain = result
         .paths
         .iter()
         .find(|p| p.path.ends_with("/domain"))
         .expect("domain path");
-    assert_eq!(domain.status, ApplicabilityStatus::NotApplicable);
-    assert!(domain.reasons.contains(&ReasonCode::DatastoreMismatch));
+    assert_eq!(domain.status, ApplicabilityStatus::Applicable);
     // state leaf stays applicable.
     let hostname = result
         .paths
@@ -687,6 +710,39 @@ fn t5_import_only_and_datastore_semantics() {
         .find(|p| p.path.ends_with("/hostname"))
         .expect("hostname path");
     assert_eq!(hostname.status, ApplicabilityStatus::Applicable);
+
+    // Explicit `running` request on a dual-datastore device: running is
+    // a configuration datastore — state paths provably mismatch even
+    // though operational exists (strict per-datastore view).
+    let lib = YangLibraryOutcome::Complete {
+        evidence: match nmda_outcome(&["base-f"], &[], None) {
+            YangLibraryOutcome::Complete { evidence } => evidence,
+            _ => unreachable!(),
+        },
+    };
+    let result = applicability::resolve_applicability(&ApplicabilityInput {
+        catalogue: Some(&catalogue),
+        catalogue_diagnostics: Vec::new(),
+        capabilities: None,
+        yang_library: Some(&lib),
+        requested_datastore: Some("running"),
+        platform: None,
+        device: &device,
+        now_ns: 10_000,
+    });
+    let hostname = result
+        .paths
+        .iter()
+        .find(|p| p.path.ends_with("/hostname"))
+        .expect("hostname path");
+    assert_eq!(hostname.status, ApplicabilityStatus::NotApplicable);
+    assert!(hostname.reasons.contains(&ReasonCode::DatastoreMismatch));
+    let domain = result
+        .paths
+        .iter()
+        .find(|p| p.path.ends_with("/domain"))
+        .expect("domain path");
+    assert_eq!(domain.status, ApplicabilityStatus::Applicable);
 }
 
 // ── T6: missing or damaged catalogue ─────────────────────────────────────────
@@ -1745,7 +1801,23 @@ fn t12_vendor_release_skew_stays_unresolved() {
     // (c) Requested datastore absent from the device library (XRd declares
     // only `running`/`candiate`; a plan asking for `operational` must fail
     // closed, never fall back silently).
-    let lib = nmda_outcome(&["base-f"], &[], None);
+    let lib = {
+        let mut ev = match nmda_outcome(&["base-f"], &[], None) {
+            YangLibraryOutcome::Complete { evidence } => evidence,
+            _ => unreachable!(),
+        };
+        ev.datastores = vec![
+            YangLibraryDatastore {
+                name: "ietf-datastores:running".to_string(),
+                schema: "s1".to_string(),
+            },
+            YangLibraryDatastore {
+                name: "ietf-datastores:candiate".to_string(),
+                schema: "s1".to_string(),
+            },
+        ];
+        YangLibraryOutcome::Complete { evidence: ev }
+    };
     let r = applicability::resolve_applicability(&ApplicabilityInput {
         catalogue: Some(&catalogue),
         catalogue_diagnostics: Vec::new(),
@@ -2120,13 +2192,15 @@ fn t4b_covered_deviation_does_not_block_applicability() {
         path_status(&r, "oper-status").unwrap().status,
         ApplicabilityStatus::Applicable
     );
-    // The deviated node itself is pruned from the effective schema.
+    // `deviate delete { default ""; }` removes only the `default`
+    // property (RFC 7950 §7.20.3.2) — the node itself remains in the
+    // effective schema and stays applicable.
     assert!(
         r.paths
             .iter()
             .filter(|p| p.module == "test-app")
-            .all(|p| !p.path.contains("hostname")),
-        "deviate delete must remove the node from compiled paths"
+            .any(|p| p.path.contains("hostname")),
+        "deviate delete must preserve the node, removing only the property"
     );
 
     // Uncovered: a DIFFERENT reported deviation was never compiled.
@@ -2138,4 +2212,889 @@ fn t4b_covered_deviation_does_not_block_applicability() {
             .contains(&ReasonCode::DeviationSemanticsUnsupported),
         "uncovered reported deviation must fail closed"
     );
+}
+
+// ── M6G: datastore semantics and multi-datastore libraries ─────────────────
+
+/// Evidence whose single datastore has an UNRECOGNIZED identity —
+/// module-schema membership is still verified, but config/state
+/// applicability must stay unproven.
+fn nmda_unknown_datastore(name: &str) -> YangLibraryOutcome {
+    let mut evidence = match nmda_outcome(&["base-f", "fancy-f"], &[], None) {
+        YangLibraryOutcome::Complete { evidence } => evidence,
+        _ => unreachable!(),
+    };
+    evidence.datastores = vec![YangLibraryDatastore {
+        name: name.to_string(),
+        schema: "s1".to_string(),
+    }];
+    YangLibraryOutcome::Complete { evidence }
+}
+
+#[test]
+fn m6g_unrecognized_datastore_never_grants_positive_applicability() {
+    let catalogue = compile_app();
+    let device = binding();
+
+    for ds_name in [
+        // XRd's real (misspelled) datastore advertisement.
+        "ietf-datastores:candiate",
+        // A fully vendor-specific datastore identity.
+        "acme:telemetry",
+    ] {
+        let lib = nmda_unknown_datastore(ds_name);
+        let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+        assert_eq!(
+            r.datastore.as_deref(),
+            Some(ds_name),
+            "datastore identity preserved verbatim"
+        );
+        // Module membership is still verified → module may be applicable,
+        // but NO path may claim applicability on unproven datastore
+        // semantics.
+        for p in &r.paths {
+            assert_ne!(
+                p.status,
+                ApplicabilityStatus::Applicable,
+                "path {} must not be applicable on unrecognized datastore {}",
+                p.path,
+                ds_name
+            );
+            assert!(
+                p.reasons
+                    .contains(&ReasonCode::DatastoreSemanticsUnverified),
+                "path {} missing datastore_semantics_unverified: {:?}",
+                p.path,
+                p.reasons
+            );
+        }
+        assert_ne!(
+            r.overall_status,
+            ApplicabilityStatus::Applicable,
+            "overall must not claim applicable on unrecognized datastore"
+        );
+    }
+}
+
+#[test]
+fn m6g_recognized_datastore_semantics_rfc8342() {
+    let catalogue = compile_app();
+    let device = binding();
+
+    // Dual running+operational device (the nmda_outcome default): union
+    // coverage → config AND state paths applicable.
+    let lib = nmda_outcome(&["base-f", "fancy-f"], &[], None);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(r.overall_status, ApplicabilityStatus::Applicable);
+    assert_eq!(
+        path_status(&r, "hostname").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+
+    // running-ONLY device (RFC 8342: running is a configuration
+    // datastore — it does NOT store operational state): config paths
+    // applicable, state paths provably mismatch.
+    let mut ev = match nmda_outcome(&["base-f", "fancy-f"], &[], None) {
+        YangLibraryOutcome::Complete { evidence } => evidence,
+        _ => unreachable!(),
+    };
+    ev.datastores = vec![YangLibraryDatastore {
+        name: "ietf-datastores:running".to_string(),
+        schema: "s1".to_string(),
+    }];
+    let lib = YangLibraryOutcome::Complete { evidence: ev };
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable,
+        "config leaf applicable on running"
+    );
+    let hostname = path_status(&r, "hostname").unwrap();
+    assert_eq!(hostname.status, ApplicabilityStatus::NotApplicable);
+    assert!(hostname.reasons.contains(&ReasonCode::DatastoreMismatch));
+
+    // operational-only device → BOTH config and state paths applicable
+    // (operational's schema is a superset of the configuration
+    // datastores').
+    let mut ev = match nmda_outcome(&["base-f", "fancy-f"], &[], None) {
+        YangLibraryOutcome::Complete { evidence } => evidence,
+        _ => unreachable!(),
+    };
+    ev.datastores = vec![YangLibraryDatastore {
+        name: "ietf-datastores:operational".to_string(),
+        schema: "s1".to_string(),
+    }];
+    let lib = YangLibraryOutcome::Complete { evidence: ev };
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(
+        path_status(&r, "hostname").unwrap().status,
+        ApplicabilityStatus::Applicable,
+        "state leaf applicable on operational"
+    );
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable,
+        "config leaf applicable on operational's superset schema"
+    );
+}
+
+// ── M6G: schema-selection optimistic concurrency ────────────────────────
+
+#[test]
+fn m6g_selection_fencing_rejects_stale_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(dir.path()).unwrap();
+
+    // No row: expected 0 is the only valid precondition.
+    let sel = selection(
+        "10.0.0.9",
+        "10.0.0.9:57400",
+        "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    let stored = store
+        .set_device_schema_selection_fenced(&sel, 0, "admin-a", "test")
+        .unwrap();
+    assert_eq!(stored.selection_revision, 1);
+
+    // Stale precondition (expected 0 while rev 1 exists) fails closed.
+    let mut sel_b = sel.clone();
+    sel_b.schema_id = "ysc-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+    let err = store
+        .set_device_schema_selection_fenced(&sel_b, 0, "admin-b", "test")
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+            .is_some(),
+        "expected SelectionRevisionConflict, got {err:#}"
+    );
+    // The stored selection is untouched — no silent last-writer-wins.
+    assert_eq!(
+        store
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .unwrap()
+            .schema_id,
+        sel.schema_id
+    );
+
+    // Correct precondition (rev 1) commits and bumps to rev 2.
+    let stored = store
+        .set_device_schema_selection_fenced(&sel_b, 1, "admin-b", "test")
+        .unwrap();
+    assert_eq!(stored.selection_revision, 2);
+
+    // A second stale writer fenced on rev 1 now conflicts.
+    let mut sel_c = sel.clone();
+    sel_c.schema_id = "ysc-cccccccccccccccccccccccccccccccc".to_string();
+    let err = store
+        .set_device_schema_selection_fenced(&sel_c, 1, "admin-c", "test")
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+            .is_some()
+    );
+}
+
+#[test]
+fn m6g_selection_fencing_concurrent_writers_single_winner() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(SqliteStore::open(dir.path()).unwrap());
+    let sel = selection(
+        "10.0.0.9",
+        "10.0.0.9:57400",
+        "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    store
+        .set_device_schema_selection_fenced(&sel, 0, "admin", "test")
+        .unwrap();
+
+    // Two admins race the same expected revision — exactly one commits.
+    let mut handles = Vec::new();
+    for (i, sid) in ["d", "e"].iter().enumerate() {
+        let store = store.clone();
+        let mut s = sel.clone();
+        s.schema_id = format!("ysc-{}", sid.repeat(32));
+        handles.push(std::thread::spawn(move || {
+            store.set_device_schema_selection_fenced(&s, 1, "racer", "test")
+        }));
+        let _ = i;
+    }
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let wins = results.iter().filter(|r| r.is_ok()).count();
+    let conflicts = results
+        .iter()
+        .filter(|r| {
+            r.as_ref().err().is_some_and(|e| {
+                e.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+                    .is_some()
+            })
+        })
+        .count();
+    assert_eq!(wins, 1, "exactly one racer may commit: {results:?}");
+    assert_eq!(conflicts, 1, "the loser must see a revision conflict");
+    assert_eq!(
+        store
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .unwrap()
+            .selection_revision,
+        2
+    );
+}
+
+#[test]
+fn m6g_selection_fenced_clear() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(dir.path()).unwrap();
+    let sel = selection(
+        "10.0.0.9",
+        "10.0.0.9:57400",
+        "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    store
+        .set_device_schema_selection_fenced(&sel, 0, "admin", "test")
+        .unwrap();
+
+    // Stale clear (expected 0) conflicts; correct revision deletes.
+    let err = store
+        .clear_device_schema_selection_fenced("10.0.0.9", 0, "admin", "test")
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+            .is_some()
+    );
+    assert!(
+        store
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .is_some()
+    );
+
+    assert!(
+        store
+            .clear_device_schema_selection_fenced("10.0.0.9", 1, "admin", "test")
+            .unwrap()
+    );
+    assert!(
+        store
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .is_none()
+    );
+
+    // Clearing an absent selection expects the CURRENT durable epoch
+    // (2 after the clear — it does not reset to 0) and reports no row
+    // deleted (false), while a wrong precondition still conflicts.
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 2);
+    assert!(
+        !store
+            .clear_device_schema_selection_fenced("10.0.0.9", 2, "admin", "test")
+            .unwrap()
+    );
+    let err = store
+        .clear_device_schema_selection_fenced("10.0.0.9", 3, "admin", "test")
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+            .is_some()
+    );
+}
+
+#[test]
+fn m6g_selection_epoch_is_durable_across_clear() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(dir.path()).unwrap();
+    let sel = selection(
+        "10.0.0.9",
+        "10.0.0.9:57400",
+        "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+
+    // Never mutated → epoch 0.
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 0);
+
+    // Unfenced internal write still advances the durable epoch.
+    store
+        .set_device_schema_selection(&sel, "admin", "test")
+        .unwrap();
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 1);
+
+    // Idempotent resubmit does not burn an epoch.
+    store
+        .set_device_schema_selection(&sel, "admin", "test")
+        .unwrap();
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 1);
+
+    // Clear deletes the row but the epoch advances and survives.
+    assert!(
+        store
+            .clear_device_schema_selection("10.0.0.9", "admin", "test")
+            .unwrap()
+    );
+    assert!(
+        store
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 2);
+
+    // ABA: expected=0 no longer matches — the stale pre-clear client
+    // cannot overwrite post-clear state.
+    let err = store
+        .set_device_schema_selection_fenced(&sel, 0, "stale", "test")
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+            .is_some()
+    );
+
+    // Reselect lands on epoch 3, never resetting to 1.
+    let stored = store
+        .set_device_schema_selection_fenced(&sel, 2, "admin", "test")
+        .unwrap();
+    assert_eq!(stored.selection_revision, 3);
+    assert_eq!(store.selection_epoch("10.0.0.9").unwrap(), 3);
+}
+#[test]
+fn m6g_multi_datastore_library_scopes_revision_conflicts() {
+    // RFC 8525: different datastore schemas may legitimately pin different
+    // revisions of the same module. Conflict detection is scoped to each
+    // schema's module-set union — the parse must NOT reject the library.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "multi-ds",
+            "module-set": [
+                {"name": "ms-run", "module": [
+                    {"name": "test-app", "revision": "2024-01-01",
+                     "namespace": "urn:example:test-app"},
+                    {"name": "test-baselib", "revision": "2023-06-01",
+                     "namespace": "urn:example:test-baselib"}
+                ]},
+                {"name": "ms-cand", "module": [
+                    {"name": "test-app", "revision": "2025-06-01",
+                     "namespace": "urn:example:test-app"},
+                    {"name": "test-baselib", "revision": "2023-06-01",
+                     "namespace": "urn:example:test-baselib"}
+                ]}
+            ],
+            "schema": [
+                {"name": "s-run", "module-set": ["ms-run"]},
+                {"name": "s-cand", "module-set": ["ms-cand"]}
+            ],
+            "datastore": [
+                {"name": "ietf-datastores:running", "schema": "s-run"},
+                {"name": "ietf-datastores:candidate", "schema": "s-cand"}
+            ]
+        }
+    });
+    let evidence =
+        yang_library::parse_nmda_library(&tree, 1).expect("per-datastore revisions must parse");
+    assert_eq!(evidence.module_sets.len(), 2);
+    assert_eq!(evidence.datastores.len(), 2);
+
+    let catalogue = compile_app();
+    let device = binding();
+    let lib = YangLibraryOutcome::Complete { evidence };
+
+    // running → revision 2024-01-01 matches the compiled catalogue.
+    let result = applicability::resolve_applicability(&ApplicabilityInput {
+        catalogue: Some(&catalogue),
+        catalogue_diagnostics: Vec::new(),
+        capabilities: None,
+        yang_library: Some(&lib),
+        requested_datastore: Some("running"),
+        platform: None,
+        device: &device,
+        now_ns: 10_000,
+    });
+    assert_eq!(result.datastore.as_deref(), Some("ietf-datastores:running"));
+    assert_eq!(
+        module_status(&result, "test-app").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+
+    // candidate → revision 2025-06-01 does NOT match — module stays
+    // unresolved, never silently applicable.
+    let result = applicability::resolve_applicability(&ApplicabilityInput {
+        catalogue: Some(&catalogue),
+        catalogue_diagnostics: Vec::new(),
+        capabilities: None,
+        yang_library: Some(&lib),
+        requested_datastore: Some("candidate"),
+        platform: None,
+        device: &device,
+        now_ns: 10_000,
+    });
+    assert_eq!(
+        result.datastore.as_deref(),
+        Some("ietf-datastores:candidate")
+    );
+    let app = module_status(&result, "test-app").unwrap();
+    assert_ne!(app.status, ApplicabilityStatus::Applicable);
+    assert!(app.reasons.contains(&ReasonCode::ModuleRevisionUnresolved));
+}
+
+#[test]
+fn m6g_conflict_within_one_schema_still_rejected() {
+    // Two module-sets combined into the SAME schema disagreeing on a
+    // module revision is a real conflict — rejected at parse time.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "x",
+            "module-set": [
+                {"name": "a", "module": [{"name": "m", "revision": "2020-01-01"}]},
+                {"name": "b", "module": [{"name": "m", "revision": "2021-01-01"}]}
+            ],
+            "schema": [{"name": "s", "module-set": ["a", "b"]}],
+            "datastore": [{"name": "ietf-datastores:running", "schema": "s"}]
+        }
+    });
+    let err = yang_library::parse_nmda_library(&tree, 0).unwrap_err();
+    assert!(err.contains("conflicting"), "{err}");
+
+    // Same disagreement but in sets referenced by DIFFERENT schemas is
+    // legitimate — parses cleanly.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "x",
+            "module-set": [
+                {"name": "a", "module": [{"name": "m", "revision": "2020-01-01"}]},
+                {"name": "b", "module": [{"name": "m", "revision": "2021-01-01"}]}
+            ],
+            "schema": [
+                {"name": "s1", "module-set": ["a"]},
+                {"name": "s2", "module-set": ["b"]}
+            ],
+            "datastore": [
+                {"name": "ietf-datastores:running", "schema": "s1"},
+                {"name": "ietf-datastores:candidate", "schema": "s2"}
+            ]
+        }
+    });
+    assert!(yang_library::parse_nmda_library(&tree, 0).is_ok());
+}
+
+#[test]
+fn m6g_import_only_modules_never_conflict() {
+    // RFC 8525: a module-set may carry multiple import-only revisions
+    // of the same module name — different modules legitimately import
+    // different revisions. Only IMPLEMENTED modules can conflict.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "io",
+            "module-set": [{
+                "name": "ms1",
+                "module": [
+                    {"name": "impl-mod", "revision": "2024-01-01",
+                     "namespace": "urn:example:impl"},
+                    {"name": "dep", "revision": "2020-01-01",
+                     "namespace": "urn:example:dep"}
+                ],
+                "import-only-module": [
+                    {"name": "dep", "revision": "2019-01-01",
+                     "namespace": "urn:example:dep"},
+                    {"name": "dep", "revision": "2021-06-01",
+                     "namespace": "urn:example:dep"},
+                    {"name": "other-dep", "revision": "2018-01-01"}
+                ]
+            }],
+            "schema": [{"name": "s1", "module-set": ["ms1"]}],
+            "datastore": [{"name": "ietf-datastores:running", "schema": "s1"}]
+        }
+    });
+    let ev = yang_library::parse_nmda_library(&tree, 0).expect("import-only revisions must parse");
+    assert_eq!(ev.module_sets[0].import_only_modules.len(), 3);
+
+    // An import-only revision differing from the IMPLEMENTED revision
+    // of the same name is also legitimate.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "io2",
+            "module-set": [{
+                "name": "ms1",
+                "module": [
+                    {"name": "dep", "revision": "2024-01-01",
+                     "namespace": "urn:example:dep"}
+                ],
+                "import-only-module": [
+                    {"name": "dep", "revision": "2019-01-01",
+                     "namespace": "urn:example:dep"}
+                ]
+            }],
+            "schema": [{"name": "s1", "module-set": ["ms1"]}],
+            "datastore": [{"name": "ietf-datastores:running", "schema": "s1"}]
+        }
+    });
+    assert!(yang_library::parse_nmda_library(&tree, 0).is_ok());
+}
+
+#[test]
+fn m6g_implemented_module_conflicts_still_rejected() {
+    // Two implemented revisions of the same module inside ONE schema —
+    // rejected, whether duplicated within one module-set or merged
+    // across two module-sets referenced by the same schema.
+    for (sets, schema_refs) in [
+        (
+            serde_json::json!([{
+                "name": "ms1",
+                "module": [
+                    {"name": "m", "revision": "2020-01-01"},
+                    {"name": "m", "revision": "2021-01-01"}
+                ]
+            }]),
+            serde_json::json!(["ms1"]),
+        ),
+        (
+            serde_json::json!([
+                {"name": "a", "module": [{"name": "m", "revision": "2020-01-01"}]},
+                {"name": "b", "module": [{"name": "m", "revision": "2021-01-01"}]}
+            ]),
+            serde_json::json!(["a", "b"]),
+        ),
+    ] {
+        let tree = serde_json::json!({
+            "yang-library": {
+                "content-id": "x",
+                "module-set": sets,
+                "schema": [{"name": "s", "module-set": schema_refs}],
+                "datastore": [{"name": "ietf-datastores:running", "schema": "s"}]
+            }
+        });
+        let err = yang_library::parse_nmda_library(&tree, 0).unwrap_err();
+        assert!(err.contains("conflicting"), "{err}");
+    }
+
+    // Same name + same revision but DIFFERENT namespaces is an
+    // identity conflict.
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "ns",
+            "module-set": [{
+                "name": "ms1",
+                "module": [
+                    {"name": "m", "revision": "2020-01-01",
+                     "namespace": "urn:example:one"},
+                    {"name": "m", "revision": "2020-01-01",
+                     "namespace": "urn:example:two"}
+                ]
+            }],
+            "schema": [{"name": "s", "module-set": ["ms1"]}],
+            "datastore": [{"name": "ietf-datastores:running", "schema": "s"}]
+        }
+    });
+    let err = yang_library::parse_nmda_library(&tree, 0).unwrap_err();
+    assert!(err.contains("conflicting"), "{err}");
+
+    // Identical duplicates remain tolerated (dedup, not conflict).
+    let tree = serde_json::json!({
+        "yang-library": {
+            "content-id": "dup",
+            "module-set": [{
+                "name": "ms1",
+                "module": [
+                    {"name": "m", "revision": "2020-01-01",
+                     "namespace": "urn:example:one"},
+                    {"name": "m", "revision": "2020-01-01",
+                     "namespace": "urn:example:one"}
+                ]
+            }],
+            "schema": [{"name": "s", "module-set": ["ms1"]}],
+            "datastore": [{"name": "ietf-datastores:running", "schema": "s"}]
+        }
+    });
+    assert!(yang_library::parse_nmda_library(&tree, 0).is_ok());
+}
+
+// ── M6G: YANG 1.1 feature if-feature dependency semantics ──────────────────
+
+const MODULE_FEATS: &str = r#"
+module test-feats {
+  yang-version 1.1;
+  namespace "urn:example:test-feats";
+  prefix tf;
+  import test-app;
+  revision 2024-01-01;
+
+  feature a { description "root"; }
+  feature b { if-feature "tf:a"; }
+  feature c { if-feature "tf:b"; }
+  feature d { if-feature "tf:missing"; }
+  feature e { if-feature "ta:fancy-f"; }
+
+  container system {
+    leaf open { type string; }
+    leaf gated-c { type string; config false; if-feature "tf:c"; }
+    leaf gated-d { type string; config false; if-feature "tf:d"; }
+    leaf gated-e { type string; config false; if-feature "tf:e"; }
+  }
+}
+"#;
+
+fn compile_feats() -> bonsai::yang_schema::CompiledCatalogue {
+    yang_schema::compile_parsed(
+        vec![
+            module_input("test-app", MODULE_APP),
+            module_input("test-feats", MODULE_FEATS),
+        ],
+        &CompileOptions::default(),
+    )
+}
+
+/// NMDA library whose single schema covers test-feats (given feature
+/// set) plus test-app with both of its features enabled.
+fn feats_outcome(feats_features: &[&str]) -> YangLibraryOutcome {
+    let evidence = YangLibraryEvidence {
+        tree: YangLibraryTree::Nmda,
+        content_id: Some("cid-f".to_string()),
+        module_sets: vec![YangLibraryModuleSet {
+            name: "msf".to_string(),
+            modules: vec![
+                lib_module(
+                    "test-feats",
+                    Some("2024-01-01"),
+                    Some("urn:example:test-feats"),
+                    feats_features,
+                    &[],
+                ),
+                lib_module(
+                    "test-app",
+                    Some("2024-01-01"),
+                    Some("urn:example:test-app"),
+                    &["base-f", "fancy-f"],
+                    &[],
+                ),
+            ],
+            import_only_modules: Vec::new(),
+        }],
+        schemas: vec![YangLibrarySchema {
+            name: "sf".to_string(),
+            module_sets: vec!["msf".to_string()],
+        }],
+        datastores: vec![
+            YangLibraryDatastore {
+                name: "ietf-datastores:running".to_string(),
+                schema: "sf".to_string(),
+            },
+            YangLibraryDatastore {
+                name: "ietf-datastores:operational".to_string(),
+                schema: "sf".to_string(),
+            },
+        ],
+        origin: "ietf".to_string(),
+        path: "/yang-library".to_string(),
+        fetched_at_ns: 2_000,
+        diagnostics: Vec::new(),
+    };
+    YangLibraryOutcome::Complete { evidence }
+}
+
+#[test]
+fn m6g_feature_dependency_chain_gates_effective_enablement() {
+    let catalogue = compile_feats();
+    let device = binding();
+
+    // Full chain a→b→c reported: gated-c is applicable.
+    let lib = feats_outcome(&["a", "b", "c"]);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(
+        path_status(&r, "gated-c").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+    assert_eq!(
+        path_status(&r, "open").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+
+    // c reported without its dependency chain: c cannot be effectively
+    // enabled — gated-c is not applicable, never silently valid.
+    for reported in [&["c"][..], &["b", "c"][..], &["a", "c"][..]] {
+        let lib = feats_outcome(reported);
+        let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+        let p = path_status(&r, "gated-c").unwrap();
+        assert_eq!(
+            p.status,
+            ApplicabilityStatus::NotApplicable,
+            "reported {reported:?} must not enable gated-c: {p:?}"
+        );
+        assert!(p.reasons.contains(&ReasonCode::FeatureDisabled));
+    }
+}
+
+#[test]
+fn m6g_feature_unproven_dependency_is_unknown_never_positive() {
+    let catalogue = compile_feats();
+    let device = binding();
+
+    // d depends on undeclared tf:missing — reported enabled but the
+    // dependency can never be proven: gated-d caps at Unknown.
+    let lib = feats_outcome(&["d"]);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    let p = path_status(&r, "gated-d").unwrap();
+    assert_eq!(p.status, ApplicabilityStatus::Unknown, "{p:?}");
+    assert!(p.reasons.contains(&ReasonCode::FeatureStateUnknown));
+    assert_ne!(p.status, ApplicabilityStatus::Applicable);
+    assert_ne!(p.status, ApplicabilityStatus::NotApplicable);
+}
+
+#[test]
+fn m6g_feature_dependency_cross_module_transitive() {
+    let catalogue = compile_feats();
+    let device = binding();
+
+    // Cross-module: e depends on test-app's fancy-f, which itself
+    // depends on base-f. test-app reports both enabled in feats_outcome,
+    // so e reported alone is sufficient through the transitive chain.
+    let lib = feats_outcome(&["e"]);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(
+        path_status(&r, "gated-e").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+}
+
+// RFC 7950 §7.20.1: circular if-feature dependency graphs are invalid
+// YANG — detected at compile time; the module is partial and can never
+// be authoritative.
+const MODULE_CYCLE: &str = r#"
+module test-cycle {
+  yang-version 1.1;
+  namespace "urn:example:test-cycle";
+  prefix tc;
+  revision 2024-01-01;
+
+  feature p { if-feature "tc:q"; }
+  feature q { if-feature "tc:p"; }
+  feature selfref { if-feature "tc:selfref"; }
+
+  container system {
+    leaf gated { type string; config false; if-feature "tc:p"; }
+    leaf gated-self { type string; config false; if-feature "tc:selfref"; }
+  }
+}
+"#;
+
+#[test]
+fn m6g_circular_feature_dependencies_are_compile_time_invalid() {
+    let catalogue = yang_schema::compile_parsed(
+        vec![module_input("test-cycle", MODULE_CYCLE)],
+        &CompileOptions::default(),
+    );
+    let module = catalogue
+        .modules
+        .iter()
+        .find(|m| m.name == "test-cycle")
+        .expect("module compiled");
+    assert_eq!(
+        module.resolution, "partial",
+        "circular dependency must mark the module partial: {:?}",
+        catalogue.diagnostics
+    );
+    assert!(
+        catalogue
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("circular if-feature")),
+        "expected circular-dependency diagnostic: {:?}",
+        catalogue.diagnostics
+    );
+
+    // Even with every feature reported enabled, no gated path of an
+    // invalid module may be applicable.
+    let lib = YangLibraryOutcome::Complete {
+        evidence: YangLibraryEvidence {
+            tree: YangLibraryTree::Nmda,
+            content_id: Some("cid-c".to_string()),
+            module_sets: vec![YangLibraryModuleSet {
+                name: "msc".to_string(),
+                modules: vec![lib_module(
+                    "test-cycle",
+                    Some("2024-01-01"),
+                    Some("urn:example:test-cycle"),
+                    &["p", "q", "selfref"],
+                    &[],
+                )],
+                import_only_modules: Vec::new(),
+            }],
+            schemas: vec![YangLibrarySchema {
+                name: "sc".to_string(),
+                module_sets: vec!["msc".to_string()],
+            }],
+            datastores: vec![
+                YangLibraryDatastore {
+                    name: "ietf-datastores:running".to_string(),
+                    schema: "sc".to_string(),
+                },
+                YangLibraryDatastore {
+                    name: "ietf-datastores:operational".to_string(),
+                    schema: "sc".to_string(),
+                },
+            ],
+            origin: "ietf".to_string(),
+            path: "/yang-library".to_string(),
+            fetched_at_ns: 2_000,
+            diagnostics: Vec::new(),
+        },
+    };
+    let r = resolve(Some(&catalogue), None, Some(&lib), &binding());
+    for p in r.paths.iter().filter(|p| p.module == "test-cycle") {
+        assert_ne!(
+            p.status,
+            ApplicabilityStatus::Applicable,
+            "invalid dependency graph must not authorize {}: {p:?}",
+            p.path
+        );
+    }
+}
+
+/// XRd's recorded evidence: YANG Library declares `running` plus the
+/// misspelled `ietf-datastores:candiate`. running provably lacks state;
+/// the unrecognized identity is Unknown — the union can prove neither
+/// presence nor absence of state coverage, so state paths cap at
+/// `unknown` (never positive, never a fabricated negative). Config
+/// paths remain provably covered by `running`.
+#[test]
+fn m6g_xrd_running_plus_unrecognized_datastore_state_stays_unknown() {
+    let catalogue = compile_app();
+    let device = binding();
+
+    let mut ev = match nmda_outcome(&["base-f", "fancy-f"], &[], None) {
+        YangLibraryOutcome::Complete { evidence } => evidence,
+        _ => unreachable!(),
+    };
+    ev.datastores = vec![
+        YangLibraryDatastore {
+            name: "ietf-datastores:running".to_string(),
+            schema: "s1".to_string(),
+        },
+        YangLibraryDatastore {
+            name: "ietf-datastores:candiate".to_string(),
+            schema: "s1".to_string(),
+        },
+    ];
+    let lib = YangLibraryOutcome::Complete { evidence: ev };
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable,
+        "config coverage proven by running"
+    );
+    let hostname = path_status(&r, "hostname").unwrap();
+    assert_eq!(
+        hostname.status,
+        ApplicabilityStatus::Unknown,
+        "state coverage unproven: running lacks state, candiate unrecognized: {hostname:?}"
+    );
+    assert!(
+        hostname
+            .reasons
+            .contains(&ReasonCode::DatastoreSemanticsUnverified)
+    );
+    // Overall must not claim applicable while an axis is unverified.
+    assert_ne!(r.overall_status, ApplicabilityStatus::Applicable);
 }

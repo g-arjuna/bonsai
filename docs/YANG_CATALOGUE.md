@@ -122,21 +122,36 @@ paths with zero diagnostics, schema `ysc-d7254b6e840b0f0041c4b2458bb509a1`):
 Explicitly unsupported or approximate (diagnosed or documented, never
 silent where detectable):
 
-- `deviate add` and structural `deviate replace` (type/config/keys/
-  mandatory/must/when/units changes) — real YANG restructuring Bonsai
-  does not implement. They mark the subtree `deviated` with
-  notes/status AND emit an explicit diagnostic that keeps the
-  catalogue `partial` — affected definitions must not be treated as
-  authoritative.
-- `deviate delete` and `deviate not-supported` ARE interpreted: the
-  target subtree is pruned from the effective schema (path index,
-  feature gates and all). Both block (`deviate delete { ... }`, no
-  trailing `;` — the form real-world vendor deviation modules such as
+- `deviate not-supported` removes the target node and its whole subtree
+  from the effective schema (path index, feature gates and all).
+- `deviate delete` removes only the listed PROPERTIES of the target
+  node — the node itself stays (RFC 7950 §7.20.3.2; `delete` and
+  `not-supported` are distinct operations). Deletion is implemented for
+  the properties Bonsai represents accurately (`default`, `units`,
+  `mandatory`, `config`, `presence`, `description`, `reference`,
+  `status`, `ordered-by`, `min-elements`, `max-elements`, `must`,
+  `when`); deleting anything else (`type`, `key`, `if-feature`,
+  `unique`, extensions, ...) preserves the node, emits a diagnostic and
+  keeps the catalogue `partial` — the deviation is NOT counted as
+  applied. Both block (`deviate delete { ... }`, no trailing `;` — the
+  form real-world vendor deviation modules such as
   `cisco-xr-openconfig-interfaces-deviations` use) and semicolon forms
   parse correctly.
-- `deviate replace` is applied only when its block is annotation-only
-  (`default`, `status`, `description`, `reference`) — statements that
-  cannot change path identity. Anything else is diagnosed as above.
+- `deviate replace` writes the replacement VALUE into the effective
+  node for the represented scalar properties (`default`, `units`,
+  `status`, `description`, `reference`, `mandatory`, `config`,
+  `min-elements`, `max-elements`, `presence`, `ordered-by`). Anything
+  else — including `type`, `key`, `must`/`when` restructuring and
+  sub-block forms — is diagnosed and keeps the catalogue `partial`.
+- `deviate add` applies the same scalar-property subset plus flag
+  `mandatory` and `must`/`when` expressions, but only when the property
+  is absent — adding an existing property or an unimplemented property
+  is diagnosed and keeps the catalogue `partial`. Data-definition
+  additions (`leaf`, `container`, ...) are never synthesized.
+- Malformed deviation bodies are diagnosed, never silently applied:
+  `deviate delete`/`add`/`replace` without a non-empty block,
+  `deviate not-supported` carrying a block, and unknown `deviate`
+  kinds all keep the catalogue `partial`.
 - Applied deviation coverage is recorded per target module in
   `CompiledModule.deviation_modules` (deviation-module names whose
   `deviate` statements were fully honored). Applicability treats a
@@ -144,10 +159,19 @@ silent where detectable):
   there; reported-but-uncompiled deviations remain
   `deviation_semantics_unsupported` and fail closed.
 - `when`/`must` expressions are captured as strings, not evaluated.
-- Feature implication (`feature a { if-feature b; }`) is recorded on
-  `CompiledFeature.if_features` but not transitively evaluated by
-  `filter_by_features`; cross-module feature references are canonicalized
-  to `declared_prefix:local` form.
+- Feature implication (`feature a { if-feature b; }`) IS evaluated
+  device-side in applicability (M6G): `if-feature` expressions use
+  three-valued logic — a device-reported feature is effectively enabled
+  only when every dependency is provably satisfied; unproven
+  dependencies cap applicability at `unknown`, never positive.
+  Circular dependency graphs (direct, multi-node, cross-module) are
+  invalid per RFC 7950 §7.20.1 and are diagnosed at compile time,
+  marking the module `partial` — they can never authorize paths.
+  Feature atoms resolve against ALL modules carrying the lexical
+  prefix; ambiguous or disagreeing resolution is `unknown`.
+  `filter_by_features` (compile-time pruning) still does not expand
+  implications transitively; cross-module feature references are
+  canonicalized to `declared_prefix:local` form.
 - Import `revision` pins are diagnosed when they differ from the
   selected revision. Per-revision module selection IS implemented
   (M6F-F): `CompileOptions.module_revisions` pins a module name to an
@@ -252,9 +276,10 @@ which evidence, and with which uncertainty?"
   `applicable` (all true), `not_applicable` (a required feature is
   provably disabled), or `unknown`/`feature_state_unknown` — unknown
   feature state is never interpreted as enabled.
-- `deviate not-supported`/`delete` pruning and annotation-only
-  `deviate replace` are honoured (pruned nodes never appear); a
-  device-advertised deviation module caps affected paths at `unknown`
+- `deviate not-supported` pruning and property-level `deviate
+  delete`/`add`/`replace` are honoured for the implemented property
+  subset; a device-advertised deviation module caps affected paths at
+  `unknown`
   with `deviation_semantics_unsupported` ONLY when that deviation
   module was not compiled into and fully applied against the target
   module (`CompiledModule.deviation_modules`). Compiled-and-applied
@@ -266,6 +291,23 @@ which evidence, and with which uncertainty?"
   module-set mapping is selected (default `ietf-datastores:running`
   when unambiguous) and config/state classification is checked against
   it. Multiple datastore schemas are never silently merged.
+  Per RFC 8342 §5 the axes are `running` = configuration only,
+  `operational` = config+state superset, `candidate`/`startup`/
+  `intended` = configuration only; an explicit `requested_datastore`
+  is evaluated strictly, while default resolution unions coverage
+  across all declared datastores. Unrecognized datastore identities
+  (e.g. XRd's misspelled `ietf-datastores:candiate`) yield `unknown`
+  axes — module membership may verify but config/state applicability
+  stays unproven (`datastore_semantics_unverified`), never positive.
+  Consequence: schema-bound acquisition of config-false state paths
+  requires the device to declare a state-bearing datastore; devices
+  advertising only `running` get `not_applicable` on state paths.
+- RFC 8525 revision conflicts are scoped to each schema's union of
+  referenced module-sets — different datastores may legitimately pin
+  different revisions; conflicts within one effective schema are
+  still rejected. `import-only-module` entries never conflict (RFC
+  8525 permits multiple import-only revisions of one module name);
+  implemented-module identity is (name, revision, namespace).
 - Device identity comes from the registry binding (canonical address /
   external id / collector), never hostname or transport IP alone;
   ambiguous identity yields `conflicted` with `identity_ambiguity`.

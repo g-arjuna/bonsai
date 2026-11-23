@@ -107,6 +107,7 @@ pub enum ReasonCode {
     DatastoreSchemaMissing,
     DatastoreSchemaAmbiguous,
     DatastoreSchemaUnverified,
+    DatastoreSemanticsUnverified,
     DatastoreMismatch,
     FeatureDisabled,
     FeatureStateUnknown,
@@ -148,6 +149,7 @@ impl ReasonCode {
             Self::DatastoreSchemaMissing => "datastore_schema_missing",
             Self::DatastoreSchemaAmbiguous => "datastore_schema_ambiguous",
             Self::DatastoreSchemaUnverified => "datastore_schema_unverified",
+            Self::DatastoreSemanticsUnverified => "datastore_semantics_unverified",
             Self::DatastoreMismatch => "datastore_mismatch",
             Self::FeatureDisabled => "feature_disabled",
             Self::FeatureStateUnknown => "feature_state_unknown",
@@ -565,6 +567,10 @@ struct ModuleFeatureState {
     prefix: String,
     /// Local feature names proven enabled.
     enabled: BTreeSet<String>,
+    /// Local feature names reported enabled whose `if-feature`
+    /// dependencies cannot be proven — effectively unknowable, never
+    /// positive.
+    unproven: BTreeSet<String>,
     /// Local feature names declared by the compiled module.
     declared: BTreeSet<String>,
     /// Whether enabled/disabled is authoritative. When false every atom
@@ -587,6 +593,13 @@ struct EffectiveSet {
     datastore_linked: bool,
     /// Selected datastore identity, when resolved.
     datastore: Option<String>,
+    /// (supports_config, supports_state) across the device's declared
+    /// datastores. For an explicit `requested_datastore` this is that
+    /// datastore's own axes; for default resolution it is the union
+    /// over every declared datastore — a state node is only provably
+    /// served when SOME declared datastore carries state. `Unknown`
+    /// axes (unrecognized identities) never collapse to `No`.
+    datastore_axes: (DatastoreAxis, DatastoreAxis),
     content_id: Option<String>,
     /// Set when datastore/schema resolution failed — every module is
     /// then `unknown`, never `not_applicable` (absence of evidence is
@@ -649,8 +662,7 @@ pub fn resolve_applicability(input: &ApplicabilityInput<'_>) -> ApplicabilityRes
 
     // ── C/D. Module + path evaluation ─────────────────────────────────
     let feature_states = build_feature_states(catalogue, &effective.modules);
-    let (ds_config, ds_state) =
-        datastore_capabilities(effective.datastore.as_deref(), &mut diagnostics);
+    let (ds_config, ds_state) = effective.datastore_axes;
 
     let mut module_results: Vec<ModuleResult> = Vec::new();
     let mut path_results: Vec<PathResult> = Vec::new();
@@ -798,6 +810,7 @@ fn build_effective_set(
         authoritative: false,
         datastore_linked: false,
         datastore: None,
+        datastore_axes: (DatastoreAxis::Yes, DatastoreAxis::Yes),
         content_id: None,
         blocked: None,
     };
@@ -858,6 +871,14 @@ fn build_effective_set(
             YangLibraryTree::Nmda => {
                 match resolve_nmda_datastore(evidence, input.requested_datastore, diagnostics) {
                     Ok((datastore_name, schema)) => {
+                        set.datastore_axes = datastore_axes(
+                            evidence,
+                            input
+                                .requested_datastore
+                                .is_some()
+                                .then(|| datastore_name.as_str()),
+                            diagnostics,
+                        );
                         set.datastore = Some(datastore_name);
                         set.module_set_names = schema.module_sets.clone();
                         set.datastore_linked = true;
@@ -1266,20 +1287,30 @@ fn evaluate_path(
     module_reasons: &BTreeSet<ReasonCode>,
     feature_states: &BTreeMap<String, ModuleFeatureState>,
     effective: &EffectiveSet,
-    ds_config: bool,
-    ds_state: bool,
+    ds_config: DatastoreAxis,
+    ds_state: DatastoreAxis,
 ) -> PathResult {
     let mut status = module_status;
     let mut reasons: BTreeSet<ReasonCode> = module_reasons.clone();
 
     // Datastore applicability: config data needs a config-bearing
-    // datastore; state data needs an operational-bearing one.
-    if entry.config && !ds_config {
-        reasons.insert(ReasonCode::DatastoreMismatch);
-        status = not_applicable_if_positive(status);
-    } else if !entry.config && !ds_state {
-        reasons.insert(ReasonCode::DatastoreMismatch);
-        status = not_applicable_if_positive(status);
+    // datastore; state data needs an operational-bearing one. A proven
+    // mismatch is `not_applicable`; an UNRECOGNIZED datastore identity
+    // leaves the axis unproven — positive applicability is capped at
+    // `unknown`, never upgraded and never fabricated into a negative.
+    let needed = if entry.config { ds_config } else { ds_state };
+    match needed {
+        DatastoreAxis::No => {
+            reasons.insert(ReasonCode::DatastoreMismatch);
+            status = not_applicable_if_positive(status);
+        }
+        DatastoreAxis::Unknown => {
+            reasons.insert(ReasonCode::DatastoreSemanticsUnverified);
+            if status == ApplicabilityStatus::Applicable {
+                status = ApplicabilityStatus::Unknown;
+            }
+        }
+        DatastoreAxis::Yes => {}
     }
 
     // Feature gates: evaluate each required expression with tri-state
@@ -1360,20 +1391,194 @@ fn build_feature_states(
     catalogue: &CompiledCatalogue,
     device_modules: &BTreeMap<String, DeviceModuleEvidence>,
 ) -> BTreeMap<String, ModuleFeatureState> {
-    let mut states = BTreeMap::new();
-    for cm in &catalogue.modules {
-        let declared: BTreeSet<String> = cm.features.iter().map(|f| f.name.clone()).collect();
+    // Per-feature tri-state truth, indexed by module position. YANG 1.1
+    // `if-feature` on a feature declaration means the feature can only
+    // be effectively enabled when its dependency expressions hold —
+    // device-reported "enabled" alone is not sufficient evidence.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum T {
+        False,
+        True,
+        Unknown,
+    }
+    impl T {
+        fn ft(self) -> FeatureTruth {
+            match self {
+                T::False => FeatureTruth::False,
+                T::True => FeatureTruth::True,
+                T::Unknown => FeatureTruth::Unknown,
+            }
+        }
+    }
+
+    let n = catalogue.modules.len();
+    // module idx -> feature local name -> dependency expressions
+    let mut deps: Vec<BTreeMap<String, Vec<String>>> = Vec::with_capacity(n);
+    // module idx -> declared local feature names
+    let mut declared: Vec<BTreeSet<String>> = Vec::with_capacity(n);
+    // prefix -> module indices. YANG prefixes are scoped to the
+    // declaring module's imports — two modules may legitimately reuse
+    // the same lexical prefix, so resolution collects ALL candidates
+    // and requires agreement (ambiguous references resolve Unknown,
+    // never a guessed module).
+    let mut by_prefix: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (i, cm) in catalogue.modules.iter().enumerate() {
+        by_prefix.entry(cm.prefix.clone()).or_default().push(i);
+        let mut d = BTreeMap::new();
+        let mut names = BTreeSet::new();
+        for f in &cm.features {
+            names.insert(f.name.clone());
+            d.insert(f.name.clone(), f.if_features.clone());
+        }
+        deps.push(d);
+        declared.push(names);
+    }
+
+    // truth[i] : feature local name -> T (declared features only)
+    let mut truth: Vec<BTreeMap<String, T>> = Vec::with_capacity(n);
+    for (i, cm) in catalogue.modules.iter().enumerate() {
         let ev = device_modules.get(&cm.name);
         let (enabled, known) = match ev {
             Some(e) if e.features_state_known => (e.enabled_features.clone(), true),
             _ => (BTreeSet::new(), false),
         };
+        let mut t = BTreeMap::new();
+        for name in &declared[i] {
+            t.insert(
+                name.clone(),
+                if !known {
+                    T::Unknown
+                } else if enabled.contains(name) {
+                    T::True
+                } else {
+                    T::False
+                },
+            );
+        }
+        truth.push(t);
+    }
+
+    // Monotone downgrade fixpoint: a reported-enabled feature drops to
+    // Unknown when any dependency is unproven, and to False when a
+    // dependency is provably unsatisfied (it cannot validly be enabled).
+    // Feature dependency graphs are finite; each pass strictly reduces
+    // the number of True entries, so this terminates. Downgrades are
+    // collected per pass and applied together — dependencies within one
+    // pass evaluate against the previous pass's truth (chaotic
+    // iteration still converges to the same greatest fixpoint because
+    // downgrades are monotone).
+    let total: usize = truth.iter().map(|t| t.len()).sum();
+    for _ in 0..=total {
+        let mut pending: Vec<(usize, String, T)> = Vec::new();
+        {
+            // Resolve one if-feature atom against the current fixpoint
+            // truth, mirroring feature_atom_truth's prefix/bare
+            // agreement rules.
+            let atom_truth = |atom: &str| -> FeatureTruth {
+                if let Some((prefix, local)) = atom.split_once(':') {
+                    let Some(candidates) = by_prefix.get(prefix) else {
+                        return FeatureTruth::Unknown;
+                    };
+                    // Every module carrying this prefix that declares
+                    // the feature must agree — disagreement is Unknown.
+                    let mut acc: Option<FeatureTruth> = None;
+                    for &i in candidates {
+                        let Some(v) = truth[i].get(local) else {
+                            continue;
+                        };
+                        let ft = v.ft();
+                        acc = Some(match acc {
+                            None => ft,
+                            Some(a) if a == ft => a,
+                            Some(_) => return FeatureTruth::Unknown,
+                        });
+                    }
+                    return acc.unwrap_or(FeatureTruth::Unknown);
+                }
+                let mut acc: Option<FeatureTruth> = None;
+                for t in &truth {
+                    // Only modules that declare the bare name participate.
+                    let Some(v) = t.get(atom) else { continue };
+                    let ft = v.ft();
+                    acc = Some(match acc {
+                        None => ft,
+                        Some(a) if a == ft => a,
+                        Some(_) => return FeatureTruth::Unknown,
+                    });
+                }
+                acc.unwrap_or(FeatureTruth::Unknown)
+            };
+            for i in 0..n {
+                let names: Vec<String> = deps[i].keys().cloned().collect();
+                for name in names {
+                    if truth[i].get(&name) != Some(&T::True) {
+                        continue;
+                    }
+                    let exprs = deps[i][&name].clone();
+                    if exprs.is_empty() {
+                        continue;
+                    }
+                    let mut saw_false = false;
+                    let mut saw_unknown = false;
+                    for expr in &exprs {
+                        match eval_feature_expr_tristate(expr, &atom_truth) {
+                            FeatureTruth::False => saw_false = true,
+                            FeatureTruth::Unknown => saw_unknown = true,
+                            FeatureTruth::True => {}
+                        }
+                    }
+                    let next = if saw_false {
+                        T::False
+                    } else if saw_unknown {
+                        T::Unknown
+                    } else {
+                        T::True
+                    };
+                    if next != T::True {
+                        pending.push((i, name, next));
+                    }
+                }
+            }
+        }
+        if pending.is_empty() {
+            break;
+        }
+        for (i, name, next) in pending {
+            truth[i].insert(name, next);
+        }
+    }
+
+    let mut states = BTreeMap::new();
+    for (i, cm) in catalogue.modules.iter().enumerate() {
+        let ev = device_modules.get(&cm.name);
+        let known = ev.is_some_and(|e| e.features_state_known);
+        let reported: BTreeSet<String> = ev.map(|e| e.enabled_features.clone()).unwrap_or_default();
+        let mut enabled = BTreeSet::new();
+        let mut unproven = BTreeSet::new();
+        for (name, t) in &truth[i] {
+            match t {
+                T::True => {
+                    enabled.insert(name.clone());
+                }
+                T::Unknown if known => {
+                    unproven.insert(name.clone());
+                }
+                _ => {}
+            }
+        }
+        // Reported names the compiled module does not declare keep their
+        // prior (permissive) treatment — they cannot gate any compiled
+        // path anyway.
+        for name in reported.difference(&declared[i]) {
+            enabled.insert(name.clone());
+        }
         states.insert(
             cm.name.clone(),
             ModuleFeatureState {
                 prefix: cm.prefix.clone(),
                 enabled,
-                declared,
+                unproven,
+                declared: declared[i].clone(),
                 known,
             },
         );
@@ -1387,6 +1592,10 @@ fn build_feature_states(
 fn module_feature_truth(st: &ModuleFeatureState, local: &str) -> FeatureTruth {
     if !st.known {
         FeatureTruth::Unknown
+    } else if st.unproven.contains(local) {
+        // Reported enabled but an if-feature dependency is unproven —
+        // the feature cannot be considered effectively enabled.
+        FeatureTruth::Unknown
     } else if st.enabled.contains(local) {
         FeatureTruth::True
     } else if st.declared.contains(local) {
@@ -1399,12 +1608,22 @@ fn module_feature_truth(st: &ModuleFeatureState, local: &str) -> FeatureTruth {
 
 fn feature_atom_truth(atom: &str, states: &BTreeMap<String, ModuleFeatureState>) -> FeatureTruth {
     if let Some((prefix, local)) = atom.split_once(':') {
+        // Prefixes are lexically scoped per module — collect every
+        // module carrying this prefix that declares the feature and
+        // require agreement. An ambiguous reference resolves Unknown.
+        let mut acc: Option<FeatureTruth> = None;
         for st in states.values() {
-            if st.prefix == prefix && st.declared.contains(local) {
-                return module_feature_truth(st, local);
+            if st.prefix != prefix || !st.declared.contains(local) {
+                continue;
             }
+            let t = module_feature_truth(st, local);
+            acc = Some(match acc {
+                None => t,
+                Some(a) if a == t => a,
+                Some(_) => return FeatureTruth::Unknown,
+            });
         }
-        return FeatureTruth::Unknown;
+        return acc.unwrap_or(FeatureTruth::Unknown);
     }
     // Bare local name: every module declaring it must agree, and
     // unknown state anywhere makes the atom unproven.
@@ -1425,22 +1644,110 @@ fn feature_atom_truth(atom: &str, states: &BTreeMap<String, ModuleFeatureState>)
 
 // ── datastore capabilities ─────────────────────────────────────────────
 
-/// (supports_config, supports_state) for a datastore identity.
-fn datastore_capabilities(name: Option<&str>, diagnostics: &mut Vec<String>) -> (bool, bool) {
-    let Some(name) = name else {
-        return (true, true);
-    };
+/// Tri-state answer to "does this datastore carry config/state data?".
+/// `Unknown` means the datastore identity is not one Bonsai can map to
+/// RFC 8342 semantics — module-schema membership may still be verified,
+/// but config/state applicability must stay unproven (never silently
+/// treated as supported).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DatastoreAxis {
+    /// Provably does not carry this data class.
+    No,
+    /// Provably carries this data class.
+    Yes,
+    /// Datastore semantics unrecognized — neither proven nor disproven.
+    Unknown,
+}
+
+/// (supports_config, supports_state) for ONE datastore identity.
+///
+/// RFC 8342 §5: `running` is a *configuration* datastore (config only —
+/// state data is NOT stored in `running`); `operational` holds ALL
+/// config-true and config-false nodes (config + state, a superset of the
+/// configuration datastores' schemas); `candidate`/`startup`/`intended`
+/// are configuration datastores (config only). An UNRECOGNIZED identity
+/// (including vendor misspellings such as XRd's `candiate`) gets
+/// `Unknown` on both axes — never silently assumed.
+fn single_datastore_capabilities(name: &str) -> (DatastoreAxis, DatastoreAxis) {
     match local_name(name) {
-        "running" => (true, true),
-        "operational" => (false, true),
-        "candidate" | "startup" | "intended" => (true, false),
-        other => {
-            diagnostics.push(format!(
-                "unrecognized datastore identity '{other}' — assuming combined config+state scope"
-            ));
-            (true, true)
+        "running" => (DatastoreAxis::Yes, DatastoreAxis::No),
+        "operational" => (DatastoreAxis::Yes, DatastoreAxis::Yes),
+        "candidate" | "startup" | "intended" => (DatastoreAxis::Yes, DatastoreAxis::No),
+        _ => (DatastoreAxis::Unknown, DatastoreAxis::Unknown),
+    }
+}
+
+/// Combine per-axis tri-state answers across values: `Yes` if any
+/// contributor proves it, else `Unknown` if any contributor is
+/// unproven, else `No` only when EVERY contributor provably lacks it.
+fn union_axis(values: impl IntoIterator<Item = DatastoreAxis>) -> DatastoreAxis {
+    let mut saw_yes = false;
+    let mut saw_unknown = false;
+    for v in values {
+        match v {
+            DatastoreAxis::Yes => saw_yes = true,
+            DatastoreAxis::Unknown => saw_unknown = true,
+            DatastoreAxis::No => {}
         }
     }
+    if saw_yes {
+        DatastoreAxis::Yes
+    } else if saw_unknown {
+        DatastoreAxis::Unknown
+    } else {
+        DatastoreAxis::No
+    }
+}
+
+/// Device-level datastore capability axes for applicability.
+///
+/// `strict_selected` (an explicit `requested_datastore` was supplied)
+/// evaluates ONLY the selected datastore — asking about `running`
+/// specifically must not be answered by `operational`'s coverage.
+/// Otherwise the axes are the union over every datastore the device
+/// declares: a node class is provably served iff some declared
+/// datastore carries it, unproven iff the only candidates are
+/// unrecognized, and provably absent iff every declared datastore
+/// lacks it. Module membership remains bound to the selected
+/// datastore's schema; these axes describe data-class coverage only.
+/// `None`/legacy (no NMDA datastore resolved) keeps the historical
+/// permissive pair because `datastore_linked == false` already caps
+/// every path below `applicable` — the axes are moot there.
+fn datastore_axes(
+    evidence: &YangLibraryEvidence,
+    strict_selected: Option<&str>,
+    diagnostics: &mut Vec<String>,
+) -> (DatastoreAxis, DatastoreAxis) {
+    if let Some(selected) = strict_selected {
+        // Explicit datastore request: only THAT datastore's own axes
+        // answer the query — `operational` coverage must not leak into
+        // a `running` evaluation.
+        let (c, s) = single_datastore_capabilities(selected);
+        if matches!(c, DatastoreAxis::Unknown) {
+            diagnostics.push(format!(
+                "unrecognized datastore identity '{}' — config/state applicability stays unverified",
+                local_name(selected)
+            ));
+        }
+        return (c, s);
+    }
+    let mut unrecognized = BTreeSet::new();
+    let mut config = Vec::new();
+    let mut state = Vec::new();
+    for d in &evidence.datastores {
+        let (c, s) = single_datastore_capabilities(&d.name);
+        if matches!(c, DatastoreAxis::Unknown) {
+            unrecognized.insert(local_name(&d.name).to_string());
+        }
+        config.push(c);
+        state.push(s);
+    }
+    for name in unrecognized {
+        diagnostics.push(format!(
+            "unrecognized datastore identity '{name}' — config/state applicability stays unverified"
+        ));
+    }
+    (union_axis(config), union_axis(state))
 }
 
 // ── overall status ─────────────────────────────────────────────────────
@@ -1452,9 +1759,8 @@ fn overall_status(
     module_results: &[ModuleResult],
     input: &ApplicabilityInput<'_>,
     reasons: &mut BTreeSet<ReasonCode>,
-    diagnostics: &mut Vec<String>,
+    _diagnostics: &mut Vec<String>,
 ) -> ApplicabilityStatus {
-    let _ = diagnostics;
     if input.device.identity_ambiguous {
         reasons.insert(ReasonCode::IdentityAmbiguity);
         return ApplicabilityStatus::Conflicted;
@@ -1480,6 +1786,15 @@ fn overall_status(
         .any(|m| m.status == ApplicabilityStatus::Conflicted)
     {
         return ApplicabilityStatus::Conflicted;
+    }
+    // Unrecognized datastore semantics: module-schema membership may be
+    // fully verified while config/state applicability stays unproven —
+    // the overall result must not claim `applicable` on that basis.
+    if matches!(effective.datastore_axes.0, DatastoreAxis::Unknown)
+        || matches!(effective.datastore_axes.1, DatastoreAxis::Unknown)
+    {
+        reasons.insert(ReasonCode::DatastoreSemanticsUnverified);
+        return ApplicabilityStatus::Candidate;
     }
     // Authoritative complete resolution: verified catalogue + complete
     // NMDA library + established datastore link.
