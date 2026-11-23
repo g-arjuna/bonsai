@@ -894,18 +894,46 @@ pub fn parse_nmda_library(tree: &Value, fetched_at_ns: i64) -> Result<YangLibrar
         return Err("yang-library contains no module-set".to_string());
     }
 
-    // Conflicting module definitions: same module name appearing in the
-    // effective-relevant sets with different revisions is ambiguous —
-    // the resolver also guards, but flag it at parse time too.
-    let mut seen: BTreeMap<String, Option<String>> = BTreeMap::new();
-    for ms in &module_sets {
-        for m in ms.modules.iter().chain(ms.import_only_modules.iter()) {
-            match seen.get(&m.name) {
-                Some(prev) if *prev != m.revision => {
-                    return Err(format!("conflicting module definitions for '{}'", m.name));
-                }
-                _ => {
-                    seen.insert(m.name.clone(), m.revision.clone());
+    // Conflicting module definitions are evaluated at the correct
+    // standards scope: a schema's effective module set is the UNION of
+    // the module-sets it references (RFC 8525). Different datastore
+    // schemas may legitimately pin different revisions of the same
+    // module — that is not a conflict. A conflict exists only when
+    // module-sets combined into ONE schema disagree on a module's
+    // revision; unreferenced module-sets are inert. Dangling
+    // module-set references are left for the resolver
+    // (`DatastoreSchemaMissing`), not rejected here.
+    //
+    // Only IMPLEMENTED modules participate: RFC 8525 permits a
+    // module-set to carry multiple import-only revisions of the same
+    // module name (different modules legitimately import different
+    // revisions), so import-only entries can never conflict — neither
+    // with each other nor with the implemented module of the same
+    // name. Implemented identity is (name, revision, namespace):
+    // disagreeing revisions OR disagreeing reported namespaces inside
+    // one effective schema are real conflicts.
+    for schema in &schemas {
+        let mut seen: BTreeMap<String, (Option<String>, Option<String>)> = BTreeMap::new();
+        for ms_name in &schema.module_sets {
+            let Some(ms) = module_sets.iter().find(|m| &m.name == ms_name) else {
+                continue;
+            };
+            for m in &ms.modules {
+                match seen.get(&m.name) {
+                    Some((prev_rev, prev_ns))
+                        if *prev_rev != m.revision
+                            || (prev_ns.is_some()
+                                && m.namespace.is_some()
+                                && prev_ns != &m.namespace) =>
+                    {
+                        return Err(format!(
+                            "conflicting module definitions for '{}' in schema '{}'",
+                            m.name, schema.name
+                        ));
+                    }
+                    _ => {
+                        seen.insert(m.name.clone(), (m.revision.clone(), m.namespace.clone()));
+                    }
                 }
             }
         }
