@@ -509,17 +509,21 @@ fn t4_feature_states_and_deviations_gate_paths() {
         ApplicabilityStatus::Applicable
     );
 
-    // fancy-f enabled but its if-feature base-f absent → expression
-    // "fancy-f" is the leaf gate itself; fancy-f enabled requires base-f
-    // per YANG semantics? The leaf gate is only fancy-f; base-f absence
-    // doesn't disable fancy-f at this layer — but feature state is
-    // device-reported: fancy-f enabled while base-f disabled is device
-    // evidence we record as-is.
+    // fancy-f reported enabled while its if-feature dependency base-f
+    // is provably absent: YANG 1.1 forbids the feature being effectively
+    // enabled, so the evidence is contradictory — fancy-f is not
+    // effectively enabled and the gated leaf must NOT be applicable.
     let lib = nmda_outcome(&["fancy-f"], &[], None);
     let r = resolve(Some(&catalogue), None, Some(&lib), &device);
     assert_eq!(
         path_status(&r, "mtu").unwrap().status,
-        ApplicabilityStatus::Applicable
+        ApplicabilityStatus::NotApplicable
+    );
+    assert!(
+        path_status(&r, "mtu")
+            .unwrap()
+            .reasons
+            .contains(&ReasonCode::FeatureDisabled)
     );
 
     // Unknown feature state (caps-only) → never applicable.
@@ -2137,5 +2141,166 @@ fn t4b_covered_deviation_does_not_block_applicability() {
         app.reasons
             .contains(&ReasonCode::DeviationSemanticsUnsupported),
         "uncovered reported deviation must fail closed"
+    );
+}
+
+// ── M6G: YANG 1.1 feature if-feature dependency semantics ──────────────────
+
+const MODULE_FEATS: &str = r#"
+module test-feats {
+  yang-version 1.1;
+  namespace "urn:example:test-feats";
+  prefix tf;
+  import test-app;
+  revision 2024-01-01;
+
+  feature a { description "root"; }
+  feature b { if-feature "tf:a"; }
+  feature c { if-feature "tf:b"; }
+  feature d { if-feature "tf:missing"; }
+  feature p { if-feature "tf:q"; }
+  feature q { if-feature "tf:p"; }
+  feature e { if-feature "ta:fancy-f"; }
+
+  container system {
+    leaf open { type string; }
+    leaf gated-c { type string; config false; if-feature "tf:c"; }
+    leaf gated-d { type string; config false; if-feature "tf:d"; }
+    leaf gated-p { type string; config false; if-feature "tf:p"; }
+    leaf gated-e { type string; config false; if-feature "tf:e"; }
+  }
+}
+"#;
+
+fn compile_feats() -> bonsai::yang_schema::CompiledCatalogue {
+    yang_schema::compile_parsed(
+        vec![
+            module_input("test-app", MODULE_APP),
+            module_input("test-feats", MODULE_FEATS),
+        ],
+        &CompileOptions::default(),
+    )
+}
+
+/// NMDA library whose single schema covers test-feats (given feature
+/// set) plus test-app with both of its features enabled.
+fn feats_outcome(feats_features: &[&str]) -> YangLibraryOutcome {
+    let evidence = YangLibraryEvidence {
+        tree: YangLibraryTree::Nmda,
+        content_id: Some("cid-f".to_string()),
+        module_sets: vec![YangLibraryModuleSet {
+            name: "msf".to_string(),
+            modules: vec![
+                lib_module(
+                    "test-feats",
+                    Some("2024-01-01"),
+                    Some("urn:example:test-feats"),
+                    feats_features,
+                    &[],
+                ),
+                lib_module(
+                    "test-app",
+                    Some("2024-01-01"),
+                    Some("urn:example:test-app"),
+                    &["base-f", "fancy-f"],
+                    &[],
+                ),
+            ],
+            import_only_modules: Vec::new(),
+        }],
+        schemas: vec![YangLibrarySchema {
+            name: "sf".to_string(),
+            module_sets: vec!["msf".to_string()],
+        }],
+        datastores: vec![YangLibraryDatastore {
+            name: "ietf-datastores:running".to_string(),
+            schema: "sf".to_string(),
+        }],
+        origin: "ietf".to_string(),
+        path: "/yang-library".to_string(),
+        fetched_at_ns: 2_000,
+        diagnostics: Vec::new(),
+    };
+    YangLibraryOutcome::Complete { evidence }
+}
+
+#[test]
+fn m6g_feature_dependency_chain_gates_effective_enablement() {
+    let catalogue = compile_feats();
+    let device = binding();
+
+    // Full chain a→b→c reported: gated-c is applicable.
+    let lib = feats_outcome(&["a", "b", "c"]);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(
+        path_status(&r, "gated-c").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+    assert_eq!(
+        path_status(&r, "open").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+
+    // c reported without its dependency chain: c cannot be effectively
+    // enabled — gated-c is not applicable, never silently valid.
+    for reported in [&["c"][..], &["b", "c"][..], &["a", "c"][..]] {
+        let lib = feats_outcome(reported);
+        let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+        let p = path_status(&r, "gated-c").unwrap();
+        assert_eq!(
+            p.status,
+            ApplicabilityStatus::NotApplicable,
+            "reported {reported:?} must not enable gated-c: {p:?}"
+        );
+        assert!(p.reasons.contains(&ReasonCode::FeatureDisabled));
+    }
+}
+
+#[test]
+fn m6g_feature_unproven_dependency_is_unknown_never_positive() {
+    let catalogue = compile_feats();
+    let device = binding();
+
+    // d depends on undeclared tf:missing — reported enabled but the
+    // dependency can never be proven: gated-d caps at Unknown.
+    let lib = feats_outcome(&["d"]);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    let p = path_status(&r, "gated-d").unwrap();
+    assert_eq!(p.status, ApplicabilityStatus::Unknown, "{p:?}");
+    assert!(p.reasons.contains(&ReasonCode::FeatureStateUnknown));
+    assert_ne!(p.status, ApplicabilityStatus::Applicable);
+    assert_ne!(p.status, ApplicabilityStatus::NotApplicable);
+}
+
+#[test]
+fn m6g_feature_dependency_cycle_and_cross_module() {
+    let catalogue = compile_feats();
+    let device = binding();
+
+    // Mutually-dependent p/q both reported: each dependency is
+    // satisfied by the other — effectively enabled.
+    let lib = feats_outcome(&["p", "q"]);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(
+        path_status(&r, "gated-p").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+
+    // Only p reported: q is provably absent → p cannot be enabled.
+    let lib = feats_outcome(&["p"]);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(
+        path_status(&r, "gated-p").unwrap().status,
+        ApplicabilityStatus::NotApplicable
+    );
+
+    // Cross-module: e depends on test-app's fancy-f, which itself
+    // depends on base-f. test-app reports both enabled in feats_outcome,
+    // so e reported alone is sufficient through the transitive chain.
+    let lib = feats_outcome(&["e"]);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(
+        path_status(&r, "gated-e").unwrap().status,
+        ApplicabilityStatus::Applicable
     );
 }
