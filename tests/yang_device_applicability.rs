@@ -2139,3 +2139,163 @@ fn t4b_covered_deviation_does_not_block_applicability() {
         "uncovered reported deviation must fail closed"
     );
 }
+
+// ── M6G: schema-selection optimistic concurrency ────────────────────────
+
+#[test]
+fn m6g_selection_fencing_rejects_stale_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(dir.path()).unwrap();
+
+    // No row: expected 0 is the only valid precondition.
+    let sel = selection(
+        "10.0.0.9",
+        "10.0.0.9:57400",
+        "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    let stored = store
+        .set_device_schema_selection_fenced(&sel, 0, "admin-a", "test")
+        .unwrap();
+    assert_eq!(stored.selection_revision, 1);
+
+    // Stale precondition (expected 0 while rev 1 exists) fails closed.
+    let mut sel_b = sel.clone();
+    sel_b.schema_id = "ysc-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+    let err = store
+        .set_device_schema_selection_fenced(&sel_b, 0, "admin-b", "test")
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+            .is_some(),
+        "expected SelectionRevisionConflict, got {err:#}"
+    );
+    // The stored selection is untouched — no silent last-writer-wins.
+    assert_eq!(
+        store
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .unwrap()
+            .schema_id,
+        sel.schema_id
+    );
+
+    // Correct precondition (rev 1) commits and bumps to rev 2.
+    let stored = store
+        .set_device_schema_selection_fenced(&sel_b, 1, "admin-b", "test")
+        .unwrap();
+    assert_eq!(stored.selection_revision, 2);
+
+    // A second stale writer fenced on rev 1 now conflicts.
+    let mut sel_c = sel.clone();
+    sel_c.schema_id = "ysc-cccccccccccccccccccccccccccccccc".to_string();
+    let err = store
+        .set_device_schema_selection_fenced(&sel_c, 1, "admin-c", "test")
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+            .is_some()
+    );
+}
+
+#[test]
+fn m6g_selection_fencing_concurrent_writers_single_winner() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(SqliteStore::open(dir.path()).unwrap());
+    let sel = selection(
+        "10.0.0.9",
+        "10.0.0.9:57400",
+        "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    store
+        .set_device_schema_selection_fenced(&sel, 0, "admin", "test")
+        .unwrap();
+
+    // Two admins race the same expected revision — exactly one commits.
+    let mut handles = Vec::new();
+    for (i, sid) in ["d", "e"].iter().enumerate() {
+        let store = store.clone();
+        let mut s = sel.clone();
+        s.schema_id = format!("ysc-{}", sid.repeat(32));
+        handles.push(std::thread::spawn(move || {
+            store.set_device_schema_selection_fenced(&s, 1, "racer", "test")
+        }));
+        let _ = i;
+    }
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let wins = results.iter().filter(|r| r.is_ok()).count();
+    let conflicts = results
+        .iter()
+        .filter(|r| {
+            r.as_ref().err().is_some_and(|e| {
+                e.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+                    .is_some()
+            })
+        })
+        .count();
+    assert_eq!(wins, 1, "exactly one racer may commit: {results:?}");
+    assert_eq!(conflicts, 1, "the loser must see a revision conflict");
+    assert_eq!(
+        store
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .unwrap()
+            .selection_revision,
+        2
+    );
+}
+
+#[test]
+fn m6g_selection_fenced_clear() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(dir.path()).unwrap();
+    let sel = selection(
+        "10.0.0.9",
+        "10.0.0.9:57400",
+        "ysc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    store
+        .set_device_schema_selection_fenced(&sel, 0, "admin", "test")
+        .unwrap();
+
+    // Stale clear (expected 0) conflicts; correct revision deletes.
+    let err = store
+        .clear_device_schema_selection_fenced("10.0.0.9", 0, "admin", "test")
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+            .is_some()
+    );
+    assert!(
+        store
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .is_some()
+    );
+
+    assert!(
+        store
+            .clear_device_schema_selection_fenced("10.0.0.9", 1, "admin", "test")
+            .unwrap()
+    );
+    assert!(
+        store
+            .get_device_schema_selection("10.0.0.9")
+            .unwrap()
+            .is_none()
+    );
+
+    // Clearing an absent selection expects revision 0 and reports no
+    // row deleted (false), while a wrong precondition still conflicts.
+    assert!(
+        !store
+            .clear_device_schema_selection_fenced("10.0.0.9", 0, "admin", "test")
+            .unwrap()
+    );
+    let err = store
+        .clear_device_schema_selection_fenced("10.0.0.9", 3, "admin", "test")
+        .unwrap_err();
+    assert!(
+        err.downcast_ref::<bonsai::sqlite_store::SelectionRevisionConflict>()
+            .is_some()
+    );
+}

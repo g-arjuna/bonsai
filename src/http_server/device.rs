@@ -1960,6 +1960,12 @@ pub(super) async fn device_schema_selection_get_handler(
 #[derive(Deserialize)]
 pub(super) struct DeviceSchemaSelectionRequest {
     schema_id: String,
+    /// Optimistic-concurrency precondition: the `selection_revision`
+    /// the client last observed (0 when no explicit selection exists).
+    /// REQUIRED — schema selection is an authority grant, so a stale
+    /// admin request must conflict rather than silently overwrite a
+    /// newer selection.
+    expected_selection_revision: i64,
     #[serde(default)]
     note: Option<String>,
 }
@@ -2062,10 +2068,24 @@ pub(super) async fn device_schema_selection_put_handler(
     };
     let store_for_write = store.clone();
     let actor_for_write = actor.clone();
+    let expected_revision = req.expected_selection_revision;
     tokio::task::spawn_blocking(move || {
         store_for_write
-            .set_device_schema_selection(&selection, &actor_for_write, "api_device_schema_select")
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+            .set_device_schema_selection_fenced(
+                &selection,
+                expected_revision,
+                &actor_for_write,
+                "api_device_schema_select",
+            )
+            .map_err(|e| {
+                if e.downcast_ref::<crate::sqlite_store::SelectionRevisionConflict>()
+                    .is_some()
+                {
+                    (StatusCode::CONFLICT, e.to_string())
+                } else {
+                    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                }
+            })
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
@@ -2112,9 +2132,20 @@ pub(super) async fn device_schema_selection_put_handler(
 /// the globally active catalogue. A schema-bound approval whose schema
 /// differs from the now-effective catalogue is revoked first (same
 /// fail-closed ordering as selection).
+#[derive(Deserialize)]
+pub(super) struct DeviceSchemaSelectionClearQuery {
+    /// Optional optimistic-concurrency precondition: the
+    /// `selection_revision` the client last observed (0 when no
+    /// selection exists). When supplied, a mismatched stored revision
+    /// fails with 409 instead of silently clearing a newer selection.
+    #[serde(default)]
+    expected_selection_revision: Option<i64>,
+}
+
 pub(super) async fn device_schema_selection_delete_handler(
     State(state): State<AppState>,
     Path(address): Path<String>,
+    Query(query): Query<DeviceSchemaSelectionClearQuery>,
     role: Option<axum::Extension<crate::http_server::auth::Role>>,
     subject: Option<axum::Extension<crate::http_server::auth::AuthenticatedSubject>>,
 ) -> Result<Json<DeviceSchemaSelectionResponse>, (StatusCode, String)> {
@@ -2168,10 +2199,30 @@ pub(super) async fn device_schema_selection_delete_handler(
     let store_for_write = store.clone();
     let dk = device_key.clone();
     let actor_for_write = actor.clone();
+    let expected_revision = query.expected_selection_revision;
     tokio::task::spawn_blocking(move || {
-        store_for_write
-            .clear_device_schema_selection(&dk, &actor_for_write, "api_device_schema_clear")
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        let result = match expected_revision {
+            Some(expected) => store_for_write.clear_device_schema_selection_fenced(
+                &dk,
+                expected,
+                &actor_for_write,
+                "api_device_schema_clear",
+            ),
+            None => store_for_write.clear_device_schema_selection(
+                &dk,
+                &actor_for_write,
+                "api_device_schema_clear",
+            ),
+        };
+        result.map_err(|e| {
+            if e.downcast_ref::<crate::sqlite_store::SelectionRevisionConflict>()
+                .is_some()
+            {
+                (StatusCode::CONFLICT, e.to_string())
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            }
+        })
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;

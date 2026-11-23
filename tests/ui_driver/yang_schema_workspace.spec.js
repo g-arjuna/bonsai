@@ -866,7 +866,8 @@ async function installSelectionFixtures(page, state) {
   await page.route('**/api/yang/compiled**', (route) =>
     route.fulfill({ json: compiledBundlesBody() })
   );
-  await page.route(`**${SEL_URL}`, (route) => {
+  // `*` suffix: DELETE may carry ?expected_selection_revision=… (M6G).
+  await page.route(`**${SEL_URL}*`, (route) => {
     const method = route.request().method();
     if (method === 'GET') {
       return route.fulfill({ json: state.selection });
@@ -885,6 +886,8 @@ async function installSelectionFixtures(page, state) {
     }
     if (method === 'DELETE') {
       state.selectionDeletes++;
+      state.selectionDeleteUrls = state.selectionDeleteUrls || [];
+      state.selectionDeleteUrls.push(route.request().url());
       state.selection = selectionBody();
       return route.fulfill({ json: state.selection });
     }
@@ -909,8 +912,34 @@ test.describe('M6F-F device schema selection', () => {
 
     await expect.poll(() => state.selectionPuts.length).toBe(1);
     expect(state.selectionPuts[0].schema_id).toBe(SCHEMA_B);
+    // M6G: selection writes carry the optimistic-concurrency precondition.
+    expect(state.selectionPuts[0].expected_selection_revision).toBe(0);
     await expect(page.locator('[data-testid="schema-select-message"]')).toContainText('Schema selection updated');
     await expect(card).toContainText('explicit');
+  });
+
+  test('a stale selection revision surfaces a conflict, not a silent overwrite', async ({ page }) => {
+    const state = {
+      selection: selectionBody({
+        selection: selectionRow(SCHEMA_B, 3),
+        effective_schema_id: SCHEMA_B,
+      }),
+      selectionPutStatus: 409,
+    };
+    await installFixtures(page, state);
+    await installSelectionFixtures(page, state);
+    await openSchemaWorkspace(page);
+
+    await page.locator('[data-testid="schema-bundle-select"]').selectOption(SCHEMA_A);
+    await page.locator('[data-testid="schema-select-apply"]').click();
+    await page.locator('[data-testid="schema-select-confirm"]').getByRole('button', { name: 'Confirm' }).click();
+
+    await expect.poll(() => state.selectionPuts.length).toBe(1);
+    // The client sent the revision it last observed (3).
+    expect(state.selectionPuts[0].expected_selection_revision).toBe(3);
+    await expect(page.locator('[data-testid="schema-select-error"]')).toBeVisible();
+    // No selection message — the conflict is not reported as success.
+    await expect(page.locator('[data-testid="schema-select-message"]')).toHaveCount(0);
   });
 
   test('explicit selection shows selected, effective and active identities', async ({ page }) => {
@@ -966,6 +995,9 @@ test.describe('M6F-F device schema selection', () => {
 
     await page.locator('[data-testid="schema-select-clear"]').click();
     await expect.poll(() => state.selectionDeletes).toBe(1);
+    // M6G: the clear carries the observed selection revision as a
+    // fencing precondition.
+    expect(state.selectionDeleteUrls[0]).toContain('expected_selection_revision=1');
     await expect(page.locator('[data-testid="schema-select-message"]')).toContainText('cleared');
     await expect(page.locator('[data-testid="schema-selection"]')).toContainText('default (active catalogue)');
   });

@@ -2188,6 +2188,38 @@ impl SqliteStore {
         actor: &str,
         action: &str,
     ) -> Result<DeviceSchemaSelection> {
+        self.upsert_device_schema_selection(selection, None, actor, action)
+    }
+
+    /// Fenced variant of [`Self::set_device_schema_selection`]:
+    /// `expected_selection_revision` must equal the stored
+    /// `selection_revision` — or `0` when no selection row exists —
+    /// verified INSIDE the same transaction as the write. A stale admin
+    /// request fails with [`SelectionRevisionConflict`] instead of
+    /// silently overwriting a newer selection (last-writer-wins is not
+    /// an authority model).
+    pub fn set_device_schema_selection_fenced(
+        &self,
+        selection: &DeviceSchemaSelection,
+        expected_selection_revision: i64,
+        actor: &str,
+        action: &str,
+    ) -> Result<DeviceSchemaSelection> {
+        self.upsert_device_schema_selection(
+            selection,
+            Some(expected_selection_revision),
+            actor,
+            action,
+        )
+    }
+
+    fn upsert_device_schema_selection(
+        &self,
+        selection: &DeviceSchemaSelection,
+        expected_revision: Option<i64>,
+        actor: &str,
+        action: &str,
+    ) -> Result<DeviceSchemaSelection> {
         let now = now_ns();
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
@@ -2202,6 +2234,12 @@ impl SqliteStore {
                 None => None,
             }
         };
+        if let Some(expected) = expected_revision {
+            let current = existing.map(|(rev, _)| rev).unwrap_or(0);
+            if current != expected {
+                return Err(SelectionRevisionConflict { expected, current }.into());
+            }
+        }
         let (revision, created_at) = match existing {
             Some((rev, created)) => {
                 // Same schema + same provenance is idempotent; anything
@@ -2290,15 +2328,56 @@ impl SqliteStore {
         actor: &str,
         action: &str,
     ) -> Result<bool> {
+        self.clear_device_schema_selection_inner(device_key, None, actor, action)
+    }
+
+    /// Fenced variant of [`Self::clear_device_schema_selection`]:
+    /// `expected_selection_revision` must equal the stored revision (0
+    /// when no row exists) inside the delete transaction — a stale
+    /// clear cannot race a newer selection into an inconsistent state.
+    pub fn clear_device_schema_selection_fenced(
+        &self,
+        device_key: &str,
+        expected_selection_revision: i64,
+        actor: &str,
+        action: &str,
+    ) -> Result<bool> {
+        self.clear_device_schema_selection_inner(
+            device_key,
+            Some(expected_selection_revision),
+            actor,
+            action,
+        )
+    }
+
+    fn clear_device_schema_selection_inner(
+        &self,
+        device_key: &str,
+        expected_revision: Option<i64>,
+        actor: &str,
+        action: &str,
+    ) -> Result<bool> {
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
         let existing = tx
             .query_row(
-                "SELECT device_address, schema_id FROM device_schema_selections WHERE device_key = ?1",
+                "SELECT device_address, schema_id, selection_revision FROM device_schema_selections WHERE device_key = ?1",
                 [device_key],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                },
             )
             .optional()?;
+        if let Some(expected) = expected_revision {
+            let current = existing.as_ref().map(|(_, _, rev)| *rev).unwrap_or(0);
+            if current != expected {
+                return Err(SelectionRevisionConflict { expected, current }.into());
+            }
+        }
         let deleted = tx.execute(
             "DELETE FROM device_schema_selections WHERE device_key = ?1",
             [device_key],
@@ -2313,7 +2392,7 @@ impl SqliteStore {
                 action,
                 existing
                     .as_ref()
-                    .map(|(a, s)| format!("{a}@{s}"))
+                    .map(|(a, s, _)| format!("{a}@{s}"))
                     .as_deref(),
                 None,
             )?;
@@ -3457,6 +3536,28 @@ fn device_schema_selection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Devi
         updated_at_ns: row.get(8)?,
     })
 }
+
+/// Optimistic-concurrency precondition failure for schema selection:
+/// the caller's `expected_selection_revision` did not match the stored
+/// `selection_revision` (0 when no selection exists) at transaction
+/// time. Callers must surface this as a conflict, never retry silently.
+#[derive(Clone, Debug)]
+pub struct SelectionRevisionConflict {
+    pub expected: i64,
+    pub current: i64,
+}
+
+impl std::fmt::Display for SelectionRevisionConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "schema selection revision conflict: expected {}, current {}",
+            self.expected, self.current
+        )
+    }
+}
+
+impl std::error::Error for SelectionRevisionConflict {}
 
 /// One persisted M6C-1 applicability snapshot row. JSON payloads are
 /// stored as TEXT; the typed decoding lives in `yang_applicability`.
