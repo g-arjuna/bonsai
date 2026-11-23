@@ -159,10 +159,19 @@ silent where detectable):
   there; reported-but-uncompiled deviations remain
   `deviation_semantics_unsupported` and fail closed.
 - `when`/`must` expressions are captured as strings, not evaluated.
-- Feature implication (`feature a { if-feature b; }`) is recorded on
-  `CompiledFeature.if_features` but not transitively evaluated by
-  `filter_by_features`; cross-module feature references are canonicalized
-  to `declared_prefix:local` form.
+- Feature implication (`feature a { if-feature b; }`) IS evaluated
+  device-side in applicability (M6G): `if-feature` expressions use
+  three-valued logic — a device-reported feature is effectively enabled
+  only when every dependency is provably satisfied; unproven
+  dependencies cap applicability at `unknown`, never positive.
+  Circular dependency graphs (direct, multi-node, cross-module) are
+  invalid per RFC 7950 §7.20.1 and are diagnosed at compile time,
+  marking the module `partial` — they can never authorize paths.
+  Feature atoms resolve against ALL modules carrying the lexical
+  prefix; ambiguous or disagreeing resolution is `unknown`.
+  `filter_by_features` (compile-time pruning) still does not expand
+  implications transitively; cross-module feature references are
+  canonicalized to `declared_prefix:local` form.
 - Import `revision` pins are diagnosed when they differ from the
   selected revision. Per-revision module selection IS implemented
   (M6F-F): `CompileOptions.module_revisions` pins a module name to an
@@ -282,6 +291,23 @@ which evidence, and with which uncertainty?"
   module-set mapping is selected (default `ietf-datastores:running`
   when unambiguous) and config/state classification is checked against
   it. Multiple datastore schemas are never silently merged.
+  Per RFC 8342 §5 the axes are `running` = configuration only,
+  `operational` = config+state superset, `candidate`/`startup`/
+  `intended` = configuration only; an explicit `requested_datastore`
+  is evaluated strictly, while default resolution unions coverage
+  across all declared datastores. Unrecognized datastore identities
+  (e.g. XRd's misspelled `ietf-datastores:candiate`) yield `unknown`
+  axes — module membership may verify but config/state applicability
+  stays unproven (`datastore_semantics_unverified`), never positive.
+  Consequence: schema-bound acquisition of config-false state paths
+  requires the device to declare a state-bearing datastore; devices
+  advertising only `running` get `not_applicable` on state paths.
+- RFC 8525 revision conflicts are scoped to each schema's union of
+  referenced module-sets — different datastores may legitimately pin
+  different revisions; conflicts within one effective schema are
+  still rejected. `import-only-module` entries never conflict (RFC
+  8525 permits multiple import-only revisions of one module name);
+  implemented-module identity is (name, revision, namespace).
 - Device identity comes from the registry binding (canonical address /
   external id / collector), never hostname or transport IP alone;
   ambiguous identity yields `conflicted` with `identity_ambiguity`.

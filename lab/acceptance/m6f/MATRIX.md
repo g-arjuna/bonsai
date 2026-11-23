@@ -189,6 +189,19 @@ peer-down investigations); reusable pinned topology
 and BMP reconnect (`docs/merger/evidence/2026-11-22-m6f-frr/`);
 BGP-LS UNSUPPORTED on the 10.6.2 image build (no BGP-LS AFI/SAFI).
 
+> **M6G note (2026-11-24):** M6G corrected deterministic YANG
+> semantics — RFC 7950 deviation handling, RFC 8342 datastore axes,
+> RFC 8525 YANG Library scoping, feature-dependency evaluation and
+> schema-selection fencing — validated by unit/integration suites
+> and canonical gates only. No live NOS was rerun for M6G, so every
+> status below remains M6F-F captured evidence; M6G-tree L4 is
+> NOT_EXECUTED. One semantic consequence to note for future live
+> runs: schema-bound acquisition of `config false` state paths now
+> requires the device to declare a state-bearing datastore
+> (`operational`); devices advertising only `running` (e.g. XRd)
+> yield `datastore_semantics_unverified`/`not_applicable` on state
+> paths rather than positive applicability.
+
 Update this matrix only from captured evidence in
 `docs/merger/evidence/*-m6f-*/`. Mock-gNMI suites and inferred
 compatibility do not count.
