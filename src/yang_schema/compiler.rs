@@ -59,6 +59,15 @@ pub struct CompiledModule {
     pub resolution: String, // "complete" | "partial"
     pub features: Vec<CompiledFeature>,
     pub node_count: usize,
+    /// Names of deviation modules whose `deviate` statements were
+    /// compiled and fully applied to THIS module's effective schema.
+    /// Applicability treats a device-reported deviation as covered only
+    /// when its module name appears here — a reported deviation that was
+    /// never compiled/applied remains `deviation_semantics_unsupported`.
+    /// Skipped in serialization when empty so pre-existing bundles keep
+    /// byte-identical semantic identity (and schema_id stability).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub deviation_modules: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -131,6 +140,14 @@ pub struct CompiledCatalogue {
     /// identical closures deduplicate to one bundle.
     #[serde(default)]
     pub module_selection: BTreeMap<String, String>,
+    /// Operator-approved module-name scope this bundle was compiled
+    /// under (M6F-F PR3). Provenance only — excluded from `schema_id`
+    /// for the same reason as `module_selection`: two requests with
+    /// different scopes/pins that yield identical effective content
+    /// share one bundle, and the stored provenance records the request
+    /// that created it, not every deduplicated request.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub module_scope: BTreeSet<String>,
 }
 
 fn unknown_status() -> String {
@@ -237,6 +254,16 @@ pub struct CompileOptions {
     /// absent — never silently substituted with a different revision.
     /// Unpinned names keep the default newest-revision policy.
     pub module_revisions: BTreeMap<String, String>,
+    /// Explicit module-name scope (M6F-F PR3): when non-empty, ONLY the
+    /// named modules are compile candidates — every other library module
+    /// is excluded before revision selection. This is how an operator
+    /// compiles a device-scoped schema closure (e.g. the exact modules a
+    /// NOS release implements) out of a shared multi-version library
+    /// without unrelated modules leaking diagnostics into the bundle.
+    /// Scoped-out modules that a kept module imports still fail closed
+    /// as unresolved imports — the scope must name the full closure.
+    /// Empty = unrestricted (default, backward compatible).
+    pub module_scope: BTreeSet<String>,
 }
 
 impl Default for CompileOptions {
@@ -244,6 +271,7 @@ impl Default for CompileOptions {
         Self {
             trusted_only: true,
             module_revisions: BTreeMap::new(),
+            module_scope: BTreeSet::new(),
         }
     }
 }
@@ -278,6 +306,10 @@ fn compile_inner(
     let mut kept: Vec<Option<ModuleInput>> = Vec::new();
     for (idx, input) in inputs.into_iter().enumerate() {
         if options.trusted_only && input.trust != "trusted" {
+            kept.push(None);
+            continue;
+        }
+        if !options.module_scope.is_empty() && !options.module_scope.contains(&input.module.name) {
             kept.push(None);
             continue;
         }
@@ -556,11 +588,7 @@ fn compile_inner(
                         .unwrap_or_default(),
                     status: d.status.clone().unwrap_or_default(),
                     module: name.clone(),
-                    deviates: d
-                        .deviates
-                        .iter()
-                        .map(|x| (x.kind.clone(), x.has_block))
-                        .collect(),
+                    deviates: d.deviates.clone(),
                 });
                 collect_nested_deviations(d, name.clone(), &mut deviations);
             }
@@ -599,9 +627,20 @@ fn compile_inner(
 
     // Apply deviations (target resolution failures are diagnostics, never
     // silent — a deviation that cannot be placed must not let the catalogue
-    // pretend full knowledge).
+    // pretend full knowledge). `applied_deviations` records, per target
+    // module, which deviation modules were compiled AND fully applied —
+    // applicability uses it to distinguish covered deviations (semantics
+    // evaluated) from reported-but-unknown ones (fail closed).
+    let mut applied_deviations: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for dw in &deviations {
-        apply_deviation(&mut roots, &ctxs, dw, &module_prefix, &mut diagnostics);
+        if let Some(target_module) =
+            apply_deviation(&mut roots, &ctxs, dw, &module_prefix, &mut diagnostics)
+        {
+            applied_deviations
+                .entry(target_module)
+                .or_default()
+                .insert(dw.module.clone());
+        }
     }
 
     // Feature-gate evaluation helper data is embedded per node; build index.
@@ -657,6 +696,7 @@ fn compile_inner(
             resolution: if partial { "partial" } else { "complete" }.to_string(),
             features,
             node_count: count,
+            deviation_modules: applied_deviations.get(name).cloned().unwrap_or_default(),
         });
     }
     modules_out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -705,6 +745,7 @@ fn compile_inner(
         // later request that deduplicated here; per-request audit lives
         // in the selection/compile call records, not the bundle.
         module_selection: options.module_revisions.clone(),
+        module_scope: options.module_scope.clone(),
     }
 }
 
@@ -1386,10 +1427,11 @@ struct DeviationWork {
     target: String,
     note: String,
     status: String,
-    /// Module whose lexical scope resolves the target's prefixes.
+    /// Module whose lexical scope resolves the target's prefixes —
+    /// for module-level deviations this is the deviation module itself.
     module: String,
-    /// (kind, has_block) for each `deviate` statement.
-    deviates: Vec<(String, bool)>,
+    /// `deviate` statements in this deviation body.
+    deviates: Vec<super::parser::Deviate>,
 }
 
 fn collect_nested_deviations(
@@ -1407,11 +1449,7 @@ fn collect_nested_deviations(
                 .unwrap_or_default(),
             status: child.status.clone().unwrap_or_default(),
             module: module.clone(),
-            deviates: child
-                .deviates
-                .iter()
-                .map(|x| (x.kind.clone(), x.has_block))
-                .collect(),
+            deviates: child.deviates.clone(),
         });
         collect_nested_deviations(child, module.clone(), out);
     }
@@ -1724,7 +1762,7 @@ fn apply_deviation(
     dw: &DeviationWork,
     module_prefix: &BTreeMap<String, String>,
     diagnostics: &mut Vec<String>,
-) {
+) -> Option<String> {
     let (absolute, segs) = parse_target(&dw.target);
     let _ = module_prefix;
     let Some(declaring) = ctxs.get(&dw.module) else {
@@ -1732,7 +1770,7 @@ fn apply_deviation(
             "deviation target '{}' in module '{}': declaring module not loaded",
             dw.target, dw.module
         ));
-        return;
+        return None;
     };
     let located = locate_node(roots, ctxs, declaring, absolute, &segs);
     let (module_name, path) = match located {
@@ -1742,39 +1780,79 @@ fn apply_deviation(
                 "deviation target '{}' in module '{}': {}",
                 dw.target, dw.module, e
             ));
-            return;
+            return None;
         }
     };
-    // `deviate` kinds drive semantics:
-    // - not-supported: the node is declared but NOT part of the effective
-    //   schema — prune it (and its subtree) from the path index.
-    // - add/delete/replace: real YANG restructuring we do not implement;
-    //   the subtree is marked deviated AND an explicit diagnostic keeps the
-    //   catalogue partial so it cannot pose as authoritative.
-    let has_not_supported = dw.deviates.iter().any(|(k, _)| k == "not-supported");
-    let other_kinds: Vec<&str> = dw
+    // Returns the target module name when every `deviate` statement was
+    // applied with supported semantics; `None` when the deviation could
+    // not be fully honored (unresolved target or unsupported kinds —
+    // those already produced diagnostics, keeping the catalogue partial).
+    let fully_applied = apply_deviation_kinds(roots, dw, module_name.as_str(), &path, diagnostics);
+    if fully_applied {
+        Some(module_name)
+    } else {
+        None
+    }
+}
+
+/// `deviate replace` bodies that only annotate the node — they cannot
+/// change path identity (existence, kind, keys, type, config flag), so
+/// applying them as deviation notes is honest. Anything else (type,
+/// config, mandatory, leaf/list/container restructuring, must/when,
+/// units, ...) is real YANG restructuring we do not implement.
+const SAFE_DEVIATE_REPLACE_KINDS: &[&str] = &["default", "status", "description", "reference"];
+
+/// Apply one located deviation's `deviate` statements. Returns true when
+/// all of them were honored; false when at least one required semantics
+/// Bonsai does not implement (diagnostic emitted — catalogue stays
+/// partial and can never pose as authoritative).
+fn apply_deviation_kinds(
+    roots: &mut BTreeMap<String, Vec<ResolvedNode>>,
+    dw: &DeviationWork,
+    module_name: &str,
+    path: &[usize],
+    diagnostics: &mut Vec<String>,
+) -> bool {
+    let mut fully_applied = true;
+    // `not-supported` and `delete` share the same effective-schema
+    // result for the path index: the node MUST NOT be part of the
+    // compiled data tree, so the subtree is pruned. `replace` is only
+    // honored when its body is annotation-only; `add` and structural
+    // replacements are diagnosed, never silently approximated.
+    let prune = dw
         .deviates
         .iter()
-        .map(|(k, _)| k.as_str())
-        .filter(|k| *k != "not-supported")
-        .collect();
-    for kind in &other_kinds {
-        diagnostics.push(format!(
-            "deviation '{}' in module '{}' uses 'deviate {}' — only marking is applied, not full deviation semantics",
-            dw.target, dw.module, kind
-        ));
+        .any(|d| d.kind == "not-supported" || d.kind == "delete");
+    for d in &dw.deviates {
+        match d.kind.as_str() {
+            "not-supported" | "delete" => {}
+            "replace"
+                if d.has_block
+                    && !d.body_kinds.is_empty()
+                    && d.body_kinds
+                        .iter()
+                        .all(|k| SAFE_DEVIATE_REPLACE_KINDS.contains(&k.as_str())) => {}
+            other => {
+                fully_applied = false;
+                diagnostics.push(format!(
+                    "deviation '{}' in module '{}' uses 'deviate {}' — only not-supported/delete pruning and annotation-only replace are applied, not full deviation semantics",
+                    dw.target, dw.module, other
+                ));
+            }
+        }
     }
-    let Some(nodes) = roots.get_mut(&module_name) else {
-        return;
+    let Some(nodes) = roots.get_mut(module_name) else {
+        return false;
     };
-    let Some(node) = node_at_mut(nodes, &path) else {
-        return;
+    let Some(node) = node_at_mut(nodes, path) else {
+        return false;
     };
-    if has_not_supported {
+    if prune {
         mark_pruned(node, dw);
     } else {
         mark_deviated(node, dw);
     }
+    fully_applied
 }
 
 fn mark_pruned(node: &mut ResolvedNode, dw: &DeviationWork) {

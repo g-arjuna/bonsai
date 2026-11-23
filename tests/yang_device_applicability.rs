@@ -2067,3 +2067,75 @@ fn m6ff_snapshot_freshness_binds_to_effective_schema() {
     assert_eq!(view.freshness, yang_applicability::SnapshotFreshness::Stale);
     assert!(view.catalogue_state.is_some());
 }
+
+// ── M6F-F PR3: covered vs uncovered device-reported deviations ─────────
+
+const MODULE_DEV: &str = r#"
+module test-app-dev {
+  yang-version 1.1;
+  namespace "urn:example:test-app-dev";
+  prefix tad;
+  revision 2024-02-01;
+  import test-app { prefix ta; }
+  deviation "/ta:system/hostname" {
+    deviate delete {
+      default "";
+    }
+  }
+}
+"#;
+
+#[test]
+fn t4b_covered_deviation_does_not_block_applicability() {
+    // The device reports a deviation module that IS compiled into the
+    // catalogue and fully applied — deviation semantics are evaluated,
+    // so paths are not capped at unknown. An uncompiled reported
+    // deviation still fails closed.
+    let catalogue = yang_schema::compile_parsed(
+        vec![
+            module_input("test-app", MODULE_APP),
+            module_input("test-baselib", MODULE_BASELIB),
+            module_input("test-app-dev", MODULE_DEV),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(
+        catalogue.status, "complete",
+        "diags={:?}",
+        catalogue.diagnostics
+    );
+    let device = binding();
+
+    // Covered: reported deviation == applied deviation module.
+    let lib = nmda_outcome(&["base-f", "fancy-f"], &["test-app-dev"], None);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    let app = module_status(&r, "test-app").unwrap();
+    assert!(
+        !app.reasons
+            .contains(&ReasonCode::DeviationSemanticsUnsupported),
+        "covered deviation must not be flagged unsupported: {:?}",
+        app.reasons
+    );
+    assert_eq!(
+        path_status(&r, "oper-status").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+    // The deviated node itself is pruned from the effective schema.
+    assert!(
+        r.paths
+            .iter()
+            .filter(|p| p.module == "test-app")
+            .all(|p| !p.path.contains("hostname")),
+        "deviate delete must remove the node from compiled paths"
+    );
+
+    // Uncovered: a DIFFERENT reported deviation was never compiled.
+    let lib = nmda_outcome(&["base-f", "fancy-f"], &["test-app-dev", "other-dev"], None);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    let app = module_status(&r, "test-app").unwrap();
+    assert!(
+        app.reasons
+            .contains(&ReasonCode::DeviationSemanticsUnsupported),
+        "uncovered reported deviation must fail closed"
+    );
+}

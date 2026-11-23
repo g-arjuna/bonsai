@@ -109,12 +109,27 @@ paths with zero diagnostics, schema `ysc-d7254b6e840b0f0041c4b2458bb509a1`):
 Explicitly unsupported or approximate (diagnosed or documented, never
 silent where detectable):
 
-- `deviate add/delete/replace` semantics — only `deviate
-  not-supported` is interpreted (the target subtree is pruned from the
-  effective schema). Other `deviate` kinds mark the subtree `deviated`
-  with notes/status AND emit an explicit diagnostic that keeps the
+- `deviate add` and structural `deviate replace` (type/config/keys/
+  mandatory/must/when/units changes) — real YANG restructuring Bonsai
+  does not implement. They mark the subtree `deviated` with
+  notes/status AND emit an explicit diagnostic that keeps the
   catalogue `partial` — affected definitions must not be treated as
   authoritative.
+- `deviate delete` and `deviate not-supported` ARE interpreted: the
+  target subtree is pruned from the effective schema (path index,
+  feature gates and all). Both block (`deviate delete { ... }`, no
+  trailing `;` — the form real-world vendor deviation modules such as
+  `cisco-xr-openconfig-interfaces-deviations` use) and semicolon forms
+  parse correctly.
+- `deviate replace` is applied only when its block is annotation-only
+  (`default`, `status`, `description`, `reference`) — statements that
+  cannot change path identity. Anything else is diagnosed as above.
+- Applied deviation coverage is recorded per target module in
+  `CompiledModule.deviation_modules` (deviation-module names whose
+  `deviate` statements were fully honored). Applicability treats a
+  device-reported deviation as covered ONLY when its module appears
+  there; reported-but-uncompiled deviations remain
+  `deviation_semantics_unsupported` and fail closed.
 - `when`/`must` expressions are captured as strings, not evaluated.
 - Feature implication (`feature a { if-feature b; }`) is recorded on
   `CompiledFeature.if_features` but not transitively evaluated by
@@ -215,11 +230,14 @@ which evidence, and with which uncertainty?"
   `applicable` (all true), `not_applicable` (a required feature is
   provably disabled), or `unknown`/`feature_state_unknown` — unknown
   feature state is never interpreted as enabled.
-- `deviate not-supported` semantics supported by the M6B compiler are
-  honoured (pruned nodes never appear); device-advertised deviation
-  modules whose subtree semantics the compiler cannot evaluate cap
-  affected paths at `unknown` with
-  `deviation_semantics_unsupported`.
+- `deviate not-supported`/`delete` pruning and annotation-only
+  `deviate replace` are honoured (pruned nodes never appear); a
+  device-advertised deviation module caps affected paths at `unknown`
+  with `deviation_semantics_unsupported` ONLY when that deviation
+  module was not compiled into and fully applied against the target
+  module (`CompiledModule.deviation_modules`). Compiled-and-applied
+  deviations do not block applicability — their semantics were already
+  evaluated at compile time.
 - Import-only modules supply referenced definitions but classify as
   `not_applicable` for data-tree applicability.
 - Datastore linkage is explicit: the evaluated datastore's schema →

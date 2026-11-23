@@ -69,6 +69,12 @@ class Api:
     def post(self, path, body=None):
         return self._req("POST", path, body if body is not None else {})
 
+    def put(self, path, body=None):
+        return self._req("PUT", path, body if body is not None else {})
+
+    def delete(self, path):
+        return self._req("DELETE", path)
+
     def stream_events(self, duration):
         """Yield `/api/events` SSE payloads for up to `duration` seconds.
 
@@ -275,7 +281,27 @@ def cmd_wait_collector(api, args, results):
 
 def cmd_compile(api, args, results):
     """Compile + activate the YANG catalogue through the authenticated
-    admin API — the same production path an operator uses."""
+    admin API — the same production path an operator uses.
+
+    M6F-F: --compile-body-file supplies an optional JSON request body
+    ({module_revisions, module_scope}) for device-scoped/pinned
+    compilation. A scoped compile is NEVER implicitly activated — it is
+    per-device authority selected via the schema-selection API, not the
+    global active catalogue."""
+    if args.compile_body_file:
+        body_req = json.load(open(args.compile_body_file))
+        code, body = api.post("/api/yang/compile?activate=false",
+                              body_req)
+        ok = code == 200
+        record(results, "catalogue_compile_scoped", ok,
+               f"http={code} schema={body.get('schema_id')} "
+               f"status={body.get('status')} modules={body.get('module_count')} "
+               f"paths={body.get('path_count')} activated={body.get('activated')}")
+        dump(args.evidence_dir, "08-catalogue-compile-scoped.json",
+             redact(body))
+        if ok:
+            args._compiled_schema_id = body.get("schema_id")
+        return ok
     code, body = api.post("/api/yang/compile?activate=true")
     ok = code == 200
     record(results, "catalogue_compile", ok,
@@ -296,6 +322,37 @@ def cmd_compile(api, args, results):
         record(results, "catalogue_activate_explicit", ok,
                f"http={code} schema={body.get('schema_id')}")
         dump(args.evidence_dir, "09-catalogue-activate.json", redact(act))
+    return ok
+
+
+def cmd_schema_selection(api, args, results):
+    """M6F-F: select (or clear) this device's compiled-schema authority
+    through the admin schema-selection API. 'auto' uses the schema_id
+    produced by the scoped compile stage; 'clear' restores the global
+    default catalogue for the device."""
+    addr = args.device_addr
+    sel = args.schema_selection
+    if sel == "auto":
+        sel = getattr(args, "_compiled_schema_id", None)
+        if not sel:
+            record(results, "schema_selection", False,
+                   "schema_selection=auto but no compiled schema_id")
+            return False
+    if sel == "clear":
+        code, body = api.delete(f"/api/devices/{addr}/schema-selection")
+        ok = code == 200
+        record(results, "schema_selection_clear", ok, f"http={code}")
+        dump(args.evidence_dir, "09b-schema-selection-clear.json",
+             redact(body))
+        return ok
+    code, body = api.put(f"/api/devices/{addr}/schema-selection",
+                         {"schema_id": sel})
+    ok = code == 200
+    eff = (body.get("effective_catalogue") or body.get("selection") or {})
+    record(results, "schema_selection", ok,
+           f"http={code} selected={sel} "
+           f"effective={(body.get('effective_schema_id') or eff)}")
+    dump(args.evidence_dir, "09b-schema-selection.json", redact(body))
     return ok
 
 
@@ -962,6 +1019,14 @@ def main():
     ap.add_argument("--datastore", default="ietf")
     ap.add_argument("--path-query", default="counter")
     ap.add_argument("--plan-file", default="")
+    ap.add_argument("--compile-body-file", default="",
+                    help="optional JSON body for POST /api/yang/compile "
+                         "({module_revisions, module_scope}); scoped "
+                         "compiles are never auto-activated")
+    ap.add_argument("--schema-selection", default="",
+                    help="M6F-F: schema_id to select for this device via "
+                         "PUT /api/devices/{addr}/schema-selection, 'auto' "
+                         "(use the scoped compile's schema_id) or 'clear'")
     ap.add_argument("--revoke-reason", default="m6f_acceptance_complete")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--poll-secs", type=int, default=5)
@@ -1003,6 +1068,8 @@ def main():
                     "discovery", "applicability", "preview", "activate",
                     "telemetry", "revoke", "verify_withdrawal",
                     "provenance"])
+    if args.schema_selection and args.stage == "all":
+        stages.insert(stages.index("compile") + 1, "schema_selection")
 
     token = None
     if "login" in stages:
@@ -1016,6 +1083,7 @@ def main():
         "provision": lambda: cmd_provision(api, args, results),
         "wait_collector": lambda: cmd_wait_collector(api, args, results),
         "compile": lambda: cmd_compile(api, args, results),
+        "schema_selection": lambda: cmd_schema_selection(api, args, results),
         "discovery": lambda: cmd_discovery(api, args, results),
         "applicability": lambda: cmd_applicability(api, args, results),
         "preview": lambda: cmd_preview(api, args, results),

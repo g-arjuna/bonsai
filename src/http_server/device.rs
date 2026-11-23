@@ -971,6 +971,20 @@ fn default_true_http() -> bool {
     true
 }
 
+/// Optional JSON body for `POST /api/yang/compile` (M6F-F PR3): an
+/// operator-approved module-revision pin set and/or an explicit module
+/// scope for device-specific schema closures compiled out of a shared
+/// multi-version library. Absent body = unrestricted compile (the
+/// historical behavior). Pins/scope are recorded in the request audit;
+/// the resulting bundle is content-addressed exactly like any other.
+#[derive(Deserialize)]
+pub(super) struct YangCompileBody {
+    #[serde(default)]
+    module_revisions: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default)]
+    module_scope: Option<Vec<String>>,
+}
+
 #[derive(Serialize)]
 pub(super) struct YangCompileResponse {
     schema_id: String,
@@ -984,10 +998,21 @@ pub(super) struct YangCompileResponse {
 pub(super) async fn yang_compile_handler(
     State(state): State<AppState>,
     Query(params): Query<YangCompileParams>,
+    body: Option<Json<YangCompileBody>>,
 ) -> Result<Json<YangCompileResponse>, (StatusCode, String)> {
     let (lib, cache, key) = yang_roots(&state);
     let all_trust = params.all_trust;
     let activate = params.activate;
+    let module_revisions = body
+        .as_ref()
+        .and_then(|b| b.module_revisions.clone())
+        .unwrap_or_default();
+    let module_scope: std::collections::BTreeSet<String> = body
+        .as_ref()
+        .and_then(|b| b.module_scope.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     // M6F-F: bundles referenced by device selections or active approvals
     // are retention-protected — a compile must never evict them.
     // Unavailable reference state fails closed (retention skipped).
@@ -1007,7 +1032,8 @@ pub(super) async fn yang_compile_handler(
         let catalogue = crate::yang_schema::compile_library_with_selection(
             &library,
             !all_trust,
-            &std::collections::BTreeMap::new(),
+            &module_revisions,
+            &module_scope,
             references.as_ref(),
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
