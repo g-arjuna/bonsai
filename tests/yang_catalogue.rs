@@ -3002,3 +3002,98 @@ fn module_scope_restricts_compile_to_named_closure() {
         cat.diagnostics
     );
 }
+
+#[test]
+fn module_scope_skips_out_of_scope_load_diagnostics() {
+    // M6F-F: a device-scoped compile must not inherit parse/metadata
+    // diagnostics from library modules outside the scope — those records
+    // are never read or compiled. Regression coverage for scoped bundles
+    // staying `partial` (unselectable) whenever the shared library
+    // contains any unparseable unrelated module.
+    let dir = tempfile::tempdir().unwrap();
+    let library = YangLibrary::open(dir.path().join("lib"), dir.path().join("cache"), "K").unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("good.yang"),
+        "module scoped-good {\n  yang-version \"1\";\n  namespace \"urn:t:sg\";\n  prefix sg;\n  revision \"2024-01-01\";\n  container root { leaf a { type string; } }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("bad.yang"),
+        "module scoped-bad {\n  yang-version \"1\";\n  namespace \"urn:t:sb\";\n  prefix sb;\n  revision \"2024-01-01\";\n  container root { leaf b { type string; } }\n}\n",
+    )
+    .unwrap();
+    library
+        .import_directory(
+            &src,
+            &YangImportOptions {
+                source_kind: "test".into(),
+                source_ref: "t".into(),
+                vendor_scope: "v".into(),
+                trust: "trusted".into(),
+                license: String::new(),
+                platforms: vec![],
+                pinned_ref: String::new(),
+                source_id: String::new(),
+                filename_prefixes: vec![],
+            },
+            Path::new("config/path_profiles"),
+        )
+        .unwrap();
+    // Corrupt the scoped-bad blob so it fails parsing at load time.
+    let state = library.load_state().unwrap();
+    let rel = state
+        .modules
+        .iter()
+        .find(|m| m.module_name == "scoped-bad")
+        .unwrap()
+        .relative_path
+        .clone();
+    std::fs::write(dir.path().join("lib").join(rel), "module {{{{ not yang\n").unwrap();
+
+    // Unscoped compile still sees the diagnostic (fail closed).
+    let full = compile_library(&library, true).unwrap();
+    assert_ne!(full.status, "complete", "diags={:?}", full.diagnostics);
+    assert!(
+        full.diagnostics.iter().any(|d| d.contains("parse failed")),
+        "diags={:?}",
+        full.diagnostics
+    );
+
+    // Scoped compile excluding scoped-bad: complete, only scoped-good.
+    let scope: std::collections::BTreeSet<String> =
+        ["scoped-good"].iter().map(|s| s.to_string()).collect();
+    let cat = bonsai::yang_schema::compile_library_with_selection(
+        &library,
+        true,
+        &std::collections::BTreeMap::new(),
+        &scope,
+        None,
+    )
+    .unwrap();
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    let names: Vec<&str> = cat.modules.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, vec!["scoped-good"]);
+
+    // Scoped compile including scoped-bad: the in-scope parse failure is
+    // still diagnosed — scope narrows, never conceals.
+    let scope2: std::collections::BTreeSet<String> = ["scoped-good", "scoped-bad"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let cat2 = bonsai::yang_schema::compile_library_with_selection(
+        &library,
+        true,
+        &std::collections::BTreeMap::new(),
+        &scope2,
+        None,
+    )
+    .unwrap();
+    assert_ne!(cat2.status, "complete", "diags={:?}", cat2.diagnostics);
+    assert!(
+        cat2.diagnostics.iter().any(|d| d.contains("parse failed")),
+        "diags={:?}",
+        cat2.diagnostics
+    );
+}

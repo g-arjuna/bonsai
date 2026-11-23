@@ -319,6 +319,10 @@ action_deploy() {
         -e "BONSAI_ADMIN_PASS=${M6F_ADMIN_PASS}" \
         -e "$DEVICE_USER_ENV=${!DEVICE_USER_ENV}" \
         -e "$DEVICE_PASS_ENV=${!DEVICE_PASS_ENV}" \
+        ${M6F_SRL_USER:+-e "M6F_SRL_USER=$M6F_SRL_USER"} \
+        ${M6F_SRL_PASS:+-e "M6F_SRL_PASS=$M6F_SRL_PASS"} \
+        ${M6F_XRD_USER:+-e "M6F_XRD_USER=$M6F_XRD_USER"} \
+        ${M6F_XRD_PASS:+-e "M6F_XRD_PASS=$M6F_XRD_PASS"} \
         -w /app \
         --entrypoint /opt/bonsai \
         "$RUNTIME_IMAGE" \
@@ -432,6 +436,10 @@ action_drive() {
         --device-ca "$DEVICE_CA_CONTAINER"
     )
     [ -n "${M6F_PLAN_FILE:-}" ] && extra_args+=(--plan-file "$M6F_PLAN_FILE")
+    # M6F-F: optional scoped/pinned compile body and per-device schema
+    # selection (multi-version coexistence runs).
+    [ -n "${M6F_COMPILE_BODY_FILE:-}" ] && extra_args+=(--compile-body-file "$M6F_COMPILE_BODY_FILE")
+    [ -n "${M6F_SCHEMA_SELECTION:-}" ] && extra_args+=(--schema-selection "$M6F_SCHEMA_SELECTION")
     # L4 provenance inputs (A3): both containers run the same mounted
     # binary; image identity is the pinned runtime image.
     extra_args+=(

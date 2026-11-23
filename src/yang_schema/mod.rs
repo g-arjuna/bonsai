@@ -75,6 +75,21 @@ pub fn load_module_inputs(
     library: &YangLibrary,
     include_untrusted: bool,
 ) -> Result<(Vec<ModuleInput>, Vec<String>)> {
+    load_module_inputs_scoped(library, include_untrusted, None)
+}
+
+/// `load_module_inputs` variant bounded by an explicit module-name scope
+/// (M6F-F). When `module_scope` is non-empty, records outside the scope
+/// are skipped BEFORE their content is read or parsed — a device-scoped
+/// closure must not inherit parse/metadata diagnostics from unrelated
+/// library modules it never compiles. Scoped-out modules that a kept
+/// module imports still surface as unresolved-import diagnostics during
+/// compilation (fail closed).
+pub fn load_module_inputs_scoped(
+    library: &YangLibrary,
+    include_untrusted: bool,
+    module_scope: Option<&BTreeSet<String>>,
+) -> Result<(Vec<ModuleInput>, Vec<String>)> {
     // Active-module selection resolves same name+revision content
     // conflicts deterministically; all stored content remains available
     // for rollback via bundle install.
@@ -83,6 +98,12 @@ pub fn load_module_inputs(
     let mut diagnostics = Vec::new();
     for record in records {
         if !include_untrusted && record.trust != "trusted" {
+            continue;
+        }
+        if let Some(scope) = module_scope
+            && !scope.is_empty()
+            && !scope.contains(&record.module_name)
+        {
             continue;
         }
         let path = library.root().join(&record.relative_path);
@@ -188,7 +209,8 @@ pub fn compile_library_with_selection(
     module_scope: &BTreeSet<String>,
     references: Option<&BTreeSet<String>>,
 ) -> Result<CompiledCatalogue> {
-    let (inputs, pre_diagnostics) = load_module_inputs(library, !trusted_only)?;
+    let scoped = (!module_scope.is_empty()).then_some(module_scope);
+    let (inputs, pre_diagnostics) = load_module_inputs_scoped(library, !trusted_only, scoped)?;
     let options = CompileOptions {
         trusted_only,
         module_revisions: module_revisions.clone(),
