@@ -107,6 +107,7 @@ pub enum ReasonCode {
     DatastoreSchemaMissing,
     DatastoreSchemaAmbiguous,
     DatastoreSchemaUnverified,
+    DatastoreSemanticsUnverified,
     DatastoreMismatch,
     FeatureDisabled,
     FeatureStateUnknown,
@@ -148,6 +149,7 @@ impl ReasonCode {
             Self::DatastoreSchemaMissing => "datastore_schema_missing",
             Self::DatastoreSchemaAmbiguous => "datastore_schema_ambiguous",
             Self::DatastoreSchemaUnverified => "datastore_schema_unverified",
+            Self::DatastoreSemanticsUnverified => "datastore_semantics_unverified",
             Self::DatastoreMismatch => "datastore_mismatch",
             Self::FeatureDisabled => "feature_disabled",
             Self::FeatureStateUnknown => "feature_state_unknown",
@@ -1266,20 +1268,30 @@ fn evaluate_path(
     module_reasons: &BTreeSet<ReasonCode>,
     feature_states: &BTreeMap<String, ModuleFeatureState>,
     effective: &EffectiveSet,
-    ds_config: bool,
-    ds_state: bool,
+    ds_config: DatastoreAxis,
+    ds_state: DatastoreAxis,
 ) -> PathResult {
     let mut status = module_status;
     let mut reasons: BTreeSet<ReasonCode> = module_reasons.clone();
 
     // Datastore applicability: config data needs a config-bearing
-    // datastore; state data needs an operational-bearing one.
-    if entry.config && !ds_config {
-        reasons.insert(ReasonCode::DatastoreMismatch);
-        status = not_applicable_if_positive(status);
-    } else if !entry.config && !ds_state {
-        reasons.insert(ReasonCode::DatastoreMismatch);
-        status = not_applicable_if_positive(status);
+    // datastore; state data needs an operational-bearing one. A proven
+    // mismatch is `not_applicable`; an UNRECOGNIZED datastore identity
+    // leaves the axis unproven — positive applicability is capped at
+    // `unknown`, never upgraded and never fabricated into a negative.
+    let needed = if entry.config { ds_config } else { ds_state };
+    match needed {
+        DatastoreAxis::No => {
+            reasons.insert(ReasonCode::DatastoreMismatch);
+            status = not_applicable_if_positive(status);
+        }
+        DatastoreAxis::Unknown => {
+            reasons.insert(ReasonCode::DatastoreSemanticsUnverified);
+            if status == ApplicabilityStatus::Applicable {
+                status = ApplicabilityStatus::Unknown;
+            }
+        }
+        DatastoreAxis::Yes => {}
     }
 
     // Feature gates: evaluate each required expression with tri-state
@@ -1425,20 +1437,50 @@ fn feature_atom_truth(atom: &str, states: &BTreeMap<String, ModuleFeatureState>)
 
 // ── datastore capabilities ─────────────────────────────────────────────
 
+/// Tri-state answer to "does this datastore carry config/state data?".
+/// `Unknown` means the datastore identity is not one Bonsai can map to
+/// RFC 8342 semantics — module-schema membership may still be verified,
+/// but config/state applicability must stay unproven (never silently
+/// treated as supported).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DatastoreAxis {
+    /// Provably does not carry this data class.
+    No,
+    /// Provably carries this data class.
+    Yes,
+    /// Datastore semantics unrecognized — neither proven nor disproven.
+    Unknown,
+}
+
 /// (supports_config, supports_state) for a datastore identity.
-fn datastore_capabilities(name: Option<&str>, diagnostics: &mut Vec<String>) -> (bool, bool) {
+///
+/// RFC 8342/NMDA semantics: `running` carries both configuration and
+/// operational state; `operational` carries state only;
+/// `candidate`/`startup`/`intended` carry configuration only. An
+/// UNRECOGNIZED datastore identity (including vendor misspellings such as
+/// XRd's `candiate`) gets `Unknown` on both axes — the datastore→schema
+/// link may still be verified, but assuming combined config+state scope
+/// would manufacture positive applicability the evidence does not
+/// support. `None` (no NMDA datastore resolved, e.g. legacy
+/// modules-state) keeps the historical permissive pair because
+/// `datastore_linked == false` already caps every path below
+/// `applicable` — the axes are moot there.
+fn datastore_capabilities(
+    name: Option<&str>,
+    diagnostics: &mut Vec<String>,
+) -> (DatastoreAxis, DatastoreAxis) {
     let Some(name) = name else {
-        return (true, true);
+        return (DatastoreAxis::Yes, DatastoreAxis::Yes);
     };
     match local_name(name) {
-        "running" => (true, true),
-        "operational" => (false, true),
-        "candidate" | "startup" | "intended" => (true, false),
+        "running" => (DatastoreAxis::Yes, DatastoreAxis::Yes),
+        "operational" => (DatastoreAxis::No, DatastoreAxis::Yes),
+        "candidate" | "startup" | "intended" => (DatastoreAxis::Yes, DatastoreAxis::No),
         other => {
             diagnostics.push(format!(
-                "unrecognized datastore identity '{other}' — assuming combined config+state scope"
+                "unrecognized datastore identity '{other}' — config/state applicability stays unverified"
             ));
-            (true, true)
+            (DatastoreAxis::Unknown, DatastoreAxis::Unknown)
         }
     }
 }
@@ -1454,7 +1496,6 @@ fn overall_status(
     reasons: &mut BTreeSet<ReasonCode>,
     diagnostics: &mut Vec<String>,
 ) -> ApplicabilityStatus {
-    let _ = diagnostics;
     if input.device.identity_ambiguous {
         reasons.insert(ReasonCode::IdentityAmbiguity);
         return ApplicabilityStatus::Conflicted;
@@ -1480,6 +1521,16 @@ fn overall_status(
         .any(|m| m.status == ApplicabilityStatus::Conflicted)
     {
         return ApplicabilityStatus::Conflicted;
+    }
+    // Unrecognized datastore semantics: module-schema membership may be
+    // fully verified while config/state applicability stays unproven —
+    // the overall result must not claim `applicable` on that basis.
+    if let Some(ds) = effective.datastore.as_deref() {
+        let (dc, dstate) = datastore_capabilities(Some(ds), diagnostics);
+        if matches!(dc, DatastoreAxis::Unknown) || matches!(dstate, DatastoreAxis::Unknown) {
+            reasons.insert(ReasonCode::DatastoreSemanticsUnverified);
+            return ApplicabilityStatus::Candidate;
+        }
     }
     // Authoritative complete resolution: verified catalogue + complete
     // NMDA library + established datastore link.

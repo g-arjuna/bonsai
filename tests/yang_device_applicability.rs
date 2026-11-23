@@ -2139,3 +2139,106 @@ fn t4b_covered_deviation_does_not_block_applicability() {
         "uncovered reported deviation must fail closed"
     );
 }
+
+// ── M6G: datastore semantics and multi-datastore libraries ─────────────────
+
+/// Evidence whose single datastore has an UNRECOGNIZED identity —
+/// module-schema membership is still verified, but config/state
+/// applicability must stay unproven.
+fn nmda_unknown_datastore(name: &str) -> YangLibraryOutcome {
+    let mut evidence = match nmda_outcome(&["base-f", "fancy-f"], &[], None) {
+        YangLibraryOutcome::Complete { evidence } => evidence,
+        _ => unreachable!(),
+    };
+    evidence.datastores = vec![YangLibraryDatastore {
+        name: name.to_string(),
+        schema: "s1".to_string(),
+    }];
+    YangLibraryOutcome::Complete { evidence }
+}
+
+#[test]
+fn m6g_unrecognized_datastore_never_grants_positive_applicability() {
+    let catalogue = compile_app();
+    let device = binding();
+
+    for ds_name in [
+        // XRd's real (misspelled) datastore advertisement.
+        "ietf-datastores:candiate",
+        // A fully vendor-specific datastore identity.
+        "acme:telemetry",
+    ] {
+        let lib = nmda_unknown_datastore(ds_name);
+        let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+        assert_eq!(
+            r.datastore.as_deref(),
+            Some(ds_name),
+            "datastore identity preserved verbatim"
+        );
+        // Module membership is still verified → module may be applicable,
+        // but NO path may claim applicability on unproven datastore
+        // semantics.
+        for p in &r.paths {
+            assert_ne!(
+                p.status,
+                ApplicabilityStatus::Applicable,
+                "path {} must not be applicable on unrecognized datastore {}",
+                p.path,
+                ds_name
+            );
+            assert!(
+                p.reasons
+                    .contains(&ReasonCode::DatastoreSemanticsUnverified),
+                "path {} missing datastore_semantics_unverified: {:?}",
+                p.path,
+                p.reasons
+            );
+        }
+        assert_ne!(
+            r.overall_status,
+            ApplicabilityStatus::Applicable,
+            "overall must not claim applicable on unrecognized datastore"
+        );
+    }
+}
+
+#[test]
+fn m6g_recognized_datastore_semantics_unchanged() {
+    let catalogue = compile_app();
+    let device = binding();
+
+    // running → config+state (RFC 8342 merged view).
+    let lib = nmda_outcome(&["base-f", "fancy-f"], &[], None);
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(r.overall_status, ApplicabilityStatus::Applicable);
+    assert_eq!(
+        path_status(&r, "hostname").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+
+    // operational-only device → state paths applicable, config paths
+    // provably mismatched (not merely unknown).
+    let mut ev = match nmda_outcome(&["base-f", "fancy-f"], &[], None) {
+        YangLibraryOutcome::Complete { evidence } => evidence,
+        _ => unreachable!(),
+    };
+    ev.datastores = vec![YangLibraryDatastore {
+        name: "ietf-datastores:operational".to_string(),
+        schema: "s1".to_string(),
+    }];
+    let lib = YangLibraryOutcome::Complete { evidence: ev };
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(
+        path_status(&r, "hostname").unwrap().status,
+        ApplicabilityStatus::Applicable,
+        "state leaf stays applicable on operational"
+    );
+    let domain = path_status(&r, "domain").unwrap();
+    assert_eq!(domain.status, ApplicabilityStatus::NotApplicable);
+    assert!(domain.reasons.contains(&ReasonCode::DatastoreMismatch));
+}
+
