@@ -16,6 +16,7 @@
 - Do not weaken assertions, hide failures, change goldens blindly or count skips as passes.
 - Run focused checks, then the task's required gate. Report unexecuted checks honestly.
 - No broad dependency updates, cosmetic rewrites or new infrastructure without task need.
+- **Operator-facing feature co-delivery (BN-030):** read [Operator Experience Strategy](docs/architecture/BONSAI_OPERATOR_EXPERIENCE_STRATEGY_2026-11-24.md). For every changed operator-facing capability, specify the existing/new primary and contextual UI surface, typed authorized API, scope/time/evidence/coverage, error/empty/partial/stale/unsupported/denied states, safe next action and relevant browser acceptance. Do not claim a backend-only implementation is operator-ready. Pure offline ABI/normalization/research slices may explicitly defer UI with owning backlog item and dependency; do not interrupt an in-flight trusted build/gate or require a full UI rewrite for each parser. Keep feature metadata and identity in the existing authority, not a browser-side inference registry. Use existing design tokens, accessible shared patterns and measured performance; avoid new pages per backend module. No network device writes.
 - Finish with changed files, executed commands/results, evidence path and next step.
 
 ## Build and test discipline
