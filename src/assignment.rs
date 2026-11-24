@@ -939,13 +939,37 @@ impl CollectorManager {
                         self.schema_binding_clock.now(),
                     )
                 });
-                let reason = match evidence {
+                let mut reason = match evidence {
                     Some(crate::schema_binding::BindingEvidenceState::Current) => None,
                     Some(crate::schema_binding::BindingEvidenceState::Expired) => {
                         Some("schema_binding_evidence_expired")
                     }
                     _ => Some("schema_binding_evidence_unverifiable"),
                 };
+                // M6 corrective review (commit-first selection): the
+                // fenced selection write commits BEFORE the incompatible
+                // approval's revocation runs. An interruption between
+                // them leaves an active approval whose approved schema no
+                // longer matches the device's durable selection — and no
+                // later pass re-derives that mismatch. Fail closed at
+                // this authorization boundary: when a durable selection
+                // exists, the approval only authorizes the schema it was
+                // evaluated against. A selection-store read failure is
+                // unverifiable authority, never a pass.
+                if reason.is_none() {
+                    let drift = self.registry.sqlite_store().map(|store| {
+                        store
+                            .get_device_schema_selection(&crate::registry::device_identity_key(
+                                &target,
+                            ))
+                            .map(|sel| sel.is_some_and(|s| s.schema_id != binding.schema_id))
+                    });
+                    reason = match drift {
+                        Some(Ok(true)) => Some("schema_binding_schema_mismatch"),
+                        Some(Ok(false)) | None => None,
+                        Some(Err(_)) => Some("schema_binding_evidence_unverifiable"),
+                    };
+                }
                 if let Some(reason) = reason {
                     if lifecycle_aware {
                         assignments.push(rejected_assignment(&target, reason.to_string()));
@@ -1567,6 +1591,106 @@ mod tests {
         assert_eq!(device.approval_revision, 1);
         assert_eq!(device.approved_by, "admin");
         assert_eq!(device.approved_at_ns, 42);
+    }
+
+    #[tokio::test]
+    async fn schema_bound_approval_fails_closed_when_selection_postdates_it() {
+        // M6 corrective review (commit-first selection): the fenced
+        // selection write commits BEFORE the incompatible approval's
+        // revocation runs. Simulate the interruption window by
+        // committing the durable selection WITHOUT running the
+        // revocation — the stale approval must not keep authorizing
+        // collection at the next assignment boundary.
+        let (manager, registry, _dir) =
+            manager_with_custom_target(schema_bound_target("10.0.0.8")).await;
+        let stored = registry.get_device("10.0.0.8").unwrap().unwrap();
+        let (mut bound, record) = schema_bound_activation(&stored);
+        // Fresh, fingerprint-matching evidence → BindingEvidenceState::Current.
+        let store = registry.sqlite_store().unwrap();
+        let key = crate::registry::device_identity_key(&bound);
+        let snap = crate::sqlite_store::YangApplicabilitySnapshotRow {
+            id: 0,
+            device_key: key.clone(),
+            device_address: "10.0.0.8".to_string(),
+            collector_id: Some("c1".to_string()),
+            schema_id: Some("a".repeat(64)),
+            content_id: Some("content-1".to_string()),
+            datastore: Some("ietf-datastores:operational".to_string()),
+            overall_status: "applicable".to_string(),
+            outcome: "ok".to_string(),
+            result_json: "{}".to_string(),
+            capabilities_json: None,
+            yang_library_json: None,
+            evidence_fingerprint: "ev-fp".to_string(),
+            observed_at_ns: Some(crate::graph::common::now_ns()),
+            evaluated_at_ns: crate::graph::common::now_ns(),
+            error: None,
+            created_at_ns: crate::graph::common::now_ns(),
+            executor: Some("core_direct".to_string()),
+            observing_collector_id: None,
+            discovery_job_id: None,
+            collector_session_generation: None,
+            authority_epoch: None,
+            evidence_received_at_ns: None,
+        };
+        let snap_id = store.save_yang_applicability_snapshot(&snap).unwrap();
+        bound.schema_binding.as_mut().unwrap().snapshot_id = snap_id;
+        let config_revision = bound.updated_at_ns;
+        registry
+            .activate_schema_binding(bound, record, 0, config_revision, "admin", "activate", None)
+            .unwrap();
+
+        // Control: with CURRENT evidence and NO durable selection the
+        // approval still authorizes — the check must not over-revoke.
+        let (mut rx0, _g0) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let update0 = rx0.recv().await.expect("control sync");
+        let control = update0
+            .assignments
+            .iter()
+            .find(|a| a.device.as_ref().is_some_and(|d| d.address == "10.0.0.8"))
+            .expect("control assignment");
+        assert!(
+            !control.rejected,
+            "fresh approval without selection drift must authorize: {:?}",
+            control.reject_reason
+        );
+        drop(rx0);
+
+        // Interruption window: selection commits to a DIFFERENT schema;
+        // approval revocation never ran.
+        let selection = crate::sqlite_store::DeviceSchemaSelection {
+            device_key: key,
+            device_address: "10.0.0.8".to_string(),
+            schema_id: "b".repeat(64),
+            selection_source: "admin".to_string(),
+            selected_by: Some("admin".to_string()),
+            note: None,
+            selection_revision: 0,
+            created_at_ns: 1,
+            updated_at_ns: 1,
+        };
+        store
+            .set_device_schema_selection_fenced(&selection, 0, "admin", "select")
+            .unwrap();
+
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("post-selection sync");
+        let stale = update
+            .assignments
+            .iter()
+            .find(|a| a.device.as_ref().is_some_and(|d| d.address == "10.0.0.8"))
+            .expect("stale assignment entry");
+        assert!(
+            stale.rejected,
+            "approval bound to superseded schema must not authorize"
+        );
+        assert_eq!(stale.reject_reason, "schema_binding_schema_mismatch");
     }
 
     async fn manager_with_mtls_device() -> (CollectorManager, Arc<ApiRegistry>, tempfile::TempDir) {

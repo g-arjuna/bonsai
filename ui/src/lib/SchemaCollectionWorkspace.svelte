@@ -555,6 +555,17 @@
         schemaSelError = 'Forbidden: schema selection requires an admin role.';
         return;
       }
+      if (r.status === 409) {
+        // Another administrator changed the selection (or cleared it)
+        // after this view loaded. Refresh the durable epoch so the next
+        // attempt is fenced on CURRENT state — never silently resubmit
+        // the stale mutation; the operator must confirm again.
+        schemaSelError = 'Conflict: another administrator changed this device\'s ' +
+          'schema selection. The current selection and epoch have been ' +
+          'refreshed — review them and confirm again to apply your choice.';
+        await loadSchemaSelection(address);
+        return;
+      }
       if (!r.ok) {
         schemaSelError = payload.error || payload.message || ('Schema selection failed (HTTP ' + r.status + ')');
         return;

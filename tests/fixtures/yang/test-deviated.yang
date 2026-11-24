@@ -9,5 +9,8 @@ module test-deviated {
   deviation "/tb:system/ntp/server" {
     description "server leaf deviated out";
     status obsolete;
+    deviate delete {
+      units "host";
+    }
   }
 }

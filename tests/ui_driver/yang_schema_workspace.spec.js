@@ -874,6 +874,7 @@ async function installSelectionFixtures(page, state) {
   await page.route(`**${SEL_URL}*`, (route) => {
     const method = route.request().method();
     if (method === 'GET') {
+      state.selectionGets = (state.selectionGets || 0) + 1;
       return route.fulfill({ json: state.selection });
     }
     if (method === 'PUT') {
@@ -934,6 +935,7 @@ test.describe('M6F-F device schema selection', () => {
     await installFixtures(page, state);
     await installSelectionFixtures(page, state);
     await openSchemaWorkspace(page);
+    const getsBefore = state.selectionGets || 0;
 
     await page.locator('[data-testid="schema-bundle-select"]').selectOption(SCHEMA_A);
     await page.locator('[data-testid="schema-select-apply"]').click();
@@ -942,9 +944,16 @@ test.describe('M6F-F device schema selection', () => {
     await expect.poll(() => state.selectionPuts.length).toBe(1);
     // The client sent the revision it last observed (3).
     expect(state.selectionPuts[0].expected_selection_revision).toBe(3);
-    await expect(page.locator('[data-testid="schema-select-error"]')).toBeVisible();
+    const error = page.locator('[data-testid="schema-select-error"]');
+    await expect(error).toBeVisible();
+    // CR-04: the conflict is explained and the current selection/epoch
+    // is refreshed — the stale mutation is never silently resubmitted.
+    await expect(error).toContainText('another administrator');
+    await expect.poll(() => state.selectionGets).toBeGreaterThan(getsBefore);
     // No selection message — the conflict is not reported as success.
     await expect(page.locator('[data-testid="schema-select-message"]')).toHaveCount(0);
+    // Exactly one mutation was attempted — no automatic retry.
+    expect(state.selectionPuts.length).toBe(1);
   });
 
   test('explicit selection shows selected, effective and active identities', async ({ page }) => {

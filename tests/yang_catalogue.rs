@@ -2782,7 +2782,7 @@ const DEVIATION_BASE: &str = r#"module dbase {
   prefix db;
   revision "2024-01-01";
   container iface {
-    leaf enabled { type boolean; }
+    leaf enabled { type boolean; default false; }
     leaf hold-up { type uint8; }
     container counters {
       leaf in-octets { type uint64; }
@@ -2814,7 +2814,7 @@ fn deviate_delete_block_form_applies_without_semicolon() {
     // accept the block form. RFC 7950 §7.20.3.2: `delete` removes the
     // listed PROPERTIES of the target node — it does NOT remove the node
     // (that is `not-supported`).
-    let dev = deviation_module("    deviate delete {\n        default true;\n    }");
+    let dev = deviation_module("    deviate delete {\n        default false;\n    }");
     let cat = compile_parsed(
         vec![
             inline_input("dbase", DEVIATION_BASE),
@@ -2845,8 +2845,10 @@ fn deviate_delete_block_form_applies_without_semicolon() {
 
 #[test]
 fn deviate_delete_removes_only_listed_properties() {
-    // `deviate delete` removes exactly the named properties; every other
-    // property of the node is preserved.
+    // `deviate delete` removes exactly the named properties — and only
+    // when the argument string matches the node's (RFC 7950 §7.20.3.2).
+    // Non-deviable properties (description, status, ...) are preserved
+    // untouched; deleting them is diagnosed, never approximated.
     let base = r#"module dbase {
   yang-version "1.1";
   namespace "urn:t:db";
@@ -2874,13 +2876,11 @@ fn deviate_delete_removes_only_listed_properties() {
   import dbase { prefix db; }
   deviation "/db:iface/speed" {
     deviate delete {
-      default 9999;
-      units "Gbps";
+      default 1000;
+      units "Mbps";
       mandatory true;
       min-elements 1;
       max-elements 8;
-      description "whatever";
-      status obsolete;
     }
   }
 }
@@ -2900,8 +2900,16 @@ fn deviate_delete_removes_only_listed_properties() {
     assert!(!speed.mandatory, "mandatory must be deleted");
     assert_eq!(speed.min_elements, None);
     assert_eq!(speed.max_elements, None);
-    assert_eq!(speed.description, None);
-    assert_eq!(speed.status, None, "status must be deleted");
+    assert_eq!(
+        speed.description.as_deref(),
+        Some("port speed"),
+        "description is not a deviable property — preserved"
+    );
+    assert_eq!(
+        speed.status.as_deref(),
+        Some("current"),
+        "status is not a deviable property — preserved"
+    );
     assert_eq!(speed.type_name.as_deref(), Some("uint32"), "type preserved");
     assert_eq!(speed.kind, "leaf");
 }
@@ -3012,7 +3020,7 @@ fn deviate_not_supported_and_delete_are_distinct() {
   }
 }
 "#;
-    let dev_del = deviation_module("    deviate delete {\n        default true;\n    }");
+    let dev_del = deviation_module("    deviate delete {\n        default false;\n    }");
     let cat_ns = compile_parsed(
         vec![
             inline_input("dbase", DEVIATION_BASE),
@@ -3040,27 +3048,43 @@ fn deviate_not_supported_and_delete_are_distinct() {
 #[test]
 fn multiple_deviations_on_one_node_compose() {
     // Two deviation modules may target the same node; each applies its
-    // own property operations and both are recorded as coverage.
-    let dev_a = r#"module dea {
+    // own property operations and both are recorded as coverage. Both
+    // operations must satisfy RFC 7950 preconditions: `delete` matches
+    // an existing argument, `replace` requires an existing property.
+    let base = r#"module cbase {
   yang-version "1.1";
-  namespace "urn:t:dea";
-  prefix da;
+  namespace "urn:t:cb";
+  prefix cb;
   revision "2024-01-01";
-  import dbase { prefix db; }
-  deviation "/db:iface/hold-up" {
+  container iface {
+    leaf hold-up {
+      type uint8;
+      default 5;
+      units "ms";
+    }
+  }
+}
+"#;
+    let dev_a = r#"module cea {
+  yang-version "1.1";
+  namespace "urn:t:cea";
+  prefix ca;
+  revision "2024-01-01";
+  import cbase { prefix cb; }
+  deviation "/cb:iface/hold-up" {
     deviate delete {
       default 5;
     }
   }
 }
 "#;
-    let dev_b = r#"module deb {
+    let dev_b = r#"module ceb {
   yang-version "1.1";
-  namespace "urn:t:deb";
-  prefix db2;
+  namespace "urn:t:ceb";
+  prefix cb2;
   revision "2024-01-01";
-  import dbase { prefix db; }
-  deviation "/db:iface/hold-up" {
+  import cbase { prefix cb; }
+  deviation "/cb:iface/hold-up" {
     deviate replace {
       units "seconds";
     }
@@ -3069,9 +3093,9 @@ fn multiple_deviations_on_one_node_compose() {
 "#;
     let cat = compile_parsed(
         vec![
-            inline_input("dbase", DEVIATION_BASE),
-            inline_input("dea", dev_a),
-            inline_input("deb", dev_b),
+            inline_input("cbase", base),
+            inline_input("cea", dev_a),
+            inline_input("ceb", dev_b),
         ],
         &CompileOptions::default(),
     );
@@ -3083,9 +3107,9 @@ fn multiple_deviations_on_one_node_compose() {
         .expect("node preserved");
     assert_eq!(hold.default, None, "delete removed default");
     assert_eq!(hold.units.as_deref(), Some("seconds"), "replace set units");
-    let base = cat.modules.iter().find(|m| m.name == "dbase").unwrap();
-    assert!(base.deviation_modules.contains("dea"));
-    assert!(base.deviation_modules.contains("deb"));
+    let base = cat.modules.iter().find(|m| m.name == "cbase").unwrap();
+    assert!(base.deviation_modules.contains("cea"));
+    assert!(base.deviation_modules.contains("ceb"));
 }
 
 #[test]
@@ -3177,8 +3201,6 @@ fn deviate_replace_applies_property_values() {
     deviate replace {
       default 10;
       units "minutes";
-      description "new desc";
-      status deprecated;
     }
   }
 }
@@ -3195,8 +3217,9 @@ fn deviate_replace_applies_property_values() {
         .expect("node present");
     assert_eq!(hold.default.as_deref(), Some("10"));
     assert_eq!(hold.units.as_deref(), Some("minutes"));
-    assert_eq!(hold.description.as_deref(), Some("new desc"));
-    assert_eq!(hold.status.as_deref(), Some("deprecated"));
+    // `description`/`status` are not deviable properties — untouched.
+    assert_eq!(hold.description.as_deref(), Some("old desc"));
+    assert_eq!(hold.status.as_deref(), Some("current"));
     let rbase = cat.modules.iter().find(|m| m.name == "rbase").unwrap();
     assert!(rbase.deviation_modules.contains("rdev"));
 }
@@ -3565,4 +3588,306 @@ fn module_scope_skips_out_of_scope_load_diagnostics() {
         "diags={:?}",
         cat2.diagnostics
     );
+}
+
+// ── M6 corrective review: deviation preconditions (RFC 7950 §7.20.3.2) ──
+//
+// `deviate delete` must match keyword AND argument, `deviate replace`
+// requires an existing property, `deviate add` respects cardinality,
+// and only the RFC deviable property set may appear. Anything else is a
+// diagnosed deviation — the catalogue stays non-authoritative, never a
+// falsely complete schema.
+
+const DEVIATION_PROP_BASE: &str = r#"module pbase {
+  yang-version "1.1";
+  namespace "urn:t:pb";
+  prefix pb;
+  revision "2024-01-01";
+  container iface {
+    leaf speed {
+      type uint32;
+      units "Mbps";
+      default 1000;
+      mandatory true;
+      min-elements 1;
+      max-elements 8;
+      must "speed > 0";
+      must "speed < 100000";
+      when "speed > 0 or speed < 100000";
+    }
+    leaf name { type string; }
+    list peers {
+      key "name";
+      leaf name { type string; }
+      unique "name";
+    }
+  }
+}
+"#;
+
+fn prop_deviation(target: &str, deviates_body: &str) -> String {
+    format!(
+        r#"module pdev {{
+  yang-version "1.1";
+  namespace "urn:t:pd";
+  prefix pd;
+  revision "2024-01-01";
+  import pbase {{ prefix pb; }}
+  deviation "{target}" {{
+{deviates_body}
+  }}
+}}
+"#
+    )
+}
+
+fn compile_prop_deviation(
+    target: &str,
+    deviates_body: &str,
+) -> bonsai::yang_schema::CompiledCatalogue {
+    compile_parsed(
+        vec![
+            inline_input("pbase", DEVIATION_PROP_BASE),
+            inline_input("pdev", &prop_deviation(target, deviates_body)),
+        ],
+        &CompileOptions::default(),
+    )
+}
+
+#[test]
+fn deviate_delete_matching_argument_succeeds() {
+    let cat = compile_prop_deviation(
+        "/pb:iface/speed",
+        "    deviate delete {\n        default 1000;\n        units \"Mbps\";\n    }",
+    );
+    assert_eq!(cat.status, "complete", "diags={:?}", cat.diagnostics);
+    let speed = cat
+        .paths
+        .iter()
+        .find(|p| p.path == "/iface/speed")
+        .expect("node preserved");
+    assert_eq!(speed.default, None, "matching default deleted");
+    assert_eq!(speed.units, None, "matching units deleted");
+    assert_eq!(speed.type_name.as_deref(), Some("uint32"));
+    let base = cat.modules.iter().find(|m| m.name == "pbase").unwrap();
+    assert!(base.deviation_modules.contains("pdev"));
+}
+
+#[test]
+fn deviate_delete_argument_mismatch_fails_closed() {
+    // RFC 7950 §7.20.3.2: the substatement's argument string MUST equal
+    // the target node's argument string. `default 9999` does not match
+    // `default 1000` — the deviation is invalid and must NOT silently
+    // delete the property nor produce a complete catalogue.
+    for (prop, label) in [
+        ("default 9999;", "default"),
+        ("units \"Gbps\";", "units"),
+        ("min-elements 2;", "min-elements"),
+        ("max-elements 16;", "max-elements"),
+        ("mandatory false;", "mandatory"),
+        ("must \"speed > 1\";", "must"),
+    ] {
+        let cat = compile_prop_deviation(
+            "/pb:iface/speed",
+            &format!("    deviate delete {{\n        {prop}\n    }}"),
+        );
+        assert_eq!(
+            cat.status, "partial",
+            "{label}: mismatched argument must not compile complete: {:?}",
+            cat.diagnostics
+        );
+        assert!(
+            cat.diagnostics.iter().any(|d| d.contains("deviate delete")),
+            "{label}: expected deviate-delete diagnostic, got {:?}",
+            cat.diagnostics
+        );
+        let speed = cat
+            .paths
+            .iter()
+            .find(|p| p.path == "/iface/speed")
+            .expect("node preserved on failed deviation");
+        match label {
+            "default" => assert_eq!(speed.default.as_deref(), Some("1000")),
+            "units" => assert_eq!(speed.units.as_deref(), Some("Mbps")),
+            "min-elements" => assert_eq!(speed.min_elements, Some(1)),
+            "max-elements" => assert_eq!(speed.max_elements, Some(8)),
+            "mandatory" => assert!(speed.mandatory),
+            _ => {}
+        }
+        let base = cat.modules.iter().find(|m| m.name == "pbase").unwrap();
+        assert!(
+            !base.deviation_modules.contains("pdev"),
+            "{label}: unapplied deviation must not count as coverage"
+        );
+    }
+}
+
+#[test]
+fn deviate_delete_missing_property_fails_closed() {
+    // `name` carries no `default`; deleting one that does not exist is
+    // invalid — never a silent success.
+    let cat = compile_prop_deviation(
+        "/pb:iface/name",
+        "    deviate delete {\n        default 5;\n    }",
+    );
+    assert_eq!(cat.status, "partial", "diags={:?}", cat.diagnostics);
+    assert!(
+        cat.diagnostics.iter().any(|d| d.contains("deviate delete")),
+        "diags={:?}",
+        cat.diagnostics
+    );
+    // Control: the same delete against a node that DOES carry the
+    // property compiles complete.
+    let ok = compile_prop_deviation(
+        "/pb:iface/speed",
+        "    deviate delete {\n        default 1000;\n    }",
+    );
+    assert_eq!(ok.status, "complete", "diags={:?}", ok.diagnostics);
+}
+
+#[test]
+fn deviate_delete_must_removes_only_matching_expression() {
+    // `speed` carries two `must` expressions. Deleting a non-existent
+    // expression must fail closed — it must NOT clear every `must` on
+    // the node and still report success.
+    let cat = compile_prop_deviation(
+        "/pb:iface/speed",
+        "    deviate delete {\n        must \"speed > 999999\";\n    }",
+    );
+    assert_eq!(
+        cat.status, "partial",
+        "non-matching must delete must not succeed: {:?}",
+        cat.diagnostics
+    );
+    assert!(
+        cat.diagnostics.iter().any(|d| d.contains("deviate delete")),
+        "diags={:?}",
+        cat.diagnostics
+    );
+    // Matching delete of one expression succeeds.
+    let ok = compile_prop_deviation(
+        "/pb:iface/speed",
+        "    deviate delete {\n        must \"speed > 0\";\n    }",
+    );
+    assert_eq!(ok.status, "complete", "diags={:?}", ok.diagnostics);
+}
+
+#[test]
+fn deviate_delete_unique_property() {
+    // `unique` is a standard deviable property (0..n). Deleting the
+    // matching argument succeeds; a non-existent one fails closed.
+    let ok = compile_prop_deviation(
+        "/pb:iface/peers",
+        "    deviate delete {\n        unique \"name\";\n    }",
+    );
+    assert_eq!(ok.status, "complete", "diags={:?}", ok.diagnostics);
+    let bad = compile_prop_deviation(
+        "/pb:iface/peers",
+        "    deviate delete {\n        unique \"other\";\n    }",
+    );
+    assert_eq!(bad.status, "partial", "diags={:?}", bad.diagnostics);
+    assert!(
+        bad.diagnostics.iter().any(|d| d.contains("deviate delete")),
+        "diags={:?}",
+        bad.diagnostics
+    );
+}
+
+#[test]
+fn deviate_replace_requires_existing_property() {
+    // `name` has no `units`/`default`; `deviate replace` may only
+    // replace properties that exist — it must not act as `add`.
+    for prop in ["units \"Mbps\";", "default 5;", "mandatory true;"] {
+        let cat = compile_prop_deviation(
+            "/pb:iface/name",
+            &format!("    deviate replace {{\n        {prop}\n    }}"),
+        );
+        assert_eq!(
+            cat.status, "partial",
+            "replace of absent property must fail: {prop} diags={:?}",
+            cat.diagnostics
+        );
+        assert!(
+            cat.diagnostics
+                .iter()
+                .any(|d| d.contains("deviate replace")),
+            "diags={:?}",
+            cat.diagnostics
+        );
+    }
+    // Control: replacing an existing property applies the new value.
+    let ok = compile_prop_deviation(
+        "/pb:iface/speed",
+        "    deviate replace {\n        default 2000;\n        units \"Gbps\";\n        min-elements 0;\n    }",
+    );
+    assert_eq!(ok.status, "complete", "diags={:?}", ok.diagnostics);
+    let speed = ok
+        .paths
+        .iter()
+        .find(|p| p.path == "/iface/speed")
+        .expect("node present");
+    assert_eq!(speed.default.as_deref(), Some("2000"));
+    assert_eq!(speed.units.as_deref(), Some("Gbps"));
+    assert_eq!(speed.min_elements, Some(0));
+}
+
+#[test]
+fn deviate_rejects_properties_outside_rfc_set() {
+    // RFC 7950 §7.20.3.2 deviable set: config, default, mandatory,
+    // max-elements, min-elements, must, type, unique, units. Properties
+    // outside it — description, reference, status, when, presence,
+    // ordered-by, key, if-feature — are not deviation properties and
+    // must be diagnosed for every deviate kind, never approximated.
+    for kind in ["delete", "add", "replace"] {
+        for prop in [
+            "description \"x\";",
+            "reference \"r\";",
+            "status current;",
+            "when \"speed > 0\";",
+            "presence \"p\";",
+            "ordered-by user;",
+            "key \"name\";",
+            "if-feature \"pb:f\";",
+        ] {
+            let cat = compile_prop_deviation(
+                "/pb:iface/speed",
+                &format!("    deviate {kind} {{\n        {prop}\n    }}"),
+            );
+            assert_eq!(
+                cat.status, "partial",
+                "{kind} {{{prop}}} must be diagnosed: {:?}",
+                cat.diagnostics
+            );
+            assert!(
+                cat.diagnostics
+                    .iter()
+                    .any(|d| d.contains(&format!("deviate {kind}"))),
+                "{kind} {{{prop}}} expected diagnostic, got {:?}",
+                cat.diagnostics
+            );
+        }
+    }
+}
+
+#[test]
+fn deviation_without_deviate_statements_is_diagnosed() {
+    // RFC 7950 ABNF requires a deviation body to carry at least one
+    // `deviate` statement. An empty deviation must not count as applied
+    // coverage for the target module.
+    let dev = prop_deviation("/pb:iface/speed", "    description \"nothing applied\";");
+    let cat = compile_parsed(
+        vec![
+            inline_input("pbase", DEVIATION_PROP_BASE),
+            inline_input("pdev", &dev),
+        ],
+        &CompileOptions::default(),
+    );
+    assert_eq!(cat.status, "partial", "diags={:?}", cat.diagnostics);
+    assert!(
+        cat.diagnostics.iter().any(|d| d.contains("deviate")),
+        "diags={:?}",
+        cat.diagnostics
+    );
+    let base = cat.modules.iter().find(|m| m.name == "pbase").unwrap();
+    assert!(!base.deviation_modules.contains("pdev"));
 }
