@@ -109,6 +109,28 @@ pub enum InterfaceType {
     Unknown,
 }
 
+/// Speed value plus the unit the producing profile asserts for it.
+/// `Unknown` is a first-class unit: several NOS CLI formats emit a bare
+/// number whose scale is version- or vendor-dependent, and guessing a
+/// unit would fabricate precision the observation does not carry.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpeedObservation {
+    pub value: u64,
+    pub unit: SpeedUnit,
+}
+
+/// Declared speed unit. Only units the profile can evidence may be used;
+/// `Unknown` keeps the raw magnitude without a scale claim.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeedUnit {
+    BitsPerSecond,
+    KilobitsPerSecond,
+    MegabitsPerSecond,
+    /// Scale not established for this source/format/release.
+    Unknown,
+}
+
 /// Typed `interface.state` payload. Identity axes (device, network
 /// namespace, entity name, VRF) live on `TypedFact::subject`; this struct
 /// carries only the observed attributes of that entity.
@@ -125,8 +147,11 @@ pub struct InterfaceStatePayload {
     /// MTU in bytes as reported; unit semantics are NOS-specific and
     /// recorded by the producing profile, not assumed here.
     pub mtu: ObservedField<u32>,
-    /// Speed normalized to bits per second by the producer.
-    pub speed_bps: ObservedField<u64>,
+    /// Speed as reported by the source together with its declared unit.
+    /// `unit: unknown` means the profile could not establish the scale —
+    /// the raw value is preserved as evidence and is never presented as
+    /// bits-per-second. Producers that can prove the unit must say so.
+    pub speed: ObservedField<SpeedObservation>,
     /// MAC address normalized to lowercase `xx:xx:xx:xx:xx:xx`.
     pub mac_address: ObservedField<String>,
     /// Optional description; bounded and control-character stripped.
@@ -139,6 +164,16 @@ pub struct InterfaceStatePayload {
     /// Port-channel/LAG this interface is a member of, if established.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_of: Option<String>,
+    /// IPv4 addresses observed on the interface as `addr/prefix` strings,
+    /// in source order. `Known` with an empty list means "observed, none";
+    /// `Unknown` means the source did not report addressing at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_addresses: Option<ObservedField<Vec<String>>>,
+    /// IPv6 addresses observed on the interface as `addr/prefix` strings.
+    /// Link-local and other non-routable scopes are preserved verbatim —
+    /// scope classification is a consumer concern, not silently dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipv6_addresses: Option<ObservedField<Vec<String>>>,
 }
 
 const MAX_NAME_LEN: usize = 255;
@@ -233,7 +268,7 @@ pub fn validate_typed(p: &InterfaceStatePayload) -> Result<(), FactError> {
     check_field(&p.operational_state, "operational_state", |_| true)?;
     check_field(&p.interface_type, "interface_type", |_| true)?;
     check_field(&p.mtu, "mtu", |v| *v > 0 && *v <= u16::MAX as u32)?;
-    check_field(&p.speed_bps, "speed_bps", |v| *v > 0)?;
+    check_field(&p.speed, "speed", |v| v.value > 0)?;
     check_field(&p.mac_address, "mac_address", |v| {
         // Stored value must already be in normalized form.
         normalize_mac(v).is_some_and(|n| n == *v)
@@ -246,6 +281,21 @@ pub fn validate_typed(p: &InterfaceStatePayload) -> Result<(), FactError> {
     for name in [&p.parent_interface, &p.member_of].into_iter().flatten() {
         if !valid_name(name) {
             return Err(FactError::InvalidField("interface reference"));
+        }
+    }
+    for (field, name) in [
+        (&p.ip_addresses, "ip_addresses"),
+        (&p.ipv6_addresses, "ipv6_addresses"),
+    ] {
+        if let Some(f) = field {
+            check_field(f, name, |addrs| {
+                addrs.len() <= 64
+                    && addrs.iter().all(|a| {
+                        a.len() <= 64
+                            && !a.chars().any(|c| c.is_control())
+                            && a.contains('/')
+                    })
+            })?;
         }
     }
     Ok(())
@@ -264,11 +314,16 @@ mod tests {
             operational_state: ObservedField::known(OperState::Up),
             interface_type: ObservedField::known(InterfaceType::Physical),
             mtu: ObservedField::known(9216),
-            speed_bps: ObservedField::known(100_000_000_000),
+            speed: ObservedField::known(SpeedObservation {
+                value: 100_000,
+                unit: SpeedUnit::MegabitsPerSecond,
+            }),
             mac_address: ObservedField::known("aa:bb:cc:dd:ee:ff".into()),
             description: Some("server-facing".into()),
             parent_interface: None,
             member_of: None,
+            ip_addresses: Some(ObservedField::known(vec!["10.0.0.2/24".into()])),
+            ipv6_addresses: Some(ObservedField::known(vec![])),
         }
     }
 
@@ -282,13 +337,16 @@ mod tests {
     #[test]
     fn unknown_is_not_a_value() {
         let mut p = known_payload();
-        p.speed_bps = ObservedField {
+        p.speed = ObservedField {
             state: FieldAvailability::Unknown,
-            value: Some(0), // must be rejected: value on non-known state
+            value: Some(SpeedObservation {
+                value: 0,
+                unit: SpeedUnit::Unknown,
+            }), // must be rejected: value on non-known state
             detail: None,
         };
         assert!(validate_typed(&p).is_err());
-        p.speed_bps = ObservedField::unavailable(FieldAvailability::Unknown, None);
+        p.speed = ObservedField::unavailable(FieldAvailability::Unknown, None);
         assert!(validate_typed(&p).is_ok());
     }
 

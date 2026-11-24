@@ -1049,7 +1049,7 @@ mod tests {
             "operational_state": {"state": "known", "value": "up"},
             "interface_type": {"state": "known", "value": "physical"},
             "mtu": {"state": "known", "value": 9216},
-            "speed_bps": {"state": "unknown"},
+            "speed": {"state": "unknown"},
             "mac_address": {"state": "unknown"},
         }));
         f.seal();
