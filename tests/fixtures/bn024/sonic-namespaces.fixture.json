@@ -1,0 +1,27 @@
+{
+  "description": "BN-024-03 SONiC multi-ASIC namespace fixture. Synthetic device inventory describing a dual-ASIC SONiC target used to prove namespace-scoped profile selection never collapses per-ASIC identities. Not a capture of real hardware.",
+  "platform": "sonic",
+  "version": "2025.1",
+  "namespaces": [
+    {
+      "namespace": "asic-0",
+      "role": "linecard",
+      "interfaces": ["Ethernet0", "Ethernet1", "PortChannel01"]
+    },
+    {
+      "namespace": "asic-1",
+      "role": "linecard",
+      "interfaces": ["Ethernet0", "Ethernet1", "PortChannel01"]
+    },
+    {
+      "namespace": "host",
+      "role": "management",
+      "interfaces": ["eth0", "Management1"]
+    }
+  ],
+  "expected_profile": {
+    "profile_id": "sonic-1",
+    "verified_namespaces": ["asic-0", "asic-1"],
+    "note": "host namespace intentionally absent — must be treated as unverified, not assumed covered"
+  }
+}

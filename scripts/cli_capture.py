@@ -11,9 +11,41 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
 
 import paramiko
+
+# Hard cap on captured device output. Running-config captures are typically
+# well under 1 MiB; anything larger is rejected explicitly rather than being
+# buffered and parsed without bound downstream.
+MAX_CAPTURE_BYTES = 4 * 1024 * 1024
+
+
+def read_bounded(stream, max_bytes: int) -> bytes:
+    # Read via channel.recv so each call returns promptly with available data
+    # (ChannelFile.read(n) may block trying to fill the whole buffer).
+    channel = stream.channel
+    chunks = []
+    total = 0
+    while True:
+        chunk = channel.recv(65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"capture exceeded {max_bytes} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def read_bounded_timeout(stream, max_bytes: int, timeout_secs: int) -> bytes:
+    # A channel that stops producing data must not block the capture
+    # forever: recv() is bounded by a per-read socket timeout and any
+    # stall surfaces as an explicit timeout error.
+    channel = stream.channel
+    channel.settimeout(timeout_secs)
+    return read_bounded(stream, max_bytes)
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--username", required=True)
     parser.add_argument("--command", required=True)
     parser.add_argument("--timeout-secs", type=int, default=20)
+    parser.add_argument("--max-bytes", type=int, default=MAX_CAPTURE_BYTES)
     return parser.parse_args()
 
 
@@ -34,7 +67,15 @@ def main() -> int:
         return 2
 
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # Fail closed on unknown host keys: capture credentials must never be
+    # sent to an unverified endpoint. Pre-provision host keys via
+    # `ssh-keyscan -H <host> >> ~/.ssh/known_hosts` (or the system
+    # known_hosts file) before running captures.
+    client.load_system_host_keys()
+    user_known_hosts = os.path.expanduser("~/.ssh/known_hosts")
+    if os.path.exists(user_known_hosts):
+        client.load_host_keys(user_known_hosts)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(
             hostname=args.host,
@@ -48,8 +89,21 @@ def main() -> int:
             auth_timeout=args.timeout_secs,
         )
         _, stdout, stderr = client.exec_command(args.command, timeout=args.timeout_secs)
-        output = stdout.read().decode("utf-8", errors="replace")
-        error_output = stderr.read().decode("utf-8", errors="replace").strip()
+        try:
+            output = read_bounded_timeout(
+                stdout, args.max_bytes, args.timeout_secs
+            ).decode("utf-8", errors="replace")
+            error_output = (
+                read_bounded_timeout(stderr, args.max_bytes, args.timeout_secs)
+                .decode("utf-8", errors="replace")
+                .strip()
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 4
+        except (socket.timeout, TimeoutError):
+            print("capture timed out waiting for device output", file=sys.stderr)
+            return 5
         exit_status = stdout.channel.recv_exit_status()
         if exit_status != 0:
             print(

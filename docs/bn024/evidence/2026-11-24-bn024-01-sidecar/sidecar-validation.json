@@ -1,0 +1,216 @@
+{
+  "image": "bonsai-pyats-sidecar:bn024",
+  "image_digest": "sha256:6a15831d4dd6c0ea9af5b9edf1c85cfe6699907b4c6a3faf3b1d73ecafa6e482",
+  "versions": {
+    "python": "3.11.18",
+    "genie": "26.10",
+    "pyats": "26.10",
+    "ntc-templates": "9.4.0",
+    "textfsm": "2.1.1",
+    "fastapi": "0.115.12",
+    "uvicorn": "0.34.2"
+  },
+  "fixture": "self-authored iosxe 'show ip bgp summary' (2 neighbors)",
+  "fixture_sha256": "070aa116213cb1aad054b51c899423af3855dad1db69410f6462ba7bb7aeddda",
+  "cases": {
+    "genie_iosxe_bgp_summary": {
+      "parser": "genie",
+      "backend_used": "genie",
+      "outcome": "structured_success",
+      "vendor": "cisco_iosxe",
+      "command": "show ip bgp summary",
+      "detail": null,
+      "_elapsed_ms": 151.54,
+      "payload_summary": [
+        "bgp_id",
+        "vrf"
+      ],
+      "payload_bytes": 649
+    },
+    "textfsm_iosxe_bgp_summary": {
+      "parser": "textfsm",
+      "backend_used": "textfsm",
+      "outcome": "structured_success",
+      "vendor": "cisco_iosxe",
+      "command": "show ip bgp summary",
+      "detail": null,
+      "_elapsed_ms": 10.96,
+      "payload_summary": "list[2] first_keys=['router_id', 'local_as', 'address_family', 'bgp_neighbor', 'bgp_version', 'neighbor_as', 'messages_received', 'messages_sent']",
+      "payload_bytes": 628
+    },
+    "genie_canonical_iosxr_vendor": {
+      "parser": "genie",
+      "backend_used": "genie",
+      "outcome": "structured_empty",
+      "vendor": "cisco_iosxr",
+      "command": "show ip bgp summary",
+      "detail": null,
+      "_elapsed_ms": 59.9,
+      "payload_summary": [],
+      "payload_bytes": 2
+    },
+    "genie_empty_input": {
+      "parser": "genie",
+      "backend_used": "fallback",
+      "outcome": "invalid_input",
+      "vendor": "cisco_iosxe",
+      "command": "show ip bgp summary",
+      "detail": "empty raw_output",
+      "_elapsed_ms": 6.3,
+      "payload_summary": [
+        "result_kind",
+        "backend_used",
+        "line_count",
+        "lines",
+        "truncated"
+      ],
+      "payload_bytes": 120
+    },
+    "genie_srlinux_unsupported_vendor": {
+      "parser": "genie",
+      "backend_used": "fallback",
+      "outcome": "unstructured_fallback",
+      "vendor": "nokia_srlinux",
+      "command": "show ip bgp summary",
+      "detail": "genie=unsupported(no genie os mapping for vendor 'nokia_srlinux')",
+      "_elapsed_ms": 6.37,
+      "payload_summary": [
+        "result_kind",
+        "backend_used",
+        "line_count",
+        "lines",
+        "truncated"
+      ],
+      "payload_bytes": 500
+    },
+    "textfsm_srlinux": {
+      "parser": "textfsm",
+      "backend_used": "fallback",
+      "outcome": "unstructured_fallback",
+      "vendor": "nokia_srlinux",
+      "command": "show ip bgp summary",
+      "detail": "textfsm=unsupported(ParsingException: Unable to parse command \"show ip bgp summary\" on platform nokia_srl - No template found for attributes: \"{'Command': 'show ip bgp summary', 'Platform': 'nokia_srl'}\")",
+      "_elapsed_ms": 11.07,
+      "payload_summary": [
+        "result_kind",
+        "backend_used",
+        "line_count",
+        "lines",
+        "truncated"
+      ],
+      "payload_bytes": 500
+    },
+    "genie_unsupported_command": {
+      "parser": "genie",
+      "backend_used": "fallback",
+      "outcome": "unstructured_fallback",
+      "vendor": "cisco_iosxe",
+      "command": "show totally bogus xyzzy",
+      "detail": "genie=unsupported(ParserNotFound: Could not find parser for 'show totally bogus xyzzy' under {'origin': [<MagicMock name='mock.origin' id='135015450800592'>], 'os': ['iosxe'], 'platform': [''], 'model': [<MagicMock name='mock.model' i)",
+      "_elapsed_ms": 59.11,
+      "payload_summary": [
+        "result_kind",
+        "backend_used",
+        "line_count",
+        "lines",
+        "truncated"
+      ],
+      "payload_bytes": 500
+    },
+    "textfsm_unsupported_command": {
+      "parser": "textfsm",
+      "backend_used": "fallback",
+      "outcome": "unstructured_fallback",
+      "vendor": "cisco_iosxe",
+      "command": "show totally bogus xyzzy",
+      "detail": "textfsm=unsupported(ParsingException: Unable to parse command \"show totally bogus xyzzy\" on platform cisco_ios - No template found for attributes: \"{'Command': 'show totally bogus xyzzy', 'Platform': 'cisco_ios'}\")",
+      "_elapsed_ms": 9.99,
+      "payload_summary": [
+        "result_kind",
+        "backend_used",
+        "line_count",
+        "lines",
+        "truncated"
+      ],
+      "payload_bytes": 500
+    },
+    "genie_unknown_vendor": {
+      "parser": "genie",
+      "backend_used": "fallback",
+      "outcome": "unstructured_fallback",
+      "vendor": "vyos",
+      "command": "show ip bgp summary",
+      "detail": "genie=unsupported(no genie os mapping for vendor 'vyos')",
+      "_elapsed_ms": 5.6,
+      "payload_summary": [
+        "result_kind",
+        "backend_used",
+        "line_count",
+        "lines",
+        "truncated"
+      ],
+      "payload_bytes": 500
+    },
+    "auto_iosxe": {
+      "parser": "auto",
+      "backend_used": "genie",
+      "outcome": "structured_success",
+      "vendor": "cisco_iosxe",
+      "command": "show ip bgp summary",
+      "detail": null,
+      "_elapsed_ms": 18.6,
+      "payload_summary": [
+        "bgp_id",
+        "vrf"
+      ],
+      "payload_bytes": 649
+    }
+  },
+  "genie_full_payload": {
+    "bgp_id": 65001,
+    "vrf": {
+      "default": {
+        "neighbor": {
+          "10.0.0.2": {
+            "address_family": {
+              "": {
+                "version": 4,
+                "as": 65002,
+                "msg_rcvd": 10,
+                "msg_sent": 10,
+                "tbl_ver": 5,
+                "input_queue": 0,
+                "output_queue": 0,
+                "up_down": "00:05:00",
+                "state_pfxrcd": "100",
+                "route_identifier": "10.0.0.1",
+                "local_as": 65001,
+                "bgp_table_version": 5,
+                "routing_table_version": 5
+              }
+            }
+          },
+          "10.0.0.3": {
+            "address_family": {
+              "": {
+                "version": 4,
+                "as": 65003,
+                "msg_rcvd": 8,
+                "msg_sent": 8,
+                "tbl_ver": 5,
+                "input_queue": 0,
+                "output_queue": 0,
+                "up_down": "01:00:00",
+                "state_pfxrcd": "200",
+                "route_identifier": "10.0.0.1",
+                "local_as": 65001,
+                "bgp_table_version": 5,
+                "routing_table_version": 5
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

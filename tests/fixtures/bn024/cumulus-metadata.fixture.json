@@ -1,0 +1,44 @@
+{
+  "description": "BN-024-03A/08A Cumulus Linux metadata fixture. Synthetic device inventory describing a Cumulus Linux target used to prove the feature-applicability contract models release/component versions, ASIC scope and distinct configuration planes — without implying standalone-FRR equivalence with SONiC or operational support. Not a capture of real hardware.",
+  "platform": "cumulus",
+  "release": {
+    "raw": "5.13.0",
+    "train": null,
+    "build": null
+  },
+  "nvue": {
+    "version": "1.0",
+    "api": "REST GET (read-only)"
+  },
+  "frr": {
+    "version": "10.6.1",
+    "daemons": ["bgpd", "ospfd", "isisd", "staticd", "pbrd", "bfdd"]
+  },
+  "kernel": {
+    "version": "6.1.x",
+    "source": "linux networking / netlink / iproute2"
+  },
+  "asic": "marvell",
+  "platform_sku": "cumulus-linux",
+  "namespaces": [
+    {
+      "namespace": "default",
+      "role": "mgmt+host",
+      "vrfs": ["default", "blue"]
+    }
+  ],
+  "config_planes": {
+    "applied": {
+      "source": "NVUE applied (intended runtime state)",
+      "note": "distinct from FRR running config and kernel FIB"
+    },
+    "startup": {
+      "source": "NVUE startup (persisted intent)",
+      "note": "may differ from applied after commit without save"
+    }
+  },
+  "expected_profile": {
+    "profile_id": "cumulus-1",
+    "note": "selection requires release.raw=5.13.0 AND components.frr=10.6.1 AND asic=marvell; any mismatch is OutOfScope, never a generic FRR fallback"
+  }
+}

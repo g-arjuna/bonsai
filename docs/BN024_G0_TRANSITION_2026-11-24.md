@@ -1,8 +1,28 @@
 # BN-024 G0 transition note — 2026-11-24
 
-Status: **handoff prepared, no BN-024 implementation started.**
-Baseline: `main` @ `18fa577` + evidence branch
-`bn019/m6-packaged-upgrade` (`f55b4b1`, `c175cdb`).
+Status: **superseded — BN-024 implementation has since landed.** This note
+was written at G0 handoff; it is retained for history. Current state:
+
+- **BN-024-00** provenance foundation MERGED (PR #82 `e578595`) and
+  verifier hardened on `fix/bn024-parser-quality-and-sidecar-contract`
+  (revision-identity checks, path containment, deterministic tree hashes;
+  114/114 entries verified against pinned-revision git checkouts).
+- **BN-024-01** parser contract MERGED (PR #83 `09c2d60`) and corrected on
+  the same branch: structured-first ordering, canonical→backend vendor
+  translation through the production `inferred_vendor()` path, sidecar
+  identity/outcome validation, bounded native parse, explicit
+  `suzieq_native` unsupported, genuine packaged-sidecar validation and a
+  real differential oracle (see `docs/bn024/evidence/`).
+- **BN-024-02** typed-fact ABI implemented on the same branch
+  (`src/typed_facts.rs`, `docs/bn024/typed-facts/`): versioned schema,
+  explicit unknown/absent/invalid states, trust/authority boundary,
+  lifecycle/withdrawal, identity+evidence digests, schema-evolution gate.
+  No graph writer enabled.
+- Baseline: `main` @ `18fa577` + evidence branch
+  `bn019/m6-packaged-upgrade` (`f55b4b1`, `c175cdb`).
+
+The G0 requirements and verified-closed inputs below remain accurate as of
+their writing; see `docs/STATUS.md` and `BONSAI_BACKLOG.md` for live state.
 
 ## What G0 requires (design doc §10)
 

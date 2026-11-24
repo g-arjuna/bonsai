@@ -91,22 +91,36 @@ def _sha256_file(path: str) -> str:
 
 def _tree_hash(root: str, rel: str) -> str:
     base = os.path.join(root, rel)
-    h = hashlib.sha256()
-    for dirpath, _dirs, files in os.walk(base):
+    entries: list[tuple[str, str]] = []
+    for dirpath, dirnames, files in os.walk(base):
+        dirnames.sort()
         for name in sorted(files):
             full = os.path.join(dirpath, name)
             if not os.path.isfile(full) or os.path.islink(full):
                 continue
             r = os.path.relpath(full, base)
-            h.update(r.encode())
-            h.update(b"\0")
-            h.update(_sha256_file(full).encode())
-            h.update(b"\n")
+            entries.append((r, _sha256_file(full)))
+    entries.sort(key=lambda item: item[0])
+    h = hashlib.sha256()
+    for r, digest in entries:
+        h.update(r.encode())
+        h.update(b"\0")
+        h.update(digest.encode())
+        h.update(b"\n")
     return h.hexdigest()
 
 
 def _repo_dirname(repo_url: str) -> str:
     return repo_url.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _check_path_containment(repo_dir: str, upstream_path: str) -> str | None:
+    """Return an error string if upstream_path escapes repo_dir, else None."""
+    base = os.path.realpath(repo_dir)
+    target = os.path.realpath(os.path.join(base, upstream_path))
+    if target != base and not target.startswith(base + os.sep):
+        return f"upstream_path '{upstream_path}' escapes repository checkout"
+    return None
 
 
 def validate(manifest: dict) -> list[str]:
@@ -165,6 +179,16 @@ def validate(manifest: dict) -> list[str]:
         if usage == "unclear_prohibited_pending_review" and review == "approved_reference":
             errors.append(f"{where}: unclear assets cannot be approved_reference")
 
+        path = src.get("upstream_path")
+        if isinstance(path, str) and path:
+            parts = path.split("/")
+            if path.startswith("/") or "\x00" in path or any(
+                p in ("", ".", "..") for p in parts
+            ):
+                errors.append(
+                    f"{where}: upstream_path must be a clean relative path "
+                    "(no absolute paths, '.', '..' or empty segments)"
+                )
         dest = src.get("local_destination")
         if dest is not None:
             if not isinstance(dest, str) or not dest:
@@ -174,15 +198,67 @@ def validate(manifest: dict) -> list[str]:
     return errors
 
 
-def verify(manifest: dict, checkout_root: str) -> list[str]:
+def _git_head(repo_dir: str) -> str | None:
+    """Return HEAD revision of a git checkout, or None if not a git repo."""
+    import subprocess
+
+    if not (os.path.isdir(os.path.join(repo_dir, ".git"))
+            or os.path.isfile(os.path.join(repo_dir, ".git"))):
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip() or None
+
+
+def verify(manifest: dict, checkout_root: str, require_revision: bool = True) -> list[str]:
     errors: list[str] = []
+    # HEAD is a property of the checkout, so it is looked up once per repo
+    # dir — but the pinned-revision comparison is per *source*: two manifest
+    # entries may legitimately pin different revisions of the same repository,
+    # and each must be checked against its own immutable_revision. Scoping the
+    # "already checked" set by repo_dir alone would silently skip that check.
+    head_cache: dict[str, str | None] = {}
+    non_git_reported: set[str] = set()
     for src in manifest.get("sources", []):
         sid = src.get("source_id", "?")
-        repo_dir = os.path.join(checkout_root, _repo_dirname(src["upstream_repository"]))
-        target = os.path.join(repo_dir, src["upstream_path"])
+        repo_url = src.get("upstream_repository", "")
+        repo_dir = os.path.join(checkout_root, _repo_dirname(repo_url))
+        upstream_path = src.get("upstream_path", "")
         if not os.path.isdir(repo_dir):
-            errors.append(f"{sid}: no checkout for {src['upstream_repository']} at {repo_dir}")
+            errors.append(f"{sid}: no checkout for {repo_url} at {repo_dir}")
             continue
+
+        # Verify the checkout is actually at the pinned immutable revision —
+        # content hashes alone cannot prove revision identity.
+        if repo_dir not in head_cache:
+            head_cache[repo_dir] = _git_head(repo_dir)
+        head = head_cache[repo_dir]
+        if head is None:
+            if require_revision and repo_dir not in non_git_reported:
+                non_git_reported.add(repo_dir)
+                errors.append(
+                    f"{sid}: checkout {repo_dir} is not a git repository; "
+                    "cannot verify pinned immutable_revision"
+                )
+        elif head != src.get("immutable_revision"):
+            errors.append(
+                f"{sid}: checkout {repo_dir} HEAD {head[:12]}… does not "
+                f"match pinned revision {str(src.get('immutable_revision'))[:12]}…"
+            )
+
+        containment = _check_path_containment(repo_dir, upstream_path)
+        if containment:
+            errors.append(f"{sid}: {containment}")
+            continue
+
+        target = os.path.join(repo_dir, upstream_path)
         if src["content_kind"] == "file":
             if not os.path.isfile(target):
                 errors.append(f"{sid}: missing file {target}")

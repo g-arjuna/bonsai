@@ -1700,7 +1700,7 @@ impl Default for YangConfig {
     }
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ParserChainConfig {
     #[serde(default)]
     pub sidecars: ParserSidecarConfig,
@@ -1709,6 +1709,27 @@ pub struct ParserChainConfig {
     pub priorities: HashMap<String, Vec<String>>,
     #[serde(default)]
     pub consensus_mode: bool,
+    /// When false, only structured parser results are selectable; unstructured
+    /// fallback and unknown-quality output produce an explicit failure instead
+    /// of a degraded "successful" capture. Default true preserves the
+    /// line-split last-resort behavior for existing configurations.
+    #[serde(default = "default_allow_unstructured_fallback")]
+    pub allow_unstructured_fallback: bool,
+}
+
+fn default_allow_unstructured_fallback() -> bool {
+    true
+}
+
+impl Default for ParserChainConfig {
+    fn default() -> Self {
+        Self {
+            sidecars: ParserSidecarConfig::default(),
+            priorities: HashMap::new(),
+            consensus_mode: false,
+            allow_unstructured_fallback: default_allow_unstructured_fallback(),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]

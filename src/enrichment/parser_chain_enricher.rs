@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
@@ -13,6 +14,17 @@ use crate::parser_chain::{ParseRequest, ParserChain};
 
 const DEFAULT_SSH_PORT: u16 = 22;
 const CLI_CAPTURE_SCRIPT: &str = "scripts/cli_capture.py";
+/// Hard wall-clock deadline for one capture-helper invocation. The helper's
+/// own `--timeout-secs` bounds connect/auth/command phases; this deadline
+/// additionally covers interpreter startup and guarantees a wedged helper
+/// cannot stall enrichment indefinitely.
+const CLI_CAPTURE_DEADLINE: Duration = Duration::from_secs(90);
+/// The helper emits one JSON document whose `raw_output` is capped at 4 MiB;
+/// allow JSON/escaping overhead but reject anything beyond this as a
+/// contract violation rather than buffering it unboundedly.
+const MAX_CAPTURE_HELPER_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+/// Stderr is diagnostic only — keep failure messages bounded.
+const MAX_CAPTURE_STDERR_BYTES: usize = 8 * 1024;
 
 pub struct ParserChainCliEnricher {
     parser_chain: ParserChain,
@@ -67,11 +79,37 @@ impl MultiSourceEnricher for ParserChainCliEnricher {
             .await?;
         let payload = serde_json::to_string_pretty(&decision.parsed_json)
             .context("failed to serialize parser-chain output")?;
+        // Parser quality describes output *format*, not observation trust:
+        // a structured parser result does not authenticate the device, prove
+        // capture freshness/completeness, or establish semantic correctness.
+        // Confidence therefore stays conservative — structured parses cap at
+        // "medium" and degraded/unknown output at "low". BN-024-02 formalizes
+        // the wider trust dimensions (source, completeness, freshness,
+        // corroboration, authority eligibility).
         let confidence = match decision.quality.as_str() {
-            crate::parser_chain::QUALITY_STRUCTURED => "high",
-            crate::parser_chain::QUALITY_UNSTRUCTURED_FALLBACK => "low",
-            _ => "medium",
+            crate::parser_chain::QUALITY_STRUCTURED => "medium",
+            _ => "low",
         };
+        // Serialize attempt diagnostics without duplicating full parsed
+        // payloads: identity, outcome, quality and content digest/size are
+        // sufficient provenance; the selected payload is stored once via
+        // `capture.payload`.
+        let attempt_details: Vec<serde_json::Value> = decision
+            .attempts
+            .iter()
+            .map(|attempt| {
+                serde_json::json!({
+                    "parser": attempt.parser,
+                    "success": attempt.success,
+                    "error": attempt.error,
+                    "backend_used": attempt.backend_used,
+                    "quality": attempt.quality,
+                    "outcome": attempt.outcome,
+                    "parsed_sha256": attempt.parsed_sha256,
+                    "parsed_bytes": attempt.parsed_bytes,
+                })
+            })
+            .collect();
         Ok(MultiSourceCapture {
             source: self.name().to_string(),
             path_count: 1,
@@ -86,7 +124,7 @@ impl MultiSourceEnricher for ParserChainCliEnricher {
                 "ssh_port": ssh_target.port,
                 "consensus_state": decision.consensus_state,
                 "parse_quality": decision.quality,
-                "attempts": decision.attempts,
+                "attempts": attempt_details,
             }),
         })
     }
@@ -152,10 +190,31 @@ async fn capture_raw_output(
             .arg(command_pattern)
             .env("BONSAI_CAPTURE_PASSWORD", &credentials.password)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
-        match cmd.output().await {
+        let output = match tokio::time::timeout(CLI_CAPTURE_DEADLINE, cmd.output()).await {
+            Ok(result) => result,
+            Err(_) => {
+                failures.push(format!(
+                    "{} exceeded the {}s capture deadline",
+                    candidate.display(),
+                    CLI_CAPTURE_DEADLINE.as_secs()
+                ));
+                continue;
+            }
+        };
+        match output {
             Ok(output) if output.status.success() => {
+                if output.stdout.len() > MAX_CAPTURE_HELPER_OUTPUT_BYTES {
+                    failures.push(format!(
+                        "{} produced {} bytes of stdout (limit {} bytes)",
+                        candidate.display(),
+                        output.stdout.len(),
+                        MAX_CAPTURE_HELPER_OUTPUT_BYTES
+                    ));
+                    continue;
+                }
                 let result: CliCaptureResult = serde_json::from_slice(&output.stdout)
                     .with_context(|| {
                         format!(
@@ -166,11 +225,14 @@ async fn capture_raw_output(
                 return Ok(result.raw_output);
             }
             Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = stderr.trim();
+                let truncated: String = stderr.chars().take(MAX_CAPTURE_STDERR_BYTES).collect();
                 failures.push(format!(
                     "{} exited with {}: {}",
                     candidate.display(),
                     output.status,
-                    String::from_utf8_lossy(&output.stderr).trim()
+                    truncated
                 ));
             }
             Err(error) => {
@@ -297,5 +359,70 @@ mod tests {
             crate::platform_registry::suggest_platform_from_hostname(target.hostname.as_deref()),
             Some("cisco.iosxr")
         );
+    }
+
+    /// CR-02 production-path regression: the vendor string produced by
+    /// `inferred_vendor()` (canonical dotted platform id) must reach the
+    /// sidecar translated to the backend vendor id (`cisco_iosxr`), exercised
+    /// end-to-end through `ParserChain::parse` — not just a mapping helper.
+    #[tokio::test]
+    async fn inferred_vendor_output_reaches_sidecar_as_backend_id() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/parse"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "parser": "genie",
+                "backend_used": "genie",
+                "vendor": "cisco_iosxr",
+                "command": "show running-config",
+                "parsed_json": {"ok": true},
+            })))
+            .mount(&server)
+            .await;
+
+        let mut priorities = std::collections::HashMap::new();
+        priorities.insert(
+            "cisco.iosxr::*".to_string(),
+            vec!["pyats_genie".to_string()],
+        );
+        let chain = crate::parser_chain::ParserChain::new(crate::config::ParserChainConfig {
+            sidecars: crate::config::ParserSidecarConfig {
+                pyats_url: server.uri(),
+                native_url: "http://127.0.0.1:1".to_string(),
+            },
+            priorities,
+            ..Default::default()
+        });
+
+        let target = TargetConfig {
+            address: "172.100.102.21:57400".to_string(),
+            enabled: true,
+            vendor: Some("cisco-iosxr".to_string()),
+            ..Default::default()
+        };
+        let vendor = inferred_vendor(&target);
+        assert_eq!(vendor, "cisco.iosxr");
+        let command = command_for_vendor(&vendor).expect("iosxr command");
+
+        let decision = chain
+            .parse(ParseRequest {
+                vendor,
+                command_pattern: command.to_string(),
+                raw_output: "x\n".to_string(),
+            })
+            .await
+            .expect("parse decision");
+        assert_eq!(decision.quality, crate::parser_chain::QUALITY_STRUCTURED);
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("request json");
+        assert_eq!(body["vendor"], "cisco_iosxr");
+        assert_eq!(body["parser"], "genie");
+        assert_eq!(body["command"], command);
     }
 }
