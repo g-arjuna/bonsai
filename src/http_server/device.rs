@@ -1982,10 +1982,13 @@ pub(super) struct DeviceSchemaSelectionRequest {
 /// bundle. The bundle must exist and pass integrity verification as a
 /// COMPLETE catalogue — partial catalogues are never selectable
 /// authority. A schema-bound approval derived from a different schema is
-/// revoked through the fingerprint-guarded device-scoped path before the
-/// selection commits ordering-wise (revoke first, then select: the
-/// device can never hold an approval whose schema differs from its
-/// effective catalogue).
+/// revoked through the fingerprint-guarded device-scoped path as part of
+/// the same logical transition — the fenced selection write commits
+/// FIRST so a stale `expected_selection_revision` fails before any
+/// authority-changing action, and only then is the incompatible
+/// approval revoked (commit-first ordering: a rejected request can
+/// never revoke a valid approval; an interrupted transition leaves a
+/// durable selection the authorization boundary fails closed against).
 pub(super) async fn device_schema_selection_put_handler(
     State(state): State<AppState>,
     Path(address): Path<String>,

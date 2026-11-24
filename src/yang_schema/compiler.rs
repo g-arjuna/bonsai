@@ -17,7 +17,13 @@ use super::parser::{DeviateProp, Module, Node, Stmt, TypeSpec};
 /// circular if-feature dependency diagnostics — both alter compiled
 /// module content/diagnostics and therefore schema identity. Old
 /// bundles must never be interpreted under the new semantics.
-pub const COMPILED_SCHEMA_VERSION: u32 = 3;
+/// v4: deviation preconditions corrected to RFC 7950 §7.20.3.2 —
+/// `delete` requires keyword+argument match, `replace` requires an
+/// existing property, `add` respects cardinality, and only the RFC
+/// deviable property set is honored. Compiled content, diagnostics and
+/// schema identity all change; v3 bundles must be recompiled and
+/// reselections re-approved explicitly.
+pub const COMPILED_SCHEMA_VERSION: u32 = 4;
 /// Bound on resolution passes for nested augments.
 const MAX_RESOLUTION_PASSES: usize = 8;
 /// Bound on uses-expansion depth (grouping cycles).
@@ -1931,6 +1937,16 @@ fn apply_deviation_kinds(
         return false;
     };
     let mut fully_applied = true;
+    if dw.deviates.is_empty() {
+        // RFC 7950 ABNF: a deviation body must carry at least one
+        // `deviate` statement. An empty deviation applies nothing yet
+        // would still claim coverage — diagnose instead.
+        fully_applied = false;
+        diagnostics.push(format!(
+            "deviation '{}' in module '{}': deviation body contains no 'deviate' statement",
+            dw.target, dw.module
+        ));
+    }
     for d in &dw.deviates {
         match d.kind.as_str() {
             "not-supported" => {
@@ -1962,11 +1978,11 @@ fn apply_deviation_kinds(
                     continue;
                 }
                 for prop in &d.body_props {
-                    if !delete_deviate_property(&mut node.node, &prop.name) {
+                    if let Err(why) = delete_deviate_property(&mut node.node, prop) {
                         fully_applied = false;
                         diagnostics.push(format!(
-                            "deviation '{}' in module '{}': 'deviate delete' of '{}' is not implemented — property preserved, catalogue stays non-authoritative",
-                            dw.target, dw.module, prop.name
+                            "deviation '{}' in module '{}': deviate delete {{{}}}: {} — property preserved, catalogue stays non-authoritative",
+                            dw.target, dw.module, prop.name, why
                         ));
                     }
                 }
@@ -2027,42 +2043,184 @@ fn apply_deviation_kinds(
     fully_applied
 }
 
-/// Properties `deviate delete` can remove because the compiled model
-/// represents them accurately. Anything else (`type`, `key`, `if-feature`,
-/// `unique`, extensions, ...) either changes path/type identity we cannot
-/// represent post-resolution or is not modeled at all — deleting it must
-/// fail closed rather than pretend the property is gone.
-fn delete_deviate_property(node: &mut Node, name: &str) -> bool {
-    match name {
-        "description" => node.description = None,
-        "reference" => node.reference = None,
-        "status" => node.status = None,
-        "config" => node.config = None,
-        "mandatory" => node.mandatory = None,
-        "presence" => node.presence = None,
-        "default" => node.default = None,
-        "units" => node.units = None,
-        "ordered-by" => node.ordered_by = None,
-        "min-elements" => node.min_elements = None,
-        "max-elements" => node.max_elements = None,
-        "must" => node.musts.clear(),
-        "when" => node.whens.clear(),
-        _ => return false,
+/// RFC 7950 §7.20.3.2 — the complete set of properties a `deviate`
+/// substatement may name. Anything else (description, reference,
+/// status, when, presence, ordered-by, key, if-feature, data-defs,
+/// extension properties) is not a deviation property; extension-defined
+/// deviation semantics require their own explicit support contract and
+/// are diagnosed, never approximated.
+const DEVIABLE_PROPERTIES: &[&str] = &[
+    "config",
+    "default",
+    "mandatory",
+    "max-elements",
+    "min-elements",
+    "must",
+    "type",
+    "unique",
+    "units",
+];
+
+fn check_deviable(name: &str) -> Result<(), String> {
+    if DEVIABLE_PROPERTIES.contains(&name) {
+        Ok(())
+    } else {
+        Err(format!(
+            "'{}' is not a deviable property (RFC 7950 §7.20.3.2)",
+            name
+        ))
     }
-    true
 }
 
-/// `deviate replace` property application. Only properties whose values
-/// Bonsai represents AND whose replacement cannot change path identity in
-/// ways we cannot recompute are honored; the replacement VALUE is written
-/// into the node — a recorded-but-unapplied replacement would be a false
-/// authoritative schema.
-fn replace_deviate_property(node: &mut Node, prop: &DeviateProp) -> Result<(), String> {
-    if prop.has_block {
-        return Err("sub-block form is not a property replacement".to_string());
+/// Whether the target node currently carries the named deviation
+/// property (singleton view — repeated properties are handled
+/// separately).
+fn deviate_property_present(node: &Node, name: &str) -> bool {
+    match name {
+        "config" => node.config.is_some(),
+        "default" => node.default.is_some(),
+        "mandatory" => node.mandatory.is_some(),
+        "min-elements" => node.min_elements.is_some(),
+        "max-elements" => node.max_elements.is_some(),
+        "units" => node.units.is_some(),
+        _ => false,
+    }
+}
+
+/// Normalize a `must` expression argument for comparison with the
+/// dequoted expressions stored on the node.
+fn deviate_expr(v: &str) -> Result<String, String> {
+    if v.starts_with('"') {
+        dequote_concat(v)
+    } else {
+        Ok(v.to_string())
+    }
+}
+
+/// `deviate delete` removes a property ONLY when the substatement's
+/// keyword matches a property on the target node AND the argument
+/// string equals the node's argument string (RFC 7950 §7.20.3.2). A
+/// missing property or mismatched argument is an invalid deviation —
+/// diagnosed, property preserved, catalogue non-authoritative. Repeated
+/// properties (`must`, `unique`) remove only the matching occurrence.
+fn delete_deviate_property(node: &mut Node, prop: &DeviateProp) -> Result<(), String> {
+    let name = prop.name.as_str();
+    check_deviable(name)?;
+    if name == "type" {
+        return Err(
+            "'type' deletion is not implemented — type identity cannot be safely rewritten post-resolution"
+                .to_string(),
+        );
+    }
+    // `must` legitimately carries an error-message sub-block; every
+    // other deviable property is a plain `;`-terminated statement.
+    if prop.has_block && name != "must" {
+        return Err(format!("'{}' does not take a sub-block here", name));
     }
     let v = prop.value.trim();
-    match prop.name.as_str() {
+    match name {
+        "config" => {
+            let want = deviate_bool(v, "config")?;
+            match node.config {
+                Some(have) if have == want => node.config = None,
+                Some(_) => return Err("argument does not match the node's 'config' value".into()),
+                None => return Err("'config' is not present on the target node".into()),
+            }
+        }
+        "mandatory" => {
+            // Flag property: bare `mandatory;` means `mandatory true`.
+            let want = if v.is_empty() {
+                true
+            } else {
+                deviate_bool(v, "mandatory")?
+            };
+            match node.mandatory {
+                Some(have) if have == want => node.mandatory = None,
+                Some(_) => {
+                    return Err("argument does not match the node's 'mandatory' value".into());
+                }
+                None => return Err("'mandatory' is not present on the target node".into()),
+            }
+        }
+        "default" => {
+            if v.is_empty() {
+                return Err("missing value".into());
+            }
+            match &node.default {
+                Some(have) if have.trim() == v => node.default = None,
+                Some(_) => return Err("argument does not match the node's 'default' value".into()),
+                None => return Err("'default' is not present on the target node".into()),
+            }
+        }
+        "units" => {
+            let want = unquote_deviate_string(v)?;
+            match &node.units {
+                Some(have) if *have == want => node.units = None,
+                Some(_) => return Err("argument does not match the node's 'units' value".into()),
+                None => return Err("'units' is not present on the target node".into()),
+            }
+        }
+        "min-elements" | "max-elements" => {
+            let want = deviate_uint(v, name)?;
+            let slot = if name == "min-elements" {
+                &mut node.min_elements
+            } else {
+                &mut node.max_elements
+            };
+            match *slot {
+                Some(have) if have == want => *slot = None,
+                Some(_) => {
+                    return Err(format!(
+                        "argument does not match the node's '{}' value",
+                        name
+                    ));
+                }
+                None => return Err(format!("'{}' is not present on the target node", name)),
+            }
+        }
+        "must" => {
+            if v.is_empty() {
+                return Err("missing expression".into());
+            }
+            let expr = deviate_expr(v)?;
+            match node.musts.iter().position(|m| m == &expr) {
+                Some(i) => {
+                    node.musts.remove(i);
+                }
+                None => {
+                    return Err(
+                        "no 'must' expression on the target node matches the argument".into(),
+                    );
+                }
+            }
+        }
+        "unique" => {
+            if v.is_empty() {
+                return Err("missing argument".into());
+            }
+            let want = unquote_deviate_string(v)?;
+            match node.uniques.iter().position(|u| u.trim() == want) {
+                Some(i) => {
+                    node.uniques.remove(i);
+                }
+                None => return Err("no 'unique' argument on the target node matches".into()),
+            }
+        }
+        _ => unreachable!("check_deviable gates the match"),
+    }
+    Ok(())
+}
+
+/// Parse and write a scalar deviation property value. Shared by
+/// `deviate replace` (after the existence precondition) and `deviate
+/// add` (after the absence precondition).
+fn set_deviate_property_value(
+    node: &mut Node,
+    name: &str,
+    prop: &DeviateProp,
+) -> Result<(), String> {
+    let v = prop.value.trim();
+    match name {
         "default" => {
             if v.is_empty() {
                 return Err("missing value".to_string());
@@ -2072,96 +2230,110 @@ fn replace_deviate_property(node: &mut Node, prop: &DeviateProp) -> Result<(), S
         "units" => {
             node.units = Some(unquote_deviate_string(v)?);
         }
-        "status" => {
-            node.status = Some(single_ident(v, "status")?);
-        }
-        "description" | "reference" => {
-            let s = dequote_concat(v)?;
-            if prop.name == "description" {
-                node.description = Some(s);
+        "mandatory" => {
+            node.mandatory = Some(if v.is_empty() {
+                true
             } else {
-                node.reference = Some(s);
-            }
-        }
-        "mandatory" => node.mandatory = Some(deviate_bool(v, "mandatory")?),
-        "config" => node.config = Some(deviate_bool(v, "config")?),
-        "min-elements" => node.min_elements = Some(deviate_uint(v, "min-elements")?),
-        "max-elements" => node.max_elements = Some(deviate_uint(v, "max-elements")?),
-        "presence" => {
-            node.presence = Some(if v.is_empty() {
-                String::new()
-            } else {
-                unquote_deviate_string(v)?
+                deviate_bool(v, "mandatory")?
             });
         }
-        "ordered-by" => {
-            node.ordered_by = Some(single_ident(v, "ordered-by")?);
+        "config" => {
+            node.config = Some(deviate_bool(v, "config")?);
+        }
+        "min-elements" => {
+            node.min_elements = Some(deviate_uint(v, "min-elements")?);
+        }
+        "max-elements" => {
+            node.max_elements = Some(deviate_uint(v, "max-elements")?);
         }
         other => {
-            return Err(format!("replacement of '{}' is not implemented", other));
+            return Err(format!("'{}' is not a settable deviation property", other));
         }
     }
     Ok(())
 }
 
-/// `deviate add` property application for the read-only-planning subset:
-/// scalar properties we represent, plus flag `mandatory` and `must`/`when`
-/// expressions (stored, never evaluated — same fidelity as the base
-/// parser). Adding a property the node already carries is a deviation
-/// conflict and fails closed.
+/// `deviate replace` rewrites the VALUE of a property that MUST already
+/// exist on the target node (RFC 7950 §7.20.3.2). Only scalar properties
+/// this compiler represents faithfully are honored; `type` changes path
+/// identity and the repeated properties (`must`, `unique`) have no
+/// unambiguous single-slot replacement — all are diagnosed.
+fn replace_deviate_property(node: &mut Node, prop: &DeviateProp) -> Result<(), String> {
+    let name = prop.name.as_str();
+    check_deviable(name)?;
+    match name {
+        "type" => {
+            return Err(
+                "'type' replacement is not implemented — type identity cannot be safely rewritten post-resolution"
+                    .to_string(),
+            )
+        }
+        "must" | "unique" => {
+            return Err(format!(
+                "replacement of '{}' is ambiguous for a repeated property",
+                name
+            ))
+        }
+        _ => {}
+    }
+    if prop.has_block {
+        return Err("sub-block form is not a property replacement".to_string());
+    }
+    if !deviate_property_present(node, name) {
+        return Err(format!(
+            "'{}' is not present on the target node — 'deviate replace' requires an existing property",
+            name
+        ));
+    }
+    set_deviate_property_value(node, name, prop)
+}
+
+/// `deviate add` introduces a property the target node does NOT carry.
+/// Singleton (0..1) properties conflict when already present; repeated
+/// (0..n) properties (`must`, `unique`) conflict only on an identical
+/// argument. Only the representable scalar subset plus `must`/`unique`
+/// expressions is honored — anything else is diagnosed.
 fn add_deviate_property(node: &mut Node, prop: &DeviateProp) -> Result<(), String> {
+    let name = prop.name.as_str();
+    check_deviable(name)?;
+    if name == "type" {
+        return Err("'type' addition is not implemented".to_string());
+    }
+    match name {
+        "must" | "unique" => {
+            if prop.has_block && name != "must" {
+                return Err(format!("'{}' does not take a sub-block here", name));
+            }
+            let v = prop.value.trim();
+            if v.is_empty() {
+                return Err("missing argument".to_string());
+            }
+            if name == "must" {
+                let expr = deviate_expr(v)?;
+                if node.musts.iter().any(|m| m == &expr) {
+                    return Err("'must' expression already present".to_string());
+                }
+                node.musts.push(expr);
+            } else {
+                let want = unquote_deviate_string(v)?;
+                if node.uniques.iter().any(|u| u.trim() == want) {
+                    return Err("'unique' argument already present".to_string());
+                }
+                node.uniques.push(want);
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
     if prop.has_block {
         return Err("sub-block form is not a property addition".to_string());
     }
-    let v = prop.value.trim();
-    match prop.name.as_str() {
-        "mandatory" => {
-            // `deviate add { mandatory; }` is the common flag form.
-            let val = if v.is_empty() {
-                true
-            } else {
-                deviate_bool(v, "mandatory")?
-            };
-            if node.mandatory.is_some() {
-                return Err("mandatory already present".to_string());
-            }
-            node.mandatory = Some(val);
-        }
-        "must" | "when" => {
-            if v.is_empty() {
-                return Err("missing expression".to_string());
-            }
-            let exprs = if prop.name == "must" {
-                &mut node.musts
-            } else {
-                &mut node.whens
-            };
-            exprs.push(dequote_concat(v)?);
-        }
-        _ => {
-            // Scalar additions share the replace machinery, but only when
-            // the property is absent — `deviate add` of an existing
-            // property is a conflict, not an overwrite.
-            let occupied = match prop.name.as_str() {
-                "default" => node.default.is_some(),
-                "units" => node.units.is_some(),
-                "status" => node.status.is_some(),
-                "description" => node.description.is_some(),
-                "reference" => node.reference.is_some(),
-                "config" => node.config.is_some(),
-                "min-elements" => node.min_elements.is_some(),
-                "max-elements" => node.max_elements.is_some(),
-                "presence" => node.presence.is_some(),
-                "ordered-by" => node.ordered_by.is_some(),
-                _ => return Err(format!("addition of '{}' is not implemented", prop.name)),
-            };
-            if occupied {
-                return Err(format!("'{}' already present", prop.name));
-            }
-            replace_deviate_property(node, prop)?;
-        }
+    // `deviate add` of an existing property is a deviation conflict,
+    // not an overwrite — fail closed.
+    if deviate_property_present(node, name) {
+        return Err(format!("'{}' already present", name));
     }
-    Ok(())
+    set_deviate_property_value(node, name, prop)
 }
 
 fn deviate_bool(v: &str, what: &str) -> Result<bool, String> {
@@ -2175,18 +2347,6 @@ fn deviate_bool(v: &str, what: &str) -> Result<bool, String> {
 fn deviate_uint(v: &str, what: &str) -> Result<u64, String> {
     v.parse::<u64>()
         .map_err(|_| format!("{} expects an unsigned integer, found '{}'", what, v))
-}
-
-/// A single identifier/keyword argument (`status current`, `ordered-by
-/// user`). Quoted or multi-token values are rejected.
-fn single_ident(v: &str, what: &str) -> Result<String, String> {
-    if v.is_empty() || v.contains(char::is_whitespace) || v.starts_with('"') {
-        return Err(format!(
-            "{} expects a single identifier, found '{}'",
-            what, v
-        ));
-    }
-    Ok(v.to_string())
 }
 
 /// Unquote a `"..."`-quoted argument; bare identifiers pass through.
@@ -2662,4 +2822,192 @@ pub fn filter_by_features<'a>(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deviate_prop(name: &str, value: &str) -> DeviateProp {
+        DeviateProp {
+            name: name.to_string(),
+            value: value.to_string(),
+            has_block: false,
+        }
+    }
+
+    fn node_with_props() -> Node {
+        Node {
+            name: "n".to_string(),
+            musts: vec!["a or b".to_string(), "c or d".to_string()],
+            uniques: vec!["name".to_string(), "name domain".to_string()],
+            default: Some("1000".to_string()),
+            units: Some("Mbps".to_string()),
+            mandatory: Some(true),
+            config: Some(true),
+            min_elements: Some(1),
+            max_elements: Some(8),
+            ..Node::default()
+        }
+    }
+
+    #[test]
+    fn delete_removes_only_the_matching_must_occurrence() {
+        let mut n = node_with_props();
+        delete_deviate_property(&mut n, &deviate_prop("must", "\"a or b\""))
+            .expect("matching must deletes");
+        assert_eq!(n.musts, vec!["c or d".to_string()]);
+        // The remaining expression is still deletable on its own.
+        delete_deviate_property(&mut n, &deviate_prop("must", "\"c or d\""))
+            .expect("second must deletes");
+        assert!(n.musts.is_empty());
+        // And a third delete of the same expression now fails closed.
+        assert!(delete_deviate_property(&mut n, &deviate_prop("must", "\"a or b\"")).is_err());
+    }
+
+    #[test]
+    fn delete_removes_only_the_matching_unique_occurrence() {
+        let mut n = node_with_props();
+        delete_deviate_property(&mut n, &deviate_prop("unique", "\"name\""))
+            .expect("matching unique deletes");
+        assert_eq!(n.uniques, vec!["name domain".to_string()]);
+        assert!(delete_deviate_property(&mut n, &deviate_prop("unique", "\"name\"")).is_err());
+    }
+
+    #[test]
+    fn delete_scalar_properties_require_exact_argument_match() {
+        let mut n = node_with_props();
+        for (name, bad, good) in [
+            ("default", "\"9999\"", "1000"),
+            ("units", "\"Gbps\"", "\"Mbps\""),
+            ("mandatory", "false", "true"),
+            ("config", "false", "true"),
+            ("min-elements", "2", "1"),
+            ("max-elements", "16", "8"),
+        ] {
+            let mut m = node_with_props();
+            assert!(
+                delete_deviate_property(&mut m, &deviate_prop(name, bad)).is_err(),
+                "{name} {bad} must not match"
+            );
+            delete_deviate_property(&mut n, &deviate_prop(name, good))
+                .unwrap_or_else(|e| panic!("{name} {good}: {e}"));
+        }
+        assert!(
+            n.default.is_none()
+                && n.units.is_none()
+                && n.mandatory.is_none()
+                && n.config.is_none()
+                && n.min_elements.is_none()
+                && n.max_elements.is_none()
+        );
+    }
+
+    #[test]
+    fn delete_rejects_absent_and_non_deviable_properties() {
+        let mut n = Node::default();
+        for prop in [
+            deviate_prop("default", "1"),
+            deviate_prop("units", "\"x\""),
+            deviate_prop("mandatory", ""),
+            deviate_prop("config", "true"),
+            deviate_prop("must", "\"x\""),
+            deviate_prop("unique", "\"x\""),
+            deviate_prop("type", "uint32"),
+        ] {
+            assert!(
+                delete_deviate_property(&mut n, &prop).is_err(),
+                "{:?}",
+                prop.name
+            );
+        }
+        for name in [
+            "description",
+            "reference",
+            "status",
+            "when",
+            "presence",
+            "ordered-by",
+            "key",
+            "if-feature",
+            "leaf",
+        ] {
+            let mut m = node_with_props();
+            assert!(
+                delete_deviate_property(&mut m, &deviate_prop(name, "x")).is_err(),
+                "{name} is not deviable"
+            );
+        }
+    }
+
+    #[test]
+    fn replace_requires_existing_property() {
+        let mut n = Node {
+            units: Some("Mbps".to_string()),
+            ..Node::default()
+        };
+        // Absent properties cannot be replaced.
+        for prop in [
+            deviate_prop("default", "5"),
+            deviate_prop("mandatory", "true"),
+            deviate_prop("config", "true"),
+            deviate_prop("min-elements", "1"),
+            deviate_prop("max-elements", "2"),
+        ] {
+            assert!(
+                replace_deviate_property(&mut n, &prop).is_err(),
+                "{:?}",
+                prop.name
+            );
+        }
+        // Existing property replaces; repeated/type properties diagnose.
+        replace_deviate_property(&mut n, &deviate_prop("units", "\"Gbps\""))
+            .expect("units replace");
+        assert_eq!(n.units.as_deref(), Some("Gbps"));
+        for prop in [
+            deviate_prop("type", "uint32"),
+            deviate_prop("must", "\"x\""),
+            deviate_prop("unique", "\"x\""),
+            deviate_prop("description", "\"d\""),
+        ] {
+            let mut m = node_with_props();
+            assert!(
+                replace_deviate_property(&mut m, &prop).is_err(),
+                "{:?}",
+                prop.name
+            );
+        }
+    }
+
+    #[test]
+    fn add_respects_cardinality_and_argument_dedup() {
+        let mut n = Node::default();
+        // Singleton absent → add applies.
+        add_deviate_property(&mut n, &deviate_prop("mandatory", "")).expect("mandatory add");
+        assert_eq!(n.mandatory, Some(true));
+        // Singleton now present → conflict.
+        assert!(add_deviate_property(&mut n, &deviate_prop("mandatory", "")).is_err());
+        // Repeated properties: distinct args add, identical args conflict.
+        add_deviate_property(&mut n, &deviate_prop("must", "\"a\"")).expect("must add");
+        add_deviate_property(&mut n, &deviate_prop("must", "\"b\"")).expect("second must add");
+        assert!(add_deviate_property(&mut n, &deviate_prop("must", "\"a\"")).is_err());
+        assert_eq!(n.musts.len(), 2);
+        add_deviate_property(&mut n, &deviate_prop("unique", "\"k\"")).expect("unique add");
+        assert!(add_deviate_property(&mut n, &deviate_prop("unique", "\"k\"")).is_err());
+        assert_eq!(n.uniques, vec!["k".to_string()]);
+        // Non-deviable / unsupported additions diagnose.
+        for prop in [
+            deviate_prop("type", "uint32"),
+            deviate_prop("description", "\"d\""),
+            deviate_prop("when", "\"x\""),
+            deviate_prop("leaf", "x"),
+        ] {
+            let mut m = Node::default();
+            assert!(
+                add_deviate_property(&mut m, &prop).is_err(),
+                "{:?}",
+                prop.name
+            );
+        }
+    }
 }

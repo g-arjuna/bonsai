@@ -60,7 +60,9 @@ The HTTP compile endpoint only auto-activates `complete` catalogues;
 ## Schema identity (`schema_id`)
 
 `schema_id` is a SHA-256 over a canonical serialization of the
-compiler version, catalogue status, all diagnostics, full module
+compiler version (`COMPILED_SCHEMA_VERSION`, currently **4** — bumped
+from 3 by the M6 final-review deviation-semantics correction),
+catalogue status, all diagnostics, full module
 metadata (name, revision, namespace, prefix, provenance, license,
 platforms, pinned ref, source id, features) and every schema-path
 entry (path, kind, config/state, mandatory, presence, type names,
@@ -82,6 +84,24 @@ dropped '2026-10-05'"). They never affect `status` and never enter
 is `complete` and selectable exactly like a single-revision compile.
 Real conflicts (unresolvable pins, same-authority distinct content)
 remain in `diagnostics` and keep the catalogue non-authoritative.
+
+### Compiler-version migration (v3 → v4)
+
+Compiled bundles embed the compiler version; a bundle compiled under a
+different `COMPILED_SCHEMA_VERSION` fails verification closed and is
+never silently reinterpreted. After upgrading Core:
+
+1. Every pre-upgrade compiled bundle (v3 and earlier) is rejected on
+   load — `active.json` selection, device schema selections and
+   schema-bound approvals referencing it fail closed, never grant
+   authority.
+2. Recompile the intended module set under the new compiler; the new
+   content produces a new `schema_id`.
+3. Explicitly reactivate the new bundle and reselect it per device;
+   schema-bound approvals must be re-approved against the new schema —
+   no old approval is treated as approval of the new schema.
+4. Rollback is a binary rollback plus the same recompile/reselect
+   steps; old bundle files are never edited to fake compatibility.
 
 ## Supported YANG subset
 
@@ -126,26 +146,26 @@ silent where detectable):
   from the effective schema (path index, feature gates and all).
 - `deviate delete` removes only the listed PROPERTIES of the target
   node — the node itself stays (RFC 7950 §7.20.3.2; `delete` and
-  `not-supported` are distinct operations). Deletion is implemented for
-  the properties Bonsai represents accurately (`default`, `units`,
-  `mandatory`, `config`, `presence`, `description`, `reference`,
-  `status`, `ordered-by`, `min-elements`, `max-elements`, `must`,
-  `when`); deleting anything else (`type`, `key`, `if-feature`,
-  `unique`, extensions, ...) preserves the node, emits a diagnostic and
-  keeps the catalogue `partial` — the deviation is NOT counted as
-  applied. Both block (`deviate delete { ... }`, no trailing `;` — the
-  form real-world vendor deviation modules such as
-  `cisco-xr-openconfig-interfaces-deviations` use) and semicolon forms
-  parse correctly.
+  `not-supported` are distinct operations). Per the RFC the deviable
+  property set is exactly `config`, `default`, `mandatory`,
+  `max-elements`, `min-elements`, `must`, `type`, `unique` and `units`;
+  `delete` requires the keyword AND argument to match and removes only
+  the matching occurrence of repeated properties (`must`, `when`,
+  `unique`). Deleting a property outside the RFC set, a property whose
+  argument does not match, or a property that is not present preserves
+  the node, emits a diagnostic and keeps the catalogue `partial` — the
+  deviation is NOT counted as applied. Both block (`deviate delete {
+  ... }`, no trailing `;` — the form real-world vendor deviation
+  modules such as `cisco-xr-openconfig-interfaces-deviations` use) and
+  semicolon forms parse correctly.
 - `deviate replace` writes the replacement VALUE into the effective
-  node for the represented scalar properties (`default`, `units`,
-  `status`, `description`, `reference`, `mandatory`, `config`,
-  `min-elements`, `max-elements`, `presence`, `ordered-by`). Anything
-  else — including `type`, `key`, `must`/`when` restructuring and
-  sub-block forms — is diagnosed and keeps the catalogue `partial`.
-- `deviate add` applies the same scalar-property subset plus flag
-  `mandatory` and `must`/`when` expressions, but only when the property
-  is absent — adding an existing property or an unimplemented property
+  node for the represented RFC-deviable scalar properties, and only
+  when the property already exists on the target — replacing an absent
+  property, an unrepresented property (`type`), or a sub-block form is
+  diagnosed and keeps the catalogue `partial`.
+- `deviate add` applies RFC-deviable scalar properties plus `must`/
+  `when`/`unique` entries, but only when the property is absent —
+  adding an existing singleton property or an unimplemented property
   is diagnosed and keeps the catalogue `partial`. Data-definition
   additions (`leaf`, `container`, ...) are never synthesized.
 - Malformed deviation bodies are diagnosed, never silently applied:
@@ -452,3 +472,18 @@ UI: the schema workspace exposes the executor selector, live job card
 (state/collector/reason/snapshot), bounded status polling and the
 resulting snapshot's provenance; refresh on a schema-bound device
 requires explicit confirmation because it can invalidate the approval.
+
+**Effective-schema authority (M6-CR-05):** a schema-bound approval is
+authority only while the schema it was evaluated against remains the
+device's verified *effective* schema — the durable explicit selection
+when present, else the globally active catalogue. Evidence freshness
+alone is never a schema revocation guarantee: an interrupted global
+activation or selection transition (durable pointer/selection commit
+without its revocation pass), a restart before reconciliation, or a
+missing/corrupt/partial/compiler-incompatible effective bundle all
+fail closed at every ongoing authorization boundary — collector
+assignment build, lifecycle admission, local subscriber start, and
+the bounded expiry reconciler (which durably revokes only DEFINITELY
+superseded approvals; unverifiable authority is never auto-revoked,
+authorization simply refuses it). An explicit selection whose bundle
+cannot be verified never silently falls back to the global catalogue.

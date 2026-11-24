@@ -600,6 +600,13 @@ struct EffectiveSet {
     /// served when SOME declared datastore carries state. `Unknown`
     /// axes (unrecognized identities) never collapse to `No`.
     datastore_axes: (DatastoreAxis, DatastoreAxis),
+    /// Per-module datastore axes for DEFAULT (non-explicit) NMDA
+    /// resolution: module name → (config, state) proven by the
+    /// datastores whose OWN schemas implement that module at the
+    /// compiled revision. Absent entries fall back to
+    /// `datastore_axes`. Empty for explicit datastore requests and
+    /// non-NMDA evidence, where the global pair is already strict.
+    module_datastore_axes: BTreeMap<String, (DatastoreAxis, DatastoreAxis)>,
     content_id: Option<String>,
     /// Set when datastore/schema resolution failed — every module is
     /// then `unknown`, never `not_applicable` (absence of evidence is
@@ -711,6 +718,16 @@ pub fn resolve_applicability(input: &ApplicabilityInput<'_>) -> ApplicabilityRes
             reasons: module_reasons.iter().map(|r| *r).collect(),
         });
 
+        // Per-module datastore coverage (default resolution only): a
+        // module's state paths need a state-bearing datastore whose own
+        // schema implements THAT module — an unrelated datastore's
+        // state capability must not leak across module sets.
+        let module_axes = if input.requested_datastore.is_none() {
+            effective.module_datastore_axes.get(&cm.name).copied()
+        } else {
+            None
+        };
+
         for entry in catalogue.paths.iter().filter(|p| p.module == cm.name) {
             if path_results.len() < MAX_PATH_RESULTS {
                 path_results.push(evaluate_path(
@@ -721,6 +738,7 @@ pub fn resolve_applicability(input: &ApplicabilityInput<'_>) -> ApplicabilityRes
                     &effective,
                     ds_config,
                     ds_state,
+                    module_axes,
                 ));
             } else {
                 truncated = true;
@@ -811,6 +829,7 @@ fn build_effective_set(
         datastore_linked: false,
         datastore: None,
         datastore_axes: (DatastoreAxis::Yes, DatastoreAxis::Yes),
+        module_datastore_axes: BTreeMap::new(),
         content_id: None,
         blocked: None,
     };
@@ -884,6 +903,13 @@ fn build_effective_set(
                         set.datastore_linked = true;
                         set.authoritative = true;
                         merge_module_sets(&mut set, evidence, &schema.module_sets, diagnostics);
+                        if input.requested_datastore.is_none() {
+                            build_module_datastore_axes(
+                                evidence,
+                                input.catalogue,
+                                &mut set.module_datastore_axes,
+                            );
+                        }
                     }
                     Err(rc) => {
                         set.blocked = Some(rc);
@@ -1289,9 +1315,11 @@ fn evaluate_path(
     effective: &EffectiveSet,
     ds_config: DatastoreAxis,
     ds_state: DatastoreAxis,
+    module_axes: Option<(DatastoreAxis, DatastoreAxis)>,
 ) -> PathResult {
     let mut status = module_status;
     let mut reasons: BTreeSet<ReasonCode> = module_reasons.clone();
+    let (ds_config, ds_state) = module_axes.unwrap_or((ds_config, ds_state));
 
     // Datastore applicability: config data needs a config-bearing
     // datastore; state data needs an operational-bearing one. A proven
@@ -1748,6 +1776,99 @@ fn datastore_axes(
         ));
     }
     (union_axis(config), union_axis(state))
+}
+
+/// Per-module datastore coverage for DEFAULT (non-explicit) NMDA
+/// resolution.
+///
+/// Module membership is bound to the SELECTED datastore's schema, but
+/// config/state coverage must be proven by the datastore that would
+/// actually serve the data. For every declared datastore, resolve its
+/// OWN datastore→schema→module-set link and contribute that
+/// datastore's config/state axes for each module its schema implements
+/// — provided the reported revision matches the compiled module. A
+/// different (or absent) reported revision is unproven coverage for
+/// THIS schema and contributes `Unknown`, never a borrowed `Yes`.
+///
+/// A module absent from every state-bearing datastore's schema
+/// therefore has a proven-absent state axis: its state paths become
+/// `not_applicable`, not `applicable` by association with an
+/// unrelated datastore. A declared datastore whose schema link cannot
+/// be fully resolved leaves EVERY module's coverage on it unproven.
+fn build_module_datastore_axes(
+    evidence: &YangLibraryEvidence,
+    catalogue: Option<&CompiledCatalogue>,
+    axes: &mut BTreeMap<String, (DatastoreAxis, DatastoreAxis)>,
+) {
+    let Some(cat) = catalogue else { return };
+    // Compiled revisions, normalized the same way module-level
+    // comparison treats them.
+    let compiled: BTreeMap<&str, Option<&str>> = cat
+        .modules
+        .iter()
+        .map(|m| (m.name.as_str(), normalized_revision(&m.revision)))
+        .collect();
+    if compiled.is_empty() {
+        return;
+    }
+    let mut contrib: BTreeMap<String, Vec<(DatastoreAxis, DatastoreAxis)>> = BTreeMap::new();
+    let mut unresolved_datastore = false;
+    for d in &evidence.datastores {
+        let resolved_schema = evidence
+            .schemas
+            .iter()
+            .find(|s| s.name == d.schema)
+            .filter(|s| {
+                !s.module_sets.is_empty()
+                    && s.module_sets
+                        .iter()
+                        .all(|ms| evidence.module_sets.iter().any(|m| &m.name == ms))
+            });
+        let Some(schema) = resolved_schema else {
+            unresolved_datastore = true;
+            continue;
+        };
+        let (c_axis, s_axis) = single_datastore_capabilities(&d.name);
+        for ms_name in &schema.module_sets {
+            let Some(ms) = evidence.module_sets.iter().find(|m| &m.name == ms_name) else {
+                continue;
+            };
+            for m in &ms.modules {
+                let Some(&cat_rev) = compiled.get(m.name.as_str()) else {
+                    continue;
+                };
+                let dev_rev = m.revision.as_deref().and_then(normalized_revision);
+                let proven = match (cat_rev, dev_rev) {
+                    (Some(c), Some(dv)) => c == dv,
+                    (None, None) => true,
+                    _ => false,
+                };
+                let pair = if proven {
+                    (c_axis, s_axis)
+                } else {
+                    (DatastoreAxis::Unknown, DatastoreAxis::Unknown)
+                };
+                contrib.entry(m.name.clone()).or_default().push(pair);
+            }
+        }
+    }
+    if unresolved_datastore {
+        for name in compiled.keys() {
+            contrib
+                .entry(name.to_string())
+                .or_default()
+                .push((DatastoreAxis::Unknown, DatastoreAxis::Unknown));
+        }
+    }
+    for (name, pairs) in contrib {
+        axes.insert(
+            name,
+            (
+                union_axis(pairs.iter().map(|p| p.0)),
+                union_axis(pairs.iter().map(|p| p.1)),
+            ),
+        );
+    }
 }
 
 // ── overall status ─────────────────────────────────────────────────────

@@ -522,11 +522,17 @@
         fetch('/api/devices/' + encodeURIComponent(addr) + '/schema-selection'),
         fetch('/api/yang/compiled')
       ]);
-      if (selR.ok) schemaSel = await selR.json();
+      // The bundle list is global — safe to apply regardless of device.
       if (bundlesR.ok) {
         const payload = await bundlesR.json();
         schemaBundles = (payload.bundles || []).filter((b) => b.schema_id);
       }
+      // Fencing (same contract as loadApplicability): the operator may
+      // have switched devices while this request was in flight — a
+      // stale response must never overwrite the current device's
+      // selection state.
+      if (addr !== address) return;
+      if (selR.ok) schemaSel = await selR.json();
     } catch { /* selection view is advisory; backend remains authority */ }
   }
 
@@ -535,8 +541,12 @@
     schemaSelBusy = true;
     schemaSelMessage = '';
     schemaSelError = '';
+    // Capture the target device: the operator may switch devices while
+    // the mutation is in flight — response state must never be applied
+    // to a different device's view.
+    const addr = address;
     try {
-      const url = '/api/devices/' + encodeURIComponent(address) + '/schema-selection';
+      const url = '/api/devices/' + encodeURIComponent(addr) + '/schema-selection';
       // Durable epoch survives clears — never the row revision alone.
       const expectedRev = schemaSel?.selection_epoch
         ?? schemaSel?.selection?.selection_revision ?? 0;
@@ -555,16 +565,32 @@
         schemaSelError = 'Forbidden: schema selection requires an admin role.';
         return;
       }
+      if (r.status === 409) {
+        // Another administrator changed the selection (or cleared it)
+        // after this view loaded. Refresh the durable epoch so the next
+        // attempt is fenced on CURRENT state — never silently resubmit
+        // the stale mutation; the operator must confirm again.
+        schemaSelError = 'Conflict: another administrator changed this device\'s ' +
+          'schema selection. The current selection and epoch have been ' +
+          'refreshed — review them and confirm again to apply your choice.';
+        // Invalidate the open confirmation: the operator must re-review
+        // the refreshed selection/epoch and deliberately re-confirm.
+        confirmSchemaSel = false;
+        await loadSchemaSelection(addr);
+        return;
+      }
       if (!r.ok) {
         schemaSelError = payload.error || payload.message || ('Schema selection failed (HTTP ' + r.status + ')');
         return;
       }
-      schemaSel = payload;
-      schemaSelMessage = clear
-        ? 'Schema selection cleared — device follows the active catalogue.'
-        : 'Schema selection updated to ' + shortId(payload.effective_schema_id) +
-          '. Approvals bound to a different schema were revoked.';
-      confirmSchemaSel = false;
+      if (addr === address) {
+        schemaSel = payload;
+        schemaSelMessage = clear
+          ? 'Schema selection cleared — device follows the active catalogue.'
+          : 'Schema selection updated to ' + shortId(payload.effective_schema_id) +
+            '. Approvals bound to a different schema were revoked.';
+        confirmSchemaSel = false;
+      }
       if (onchanged) onchanged();
       await loadApplicability(address, filters, pathOffset);
     } catch (e) {

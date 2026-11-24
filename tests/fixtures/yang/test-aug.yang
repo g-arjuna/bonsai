@@ -29,5 +29,8 @@ module test-aug {
 
   deviation "/tb:ports/speed" {
     description "speed choice deviated for fixture";
+    deviate add {
+      config true;
+    }
   }
 }

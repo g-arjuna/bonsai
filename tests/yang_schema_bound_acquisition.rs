@@ -538,10 +538,17 @@ async fn start_core_lab(pki: &Pki, device: TargetConfig, clock: SchemaBindingClo
         }
     });
     let sessions = Arc::new(SubscriptionSessionRegistry::new());
+    // M6-CR-05: the manager resolves effective schema (explicit
+    // selection or global active catalogue) at the assignment boundary.
+    // Tests compile/activate catalogues under this same yanglib root.
+    let yang_dir = dir.path().join("yanglib");
+    let manager_library =
+        YangLibrary::open(yang_dir.join("lib"), yang_dir.join("cache"), "K").unwrap();
     let manager = Arc::new(
         CollectorManager::new(Arc::clone(&registry), Arc::clone(&credentials), vec![])
             .with_session_registry(Arc::clone(&sessions))
-            .with_schema_binding_clock(clock.clone()),
+            .with_schema_binding_clock(clock.clone())
+            .with_yang_library(Some(manager_library)),
     );
     let sidecars = Arc::new(SidecarRegistry::new(vec![]));
 
@@ -561,7 +568,12 @@ async fn start_core_lab(pki: &Pki, device: TargetConfig, clock: SchemaBindingClo
     .with_auth_policy(AuthPolicy::Required)
     .with_session_registry(Arc::clone(&sessions))
     .with_subscription_plan_tx(Some(plan_tx.clone()))
-    .with_schema_binding_clock(clock);
+    .with_schema_binding_clock(clock)
+    .with_yang_library_roots(
+        yang_dir.join("lib").to_string_lossy().into_owned(),
+        yang_dir.join("cache").to_string_lossy().into_owned(),
+        "K".to_string(),
+    );
 
     let plan = bonsai::subscriber::planned_subscription_plan_for_target(&device);
     plan_tx.send(plan).await.unwrap();
@@ -1627,6 +1639,7 @@ async fn schema_bound_expiry_withdraws_active_execution() {
         &fx.lab.registry,
         Some(&fx.lab.manager),
         fx.clock_cell.load(Ordering::SeqCst),
+        Some(&fx.library),
     )
     .await
     .expect("reconcile");
@@ -1821,6 +1834,7 @@ async fn schema_bound_expiry_disconnected_collector() {
         &lab.registry,
         Some(&lab.manager),
         clock_cell.load(Ordering::SeqCst),
+        Some(&library),
     )
     .await
     .unwrap();
@@ -1977,7 +1991,15 @@ async fn schema_bound_expired_evidence_blocks_activation_and_restart() {
             vec![],
         )
         .with_session_registry(Arc::clone(&lab.sessions))
-        .with_schema_binding_clock(SchemaBindingClock::shared(Arc::clone(&clock_cell))),
+        .with_schema_binding_clock(SchemaBindingClock::shared(Arc::clone(&clock_cell)))
+        .with_yang_library(Some(
+            YangLibrary::open(
+                lab._dir.path().join("yanglib").join("lib"),
+                lab._dir.path().join("yanglib").join("cache"),
+                "K",
+            )
+            .unwrap(),
+        )),
     );
     let (mut rx2, _g2) = restarted_manager
         .register_collector("e2e-col".to_string(), PROTOCOL_VERSION_CURRENT, true)
@@ -1997,6 +2019,7 @@ async fn schema_bound_expired_evidence_blocks_activation_and_restart() {
         &lab.registry,
         Some(&restarted_manager),
         clock_cell.load(Ordering::SeqCst),
+        Some(&library),
     )
     .await
     .unwrap();
@@ -2027,6 +2050,7 @@ async fn schema_bound_expiry_failed_delivery_then_recovery() {
         &fx.lab.registry,
         Some(&fx.lab.manager),
         fx.clock_cell.load(Ordering::SeqCst),
+        Some(&fx.library),
     )
     .await
     .unwrap();

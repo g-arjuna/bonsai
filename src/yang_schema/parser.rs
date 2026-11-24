@@ -241,6 +241,10 @@ pub struct Node {
     pub keys: Vec<String>,
     pub musts: Vec<String>,
     pub whens: Vec<String>,
+    /// `unique` constraint argument strings (dequoted content), one per
+    /// `unique` statement — needed so deviations can match/delete them
+    /// per RFC 7950 §7.20.3.2.
+    pub uniques: Vec<String>,
     pub if_features: Vec<String>,
     pub type_spec: Option<TypeSpec>,
     pub children: Vec<Stmt>,
@@ -1378,6 +1382,18 @@ impl Parser {
                                 self.skip_balanced()?;
                             } else {
                                 self.expect_punct(';')?;
+                            }
+                        }
+                        "unique" => {
+                            self.pos += 1;
+                            // unique argument is a quoted string of
+                            // space-separated leaf names; tolerate bare
+                            // or '+'-concatenated forms.
+                            if matches!(self.peek(), Tok::Str(_)) {
+                                node.uniques.push(self.string_concat()?);
+                                self.expect_punct(';')?;
+                            } else {
+                                node.uniques.push(self.raw_value_until_semi()?);
                             }
                         }
                         "if-feature" => {

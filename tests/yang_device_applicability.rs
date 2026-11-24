@@ -2150,8 +2150,8 @@ module test-app-dev {
   revision 2024-02-01;
   import test-app { prefix ta; }
   deviation "/ta:system/hostname" {
-    deviate delete {
-      default "";
+    deviate add {
+      default "localhost";
     }
   }
 }
@@ -2192,9 +2192,9 @@ fn t4b_covered_deviation_does_not_block_applicability() {
         path_status(&r, "oper-status").unwrap().status,
         ApplicabilityStatus::Applicable
     );
-    // `deviate delete { default ""; }` removes only the `default`
-    // property (RFC 7950 §7.20.3.2) — the node itself remains in the
-    // effective schema and stays applicable.
+    // `deviate add { default ... }` adds a property (RFC 7950
+    // §7.20.3.2) — the node itself remains in the effective schema and
+    // stays applicable.
     assert!(
         r.paths
             .iter()
@@ -3097,4 +3097,226 @@ fn m6g_xrd_running_plus_unrecognized_datastore_state_stays_unknown() {
     );
     // Overall must not claim applicable while an axis is unverified.
     assert_ne!(r.overall_status, ApplicabilityStatus::Applicable);
+}
+
+// ── M6 corrective review: cross-datastore applicability (CR-02) ──────────────
+//
+// Default resolution selects ONE datastore's schema for module
+// membership, but config/state coverage must be proven per module:
+// a state path is only applicable when a state-bearing datastore's
+// OWN schema implements that module (at the compiled revision).
+// An unrelated datastore's state capability must not leak across
+// module sets.
+
+/// NMDA evidence with per-datastore schemas: `running` → s-run
+/// (module set ms-run), `operational` → s-ops (module set ms-ops).
+fn split_datastore_outcome(
+    run_modules: Vec<YangLibraryModule>,
+    ops_modules: Vec<YangLibraryModule>,
+) -> YangLibraryOutcome {
+    YangLibraryOutcome::Complete {
+        evidence: YangLibraryEvidence {
+            tree: YangLibraryTree::Nmda,
+            content_id: Some("cid-split".to_string()),
+            module_sets: vec![
+                YangLibraryModuleSet {
+                    name: "ms-run".to_string(),
+                    modules: run_modules,
+                    import_only_modules: Vec::new(),
+                },
+                YangLibraryModuleSet {
+                    name: "ms-ops".to_string(),
+                    modules: ops_modules,
+                    import_only_modules: Vec::new(),
+                },
+            ],
+            schemas: vec![
+                YangLibrarySchema {
+                    name: "s-run".to_string(),
+                    module_sets: vec!["ms-run".to_string()],
+                },
+                YangLibrarySchema {
+                    name: "s-ops".to_string(),
+                    module_sets: vec!["ms-ops".to_string()],
+                },
+            ],
+            datastores: vec![
+                YangLibraryDatastore {
+                    name: "ietf-datastores:running".to_string(),
+                    schema: "s-run".to_string(),
+                },
+                YangLibraryDatastore {
+                    name: "ietf-datastores:operational".to_string(),
+                    schema: "s-ops".to_string(),
+                },
+            ],
+            origin: "ietf".to_string(),
+            path: "/yang-library".to_string(),
+            fetched_at_ns: 2_000,
+            diagnostics: Vec::new(),
+        },
+    }
+}
+
+fn app_module(revision: &str) -> YangLibraryModule {
+    lib_module(
+        "test-app",
+        Some(revision),
+        Some("urn:example:test-app"),
+        &["base-f", "fancy-f"],
+        &[],
+    )
+}
+
+fn baselib_module(revision: &str) -> YangLibraryModule {
+    lib_module(
+        "test-baselib",
+        Some(revision),
+        Some("urn:example:test-baselib"),
+        &[],
+        &[],
+    )
+}
+
+#[test]
+fn cr02_state_path_requires_module_in_state_datastore_schema() {
+    let catalogue = compile_app();
+    let device = binding();
+
+    // running's schema implements test-app; operational's schema does
+    // NOT. Default resolution selects running for module membership —
+    // but no state-bearing datastore implements test-app, so its
+    // config-false paths must NOT become applicable merely because
+    // operational exists.
+    let lib = split_datastore_outcome(
+        vec![app_module("2024-01-01"), baselib_module("2023-06-01")],
+        vec![baselib_module("2023-06-01")],
+    );
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(r.datastore.as_deref(), Some("ietf-datastores:running"));
+
+    // Module membership is proven via running → module applicable.
+    assert_eq!(
+        module_status(&r, "test-app").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+    // Config paths are served by running → applicable.
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable,
+        "config path via running schema"
+    );
+    // State paths: operational does not implement test-app → the state
+    // axis for THIS module is provably absent.
+    for needle in ["hostname", "oper-status"] {
+        let p = path_status(&r, needle).unwrap();
+        assert_eq!(
+            p.status,
+            ApplicabilityStatus::NotApplicable,
+            "{needle} must not be applicable without a state datastore implementing test-app: {p:?}"
+        );
+        assert!(
+            p.reasons.contains(&ReasonCode::DatastoreMismatch),
+            "{needle} reasons: {:?}",
+            p.reasons
+        );
+    }
+    // test-baselib IS in operational's schema → its state paths stay
+    // applicable — coverage is per-module, not global.
+    let os_name = path_status(&r, "os-name").unwrap();
+    assert_eq!(
+        os_name.status,
+        ApplicabilityStatus::Applicable,
+        "baselib state path served by operational schema"
+    );
+}
+
+#[test]
+fn cr02_different_module_revisions_across_datastore_schemas() {
+    let catalogue = compile_app();
+    let device = binding();
+
+    // running implements test-app@2024-01-01 (matches the compiled
+    // catalogue); operational implements test-app@2020-01-01 — a
+    // DIFFERENT revision. Operational's state coverage is for another
+    // schema revision and must not be borrowed for the compiled one.
+    let lib = split_datastore_outcome(
+        vec![app_module("2024-01-01"), baselib_module("2023-06-01")],
+        vec![app_module("2020-01-01"), baselib_module("2023-06-01")],
+    );
+    let r = resolve(Some(&catalogue), None, Some(&lib), &device);
+    assert_eq!(
+        module_status(&r, "test-app").unwrap().status,
+        ApplicabilityStatus::Applicable,
+        "running revision matches compiled catalogue"
+    );
+    assert_eq!(
+        path_status(&r, "domain").unwrap().status,
+        ApplicabilityStatus::Applicable
+    );
+    let hostname = path_status(&r, "hostname").unwrap();
+    assert_ne!(
+        hostname.status,
+        ApplicabilityStatus::Applicable,
+        "operational serves a different revision — state coverage unproven: {hostname:?}"
+    );
+    assert_eq!(hostname.status, ApplicabilityStatus::Unknown);
+    assert!(
+        hostname
+            .reasons
+            .contains(&ReasonCode::DatastoreSemanticsUnverified),
+        "reasons: {:?}",
+        hostname.reasons
+    );
+}
+
+#[test]
+fn cr02_explicit_datastore_selection_stays_strict() {
+    let catalogue = compile_app();
+    let device = binding();
+
+    // Same split evidence; explicit operational request evaluates ONLY
+    // operational's schema — test-app is absent there entirely.
+    let lib = split_datastore_outcome(
+        vec![app_module("2024-01-01"), baselib_module("2023-06-01")],
+        vec![baselib_module("2023-06-01")],
+    );
+    let result = applicability::resolve_applicability(&ApplicabilityInput {
+        catalogue: Some(&catalogue),
+        catalogue_diagnostics: Vec::new(),
+        capabilities: None,
+        yang_library: Some(&lib),
+        requested_datastore: Some("operational"),
+        platform: None,
+        device: &device,
+        now_ns: 10_000,
+    });
+    assert_eq!(
+        result.datastore.as_deref(),
+        Some("ietf-datastores:operational")
+    );
+    let app = module_status(&result, "test-app").unwrap();
+    assert_eq!(
+        app.status,
+        ApplicabilityStatus::NotApplicable,
+        "test-app absent from operational schema: {app:?}"
+    );
+    for p in result.paths.iter().filter(|p| p.module == "test-app") {
+        assert_ne!(p.status, ApplicabilityStatus::Applicable);
+    }
+    // Explicit running request: state paths mismatch strictly even
+    // though operational exists.
+    let result = applicability::resolve_applicability(&ApplicabilityInput {
+        catalogue: Some(&catalogue),
+        catalogue_diagnostics: Vec::new(),
+        capabilities: None,
+        yang_library: Some(&lib),
+        requested_datastore: Some("running"),
+        platform: None,
+        device: &device,
+        now_ns: 10_000,
+    });
+    let hostname = path_status(&result, "hostname").unwrap();
+    assert_eq!(hostname.status, ApplicabilityStatus::NotApplicable);
+    assert!(hostname.reasons.contains(&ReasonCode::DatastoreMismatch));
 }

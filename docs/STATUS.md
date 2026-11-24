@@ -1,5 +1,34 @@
 # Bonsai current state
 
+M6 final correctness review update — **PR #80**
+(`fix/m6g-deviation-preconditions`, on reviewed main `cdfcac1`)
+corrects defects found by the independent post-merge review; canonical
+L0–L3 gate results recorded in `docs/build-times/runs.csv`, L4
+live-NOS acceptance remains NOT_EXECUTED:
+
+- M6-CR-01: RFC 7950 §7.20.3.2 deviation preconditions — `deviate
+  delete` requires keyword+argument match and removes only the
+  matching occurrence of repeated properties; `deviate replace`
+  requires an existing property; `deviate add` respects singleton
+  cardinality; deviation properties outside the RFC set are
+  diagnosed; deviation bodies without a `deviate` statement are
+  non-authoritative. `COMPILED_SCHEMA_VERSION` is now **v4** —
+  v3-era bundles are rejected fail-closed and require explicit
+  recompile + reselection (see `docs/YANG_CATALOGUE.md`).
+- M6-CR-02: default NMDA resolution previously unioned config/state
+  datastore axes across ALL declared datastores while module
+  membership came from only the selected datastore's schema — a state
+  path could be `applicable` via an unrelated datastore. Per-module
+  axes are now proven by each datastore's own schema at the compiled
+  revision; explicit datastore requests are unchanged/strict.
+- M6-CR-03: commit-first selection ordering could leave an active
+  schema-bound approval authorizing a superseded schema if the
+  process was interrupted before revocation. Assignment authorization
+  now fails closed (`schema_binding_schema_mismatch`) whenever a
+  durable selection postdates the approval's schema.
+- M6-CR-04: the schema-selection UI explains a 409 conflict,
+  refreshes the durable epoch and never silently resubmits.
+
 M6G update — **standards-correctness review and hardening of the
 YANG architecture** (integration PR #79 `m6g/integration`; focused
 PRs #73–#78; canonical L0–L3 PASS on the gate-tested tree, L4
@@ -13,7 +42,8 @@ pipeline corrected only confirmed defects:
   complete catalogue (catalogue stays `partial`). Applied-deviation
   provenance is tracked per compiled module.
 - Compiled-schema identity now embeds `COMPILED_SCHEMA_VERSION`
-  (v3 on the combined tree): pre-upgrade bundles fail verification
+  (v4 after the M6 final-review deviation-semantics correction —
+  see the update above): pre-upgrade bundles fail verification
   closed and require explicit recompilation plus reselection — no
   silent reinterpretation of old semantics, and devices never lose
   authority silently (selections fail closed until re-approved).
