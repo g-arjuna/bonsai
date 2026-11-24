@@ -1,5 +1,21 @@
 # Bonsai current state
 
+BN-024 native network intelligence — **G0 landed 2026-11-24** on main
+`e578595`/`09c2d60`: BN-024-00 pinned SuzieQ OSS provenance manifest +
+offline validator (PR #82, `docs/bn024/provenance/`); BN-024-01 parser-chain
+contract repair (PR #83) — Rust now sends `command` + wire parser names
+(`genie`/`textfsm`), explicit backend dispatch with `suzieq_native`
+fail-closed unsupported, backend-identity validation, structured-first
+default priorities, `backend_used`→quality (`structured` /
+`unstructured_fallback` / `unknown`) propagated to attempts, decision and
+enricher confidence, 10s sidecar timeout. Canonical L0–L3 PASS on gate SHA
+`b87aa6f` (docs-only `58acb29` on top); L4 not applicable. Bounded
+differential baseline vs pinned SuzieQ fixtures: 9 nossim fixtures, 190
+SuzieQ typed fields vs 0 typed parity today — honest gap for BN-024-02+.
+No authoritative graph projection; BN-021/BN-008 gates still precede it.
+Evidence: `docs/bn024/evidence/2026-11-24-bn024-01/`,
+`docs/bn024/parser-contract.md`.
+
 BN-019 packaged upgrade slice — **executed 2026-11-24** on merged
 main `18fa577` (PR #80): real packaged images `bonsai:bn019u2-cdfcac1`
 (old baseline) → `bonsai:bn019u2-18fa577` (corrected). Leg A: disposable
