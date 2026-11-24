@@ -36,17 +36,28 @@ def _class_fields(path: Path, class_name: str) -> set[str]:
     raise AssertionError(f"{class_name} not found in {path}")
 
 
-def _parse_endpoint_return_keys(path: Path) -> set[str]:
-    """Collect top-level dict keys returned by the ``parse`` endpoint."""
+def _function_dict_keys(path: Path, function_name: str) -> set[str]:
+    """Collect string keys from every dict literal inside a function."""
     tree = ast.parse(path.read_text())
     keys: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "parse":
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
             for sub in ast.walk(node):
-                if isinstance(sub, ast.Return) and isinstance(sub.value, ast.Dict):
-                    for key in sub.value.keys:
+                if isinstance(sub, ast.Dict):
+                    for key in sub.keys:
                         if isinstance(key, ast.Constant) and isinstance(key.value, str):
                             keys.add(key.value)
+    return keys
+
+
+def _parse_endpoint_return_keys(path: Path) -> set[str]:
+    """Response keys for the ``/parse`` endpoint.
+
+    The pyats app builds responses in ``_respond``; the native app returns a
+    dict literal from ``parse`` directly.
+    """
+    keys = _function_dict_keys(path, "parse")
+    keys |= _function_dict_keys(path, "_respond")
     return keys
 
 
@@ -71,6 +82,33 @@ def test_pyats_parse_response_reports_backend_used() -> None:
     assert "backend_used" in keys
     assert "parsed_json" in keys
     assert "parser" in keys
+    # BN-024-01 corrective: distinct parse outcomes must reach the wire so
+    # empty/unsupported/failed results never collapse into fallback.
+    assert "outcome" in keys
+
+
+def test_pyats_parse_outcome_vocabulary_is_explicit() -> None:
+    source = PYATS_APP.read_text()
+    for outcome in (
+        "structured_success",
+        "structured_empty",
+        "unsupported",
+        "backend_unavailable",
+        "parser_error",
+        "unstructured_fallback",
+        "invalid_input",
+    ):
+        assert f'"{outcome}"' in source, f"missing outcome '{outcome}'"
+
+
+def test_pyats_genie_uses_real_get_parser_signature() -> None:
+    """The Genie call must match genie.libs.parser.utils.get_parser(command,
+    device) -> (parser_class, kwargs) and cli(output=...) — the previous
+    get_parser(os, command) invocation could never have worked."""
+    source = PYATS_APP.read_text()
+    assert "_genie_parse(command, device)" in source
+    assert "parser.cli(output=raw_output" in source
+    assert "ParserNotFound" in source
 
 
 def test_native_parse_response_reports_backend_used() -> None:
@@ -78,3 +116,4 @@ def test_native_parse_response_reports_backend_used() -> None:
     assert "backend_used" in keys
     assert "parsed_json" in keys
     assert "parser" in keys
+    assert "outcome" in keys

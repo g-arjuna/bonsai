@@ -128,57 +128,113 @@ class LearnRequest(BaseModel):
 
 
 # ── Parsing backends ─────────────────────────────────────────────────────────
+#
+# Each backend reports a distinct outcome so empty results, unsupported
+# commands, unavailable dependencies and execution failures never collapse
+# into the same "try the next thing" signal:
+#
+#   structured_success  — parser ran and produced records
+#   structured_empty    — parser ran and legitimately produced zero records
+#                         (e.g. an empty but valid BGP table)
+#   unsupported         — no parser/template exists for this vendor+command
+#   backend_unavailable — the parser library itself is not installed
+#   parser_error        — the parser ran and failed
+#
+# Only structured_* outcomes may surface as backend_used "genie"/"textfsm".
+# Everything else degrades to the explicit line-split fallback, whose outcome
+# is "unstructured_fallback" — never a silent success.
 
-def parse_with_genie(vendor: str, command: str, raw_output: str) -> dict | None:
-    """Try Genie structured parser. Returns parsed dict or None."""
+OUTCOME_STRUCTURED_SUCCESS = "structured_success"
+OUTCOME_STRUCTURED_EMPTY = "structured_empty"
+OUTCOME_UNSUPPORTED = "unsupported"
+OUTCOME_BACKEND_UNAVAILABLE = "backend_unavailable"
+OUTCOME_PARSER_ERROR = "parser_error"
+OUTCOME_UNSTRUCTURED_FALLBACK = "unstructured_fallback"
+OUTCOME_INVALID_INPUT = "invalid_input"
+
+
+def _sanitize_error(exc: Exception) -> str:
+    """Bounded diagnostic: exception type + truncated message. Never includes
+    raw device output or credentials."""
+    return f"{type(exc).__name__}: {str(exc)[:200]}"
+
+
+def run_genie(vendor: str, command: str, raw_output: str):
+    """Returns (outcome, payload, detail)."""
     _ensure_genie()
     if _genie_parse is None:
-        return None
+        return OUTCOME_BACKEND_UNAVAILABLE, None, "genie library not installed"
     genie_os = VENDOR_TO_GENIE_OS.get(vendor.lower())
     if not genie_os:
-        return None
+        return OUTCOME_UNSUPPORTED, None, f"no genie os mapping for vendor '{vendor}'"
     try:
-        from genie.libs.parser.utils import get_parser as _get
-        from io import StringIO
+        from genie.libs.parser.utils.common import ParserNotFound
         from unittest.mock import MagicMock
 
-        # Genie parsers expect a device object with os attribute
+        # Genie get_parser(command, device) resolves the parser class and
+        # kwargs from device tokens; the parser then parses supplied output
+        # offline via cli(output=...). A MagicMock device supplies only the
+        # os/platform attributes token lookup needs — no connection is made.
         device = MagicMock()
         device.os = genie_os
         device.platform = ""
         device.custom = {}
 
-        parser_class = _get(genie_os, command)
-        if parser_class is None:
-            return None
+        parser_class, parser_kwargs = _genie_parse(command, device)
         parser = parser_class(device=device)
-        result = parser.parse(output=raw_output)
-        return dict(result) if result else None
+        result = parser.cli(output=raw_output, **parser_kwargs)
+    except ParserNotFound as e:
+        return OUTCOME_UNSUPPORTED, None, _sanitize_error(e)
     except Exception as e:
         logger.debug("Genie parse failed for %s/%s: %s", vendor, command, e)
-        return None
+        return OUTCOME_PARSER_ERROR, None, _sanitize_error(e)
+
+    if result is None:
+        return OUTCOME_PARSER_ERROR, None, "genie parser returned no result"
+    payload = _serialize_genie(dict(result))
+    outcome = OUTCOME_STRUCTURED_EMPTY if not payload else OUTCOME_STRUCTURED_SUCCESS
+    return outcome, payload, ""
 
 
-def parse_with_textfsm(vendor: str, command: str, raw_output: str) -> list[dict] | None:
-    """Try ntc-templates TextFSM. Returns list of dicts or None."""
+def run_textfsm(vendor: str, command: str, raw_output: str):
+    """Returns (outcome, payload, detail)."""
     _ensure_textfsm()
     if _textfsm_index is None:
-        return None
+        return OUTCOME_BACKEND_UNAVAILABLE, None, "ntc-templates library not installed"
     platform = VENDOR_TO_NTC_PLATFORM.get(vendor.lower())
     if not platform:
-        return None
+        return OUTCOME_UNSUPPORTED, None, f"no ntc-templates platform for vendor '{vendor}'"
     try:
+        from ntc_templates.parse import ParsingException
+
         result = _textfsm_index(platform=platform, command=command, data=raw_output)
-        return result if result else None
+    except ParsingException as e:
+        message = str(e)
+        if "No template found" in message:
+            return OUTCOME_UNSUPPORTED, None, _sanitize_error(e)
+        logger.debug("TextFSM parse failed for %s/%s: %s", vendor, command, e)
+        return OUTCOME_PARSER_ERROR, None, _sanitize_error(e)
     except Exception as e:
         logger.debug("TextFSM parse failed for %s/%s: %s", vendor, command, e)
-        return None
+        return OUTCOME_PARSER_ERROR, None, _sanitize_error(e)
+
+    if result is None:
+        return OUTCOME_PARSER_ERROR, None, "textfsm parser returned no result"
+    payload = _serialize_genie(list(result))
+    outcome = OUTCOME_STRUCTURED_EMPTY if not payload else OUTCOME_STRUCTURED_SUCCESS
+    return outcome, payload, ""
 
 
 def fallback_parse(raw_output: str) -> dict:
-    """Last resort: line-split."""
+    """Last resort: bounded line-split. Always labeled unstructured."""
     lines = [line.strip() for line in raw_output.splitlines() if line.strip()]
-    return {"line_count": len(lines), "lines": lines[:100]}
+    return {
+        "result_kind": "unstructured_fallback",
+        "backend_used": "line_split",
+        "line_count": len(lines),
+        "lines": lines[:1000],
+        "truncated": len(lines) > 1000,
+    }
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -197,33 +253,57 @@ def healthz() -> dict:
     }
 
 
-@app.post("/parse")
-def parse(request: ParseRequest) -> dict:
-    """Parse raw CLI output using Genie (preferred) → TextFSM → line-split."""
-    backend_used = "fallback"
-    parsed: Any = None
-
-    if request.parser in ("genie", "auto"):
-        parsed = parse_with_genie(request.vendor, request.command, request.raw_output)
-        if parsed is not None:
-            backend_used = "genie"
-
-    if parsed is None and request.parser in ("textfsm", "auto"):
-        parsed = parse_with_textfsm(request.vendor, request.command, request.raw_output)
-        if parsed is not None:
-            backend_used = "textfsm"
-
-    if parsed is None:
-        parsed = fallback_parse(request.raw_output)
-        backend_used = "fallback"
-
-    return {
+def _respond(request: ParseRequest, backend_used: str, outcome: str,
+             parsed: Any, detail: str = "") -> dict:
+    response = {
         "parser": request.parser,
         "backend_used": backend_used,
+        "outcome": outcome,
         "vendor": request.vendor,
         "command": request.command,
         "parsed_json": parsed,
     }
+    if detail:
+        response["detail"] = detail
+    return response
+
+
+@app.post("/parse")
+def parse(request: ParseRequest) -> dict:
+    """Parse raw CLI output: Genie → TextFSM → explicit line-split fallback.
+
+    backend_used is "genie"/"textfsm" only when that backend actually
+    produced the payload; "fallback" covers unsupported, failed, unavailable
+    and invalid-input cases. `outcome` distinguishes structured_success,
+    structured_empty, unstructured_fallback and invalid_input.
+    """
+    if not (request.raw_output or "").strip():
+        return _respond(
+            request, "fallback", OUTCOME_INVALID_INPUT,
+            fallback_parse(request.raw_output or ""),
+            detail="empty raw_output",
+        )
+
+    details: list[str] = []
+    if request.parser in ("genie", "auto"):
+        outcome, payload, detail = run_genie(
+            request.vendor, request.command, request.raw_output)
+        if outcome in (OUTCOME_STRUCTURED_SUCCESS, OUTCOME_STRUCTURED_EMPTY):
+            return _respond(request, "genie", outcome, payload)
+        details.append(f"genie={outcome}" + (f"({detail})" if detail else ""))
+
+    if request.parser in ("textfsm", "auto"):
+        outcome, payload, detail = run_textfsm(
+            request.vendor, request.command, request.raw_output)
+        if outcome in (OUTCOME_STRUCTURED_SUCCESS, OUTCOME_STRUCTURED_EMPTY):
+            return _respond(request, "textfsm", outcome, payload)
+        details.append(f"textfsm={outcome}" + (f"({detail})" if detail else ""))
+
+    return _respond(
+        request, "fallback", OUTCOME_UNSTRUCTURED_FALLBACK,
+        fallback_parse(request.raw_output),
+        detail="; ".join(details),
+    )
 
 
 @app.post("/learn")

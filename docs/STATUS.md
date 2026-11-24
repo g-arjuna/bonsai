@@ -1,20 +1,40 @@
 # Bonsai current state
 
 BN-024 native network intelligence — **G0 landed 2026-11-24** on main
-`e578595`/`09c2d60`: BN-024-00 pinned SuzieQ OSS provenance manifest +
-offline validator (PR #82, `docs/bn024/provenance/`); BN-024-01 parser-chain
-contract repair (PR #83) — Rust now sends `command` + wire parser names
-(`genie`/`textfsm`), explicit backend dispatch with `suzieq_native`
-fail-closed unsupported, backend-identity validation, structured-first
-default priorities, `backend_used`→quality (`structured` /
-`unstructured_fallback` / `unknown`) propagated to attempts, decision and
-enricher confidence, 10s sidecar timeout. Canonical L0–L3 PASS on gate SHA
-`b87aa6f` (docs-only `58acb29` on top); L4 not applicable. Bounded
-differential baseline vs pinned SuzieQ fixtures: 9 nossim fixtures, 190
-SuzieQ typed fields vs 0 typed parity today — honest gap for BN-024-02+.
-No authoritative graph projection; BN-021/BN-008 gates still precede it.
-Evidence: `docs/bn024/evidence/2026-11-24-bn024-01/`,
-`docs/bn024/parser-contract.md`.
+`e578595`/`09c2d60` (PRs #82/#83): BN-024-00 pinned SuzieQ OSS provenance
+manifest + offline validator; BN-024-01 parser-chain contract repair.
+**Corrective pass (this branch, pending merge):** independent review of
+the merged BN-024-01 found residual defects — fixed: structured-first
+ordering no longer lets `bonsai_native` shadow Genie/TextFSM, canonical
+platform ids (`cisco.iosxr`) are translated to backend vendor ids
+(`cisco_iosxr`) at the sidecar boundary (regression-tested through the
+production `inferred_vendor()` path), sidecar `parser`/`backend_used`/
+`outcome` identity+quality are validated (missing backend = `unknown`,
+never fabricated structured), consensus compares structured outputs only,
+unsupported `suzieq_native` fails explicitly without HTTP, sidecar calls
+are bounded (10s) with per-attempt fallthrough errors, native line-split
+is capped (`MAX_NATIVE_LINES`). **Genuine packaged validation:** rebuilt
+`bonsai-pyats-sidecar:bn024` (genie 26.10 / pyats 26.10 /
+ntc-templates 9.4.0 / textfsm 2.1.1) exercised over HTTP — real Genie and
+TextFSM parses, structured_empty vs invalid_input vs fallback all
+distinguished; Rust `ParserChain`↔live-sidecar test passes. **Genuine
+differential oracle** (`scripts/bn024/differential_baseline.py` v2):
+pinned SuzieQ .tfsm templates executed by pinned TextFSM source vs the
+live sidecar on pinned nossim fixtures — per-record typed-field diffs
+with denominators, no aggregate parity claim. **BN-024-02 ABI**:
+`src/typed_facts.rs` — versioned typed-fact contract (schema_version,
+explicit unknown/absent/invalid payload states, completeness, trust/
+authority boundary, lifecycle+withdrawal, identity/evidence digests,
+schema-evolution gate) with 15 unit/property tests, JSON schema +
+serialized fixture under `docs/bn024/typed-facts/`; no graph writer.
+**BN-024-00 verifier hardened:** `upstream_provenance.py verify` now
+checks actual git checkout revisions (not just content hashes), enforces
+path containment, and uses deterministic tree hashing; all 114 manifest
+entries verified against fresh pinned-revision git checkouts.
+L0–L3 gate rerun pending on this branch; L4 not applicable. No
+authoritative graph projection; BN-021/BN-008 gates still precede it.
+Evidence: `docs/bn024/evidence/2026-11-24-bn024-01*/`,
+`docs/bn024/parser-contract.md`, `docs/bn024/typed-facts/`.
 
 BN-019 packaged upgrade slice — **executed 2026-11-24** on merged
 main `18fa577` (PR #80): real packaged images `bonsai:bn019u2-cdfcac1`

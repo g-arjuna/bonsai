@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bonsai.dev/schemas/typed-fact/v1.json",
+  "title": "Bonsai Typed Fact v1",
+  "description": "Canonical typed-fact ABI (BN-024-02). Serialized form of bonsai::typed_facts::TypedFact. This schema describes data only; it confers no graph-write authority.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fact_id",
+    "fact_kind",
+    "subject",
+    "source",
+    "observed_at",
+    "payload",
+    "quality",
+    "trust",
+    "lifecycle"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1,
+      "description": "Must equal the writer's SCHEMA_VERSION; newer versions are rejected pending explicit upgrade."
+    },
+    "fact_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 over canonical identity tuple assigned by TypedFact::seal()."
+    },
+    "fact_kind": { "type": "string", "minLength": 1 },
+    "subject": {
+      "type": "object",
+      "required": ["device_id", "namespace"],
+      "additionalProperties": false,
+      "properties": {
+        "device_id": { "type": "string", "minLength": 1 },
+        "namespace": { "type": "string", "minLength": 1 },
+        "vrf": { "type": "string" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["collector_id", "source_kind", "capture_id", "session_epoch", "sequence"],
+      "additionalProperties": false,
+      "properties": {
+        "collector_id": { "type": "string", "minLength": 1 },
+        "source_kind": { "type": "string", "minLength": 1 },
+        "capture_id": { "type": "string", "minLength": 1 },
+        "session_epoch": { "type": "integer", "minimum": 0 },
+        "sequence": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "valid_from": { "type": "string", "format": "date-time" },
+    "valid_until": { "type": "string", "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "required": ["produced_by"],
+      "additionalProperties": false,
+      "properties": {
+        "produced_by": { "type": "string", "minLength": 1 },
+        "fields": {
+          "description": "Structured fact body; absent iff state is present."
+        },
+        "state": {
+          "enum": ["empty", "invalid_input", "unsupported", "unstructured_fallback", "unknown_quality"],
+          "description": "Required when fields is absent; forbidden when fields is present."
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "required": ["completeness"],
+      "additionalProperties": false,
+      "properties": {
+        "completeness": { "enum": ["complete", "partial", "unknown"] },
+        "missing_fields": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "trust": {
+      "enum": ["unverified", "device_asserted", "corroborated", "authoritative"],
+      "description": "Authority eligibility, separate from parse quality. Only corroborated/authoritative may feed authoritative projection."
+    },
+    "lifecycle": {
+      "enum": ["active", "withdrawn", "superseded", "stale"]
+    },
+    "withdrawn_reason": { "type": "string", "minLength": 1 },
+    "superseded_by": { "type": "string", "minLength": 1, "pattern": "^[0-9a-f]{64}$" },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": { "type": "string", "minLength": 1 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "locator": { "type": "string" }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "lifecycle": { "const": "withdrawn" } } },
+      "then": { "required": ["withdrawn_reason"] }
+    },
+    {
+      "if": { "properties": { "lifecycle": { "const": "superseded" } } },
+      "then": { "required": ["superseded_by"] }
+    }
+  ]
+}

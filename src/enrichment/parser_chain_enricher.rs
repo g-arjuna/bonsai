@@ -67,11 +67,37 @@ impl MultiSourceEnricher for ParserChainCliEnricher {
             .await?;
         let payload = serde_json::to_string_pretty(&decision.parsed_json)
             .context("failed to serialize parser-chain output")?;
+        // Parser quality describes output *format*, not observation trust:
+        // a structured parser result does not authenticate the device, prove
+        // capture freshness/completeness, or establish semantic correctness.
+        // Confidence therefore stays conservative — structured parses cap at
+        // "medium" and degraded/unknown output at "low". BN-024-02 formalizes
+        // the wider trust dimensions (source, completeness, freshness,
+        // corroboration, authority eligibility).
         let confidence = match decision.quality.as_str() {
-            crate::parser_chain::QUALITY_STRUCTURED => "high",
-            crate::parser_chain::QUALITY_UNSTRUCTURED_FALLBACK => "low",
-            _ => "medium",
+            crate::parser_chain::QUALITY_STRUCTURED => "medium",
+            _ => "low",
         };
+        // Serialize attempt diagnostics without duplicating full parsed
+        // payloads: identity, outcome, quality and content digest/size are
+        // sufficient provenance; the selected payload is stored once via
+        // `capture.payload`.
+        let attempt_details: Vec<serde_json::Value> = decision
+            .attempts
+            .iter()
+            .map(|attempt| {
+                serde_json::json!({
+                    "parser": attempt.parser,
+                    "success": attempt.success,
+                    "error": attempt.error,
+                    "backend_used": attempt.backend_used,
+                    "quality": attempt.quality,
+                    "outcome": attempt.outcome,
+                    "parsed_sha256": attempt.parsed_sha256,
+                    "parsed_bytes": attempt.parsed_bytes,
+                })
+            })
+            .collect();
         Ok(MultiSourceCapture {
             source: self.name().to_string(),
             path_count: 1,
@@ -86,7 +112,7 @@ impl MultiSourceEnricher for ParserChainCliEnricher {
                 "ssh_port": ssh_target.port,
                 "consensus_state": decision.consensus_state,
                 "parse_quality": decision.quality,
-                "attempts": decision.attempts,
+                "attempts": attempt_details,
             }),
         })
     }
@@ -297,5 +323,70 @@ mod tests {
             crate::platform_registry::suggest_platform_from_hostname(target.hostname.as_deref()),
             Some("cisco.iosxr")
         );
+    }
+
+    /// CR-02 production-path regression: the vendor string produced by
+    /// `inferred_vendor()` (canonical dotted platform id) must reach the
+    /// sidecar translated to the backend vendor id (`cisco_iosxr`), exercised
+    /// end-to-end through `ParserChain::parse` — not just a mapping helper.
+    #[tokio::test]
+    async fn inferred_vendor_output_reaches_sidecar_as_backend_id() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/parse"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "parser": "genie",
+                "backend_used": "genie",
+                "vendor": "cisco_iosxr",
+                "command": "show running-config",
+                "parsed_json": {"ok": true},
+            })))
+            .mount(&server)
+            .await;
+
+        let mut priorities = std::collections::HashMap::new();
+        priorities.insert(
+            "cisco.iosxr::*".to_string(),
+            vec!["pyats_genie".to_string()],
+        );
+        let chain = crate::parser_chain::ParserChain::new(crate::config::ParserChainConfig {
+            sidecars: crate::config::ParserSidecarConfig {
+                pyats_url: server.uri(),
+                native_url: "http://127.0.0.1:1".to_string(),
+            },
+            priorities,
+            ..Default::default()
+        });
+
+        let target = TargetConfig {
+            address: "172.100.102.21:57400".to_string(),
+            enabled: true,
+            vendor: Some("cisco-iosxr".to_string()),
+            ..Default::default()
+        };
+        let vendor = inferred_vendor(&target);
+        assert_eq!(vendor, "cisco.iosxr");
+        let command = command_for_vendor(&vendor).expect("iosxr command");
+
+        let decision = chain
+            .parse(ParseRequest {
+                vendor,
+                command_pattern: command.to_string(),
+                raw_output: "x\n".to_string(),
+            })
+            .await
+            .expect("parse decision");
+        assert_eq!(decision.quality, crate::parser_chain::QUALITY_STRUCTURED);
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("request json");
+        assert_eq!(body["vendor"], "cisco_iosxr");
+        assert_eq!(body["parser"], "genie");
+        assert_eq!(body["command"], command);
     }
 }

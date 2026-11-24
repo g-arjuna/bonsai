@@ -164,7 +164,109 @@ def test_verify_detects_tampered_file(tmp_path: Path) -> None:
             "review_status": "pending_review",
         }],
     }
-    assert up.verify(manifest, str(tmp_path)) == []
+    assert up.verify(manifest, str(tmp_path), require_revision=False) == []
     target.write_text("tampered")
-    errors = up.verify(manifest, str(tmp_path))
+    errors = up.verify(manifest, str(tmp_path), require_revision=False)
     assert any("hash mismatch" in e for e in errors)
+
+
+def _fake_manifest_entry(repo_name: str, revision: str) -> dict:
+    return {
+        "manifest_version": 1,
+        "sources": [{
+            "source_id": f"acme:{repo_name}",
+            "upstream_repository": f"https://example.com/{repo_name}",
+            "immutable_revision": revision,
+            "upstream_path": "data.txt",
+            "content_sha256": hashlib.sha256(b"x").hexdigest(),
+            "content_kind": "file",
+            "license_identifier": "Apache-2.0",
+            "license_evidence": "test",
+            "required_notice": "test",
+            "usage_classification": "behavioral_reference_only",
+            "local_destination": None,
+            "modification_status": "not_vendored",
+            "review_status": "pending_review",
+        }],
+    }
+
+
+def _git(repo: Path, *args: str) -> None:
+    import subprocess
+    subprocess.run(["git", "-C", str(repo), *args], check=True,
+                   capture_output=True)
+
+
+def test_verify_requires_git_revision_identity(tmp_path: Path) -> None:
+    """A non-git checkout cannot prove it is at the pinned revision."""
+    repo = tmp_path / "acme-widget"
+    repo.mkdir()
+    (repo / "data.txt").write_text("x")
+    manifest = _fake_manifest_entry("acme-widget", "0" * 40)
+    errors = up.verify(manifest, str(tmp_path))
+    assert any("not a git repository" in e for e in errors)
+
+
+def test_verify_detects_wrong_revision(tmp_path: Path) -> None:
+    import subprocess
+    repo = tmp_path / "acme-widget"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "init")
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True
+                          ).stdout.strip()
+    manifest = _fake_manifest_entry("acme-widget", "0" * 40)
+    errors = up.verify(manifest, str(tmp_path))
+    assert any("does not match pinned revision" in e for e in errors)
+    manifest["sources"][0]["immutable_revision"] = head
+    manifest["sources"][0]["content_sha256"] = hashlib.sha256(
+        (repo / "data.txt").read_bytes() if (repo / "data.txt").exists()
+        else b"").hexdigest()
+    (repo / "data.txt").write_text("x")
+    manifest["sources"][0]["content_sha256"] = hashlib.sha256(b"x").hexdigest()
+    assert up.verify(manifest, str(tmp_path)) == []
+
+
+def test_verify_rejects_path_escape(tmp_path: Path) -> None:
+    """upstream_path containing '..' must not read outside the checkout."""
+    import subprocess
+    repo = tmp_path / "acme-widget"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "init")
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True
+                          ).stdout.strip()
+    (tmp_path / "secret.txt").write_text("topsecret")
+    manifest = _fake_manifest_entry("acme-widget", head)
+    manifest["sources"][0]["upstream_path"] = "../secret.txt"
+    errors = up.verify(manifest, str(tmp_path))
+    assert any("escapes repository checkout" in e for e in errors)
+
+
+def test_validate_rejects_dirty_upstream_path() -> None:
+    manifest = _manifest()
+    manifest["sources"][0]["upstream_path"] = "../etc/passwd"
+    errors = up.validate(manifest)
+    assert any("clean relative path" in e for e in errors)
+
+
+def test_tree_hash_sorts_across_directories(tmp_path: Path) -> None:
+    """Tree hash must not depend on filesystem directory iteration order."""
+    root = tmp_path / "fake"
+    (root / "zdir").mkdir(parents=True)
+    (root / "adir").mkdir(parents=True)
+    (root / "zdir" / "f.txt").write_text("z")
+    (root / "adir" / "f.txt").write_text("a")
+    h1 = up._tree_hash(str(tmp_path), "fake")
+    # Reverse creation order must not change the digest.
+    root2 = tmp_path / "fake2"
+    (root2 / "adir").mkdir(parents=True)
+    (root2 / "zdir").mkdir(parents=True)
+    (root2 / "adir" / "f.txt").write_text("a")
+    (root2 / "zdir" / "f.txt").write_text("z")
+    h2 = up._tree_hash(str(tmp_path), "fake2")
+    assert h1 == h2

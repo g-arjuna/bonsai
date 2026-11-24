@@ -41,6 +41,7 @@ def parse(request: ParseRequest) -> dict:
     return {
         "parser": request.parser,
         "backend_used": "line_split",
+        "outcome": "unstructured_fallback",
         "vendor": request.vendor,
         "command": command,
         "parsed_json": parsed,

@@ -1,0 +1,497 @@
+{
+  "baseline": "bn024-01-differential-v2",
+  "method": "pinned SuzieQ .tfsm template executed by pinned TextFSM source vs live Bonsai pyats sidecar (genie + ntc textfsm backends); per-record typed-field comparison on explicit join keys and field maps; SuzieQ service-layer post-processing out of scope",
+  "suzieq_pinned_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+  "textfsm_pinned_revision": "7e4ed596442867fc961c0788e7cac5bc8d091da9",
+  "scopes": [
+    {
+      "scope": "iosxe_interfaces",
+      "fixture": "tests/integration/nossim/iosxe/16.10.1/C9300/show_interfaces.txt",
+      "fixture_sha256": "deab093c3470642734439b95971ca4efdc95d4cc24de91681aa2ec5f0725a40b",
+      "fixture_bytes": 13106,
+      "suzieq_template": "suzieq/config/textfsm_templates/iosxe_show_int.tfsm",
+      "suzieq_template_sha256": "c496ca8a29917f2e88e808b7d68d017377835f7a0c39c73c05c470fa1b9880ae",
+      "suzieq_pinned_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+      "textfsm_pinned_revision": "7e4ed596442867fc961c0788e7cac5bc8d091da9",
+      "suzieq_records_parsed": 10,
+      "suzieq_parse_ms": 4.76,
+      "suzieq_avsc": "interfaces",
+      "bonsai_vendor": "cisco_iosxe",
+      "bonsai_command": "show interfaces",
+      "bonsai_status": "executed",
+      "comparison": {
+        "suzieq_records": 10,
+        "suzieq_join": "ifname",
+        "suzieq_avsc_field_count": 31,
+        "backends": {
+          "textfsm": {
+            "backend_used": "textfsm",
+            "outcome": "structured_success",
+            "elapsed_ms": 35.91,
+            "records_joined": 10,
+            "records_suzieq_only": 0,
+            "records_bonsai_only": 0,
+            "fields": {
+              "ifname": {
+                "status": "compared",
+                "compared": 10,
+                "matched": 10,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "mtu": {
+                "status": "compared",
+                "compared": 10,
+                "matched": 10,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "speed": {
+                "status": "compared",
+                "compared": 5,
+                "matched": 0,
+                "mismatched": 5,
+                "missing_in_bonsai": 5,
+                "missing_in_suzieq": 0
+              },
+              "description": {
+                "status": "compared",
+                "compared": 2,
+                "matched": 2,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "macaddr": {
+                "status": "compared",
+                "compared": 8,
+                "matched": 8,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "type": {
+                "status": "not_comparable",
+                "reason": "no bonsai-side mapping"
+              },
+              "adminState": {
+                "status": "not_comparable",
+                "reason": "no bonsai-side mapping"
+              },
+              "state": {
+                "status": "not_comparable",
+                "reason": "no bonsai-side mapping"
+              }
+            },
+            "sample_mismatches": [
+              {
+                "key": "GigabitEthernet0",
+                "field": "speed",
+                "suzieq": "1000000",
+                "bonsai": "1000Mbps"
+              },
+              {
+                "key": "GigabitEthernet0/0/0",
+                "field": "speed",
+                "suzieq": "1000000",
+                "bonsai": "1000Mbps"
+              },
+              {
+                "key": "GigabitEthernet0/0/1",
+                "field": "speed",
+                "suzieq": "1000000",
+                "bonsai": "1000Mbps"
+              },
+              {
+                "key": "GigabitEthernet0/0/2",
+                "field": "speed",
+                "suzieq": "1000000",
+                "bonsai": "1000Mbps"
+              },
+              {
+                "key": "GigabitEthernet0/0/3",
+                "field": "speed",
+                "suzieq": "1000000",
+                "bonsai": "1000Mbps"
+              }
+            ]
+          },
+          "genie": {
+            "backend_used": "genie",
+            "outcome": "structured_success",
+            "elapsed_ms": 52.74,
+            "records_joined": 10,
+            "records_suzieq_only": 0,
+            "records_bonsai_only": 0,
+            "fields": {
+              "ifname": {
+                "status": "compared",
+                "compared": 10,
+                "matched": 10,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "mtu": {
+                "status": "compared",
+                "compared": 10,
+                "matched": 10,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "speed": {
+                "status": "no_values",
+                "compared": 0,
+                "matched": 0,
+                "mismatched": 0,
+                "missing_in_bonsai": 10,
+                "missing_in_suzieq": 0
+              },
+              "description": {
+                "status": "compared",
+                "compared": 2,
+                "matched": 2,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "macaddr": {
+                "status": "compared",
+                "compared": 8,
+                "matched": 8,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "type": {
+                "status": "compared",
+                "compared": 10,
+                "matched": 10,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "adminState": {
+                "status": "compared",
+                "compared": 10,
+                "matched": 0,
+                "mismatched": 10,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "state": {
+                "status": "compared",
+                "compared": 10,
+                "matched": 10,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              }
+            },
+            "sample_mismatches": [
+              {
+                "key": "GigabitEthernet0",
+                "field": "adminState",
+                "suzieq": "up",
+                "bonsai": "true"
+              },
+              {
+                "key": "GigabitEthernet0/0/0",
+                "field": "adminState",
+                "suzieq": "up",
+                "bonsai": "true"
+              },
+              {
+                "key": "GigabitEthernet0/0/1",
+                "field": "adminState",
+                "suzieq": "up",
+                "bonsai": "true"
+              },
+              {
+                "key": "GigabitEthernet0/0/2",
+                "field": "adminState",
+                "suzieq": "administratively down",
+                "bonsai": "false"
+              },
+              {
+                "key": "GigabitEthernet0/0/3",
+                "field": "adminState",
+                "suzieq": "administratively down",
+                "bonsai": "false"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scope": "iosxe_ip_arp",
+      "fixture": "tests/integration/nossim/iosxe/16.10.1/C9300/show_ip_arp.txt",
+      "fixture_sha256": "9d696d95d632e4b21d5b5db2bf4cf5c9e8124a0445da42c814b85f201557a9b0",
+      "fixture_bytes": 305,
+      "suzieq_template": "suzieq/config/textfsm_templates/iosxe_show_arp.tfsm",
+      "suzieq_template_sha256": "c07f099ff800e606b44ed4508555bf7fadda0121fbc17fa8c42fb22f64a6aafd",
+      "suzieq_pinned_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+      "textfsm_pinned_revision": "7e4ed596442867fc961c0788e7cac5bc8d091da9",
+      "suzieq_records_parsed": 3,
+      "suzieq_parse_ms": 0.61,
+      "suzieq_avsc": "arpnd",
+      "bonsai_vendor": "cisco_iosxe",
+      "bonsai_command": "show ip arp",
+      "bonsai_status": "executed",
+      "comparison": {
+        "suzieq_records": 3,
+        "suzieq_join": "ipAddress",
+        "suzieq_avsc_field_count": 11,
+        "backends": {
+          "textfsm": {
+            "backend_used": "textfsm",
+            "outcome": "structured_success",
+            "elapsed_ms": 2.47,
+            "records_joined": 3,
+            "records_suzieq_only": 0,
+            "records_bonsai_only": 0,
+            "fields": {
+              "ipAddress": {
+                "status": "compared",
+                "compared": 3,
+                "matched": 3,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "macaddr": {
+                "status": "compared",
+                "compared": 3,
+                "matched": 3,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "type": {
+                "status": "compared",
+                "compared": 3,
+                "matched": 3,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "oif": {
+                "status": "compared",
+                "compared": 3,
+                "matched": 3,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "protocol": {
+                "status": "compared",
+                "compared": 3,
+                "matched": 3,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              }
+            },
+            "sample_mismatches": []
+          },
+          "genie": {
+            "backend_used": "genie",
+            "outcome": "structured_success",
+            "elapsed_ms": 5.05,
+            "records_joined": 3,
+            "records_suzieq_only": 0,
+            "records_bonsai_only": 0,
+            "fields": {
+              "ipAddress": {
+                "status": "compared",
+                "compared": 3,
+                "matched": 3,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "macaddr": {
+                "status": "compared",
+                "compared": 3,
+                "matched": 3,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "type": {
+                "status": "compared",
+                "compared": 3,
+                "matched": 3,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "oif": {
+                "status": "compared",
+                "compared": 3,
+                "matched": 3,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "protocol": {
+                "status": "compared",
+                "compared": 3,
+                "matched": 3,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              }
+            },
+            "sample_mismatches": []
+          }
+        }
+      }
+    },
+    {
+      "scope": "iosxe_routes",
+      "fixture": "tests/integration/nossim/iosxe/16.10.1/C9300/show_ip_route_vrf_all.txt",
+      "fixture_sha256": "f32ed2b697185886b1535595b7ac482fdb9dfb4a93b8d20ebf41f047938be47f",
+      "fixture_bytes": 8046,
+      "suzieq_template": "suzieq/config/textfsm_templates/iosxe_show_route.tfsm",
+      "suzieq_template_sha256": "6f383e52480dace30beaec0faf265bc30a14b64d5ae10e229072ba6a77e8d455",
+      "suzieq_pinned_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+      "textfsm_pinned_revision": "7e4ed596442867fc961c0788e7cac5bc8d091da9",
+      "suzieq_records_parsed": 47,
+      "suzieq_parse_ms": 8.49,
+      "suzieq_avsc": "routes",
+      "bonsai_vendor": "cisco_iosxe",
+      "bonsai_command": "show ip route vrf all",
+      "bonsai_status": "executed",
+      "comparison": {
+        "suzieq_records": 47,
+        "suzieq_join": "route_prefix",
+        "suzieq_avsc_field_count": 24,
+        "backends": {
+          "textfsm": {
+            "backend_used": "textfsm",
+            "outcome": "structured_success",
+            "elapsed_ms": 7.8,
+            "records_joined": 40,
+            "records_suzieq_only": 0,
+            "records_bonsai_only": 0,
+            "fields": {
+              "prefix": {
+                "status": "compared",
+                "compared": 40,
+                "matched": 40,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "protocol": {
+                "status": "compared",
+                "compared": 40,
+                "matched": 39,
+                "mismatched": 1,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "preference": {
+                "status": "compared",
+                "compared": 17,
+                "matched": 17,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "metric": {
+                "status": "compared",
+                "compared": 17,
+                "matched": 17,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "nexthopIps": {
+                "status": "compared",
+                "compared": 17,
+                "matched": 17,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "statusChangeTimestamp": {
+                "status": "compared",
+                "compared": 5,
+                "matched": 5,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 8
+              }
+            },
+            "sample_mismatches": [
+              {
+                "key": "0.0.0.0/0",
+                "field": "protocol",
+                "suzieq": "S*",
+                "bonsai": "S"
+              }
+            ]
+          },
+          "genie": {
+            "backend_used": "genie",
+            "outcome": "structured_success",
+            "elapsed_ms": 22.75,
+            "records_joined": 40,
+            "records_suzieq_only": 0,
+            "records_bonsai_only": 0,
+            "fields": {
+              "prefix": {
+                "status": "compared",
+                "compared": 40,
+                "matched": 40,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "protocol": {
+                "status": "compared",
+                "compared": 40,
+                "matched": 40,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "preference": {
+                "status": "compared",
+                "compared": 17,
+                "matched": 17,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "metric": {
+                "status": "compared",
+                "compared": 17,
+                "matched": 17,
+                "mismatched": 0,
+                "missing_in_bonsai": 0,
+                "missing_in_suzieq": 0
+              },
+              "nexthopIps": {
+                "status": "not_comparable",
+                "reason": "no bonsai-side mapping"
+              },
+              "statusChangeTimestamp": {
+                "status": "not_comparable",
+                "reason": "no bonsai-side mapping"
+              }
+            },
+            "sample_mismatches": []
+          }
+        }
+      }
+    }
+  ],
+  "missing": []
+}

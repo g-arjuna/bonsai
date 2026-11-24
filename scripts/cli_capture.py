@@ -15,6 +15,28 @@ import sys
 
 import paramiko
 
+# Hard cap on captured device output. Running-config captures are typically
+# well under 1 MiB; anything larger is rejected explicitly rather than being
+# buffered and parsed without bound downstream.
+MAX_CAPTURE_BYTES = 4 * 1024 * 1024
+
+
+def read_bounded(stream, max_bytes: int) -> bytes:
+    # Read via channel.recv so each call returns promptly with available data
+    # (ChannelFile.read(n) may block trying to fill the whole buffer).
+    channel = stream.channel
+    chunks = []
+    total = 0
+    while True:
+        chunk = channel.recv(65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"capture exceeded {max_bytes} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -23,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--username", required=True)
     parser.add_argument("--command", required=True)
     parser.add_argument("--timeout-secs", type=int, default=20)
+    parser.add_argument("--max-bytes", type=int, default=MAX_CAPTURE_BYTES)
     return parser.parse_args()
 
 
@@ -48,8 +71,12 @@ def main() -> int:
             auth_timeout=args.timeout_secs,
         )
         _, stdout, stderr = client.exec_command(args.command, timeout=args.timeout_secs)
-        output = stdout.read().decode("utf-8", errors="replace")
-        error_output = stderr.read().decode("utf-8", errors="replace").strip()
+        try:
+            output = read_bounded(stdout, args.max_bytes).decode("utf-8", errors="replace")
+            error_output = stderr.read().decode("utf-8", errors="replace").strip()
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 4
         exit_status = stdout.channel.recv_exit_status()
         if exit_status != 0:
             print(
