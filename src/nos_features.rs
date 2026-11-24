@@ -146,9 +146,9 @@ impl ReleaseConstraint {
         {
             return false;
         }
-        self.components.iter().all(|(k, v)| {
-            rel.components.get(k).is_some_and(|got| got == v)
-        })
+        self.components
+            .iter()
+            .all(|(k, v)| rel.components.get(k).is_some_and(|got| got == v))
     }
 }
 
@@ -199,9 +199,9 @@ impl HardwareScope {
         {
             return false;
         }
-        self.attributes.iter().all(|(k, v)| {
-            dev.attributes.get(k).is_some_and(|got| got == v)
-        })
+        self.attributes
+            .iter()
+            .all(|(k, v)| dev.attributes.get(k).is_some_and(|got| got == v))
     }
 }
 
@@ -352,9 +352,7 @@ impl ProfileRegistry {
             }
             for hc in &p.hardware_constraints {
                 if !hc.constraint_matches(query.hardware.as_ref()) {
-                    return Err(format!(
-                        "hardware constraint not satisfied ({hc:?})"
-                    ));
+                    return Err(format!("hardware constraint not satisfied ({hc:?})"));
                 }
             }
             Ok(())
@@ -441,16 +439,13 @@ impl ProfileRegistry {
         requested: &[String],
     ) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
-        let set: std::collections::BTreeSet<&str> =
-            requested.iter().map(String::as_str).collect();
+        let set: std::collections::BTreeSet<&str> = requested.iter().map(String::as_str).collect();
         for feature in requested {
             match Self::feature_status(profile, feature) {
                 FeatureStatus::Absent => {
                     errors.push(format!("feature '{feature}' is not declared"))
                 }
-                FeatureStatus::Disabled => {
-                    errors.push(format!("feature '{feature}' is disabled"))
-                }
+                FeatureStatus::Disabled => errors.push(format!("feature '{feature}' is disabled")),
                 FeatureStatus::Enabled => {}
             }
             if let Some(flag) = profile.features.get(feature) {
@@ -467,9 +462,7 @@ impl ProfileRegistry {
             if let Some(flag) = profile.features.get(feature) {
                 for conflict in &flag.conflicts {
                     if set.contains(conflict.as_str()) {
-                        errors.push(format!(
-                            "features '{feature}' and '{conflict}' conflict"
-                        ));
+                        errors.push(format!("features '{feature}' and '{conflict}' conflict"));
                     }
                 }
             }
@@ -846,10 +839,12 @@ mod tests {
         assert_eq!(p.profile_id, "cumulus-1");
         // NVUE applied/startup planes are modeled as distinct scope notes.
         let ifaces = &p.features["interfaces"];
-        assert!(ifaces
-            .scope_notes
-            .iter()
-            .any(|n| n.contains("applied vs startup")));
+        assert!(
+            ifaces
+                .scope_notes
+                .iter()
+                .any(|n| n.contains("applied vs startup"))
+        );
 
         // Wrong FRR component → out of scope, not silently selected.
         let sel = r.select(&ProfileQuery {
@@ -934,27 +929,31 @@ mod tests {
         assert!(ProfileRegistry::validate_feature_set(&p, &["isis".into()]).is_ok());
         // IS-IS + SR-MPLS + Flex-Algo + explicit SR policy + PCE-delegated
         // policy is a valid composition.
-        assert!(ProfileRegistry::validate_feature_set(
-            &p,
-            &[
-                "isis".into(),
-                "isis.sr_mpls".into(),
-                "isis.flex_algo".into(),
-                "sr.policy.explicit".into(),
-                "sr.policy.pce".into(),
-            ]
-        )
-        .is_ok());
+        assert!(
+            ProfileRegistry::validate_feature_set(
+                &p,
+                &[
+                    "isis".into(),
+                    "isis.sr_mpls".into(),
+                    "isis.flex_algo".into(),
+                    "sr.policy.explicit".into(),
+                    "sr.policy.pce".into(),
+                ]
+            )
+            .is_ok()
+        );
         // Subfeature without base fails on the missing prerequisite.
         let errs = ProfileRegistry::validate_feature_set(&p, &["isis.sr_mpls".into()])
             .expect_err("missing isis prerequisite");
         assert!(errs.iter().any(|e| e.contains("requires 'isis'")));
         // PCE policy without explicit segment-list policy fails.
-        assert!(ProfileRegistry::validate_feature_set(
-            &p,
-            &["isis".into(), "isis.sr_mpls".into(), "sr.policy.pce".into()]
-        )
-        .is_err());
+        assert!(
+            ProfileRegistry::validate_feature_set(
+                &p,
+                &["isis".into(), "isis.sr_mpls".into(), "sr.policy.pce".into()]
+            )
+            .is_err()
+        );
         // Undeclared feature is explicit, not implicitly enabled.
         assert!(ProfileRegistry::validate_feature_set(&p, &["isis.bfd".into()]).is_err());
         // Conflicting pair reports both directions once.
