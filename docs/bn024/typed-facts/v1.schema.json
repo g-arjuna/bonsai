@@ -53,6 +53,7 @@
       }
     },
     "observed_at": { "type": "string", "format": "date-time" },
+    "ingested_at": { "type": "string", "format": "date-time" },
     "valid_from": { "type": "string", "format": "date-time" },
     "valid_until": { "type": "string", "format": "date-time" },
     "payload": {
@@ -82,7 +83,17 @@
     },
     "trust": {
       "enum": ["unverified", "device_asserted", "corroborated", "authoritative"],
-      "description": "Authority eligibility, separate from parse quality. Only corroborated/authoritative may feed authoritative projection."
+      "description": "Authority eligibility CLAIM, separate from parse quality. A serialized claim is evidence only — it never satisfies authority eligibility by itself."
+    },
+    "authority": {
+      "type": "object",
+      "required": ["identity_status"],
+      "additionalProperties": false,
+      "properties": {
+        "identity_status": { "enum": ["resolved", "provisional", "ambiguous", "unknown", "conflicting"] },
+        "resolved_device_id": { "type": "string" }
+      },
+      "description": "Verified authority grant evidence. Grants are only minted in-process from a trusted IdentityResolution; deserialized grants are unattested and confer no eligibility."
     },
     "lifecycle": {
       "enum": ["active", "withdrawn", "superseded", "stale"]

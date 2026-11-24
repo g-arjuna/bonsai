@@ -348,3 +348,7 @@ date,command,scope,wall_seconds,result,notes
 2026-11-24,pytest tests/test_bn024_provenance.py tests/test_bn024_parser_contract.py (bn024 corrective),BN-024-00+01 python tests,1,pass,"25/25 incl. revision-identity/containment/tree-order provenance tests"
 2026-11-24,scripts/bn024/upstream_provenance.py verify docs/bn024/provenance/upstream-sources.json /tmp/bn024-verify-git,bn024 provenance verify,2,pass,"114/114 entries vs fresh pinned-revision git checkouts"
 2026-11-24,scripts/bn024/differential_baseline.py --suzieq-src /tmp/bn024-verify-git/suzieq --pyats-url :19101 (v2 oracle),BN-024-01 differential oracle v2,4,pass,"3 scopes iosxe interfaces/arp/routes; per-record field diffs, no aggregate parity claim"
+2026-11-24,cargo check -p bonsai --lib --offline (build-lane,ci),bonsai --lib post-rebase+03A,45,pass,"dev profile check; sccache lane ~/.cache/bonsai-ci/build-lane"
+2026-11-24,cargo test -p bonsai --profile ci --lib --offline -- typed_facts nos_features (build-lane),BN-024-02+03A focused lib tests,270,pass,"30 passed 1 ignored; includes authority-grant, Cumulus scope, composition tests"
+2026-11-24,cargo test -p bonsai --profile ci --lib --offline -- typed_facts::tests::emit_fixture_artifact --ignored (build-lane),fixture regeneration,241,pass,"v1.fixture.json regenerated under new seal() identity"
+2026-11-24,pytest tests/test_bn024_typed_facts.py tests/test_bn024_provenance.py tests/test_bn024_parser_contract.py,BN-024 python suites,1,pass,"31/31"

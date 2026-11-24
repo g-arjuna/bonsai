@@ -73,7 +73,11 @@ def main() -> int:
         _, stdout, stderr = client.exec_command(args.command, timeout=args.timeout_secs)
         try:
             output = read_bounded(stdout, args.max_bytes).decode("utf-8", errors="replace")
-            error_output = stderr.read().decode("utf-8", errors="replace").strip()
+            error_output = (
+                read_bounded(stderr, args.max_bytes)
+                .decode("utf-8", errors="replace")
+                .strip()
+            )
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 4

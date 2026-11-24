@@ -31,10 +31,25 @@ serialized fixture under `docs/bn024/typed-facts/`; no graph writer.
 checks actual git checkout revisions (not just content hashes), enforces
 path containment, and uses deterministic tree hashing; all 114 manifest
 entries verified against fresh pinned-revision git checkouts.
-L0–L3 gate rerun pending on this branch; L4 not applicable. No
+**Reconciled onto main `3347207` (owner's SONiC/Cumulus + source-port +
+reference-knowledge commits preserved; BN-024-00A/03A/08A/12A and
+BN-028-13 intact). Second review pass:** `typed_facts` authority is no
+longer self-asserted — `AuthorityGrant` mints only from a trusted
+`IdentityResolution`, attestation never survives serde, fact_id binds
+schema_version+produced_by, `ingested_at` added, JSON-schema drift gate
+added; `nos_features` extended for BN-024-03A (equality-only
+`ReleaseConstraint`, `HardwareScope`, feature requires/conflicts/support/
+evidence, `validate_feature_set`, `OutOfScope`) with a Cumulus metadata
+fixture and IS-IS/SR composition tests; BN-024-00A first crosswalk
+increment at `docs/bn024/source-crosswalk/`; parser-contract known
+limitations documented (unbounded Python worker post-timeout, sidecar
+`/learn` iosxe default, AutoAddPolicy posture, structured-empty
+ambiguity). Focused tests: 30 lib + 31 pytest pass. Canonical L0–L3 gate
+rerun pending on the reconciled SHA; L4 not applicable. No
 authoritative graph projection; BN-021/BN-008 gates still precede it.
 Evidence: `docs/bn024/evidence/2026-11-24-bn024-01*/`,
-`docs/bn024/parser-contract.md`, `docs/bn024/typed-facts/`.
+`docs/bn024/parser-contract.md`, `docs/bn024/typed-facts/`,
+`docs/bn024/extension-seam.md`, `docs/bn024/source-crosswalk/`.
 
 BN-019 packaged upgrade slice — **executed 2026-11-24** on merged
 main `18fa577` (PR #80): real packaged images `bonsai:bn019u2-cdfcac1`

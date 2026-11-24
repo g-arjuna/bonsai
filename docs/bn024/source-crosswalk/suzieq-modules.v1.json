@@ -1,0 +1,211 @@
+{
+  "crosswalk_version": 1,
+  "generated": "2026-11-24",
+  "upstream": {
+    "repository": "https://github.com/netenglabs/suzieq",
+    "pinned_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+    "license": "Apache-2.0",
+    "provenance_manifest": "docs/bn024/provenance/upstream-sources.json",
+    "verification": "git HEAD verified at pinned revision; per-file sha256 recorded below"
+  },
+  "scope_note": "Architecture-level engineering crosswalk for BN-024-00A. Entries describe inspected source at the pinned revision; 'proposed_rust' is a design intent, not implemented code. Reuse classification follows the BN-024-00 gate: Apache-2.0 source may be studied and re-implemented; verbatim copying still requires approved_reuse.",
+  "pipeline_template": [
+    "device detection (nodes/node.py: show version/hostname -> devtype+version)",
+    "NOS/version selection (config/*.yml apply.<nos>[.version|copy|normalize] + service.py::_get_def_for_version)",
+    "command/API selection (same yml: command list, textfsm template, or structured/json path)",
+    "raw output capture (node.py service queue -> output entries)",
+    "extraction (TextFSM template / Genie schema / svcparser.py nested-JSON normalizer)",
+    "multi-command record merging (service.py::merge_results on keys)",
+    "vendor-specific cleaning (per-service _clean_<nos>_data)",
+    "schema/key/default processing (Avro schema *.avsc + sqobjects field defaults)",
+    "lifecycle/difference handling (service.py::get_diff/commit_data; devconfig hash-diff)",
+    "query/assertion/reasoning use (sqobjects + engines/pandas)"
+  ],
+  "modules": [
+    {
+      "id": "suzieq.nodes.node",
+      "file": "suzieq/poller/worker/nodes/node.py",
+      "lines": 2296,
+      "sha256": "79b8b82074fbcc55f0e2bb948b358d08129f4c69e2d4f99ad81d4a30815bac52",
+      "role": "device detection, transport, command dispatch, output envelope",
+      "key_functions": [
+        "_parse_device_type_hostname (show version -> devtype/version; junos-evo vs junos split)",
+        "_set_devtype / _extract_nos_version",
+        "_detect_node_type / _get_device_type_hostname",
+        "_init_ssh_options / connection lifecycle",
+        "_create_result / _post_result (output envelope: hostname, devtype, version, timestamp, command, data)"
+      ],
+      "nos_coverage": "generic dispatch; per-NOS node subclasses selected by devtype string",
+      "identity_notes": "version field flows into service defn selection; devtype selects cleaner",
+      "error_handling": "_create_error envelope; exceptions surfaced via service stats",
+      "upstream_tests": "tests/unit + integration nossim per-NOS dirs (eos iosxe iosxr mx nxos panos qfx)",
+      "known_limitations": "version '0.0.0' sentinel skips versioned defns; hostname-based normalizer override can shadow devtype (service.py::_get_device_normalizer checks hostname FIRST)",
+      "proposed_rust": "bonsai platform_registry + typed capture envelope; detection results feed ProfileQuery.release, never silently default",
+      "intended_deviations": "no hostname-first normalizer shadowing; unknown version stays unknown, never 'all'-fallback for constrained profiles",
+      "license_class": "study_and_reimplement"
+    },
+    {
+      "id": "suzieq.services.service",
+      "file": "suzieq/poller/worker/services/service.py",
+      "lines": 947,
+      "sha256": "11df356619c4823dff1499c88a3aaa8edd5209511921be2bf7e18acf82096535",
+      "role": "service framework: defn selection, extraction dispatch, merge, clean, diff, commit",
+      "key_functions": [
+        "_get_def_for_version (packaging.version LegacyVersion comparisons >= <= > < = !=; 'all' wildcard; version==0 skips)",
+        "_get_device_normalizer (hostname -> devtype -> version precedence)",
+        "_process_each_output (per-command extraction via textfsm/json/normalize)",
+        "merge_results (join multi-command outputs on service keys)",
+        "clean_data / clean_data_common (dispatch to _clean_<nos>_data)",
+        "get_diff / commit_data (old-vs-new record lifecycle, adds/dels)",
+        "textfsm_data (embedded template parsing path)"
+      ],
+      "nos_coverage": "all; per-NOS behavior lives in subclass cleaners + yml defns",
+      "identity_notes": "merge on service 'keys' (e.g. interfaces.ifname); vrf scoping added by subclass cleaners",
+      "units_notes": "speed normalization per-NOS in cleaners (EOS bandwidth, NXOS fix_nxos_speed, missing-speed sentinels)",
+      "defaults_notes": "normalize DSL supports 'field?|default' (e.g. mtu?|0, ipAddressList?|[]) — silent defaults are upstream semantics Bonsai must treat as claims, not truth",
+      "error_handling": "per-command failures isolated in stats; missing defn -> service skipped",
+      "upstream_tests": "tests/unit/poller/worker/services/test_service.py, test_interfaces.py",
+      "known_limitations": "first-match version selection (defn list order); 'all' matches unknown versions; hostname override precedes devtype",
+      "proposed_rust": "BN-024-05 normalizer pipeline: defn-equivalent = FeatureFlag+typed extractors; keep first-match rule only where version evidence exists",
+      "intended_deviations": "unknown/unparseable version never selects 'all'; defaults recorded as defaulted fields, not observed values",
+      "license_class": "study_and_reimplement"
+    },
+    {
+      "id": "suzieq.services.svcparser",
+      "file": "suzieq/poller/worker/services/svcparser.py",
+      "lines": 552,
+      "sha256": "29796bb68d2cd7f59a35aceeb0c15d0e2589df95042349a0c44306d3e354ed63",
+      "role": "nested JSON -> flat record normalizer driven by 'normalize' templates in config yml",
+      "key_functions": [
+        "parse_subtree (recursive field extraction with lists/defaults)",
+        "copy_keys_into_each_ele",
+        "cons_recs_from_json_template",
+        "cleanup_and_return",
+        "eval_expr / num_eval (bounded expression evaluation for computed fields)"
+      ],
+      "nos_coverage": "used wherever yml 'normalize' templates exist (eos multi-command merges shown in interfaces.yml)",
+      "identity_notes": "list-index wildcards 'vlanToVniMap/*' fan out to records",
+      "defaults_notes": "?|default syntax; missing keys yield defaults silently",
+      "error_handling": "template eval errors propagate to service failure path",
+      "upstream_tests": "indirect via service tests",
+      "known_limitations": "eval_expr is upstream code execution — Bonsai must NOT port eval; implement closed-form field mappings only",
+      "proposed_rust": "typed extraction specs in nos_features FeatureFlag.parsers + future BN-024-05 DSL; no eval",
+      "intended_deviations": "no arbitrary expression eval; every default explicit in typed fact quality.missing_fields",
+      "license_class": "study_only_eval_rejected"
+    },
+    {
+      "id": "suzieq.services.interfaces",
+      "file": "suzieq/poller/worker/services/interfaces.py",
+      "lines": 1087,
+      "sha256": "d5d20ced1af881eba3eff4e50843275e8ed9f9f5aab928038906fcf124675730",
+      "role": "interface operational state normalization (first native-feature candidate)",
+      "key_functions": [
+        "_clean_eos_data / _clean_cumulus_data / _clean_junos_data / _clean_nxos_data / _clean_iosxr_data / _clean_iosxe_data+_clean_ios_data (both delegate to _clean_iosxr_data here — opposite direction from bgp.py) / _clean_sonic_data (uses _entry_cumulus_sonic_cleaner + internal_ifnames list, NOT the linux cleaner) / _clean_linux_data (flags-based admin state) / _clean_panos_data",
+        "_entry_cumulus_sonic_cleaner (shared FRR-ish interface entry cleaner)",
+        "_assign_vrf, _get_missing_speed_value, _speed_field_check, _common_speed_field_value, _textfsm_valid_speed_value",
+        "fix_junos_speed / fix_nxos_speed (vendor unit repair)"
+      ],
+      "nos_coverage": "eos cumulus junos nxos iosxr iosxe sonic panos linux",
+      "identity_notes": "ifname key + vrf assignment; sonic/cumulus share namespace-aware cleaner but host vs ASIC namespace semantics NOT modeled upstream",
+      "units_notes": "speed arrives in mixed units per NOS; cleaners normalize to kbps-ish schema field; missing speed sentinels handled explicitly",
+      "defaults_notes": "mtu default 0 via normalize DSL; burnedInAddress fallback to macaddr; linux cleaner maps state 'unknown' -> 'up' (loopback assumption — unsafe for Bonsai)",
+      "error_handling": "unknown speed -> explicit missing handling, not fabricated",
+      "upstream_tests": "tests/unit/poller/worker/services/test_interfaces.py",
+      "known_limitations": "SONiC ASIC namespace collapse; speed unit inference per-vendor fragile",
+      "proposed_rust": "first native vertical slice candidate: canonical scoped interface identity + admin/oper state + MTU + speed-with-units + typed unknowns",
+      "intended_deviations": "namespace-aware identity from day one; speed carries explicit unit field; unknown != down",
+      "license_class": "study_and_reimplement"
+    },
+    {
+      "id": "suzieq.services.bgp",
+      "file": "suzieq/poller/worker/services/bgp.py",
+      "lines": 708,
+      "sha256": "96cb37ccd7e77be4d3085e6ee7583e4048e7f99e5a66116ba0c8ca55ca523fe7",
+      "role": "BGP neighbor/AFI-SAFI normalization with heavy per-vendor cleaning",
+      "key_functions": [
+        "_clean_eos_data / _clean_junos_data (_rename_afi_safi) / _clean_nxos_data / _clean_iosxr_data / _clean_ios_data / _clean_iosxe_data(via ios) / _clean_cumulus_data / _clean_linux_data(via cumulus) / _clean_sonic_data(via linux) / _clean_panos_data",
+        "_normalize_asn",
+        "_clean_cumulus_data expands _afiInfo into per-AFI/SAFI records (afi/safi/communityTypes/rrclient/pfxRx/pfxTx/rmap/defOriginate/nhUnchanged)"
+      ],
+      "nos_coverage": "eos junos nxos iosxr ios iosxe cumulus linux sonic panos",
+      "identity_notes": "neighbor keyed by address+vrf; Cumulus expansion multiplines records per AFI/SAFI",
+      "units_notes": "prefix counters numeric; state strings vendor-specific",
+      "defaults_notes": "bfdStatus missing/'unknown' -> 'disabled' (unsafe default Bonsai should NOT copy — unknown BFD must stay unknown); acceptedPrefixCounter default 0",
+      "error_handling": "non-Established neighbors skipped entirely upstream — Bonsai must represent them explicitly",
+      "upstream_tests": "indirect; bgp fixtures under tests/integration/nossim",
+      "known_limitations": "unknown->disabled BFD default; non-established dropped; SONiC inherits Linux cleaner losing ASIC/namespace context",
+      "proposed_rust": "later slice; per-AFI/SAFI record expansion is the model to reuse conceptually",
+      "intended_deviations": "unknown BFD stays unknown; non-established neighbors are facts, not omissions",
+      "license_class": "study_and_reimplement"
+    },
+    {
+      "id": "suzieq.services.routes",
+      "file": "suzieq/poller/worker/services/routes.py",
+      "lines": 414,
+      "sha256": "af2781d6390d867e990f7990a5e3d78b6975856d7e8bbc7d3231b7cd5e5e3f86",
+      "role": "route table normalization; protocol token -> canonical protocol mapping",
+      "key_functions": [
+        "clean_json_input",
+        "proto_map lookup: entry['protocol'] = proto_map.get(entry['protocol'][0], ...)[0] — FIRST CHARACTER ONLY",
+        "vrf default 'default' injection",
+        "_fix_ipvers, statusChangeTimestamp handling"
+      ],
+      "nos_coverage": "all via per-NOS yml + common cleaner",
+      "identity_notes": "prefix+vrf+nexthop identity; 47 raw SuzieQ route records dedup to 40 join keys in differential corpus",
+      "units_notes": "preference/metric ints; uptime parsed from statusChangeTimestamp",
+      "defaults_notes": "missing vrf -> 'default'; protocol[0] silently truncates flags like 'S*' -> 'S' -> 'static'",
+      "error_handling": "unmapped protocol first-char falls back to raw token",
+      "upstream_tests": "nossim route fixtures",
+      "known_limitations": "protocol flag characters ('*' candidate default, '%' override) are LOST upstream — SuzieQ itself drops them; Bonsai may intentionally preserve as separate flag field",
+      "proposed_rust": "route facts preserve protocol AND flags separately; proto_map-equivalent is versioned data",
+      "intended_deviations": "preserve candidate-default/override flags upstream discards; no first-char truncation",
+      "license_class": "study_and_reimplement"
+    },
+    {
+      "id": "suzieq.services.devconfig",
+      "file": "suzieq/poller/worker/services/devconfig.py",
+      "lines": 62,
+      "sha256": "c53a3e5abd71c3f62f52375b625fdbe9173e69e5da77df202cdfb3e927b3da9e",
+      "role": "running-config capture: raw text -> single 'config' record with crude secret filtering",
+      "key_functions": [
+        "_common_data_cleaner (joins lines, drops lines matching 'Time|username|crypto|key-hash|encryption')",
+        "get_diff (Python hash() of whole config string -> add/del)"
+      ],
+      "nos_coverage": "generic raw-text path; NOT a multi-NOS effective-config compiler",
+      "identity_notes": "single record per device; no statement structure",
+      "units_notes": "n/a",
+      "defaults_notes": "regex secret filter is best-effort and lossy (drops any matching line incl. non-secret context)",
+      "error_handling": "minimal",
+      "upstream_tests": "limited",
+      "known_limitations": "no ordering/hierarchy/semantics preserved; hash() is process-seeded (PYTHONHASHSEED) — diff unstable across runs; confirms owner assessment that upstream is not a config compiler",
+      "proposed_rust": "BN-024-10..13 Batfish-inspired seam: ordered AST -> effective config; ConfigStore::summarize_diff line-set limitation tracked under BN-024-12A/19",
+      "intended_deviations": "lossless capture with redaction boundaries + source spans; semantic diff replaces line-set/hash diff",
+      "license_class": "study_only"
+    },
+    {
+      "id": "suzieq.config.definitions",
+      "path": "suzieq/config/*.yml (19 files) + schema/*.avsc (28)",
+      "role": "per-service per-NOS command/extraction/version predicates + Avro schemas",
+      "key_observations": [
+        "apply.<nos>.version: 'all' or version predicate list; copy:<other_nos> aliases (sonic copies cumulus in interfaces.yml)",
+        "normalize templates drive svcparser nested extraction incl. multi-command merges (eos interfaces: show interfaces + show vrf + show ip virtual-router)",
+        "textfsm_templates/: 93 pinned .tfsm files",
+        "schema keys/defaults live in *.avsc; sqobjects add query/assertion layer"
+      ],
+      "license_class": "study_and_reimplement (Apache-2.0); templates/assets per-asset approved_reuse still pending"
+    }
+  ],
+  "batfish_reference": {
+    "status": "boundary established, no port started",
+    "role": "complementary configuration-intelligence reference (Batfish-inspired 'what should the network do'), SuzieQ covers 'what is it doing'",
+    "architecture_map": [
+      "vendor grammars -> vendor-specific AST",
+      "AST -> vendor-independent representation (conversion)",
+      "routing-policy evaluation + reference resolution",
+      "dataplane computation (FIB/forwarding)",
+      "reachability + differential analysis",
+      "unrecognized-syntax/unsupported-semantics explicit states"
+    ],
+    "constraints": "no Java production dependency; pinned revision + license review required before reuse; detailed BGP-policy/VRF trace deferred to BN-024-11/12"
+  }
+}

@@ -172,6 +172,30 @@ trust dimensions.
   to the representation vocabulary above; consumers must not treat
   `representation_match` as semantic corroboration.
 
+## Known limitations (explicit, not defects of this slice)
+
+- **Python worker bounds**: the Rust caller is bounded (10 s/attempt,
+  60 s chain, 4 MiB bodies) but an expired HTTP timeout does not cancel
+  Python-side parsing — the single-process FastAPI sidecar keeps working
+  on the abandoned request (threadpool admission is the only backstop).
+  Acceptable for the current dev profile; production concurrency/overload
+  policy is a BN-024-04+ operational decision, not silently assumed.
+- **SSH host-key policy**: `scripts/cli_capture.py` uses paramiko
+  `AutoAddPolicy` (pre-existing posture, unchanged by this slice).
+  Host-key pinning for the capture path is tracked separately; no
+  regression was introduced.
+- **`/learn` vendor default**: the sidecar `/learn` endpoint maps unknown
+  vendor strings to `iosxe` (`VENDOR_TO_GENIE_OS.get(vendor, "iosxe")`).
+  `/parse` fails closed on unmapped vendors; `/learn` is the onboarding
+  path and remains a known gap.
+- **Structured-empty ambiguity**: a Genie/TextFSM backend that returns a
+  legitimately empty result for input it could not really parse still
+  reports `structured_empty` — backend semantics, not malformed-input
+  proof. `invalid_input` is only reported for empty `raw_output`.
+- **Running-config scope**: genuine Genie/TextFSM validation covers
+  operational `show` commands defined per platform; it does not establish
+  structured parsing of arbitrary running configuration.
+
 ## Tests
 
 - Rust wiremock contract tests in `src/parser_chain.rs`

@@ -35,9 +35,21 @@ extension seam on this stable schema.
 ## Trust vs quality vs authority
 
 - `trust` (`unverified` → `device_asserted` → `corroborated` →
-  `authoritative`) is authority *eligibility*, orthogonal to parse quality.
-  `TrustClass::authority_eligible()` returns true only for `corroborated`
-  and `authoritative`.
+  `authoritative`) is an authority-*eligibility claim* carried by the
+  fact, orthogonal to parse quality. `TrustClass::authority_eligible()`
+  describes the claim class only — it is NOT an authorization check.
+- **Authority requires a grant.** `TypedFact::authority_eligible()`
+  returns true only when the trust claim is `corroborated`/`authoritative`
+  AND `authority` holds an attested `AuthorityGrant`. Grants are minted
+  solely by `AuthorityGrant::from_resolution()` from a trusted Core
+  `IdentityResolution` (`IdentityStatus::Resolved`); the attestation flag
+  is never serialized, so a fact restored from JSON/journal/API data is
+  always unattested and must have authority re-derived by the consumer —
+  the same boundary as `VerifiedIngressPrincipal`.
+- A serialized `trust: "authoritative"` (with or without an `authority`
+  block) is representable evidence but never self-authorizing; covered by
+  `forged_trust_claim_is_not_authority` and
+  `deserialized_grant_loses_attestation`.
 - Validation rejects `authoritative` trust on `unstructured_fallback` or
   `unknown_quality` payloads.
 - Structured parser output alone never confers `authoritative` — the
@@ -53,9 +65,11 @@ reject further transitions. Withdrawal annotates the same `fact_id`
 
 ## Identity & evidence
 
-- `fact_id` = SHA-256 over canonical JSON of
-  (device_id, namespace, vrf, fact_kind, payload_sha256, capture_id,
-  collector_id) via `seal()`.
+- `fact_id` = SHA-256 over canonical JSON (recursively key-sorted) of
+  (schema_version, device_id, namespace, vrf, fact_kind, produced_by,
+  payload_sha256, capture_id, collector_id) via `seal()`. Binding
+  schema_version and parser identity means parser/schema evolution cannot
+  silently collide with or reinterpret historical facts.
 - `source` mirrors `ObservationSource` axes (collector_id, session_epoch,
   sequence) so BMP and CLI evidence join on the same identity.
 - `evidence[]` carries SHA-256 digests + optional locators for raw
@@ -63,12 +77,22 @@ reject further transitions. Withdrawal annotates the same `fact_id`
 
 ## Temporal semantics
 
-`observed_at` (RFC-3339) is when the capture happened; `valid_from`/
-`valid_until` bound the fact's claimed validity. Freshness/staleness
-policy is a consumer concern — the ABI only requires internal consistency.
+`observed_at` (RFC-3339) is capture/observation time; `ingested_at`
+records when Bonsai recorded the fact (`None` = unknown);
+`valid_from`/`valid_until` bound the fact's claimed validity. Device
+event time and replay markers are fact-kind payload concerns or source
+epoch/sequence — the ABI distinguishes capture time, ingestion time,
+validity window, source epoch/cursor, completeness and lifecycle without
+collapsing them. Freshness/staleness policy is a consumer concern — the
+ABI only requires internal consistency.
 
 ## Tests
 
-15 unit/property-style tests in `src/typed_facts.rs` cover: seal stability,
+20 unit/property-style tests in `src/typed_facts.rs` cover: seal stability,
 payload-state exclusivity, lifecycle terminality, trust boundary,
-schema-version gating, roundtrip, committed-fixture validity.
+schema-version gating, roundtrip, committed-fixture validity, authority
+grant derivation/attestation loss, forged-claim rejection, and
+schema/producer-bound fact identity. `tests/test_bn024_typed_facts.py`
+gates JSON-schema ↔ Rust-serialization drift (fixture validation, enum/
+required-field rejection, lifecycle conditionals, forged-claim
+representability).

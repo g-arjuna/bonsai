@@ -119,9 +119,15 @@ pub struct Quality {
 
 // ── Trust & authority ───────────────────────────────────────────────────────
 
-/// Trust class — authority *eligibility*, deliberately separate from parse
-/// quality. A structured parse from an unauthenticated capture is still only
-/// `DeviceAsserted`; nothing here writes to the graph.
+/// Trust class — authority *eligibility claim*, deliberately separate from
+/// parse quality. A structured parse from an unauthenticated capture is
+/// still only `DeviceAsserted`; nothing here writes to the graph.
+///
+/// IMPORTANT: this enum is a *claim carried by the fact*, not verified
+/// authority. Serialized `corroborated`/`authoritative` values are evidence
+/// claims only — they never satisfy [`TypedFact::authority_eligible`].
+/// Actual eligibility requires an [`AuthorityGrant`] derived from a trusted
+/// Core identity resolution in this process.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustClass {
@@ -131,17 +137,92 @@ pub enum TrustClass {
     DeviceAsserted = 1,
     /// Corroborated by a second independent observation path.
     Corroborated = 2,
-    /// Eligible for authoritative projection (requires corroboration or a
-    /// trusted direct channel — enforced by consumers, not this module).
+    /// Claimed eligible for authoritative projection.
     Authoritative = 3,
 }
 
 impl TrustClass {
-    /// Whether this class may feed an authoritative projection. Only
-    /// `Corroborated` and `Authoritative` qualify; `DeviceAsserted` remains
-    /// advisory. This is the trust/authority boundary of the ABI.
+    /// Whether this *class claim* asserts authority eligibility. This is
+    /// not an authorization check — use [`TypedFact::authority_eligible`],
+    /// which additionally requires a live [`AuthorityGrant`].
     pub fn authority_eligible(self) -> bool {
         matches!(self, TrustClass::Corroborated | TrustClass::Authoritative)
+    }
+}
+
+/// Verified authority grant — the only path by which a fact may be
+/// authority-eligible.
+///
+/// Mirrors the `VerifiedIngressPrincipal` trust boundary
+/// (`telemetry_identity.rs`): the attestation flag is never serialized, so
+/// a fact restored from JSON, journal or API payload deserializes with
+/// `attested = false` and can never re-authorize itself. Consumers must
+/// re-derive the grant from a live trusted Core `IdentityResolution`.
+///
+/// A grant records *that* trusted resolution permitted authority for this
+/// fact's subject; it does not itself assert parse quality, freshness or
+/// semantic correctness — those remain separate dimensions on the fact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AuthorityGrant {
+    /// Identity status that justified the grant (always `resolved`).
+    pub identity_status: crate::telemetry_identity::IdentityStatus,
+    /// Canonical device id the resolution produced (evidence, not identity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_device_id: Option<String>,
+    /// Set only by [`Self::from_resolution`]; skipped by serde so
+    /// deserialized grants are always unattested.
+    #[serde(skip)]
+    attested: bool,
+}
+
+impl AuthorityGrant {
+    /// Derive a grant from a trusted Core identity resolution. Returns
+    /// `None` unless the resolution may update authoritative state
+    /// (`IdentityStatus::Resolved`) — provisional, ambiguous, unknown and
+    /// conflicting outcomes can never mint authority. Callers must obtain
+    /// the resolution from `IdentityResolver` (including the
+    /// verified-ingress path where transport attestation applies), not
+    /// from self-reported fact fields.
+    pub fn from_resolution(
+        resolution: &crate::telemetry_identity::IdentityResolution,
+    ) -> Option<Self> {
+        if !resolution.may_update_authoritative_state() {
+            return None;
+        }
+        Some(Self {
+            identity_status: resolution.status,
+            resolved_device_id: resolution.device_id.clone(),
+            attested: true,
+        })
+    }
+
+    /// Whether this grant was derived from a live trusted resolution in
+    /// this process. Always `false` for deserialized values.
+    pub fn is_attested(&self) -> bool {
+        self.attested
+    }
+}
+
+impl<'de> Deserialize<'de> for AuthorityGrant {
+    /// Deserialization preserves the resolution evidence but NEVER the
+    /// attestation — a grant loaded from stored data cannot authorize
+    /// authority eligibility.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Repr {
+            identity_status: crate::telemetry_identity::IdentityStatus,
+            #[serde(default)]
+            resolved_device_id: Option<String>,
+        }
+        let repr = Repr::deserialize(deserializer)?;
+        Ok(Self {
+            identity_status: repr.identity_status,
+            resolved_device_id: repr.resolved_device_id,
+            attested: false,
+        })
     }
 }
 
@@ -185,8 +266,11 @@ pub struct TypedFact {
     pub fact_kind: String,
     pub subject: FactSubject,
     pub source: FactSource,
-    /// RFC-3339 observation timestamp.
+    /// RFC-3339 observation timestamp (capture/device-observation time).
     pub observed_at: String,
+    /// RFC-3339 time Bonsai ingested/recorded the fact. `None` = unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingested_at: Option<String>,
     /// Validity window (RFC-3339); `None` = validity unknown, not infinite.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_from: Option<String>,
@@ -194,7 +278,14 @@ pub struct TypedFact {
     pub valid_until: Option<String>,
     pub payload: FactPayload,
     pub quality: Quality,
+    /// Claimed trust class — an evidence claim, never self-verified
+    /// authority. See [`AuthorityGrant`] for the eligibility boundary.
     pub trust: TrustClass,
+    /// Verified authority grant derived from a trusted Core identity
+    /// resolution in this process. Absent = not authority-eligible.
+    /// Deserialized grants carry `attested = false` and confer nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<AuthorityGrant>,
     pub lifecycle: Lifecycle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withdrawn_reason: Option<String>,
@@ -269,11 +360,16 @@ impl TypedFact {
             .as_ref()
             .map(|f| sha256_hex(canonical_json(f).as_bytes()))
             .unwrap_or_default();
+        // Identity covers schema version, parser provenance and the
+        // canonical payload digest so parser/schema evolution cannot
+        // silently collide with or reinterpret historical facts.
         let identity = serde_json::json!({
+            "schema_version": self.schema_version,
             "device_id": self.subject.device_id,
             "namespace": self.subject.namespace,
             "vrf": self.subject.vrf,
             "fact_kind": self.fact_kind,
+            "produced_by": self.payload.produced_by,
             "payload_sha256": payload_digest,
             "capture_id": self.source.capture_id,
             "collector_id": self.source.collector_id,
@@ -333,8 +429,9 @@ impl TypedFact {
             }
             Lifecycle::Active | Lifecycle::Stale => {}
         }
-        // An authoritative-trust fact cannot be built on unknown-quality
-        // payload output.
+        // An authoritative-trust *claim* cannot be built on unknown-quality
+        // payload output. Note this constrains the claim only; actual
+        // authority eligibility is decided by `authority_eligible()`.
         if self.trust == TrustClass::Authoritative
             && matches!(
                 self.payload.state,
@@ -346,6 +443,23 @@ impl TypedFact {
             ));
         }
         Ok(())
+    }
+
+    /// Whether this fact may feed an authoritative projection. Requires
+    /// BOTH an authority-eligible trust *claim* AND a live attested
+    /// [`AuthorityGrant`] derived from trusted Core identity resolution.
+    /// A serialized `trust: "authoritative"` alone never qualifies, and a
+    /// deserialized grant is unattested — replayed or API-supplied facts
+    /// must have authority re-derived by the consumer.
+    ///
+    /// This is eligibility metadata only; consumers still own freshness,
+    /// completeness, scope and projection policy.
+    pub fn authority_eligible(&self) -> bool {
+        self.trust.authority_eligible()
+            && self
+                .authority
+                .as_ref()
+                .is_some_and(AuthorityGrant::is_attested)
     }
 
     /// Schema-evolution gate: deserialize then validate version support.
@@ -417,6 +531,7 @@ mod tests {
                 sequence: 42,
             },
             observed_at: "2026-11-24T10:00:00Z".into(),
+            ingested_at: Some("2026-11-24T10:00:01Z".into()),
             valid_from: Some("2026-11-24T09:59:00Z".into()),
             valid_until: None,
             payload: FactPayload {
@@ -430,6 +545,7 @@ mod tests {
                 notes: vec![],
             },
             trust: TrustClass::DeviceAsserted,
+            authority: None,
             lifecycle: Lifecycle::Active,
             withdrawn_reason: None,
             superseded_by: None,
@@ -532,6 +648,85 @@ mod tests {
         assert!(!TrustClass::DeviceAsserted.authority_eligible());
         assert!(TrustClass::Corroborated.authority_eligible());
         assert!(TrustClass::Authoritative.authority_eligible());
+    }
+
+    fn resolved_identity() -> crate::telemetry_identity::IdentityResolution {
+        crate::telemetry_identity::IdentityResolution {
+            status: crate::telemetry_identity::IdentityStatus::Resolved,
+            device_id: Some("dev-1".into()),
+            canonical_exporter_id: Some("exp-1".into()),
+            binding_id: Some("bind-1".into()),
+            provenance: None,
+            observed: crate::telemetry_identity::TelemetrySourceIdentity::observed("10.0.0.1"),
+        }
+    }
+
+    #[test]
+    fn authority_grant_requires_resolved_resolution() {
+        let res = resolved_identity();
+        let grant = AuthorityGrant::from_resolution(&res).expect("resolved grants");
+        assert!(grant.is_attested());
+        assert_eq!(grant.resolved_device_id.as_deref(), Some("dev-1"));
+
+        for status in [
+            crate::telemetry_identity::IdentityStatus::Provisional,
+            crate::telemetry_identity::IdentityStatus::Ambiguous,
+            crate::telemetry_identity::IdentityStatus::Unknown,
+            crate::telemetry_identity::IdentityStatus::Conflicting,
+        ] {
+            let mut r = resolved_identity();
+            r.status = status;
+            assert!(
+                AuthorityGrant::from_resolution(&r).is_none(),
+                "{status:?} must not mint authority"
+            );
+        }
+    }
+
+    #[test]
+    fn forged_trust_claim_is_not_authority() {
+        // A serialized fact claiming authoritative trust deserializes as a
+        // claim only — without a live attested grant it is never eligible.
+        let mut f = sample_fact();
+        f.trust = TrustClass::Authoritative;
+        f.seal();
+        let bytes = f.to_vec().unwrap();
+        let back = TypedFact::from_slice(&bytes).unwrap();
+        assert_eq!(back.trust, TrustClass::Authoritative);
+        assert!(!back.authority_eligible());
+    }
+
+    #[test]
+    fn deserialized_grant_loses_attestation() {
+        let mut f = sample_fact();
+        f.trust = TrustClass::Corroborated;
+        f.authority = AuthorityGrant::from_resolution(&resolved_identity());
+        assert!(f.authority_eligible());
+        f.seal();
+
+        let bytes = f.to_vec().unwrap();
+        let back = TypedFact::from_slice(&bytes).unwrap();
+        // Grant evidence survives; attestation does not — replayed facts
+        // must have authority re-derived by the consumer.
+        assert!(back.authority.is_some());
+        assert!(!back.authority_eligible());
+    }
+
+    #[test]
+    fn fact_id_binds_schema_version_and_producer() {
+        let mut a = sample_fact();
+        let mut b = sample_fact();
+        b.payload.produced_by = "textfsm".into();
+        b.seal();
+        assert_ne!(a.fact_id, b.fact_id);
+        a.payload.produced_by = "textfsm".into();
+        a.seal();
+        assert_eq!(a.fact_id, b.fact_id);
+
+        let mut c = sample_fact();
+        c.schema_version = SCHEMA_VERSION; // same version → same id space
+        c.seal();
+        assert_eq!(c.fact_id, sample_fact().fact_id);
     }
 
     #[test]
