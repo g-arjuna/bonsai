@@ -1,0 +1,11 @@
+=== U2 pre-upgrade provenance ===
+Tue Nov 24 08:10:22 AM UTC 2026
+old_source_sha: cdfcac108b7a85265d4c9c245fa2d93f06ca8bbe (origin/main pre-PR80)
+old_image: bonsai:bn019u2-cdfcac1
+image_id=sha256:e1164c58b7affc25a7fee281fdf69be687c138d3cfc98583f6d4c3000fd5feda created=2026-11-24T12:58:57.576995517+05:30
+[2m2026-11-24T08:10:22.413584Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m bonsai starting [3mprotocol_version[0m[2m=[0m6
+[2m2026-11-24T08:10:22.413659Z[0m [32m INFO[0m [2mbonsai::server_startup[0m[2m:[0m startup [3mphase[0m[2m=[0m"config_load" [3melapsed_ms[0m[2m=[0m0
+[2m2026-11-24T08:10:22.413767Z[0m [32m INFO[0m [2mbonsai::resource_profile[0m[2m:[0m resource profile selected [3mprofile[0m[2m=[0m"xlarge" [3mram_gb[0m[2m=[0m46 [3meffective_ram_gb[0m[2m=[0m46 [3mcpu_cores[0m[2m=[0m8 [3mdisk_free_gb[0m[2m=[0m102 [3min_container[0m[2m=[0mtrue [3mmemory_budget_mb[0m[2m=[0m4096
+compiled_schema_version(old): 3
+sqlite user_version(old): 15
+active_schema_id: ysc-0f4cc548a0d35c7b2f1b82b6e2a39cdf

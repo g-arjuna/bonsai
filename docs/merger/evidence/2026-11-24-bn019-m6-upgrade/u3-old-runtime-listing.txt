@@ -1,0 +1,17 @@
+/app/bonsai-credentials/:
+total 12
+drwx------ 3   1000   1000 4096 Nov 24 08:27 .
+drwxr-xr-x 1 bonsai bonsai 4096 Nov 24 07:28 ..
+drwxr-xr-x 2   1000   1000 4096 Nov 24 08:27 audit
+
+/app/runtime/:
+total 1800
+drwx------ 3   1000   1000    4096 Nov 24 08:27 .
+drwxr-xr-x 1 bonsai bonsai    4096 Nov 24 07:28 ..
+-rw------- 1   1000   1000 1515520 Nov 24 08:25 bonsai.db
+-rw-r--r-- 1   1000   1000   11343 Nov 24 08:26 bonsai.db.wal
+-rw------- 1   1000   1000   86016 Nov 24 08:27 bonsai_auth.db
+-rw-r--r-- 1   1000   1000  167936 Nov 24 08:26 bonsai_config.db
+-rw-r--r-- 1   1000   1000   32768 Nov 24 08:26 bonsai_config.db-shm
+-rw-r--r-- 1   1000   1000    8272 Nov 24 08:26 bonsai_config.db-wal
+drwxr-xr-x 2   1000   1000    4096 Nov 24 08:26 config-store

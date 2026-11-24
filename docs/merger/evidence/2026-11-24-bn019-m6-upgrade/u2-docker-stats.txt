@@ -1,0 +1,3 @@
+bn019u2-bonsai-standalone-1 cpu=0.74% mem=661.8MiB / 46.68GiB net=10.9MB / 11.2MB
+bn019u2-bonsai-routing-1 cpu=0.05% mem=9.387MiB / 46.68GiB net=230kB / 259kB
+clab-bonsai-bn019-srl1 cpu=0.00% mem=0B / 0B net=0B / 0B
