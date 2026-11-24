@@ -359,3 +359,4 @@ date,command,scope,wall_seconds,result,notes
 2026-11-24,cargo test -p bonsai --lib --profile ci -- typed_facts::tests::emit_fixture_artifact --ignored (build-lane),fixture regeneration,290,pass,"v1.fixture.json regenerated with payload_sha256/evidence_sha256"
 2026-11-24,cargo test -p bonsai --lib --profile ci -- typed_facts nos_features parser_chain telemetry_identity interface_facts (build-lane),BN-024 focused lib tests run2,281,pass,"88 passed 0 failed 2 ignored"
 2026-11-24,pytest tests/test_bn024_typed_facts.py tests/test_bn024_provenance.py tests/test_bn024_parser_contract.py,BN-024 python suites,1,pass,"32/32 after schema+fixture+forged-grant test updates"
+2026-11-25,scripts/ci/run-local.sh --trusted l0 l1 l2 l3 (docker, shared lane, CARGO_BUILD_JOBS=2),BN-024 PR85 final gates on c794258,~4800,pass,"ALL REQUESTED GATES PASSED; log ~/.cache/bonsai-ci/build-lane/ci/local-gates-1795544532.log"
