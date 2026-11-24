@@ -67,12 +67,17 @@ impl MultiSourceEnricher for ParserChainCliEnricher {
             .await?;
         let payload = serde_json::to_string_pretty(&decision.parsed_json)
             .context("failed to serialize parser-chain output")?;
+        let confidence = match decision.quality.as_str() {
+            crate::parser_chain::QUALITY_STRUCTURED => "high",
+            crate::parser_chain::QUALITY_UNSTRUCTURED_FALLBACK => "low",
+            _ => "medium",
+        };
         Ok(MultiSourceCapture {
             source: self.name().to_string(),
             path_count: 1,
             payload,
             parser: decision.primary_parser.clone(),
-            confidence: "medium".to_string(),
+            confidence: confidence.to_string(),
             details: serde_json::json!({
                 "transport": "ssh_cli",
                 "vendor": vendor,
@@ -80,6 +85,7 @@ impl MultiSourceEnricher for ParserChainCliEnricher {
                 "ssh_host": ssh_target.host,
                 "ssh_port": ssh_target.port,
                 "consensus_state": decision.consensus_state,
+                "parse_quality": decision.quality,
                 "attempts": decision.attempts,
             }),
         })
