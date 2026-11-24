@@ -1058,58 +1058,70 @@ module legacy-mod {
         assert_eq!(catalogue.schema_version, compiler::COMPILED_SCHEMA_VERSION);
         assert_eq!(catalogue.status, "complete");
 
-        // Fabricate a genuine pre-upgrade bundle: identical semantic
-        // content, but schema_version=1 and an identity hashed under
-        // compiler_version 1 — exactly what a v1 binary would have
-        // persisted.
-        let legacy_id = compiler::compute_schema_id_with_version(
-            1,
-            &catalogue.modules,
-            &catalogue.paths,
-            &catalogue.status,
-            &catalogue.diagnostics,
-        );
-        assert_ne!(legacy_id, catalogue.schema_id);
-        let mut legacy_json = serde_json::to_value(&catalogue).expect("serialize");
-        legacy_json["schema_version"] = serde_json::json!(1);
-        legacy_json["schema_id"] = serde_json::json!(&legacy_id);
+        // Fabricate genuine pre-upgrade bundles: identical semantic
+        // content, but schema_version=N and an identity hashed under
+        // compiler_version N — exactly what a vN binary would have
+        // persisted. Cover BOTH the historical v1 bundle and the v3 →
+        // v4 transition (deviation-semantics compiler bump), which is
+        // the upgrade path real deployments take.
         let cdir = compiled_dir(&library);
         std::fs::create_dir_all(&cdir).expect("compiled dir");
-        std::fs::write(
-            cdir.join(format!("{legacy_id}.json")),
-            serde_json::to_vec_pretty(&legacy_json).expect("legacy json"),
-        )
-        .expect("write legacy bundle");
-        std::fs::write(
-            active_pointer_path(&library),
-            serde_json::to_vec(&ActivePointer {
-                schema_id: legacy_id.clone(),
-            })
-            .expect("pointer json"),
-        )
-        .expect("write active pointer");
+        let mut legacy_ids = Vec::new();
+        for legacy_version in [1u32, compiler::COMPILED_SCHEMA_VERSION - 1] {
+            assert!(legacy_version < compiler::COMPILED_SCHEMA_VERSION);
+            let legacy_id = compiler::compute_schema_id_with_version(
+                legacy_version,
+                &catalogue.modules,
+                &catalogue.paths,
+                &catalogue.status,
+                &catalogue.diagnostics,
+            );
+            assert_ne!(legacy_id, catalogue.schema_id);
+            legacy_ids.push(legacy_id.clone());
+            let mut legacy_json = serde_json::to_value(&catalogue).expect("serialize");
+            legacy_json["schema_version"] = serde_json::json!(legacy_version);
+            legacy_json["schema_id"] = serde_json::json!(&legacy_id);
+            std::fs::write(
+                cdir.join(format!("{legacy_id}.json")),
+                serde_json::to_vec_pretty(&legacy_json).expect("legacy json"),
+            )
+            .expect("write legacy bundle");
+            std::fs::write(
+                active_pointer_path(&library),
+                serde_json::to_vec(&ActivePointer {
+                    schema_id: legacy_id.clone(),
+                })
+                .expect("pointer json"),
+            )
+            .expect("write active pointer");
 
-        // The active pointer names an old-version bundle: explicit
-        // invalid state — never a usable catalogue, never a silent
-        // fallback to "whatever verifies".
-        assert!(matches!(
-            active_catalogue_state(&library),
-            ActiveCatalogueState::InvalidBundle
-        ));
-        assert!(load_active_catalogue(&library).is_err());
-        // Direct activation and per-id inspection (the path device
-        // schema selection uses) both refuse the old identity.
-        assert!(activate_compiled(&library, &legacy_id).is_err());
-        assert!(matches!(
-            compiled_bundle_state(&library, &legacy_id),
-            ActiveCatalogueState::InvalidBundle
-        ));
+            // The active pointer names an old-version bundle: explicit
+            // invalid state — never a usable catalogue, never a silent
+            // fallback to "whatever verifies".
+            assert!(
+                matches!(
+                    active_catalogue_state(&library),
+                    ActiveCatalogueState::InvalidBundle
+                ),
+                "v{legacy_version} bundle must be rejected"
+            );
+            assert!(load_active_catalogue(&library).is_err());
+            // Direct activation and per-id inspection (the path device
+            // schema selection uses) both refuse the old identity.
+            assert!(activate_compiled(&library, &legacy_id).is_err());
+            assert!(matches!(
+                compiled_bundle_state(&library, &legacy_id),
+                ActiveCatalogueState::InvalidBundle
+            ));
+        }
 
         // Recompile under current semantics: a NEW schema_id, verified
         // cleanly. The old bundle stays on disk but remains rejected —
         // upgrade never transfers authority between semantic identities.
         let current = compile_parsed(vec![legacy_input()], &CompileOptions::default());
-        assert_ne!(current.schema_id, legacy_id);
+        for legacy_id in &legacy_ids {
+            assert_ne!(current.schema_id, *legacy_id);
+        }
         persist_compiled(&library, &current).expect("persist current");
         activate_compiled(&library, &current.schema_id).expect("activate current");
         match active_catalogue_state(&library) {
@@ -1118,9 +1130,11 @@ module legacy-mod {
             }
             other => panic!("expected verified active catalogue, got {other:?}"),
         }
-        assert!(matches!(
-            compiled_bundle_state(&library, &legacy_id),
-            ActiveCatalogueState::InvalidBundle
-        ));
+        for legacy_id in &legacy_ids {
+            assert!(matches!(
+                compiled_bundle_state(&library, legacy_id),
+                ActiveCatalogueState::InvalidBundle
+            ));
+        }
     }
 }

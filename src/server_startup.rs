@@ -1025,6 +1025,23 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
     let session_registry =
         std::sync::Arc::new(bonsai::subscription_sessions::SubscriptionSessionRegistry::new());
 
+    // M6-CR-05: the assignment boundary resolves each device's effective
+    // schema (explicit selection or global active catalogue) before a
+    // schema-bound approval can authorize collection. Open the configured
+    // YANG library once; an open failure fails closed for schema-bound
+    // devices only — ordinary acquisition is unaffected.
+    let yang_library_for_assignments = match bonsai::yang::YangLibrary::open(
+        cfg.yang.library_root.clone(),
+        cfg.yang.cache_root.clone(),
+        cfg.yang.bundle_key_env.clone(),
+    ) {
+        Ok(library) => Some(library),
+        Err(error) => {
+            warn!(%error, "YANG library unavailable; schema-bound assignments will fail closed");
+            None
+        }
+    };
+
     let collector_manager = if run_core {
         Some(std::sync::Arc::new(
             bonsai::assignment::CollectorManager::new(
@@ -1033,7 +1050,8 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                 cfg.assignment.rules.clone(),
             )
             .with_health_emitter(health_emitter_for_disk.clone())
-            .with_session_registry(std::sync::Arc::clone(&session_registry)),
+            .with_session_registry(std::sync::Arc::clone(&session_registry))
+            .with_yang_library(yang_library_for_assignments),
         ))
     } else {
         None
@@ -1190,12 +1208,28 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let registry_for_expiry = std::sync::Arc::clone(&registry);
         let manager_for_expiry = std::sync::Arc::clone(manager);
         let expiry_shutdown = shutdown_rx.clone();
+        // M6-CR-05: the reconciler also retires approvals whose schema
+        // was DEFINITELY superseded (global activation or selection
+        // change whose revocation was interrupted). `None` disables
+        // only the drift pass — expiry reconciliation is unaffected.
+        let yang_library_for_reconcile = match bonsai::yang::YangLibrary::open(
+            cfg.yang.library_root.clone(),
+            cfg.yang.cache_root.clone(),
+            cfg.yang.bundle_key_env.clone(),
+        ) {
+            Ok(library) => Some(library),
+            Err(error) => {
+                warn!(%error, "YANG library unavailable; schema-drift reconciliation disabled");
+                None
+            }
+        };
         tokio::spawn(async move {
             bonsai::schema_binding::run_schema_binding_expiry_reconciler(
                 registry_for_expiry,
                 Some(manager_for_expiry),
                 bonsai::schema_binding::SCHEMA_BINDING_RECONCILE_INTERVAL,
                 expiry_shutdown,
+                yang_library_for_reconcile,
             )
             .await;
         });
@@ -1344,9 +1378,33 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
         let debouncer_for_subs = std::sync::Arc::clone(&debouncer);
         let subscription_plan_tx = subscription_plan_tx.clone();
         let mut shutdown = shutdown_rx.clone();
+        // M6-CR-05: schema-bound authority sources for local subscriber
+        // starts — the same effective-schema contract collector
+        // assignments enforce. An unopened library fails closed for
+        // schema-bound targets only.
+        let yang_library_root_subs = cfg.yang.library_root.clone();
+        let yang_cache_root_subs = cfg.yang.cache_root.clone();
+        let yang_bundle_key_env_subs = cfg.yang.bundle_key_env.clone();
         Some(tokio::spawn(async move {
             let mut change_rx = registry.subscribe_changes();
             let mut subscribers: SubscriberHandleMap = SubscriberHandleMap::new();
+            let sqlite_for_subs = registry.sqlite_store();
+            let yang_library_for_subs = match bonsai::yang::YangLibrary::open(
+                std::path::Path::new(&yang_library_root_subs),
+                std::path::Path::new(&yang_cache_root_subs),
+                yang_bundle_key_env_subs.as_str(),
+            ) {
+                Ok(library) => Some(library),
+                Err(error) => {
+                    warn!(%error, "YANG library unavailable; schema-bound local subscribers fail closed");
+                    None
+                }
+            };
+            let authority_sources =
+                match (sqlite_for_subs.as_deref(), yang_library_for_subs.as_ref()) {
+                    (Some(store), Some(library)) => Some((store, library)),
+                    _ => None,
+                };
 
             match registry.list_active() {
                 Ok(targets) => {
@@ -1363,6 +1421,7 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
                             subscription_plan_tx.as_ref(),
                             Some(&local_lifecycle),
                             &mut subscribers,
+                            authority_sources,
                         )
                         .await
                         {
@@ -1387,13 +1446,13 @@ pub(super) async fn run_server() -> anyhow::Result<()> {
 
                         match change {
                             RegistryChange::Added(target) => {
-                                if let Err(error) = spawn_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), Some(&local_lifecycle), &mut subscribers).await {
+                                if let Err(error) = spawn_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), Some(&local_lifecycle), &mut subscribers, authority_sources).await {
                                     warn!(%error, "failed to start subscriber for added device");
                                 }
                             }
                             RegistryChange::Updated(target) => {
                                 if target.enabled {
-                                    if let Err(error) = restart_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), Some(&local_lifecycle), &mut subscribers).await {
+                                    if let Err(error) = restart_subscriber(target, &credentials, &bus, Some(std::sync::Arc::clone(&debouncer_for_subs)), subscription_plan_tx.as_ref(), Some(&local_lifecycle), &mut subscribers, authority_sources).await {
                                         warn!(%error, "failed to restart subscriber for updated device");
                                     }
                                 } else {
@@ -2449,7 +2508,7 @@ async fn publish_blocked_plan_tx(
     }
 }
 
-pub(super) async fn spawn_subscriber(
+pub(super) async fn spawn_subscriber<'a>(
     target: TargetConfig,
     credentials: &std::sync::Arc<CredentialVault>,
     bus: &std::sync::Arc<InProcessBus>,
@@ -2457,6 +2516,13 @@ pub(super) async fn spawn_subscriber(
     subscription_plan_tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     lifecycle: Option<&subscriber::LifecycleHandle>,
     subscribers: &mut SubscriberHandleMap,
+    // M6-CR-05: (durable store, YANG library) for schema-bound
+    // effective-authority checks — identical contract to the collector
+    // assignment boundary. `None` fails closed for schema-bound targets.
+    schema_authority_sources: Option<(
+        &'a bonsai::sqlite_store::SqliteStore,
+        &'a bonsai::yang::YangLibrary,
+    )>,
 ) -> Result<()> {
     let address = target.address.clone();
     if !target.enabled {
@@ -2500,6 +2566,48 @@ pub(super) async fn spawn_subscriber(
         )
         .await;
         return Ok(());
+    }
+    // M6-CR-05: structural completeness is not authority. A locally
+    // spawned subscriber for a schema-bound target must satisfy the
+    // SAME contract as a collector assignment — fresh approved
+    // evidence AND the approved schema still being the device's
+    // verified effective schema (explicit selection or active global
+    // catalogue). An interrupted activation/selection transition, a
+    // missing/corrupt/partial/compiler-incompatible effective bundle,
+    // or unavailable authority sources all fail closed here; the
+    // periodic reconciler owns durable withdrawal afterwards.
+    if let Some(binding) = target.schema_binding.as_ref()
+        && binding.mode == "schema_bound"
+    {
+        let authorized = match schema_authority_sources {
+            Some((store, library)) => {
+                let mut ctx = bonsai::schema_binding::SchemaAuthorityContext::new(library, store);
+                bonsai::schema_binding::binding_authorizes_execution(
+                    store,
+                    &mut ctx,
+                    &target,
+                    binding,
+                    bonsai::schema_binding::SchemaBindingClock::system().now(),
+                )
+            }
+            None => false,
+        };
+        if !authorized {
+            tracing::info!(
+                address = %address,
+                "schema-bound subscriber blocked — approval is not current effective authority"
+            );
+            stop_subscriber(&address, subscribers).await;
+            publish_blocked_plan_tx(
+                subscription_plan_tx,
+                &target,
+                "rejected",
+                "schema_binding_not_authoritative".to_string(),
+                lifecycle,
+            )
+            .await;
+            return Ok(());
+        }
     }
 
     // Resolve security + credentials BEFORE deciding: an unresolvable
@@ -2602,7 +2710,7 @@ pub(super) async fn spawn_subscriber(
     Ok(())
 }
 
-pub(super) async fn restart_subscriber(
+pub(super) async fn restart_subscriber<'a>(
     target: TargetConfig,
     credentials: &std::sync::Arc<CredentialVault>,
     bus: &std::sync::Arc<InProcessBus>,
@@ -2610,6 +2718,10 @@ pub(super) async fn restart_subscriber(
     subscription_plan_tx: Option<&tokio::sync::mpsc::Sender<SubscriptionPlan>>,
     lifecycle: Option<&subscriber::LifecycleHandle>,
     subscribers: &mut SubscriberHandleMap,
+    schema_authority_sources: Option<(
+        &'a bonsai::sqlite_store::SqliteStore,
+        &'a bonsai::yang::YangLibrary,
+    )>,
 ) -> Result<()> {
     // spawn_subscriber performs effective-assignment reconciliation:
     // an unchanged assignment preserves the healthy subscriber instead
@@ -2622,6 +2734,7 @@ pub(super) async fn restart_subscriber(
         subscription_plan_tx,
         lifecycle,
         subscribers,
+        schema_authority_sources,
     )
     .await
 }

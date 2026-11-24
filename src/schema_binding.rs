@@ -8,6 +8,7 @@
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::config::{AcquisitionMode, SchemaBindingConfig, SelectedSubscriptionPath, TargetConfig};
 use crate::registry::{ApiRegistry, device_identity_key};
@@ -527,6 +528,165 @@ pub fn revoke_binding_superseded_by_evidence(
     }
 }
 
+// ── M6-CR-05 effective-schema authority ──────────────────────────────
+//
+// A schema-bound approval is authority ONLY while the schema it was
+// evaluated against remains the device's verified EFFECTIVE schema:
+// the durable explicit selection when present, else the globally active
+// catalogue. The CR-03 commit-first selection ordering and the global
+// activation revocation pass are best-effort transitions — an
+// interruption between the durable pointer/selection commit and the
+// approval revocation must never leave the superseded approval
+// authorizing collection. Every ongoing authorization boundary
+// (assignment build, lifecycle admission, reconciliation) therefore
+// re-resolves the effective schema and compares it to the approved
+// `binding.schema_id`; evidence freshness alone is NOT a schema
+// revocation guarantee.
+//
+// `Superseded` is a DEFINITE drift (a different verified effective
+// schema exists) and is safe for durable reconciliation. `Unverifiable`
+// covers missing/corrupt/partial bundles, absent authority, and store
+// or library read failures — authorization fails closed on it, but the
+// durable reconciler must not auto-revoke on possibly-transient
+// unverifiable state.
+
+/// Effective-schema authority state of one schema-bound approval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingSchemaAuthority {
+    /// The approval's schema is the device's current verified effective
+    /// schema (explicit selection or inherited global catalogue).
+    Current,
+    /// A DIFFERENT verified schema is now effective — the approval was
+    /// superseded by a selection change or global activation whose
+    /// revocation did not complete.
+    Superseded,
+    /// Effective schema authority could not be established as verified:
+    /// missing/corrupt/partial bundle, absent active pointer, store or
+    /// library failure. Never authority.
+    Unverifiable,
+}
+
+/// Per-pass effective-schema resolver. Hoists the global active
+/// catalogue verification so N inheriting devices cost ONE bundle
+/// verification per pass, not N; per-device explicit selections are
+/// verified once per distinct schema_id. Uses the same identity and
+/// validity semantics as `yang_applicability::resolve_effective_catalogue`
+/// without re-verifying shared state per device.
+pub struct SchemaAuthorityContext<'a> {
+    library: &'a YangLibrary,
+    store: &'a SqliteStore,
+    /// Lazily resolved global active catalogue: (schema_id, verified).
+    /// Verified on FIRST inherited lookup — an all-explicit workload
+    /// never pays for a bundle it does not consult.
+    active: std::cell::OnceCell<(Option<String>, bool)>,
+    /// schema_id -> selected-bundle verified-complete, memoized for the
+    /// pass.
+    bundle_verified: HashMap<String, bool>,
+}
+
+impl<'a> SchemaAuthorityContext<'a> {
+    pub fn new(library: &'a YangLibrary, store: &'a SqliteStore) -> Self {
+        Self {
+            library,
+            store,
+            active: std::cell::OnceCell::new(),
+            bundle_verified: HashMap::new(),
+        }
+    }
+
+    /// The globally active catalogue's (schema_id, verified-complete),
+    /// resolved once per context.
+    fn active(&self) -> &(Option<String>, bool) {
+        self.active.get_or_init(|| {
+            let state = crate::yang_schema::active_catalogue_state(self.library);
+            (
+                state.schema_id().map(str::to_string),
+                matches!(state, crate::yang_schema::ActiveCatalogueState::Verified(_)),
+            )
+        })
+    }
+
+    fn selected_bundle_verified(&mut self, schema_id: &str) -> bool {
+        if let Some(v) = self.bundle_verified.get(schema_id) {
+            return *v;
+        }
+        let v = matches!(
+            crate::yang_schema::compiled_bundle_state(self.library, schema_id),
+            crate::yang_schema::ActiveCatalogueState::Verified(_)
+        );
+        self.bundle_verified.insert(schema_id.to_string(), v);
+        v
+    }
+
+    /// Resolve the device's effective schema authority and compare it to
+    /// the approved binding. Explicit durable selection wins over the
+    /// global catalogue exactly as in `resolve_effective_catalogue`; an
+    /// explicit selection whose bundle is absent, corrupt, partial or
+    /// compiler-incompatible is `Unverifiable` — NEVER a silent global
+    /// fallback.
+    pub fn binding_authority(
+        &mut self,
+        device_key: &str,
+        binding: &SchemaBindingConfig,
+    ) -> BindingSchemaAuthority {
+        if binding.mode != "schema_bound" {
+            return BindingSchemaAuthority::Unverifiable;
+        }
+        let selection = match self.store.get_device_schema_selection(device_key) {
+            Ok(selection) => selection,
+            Err(_) => return BindingSchemaAuthority::Unverifiable,
+        };
+        let (effective_id, verified) = match selection {
+            Some(selection) => {
+                let verified = self.selected_bundle_verified(&selection.schema_id);
+                (Some(selection.schema_id), verified)
+            }
+            None => {
+                let (id, verified) = self.active();
+                (id.clone(), *verified)
+            }
+        };
+        if !verified {
+            return BindingSchemaAuthority::Unverifiable;
+        }
+        match effective_id.as_deref() {
+            Some(id) if id == binding.schema_id => BindingSchemaAuthority::Current,
+            Some(_) => BindingSchemaAuthority::Superseded,
+            None => BindingSchemaAuthority::Unverifiable,
+        }
+    }
+}
+
+/// Single-shot convenience wrapper for boundaries that evaluate one
+/// device at a time (e.g. lifecycle admission).
+pub fn binding_schema_authority(
+    library: &YangLibrary,
+    store: &SqliteStore,
+    device_key: &str,
+    binding: &SchemaBindingConfig,
+) -> BindingSchemaAuthority {
+    SchemaAuthorityContext::new(library, store).binding_authority(device_key, binding)
+}
+
+/// Combined execution-authorization check for boundaries that spawn
+/// LOCAL execution rather than build collector assignments (the
+/// server-side subscriber path). Approved evidence must be `Current`
+/// AND the approved schema must still be the device's verified
+/// effective schema — identical semantics to the collector assignment
+/// boundary. ANY expired/unverifiable/superseded state is not
+/// authority.
+pub fn binding_authorizes_execution(
+    store: &SqliteStore,
+    ctx: &mut SchemaAuthorityContext<'_>,
+    target: &TargetConfig,
+    binding: &SchemaBindingConfig,
+    now_ns: i64,
+) -> bool {
+    binding_evidence_state(store, binding, now_ns) == BindingEvidenceState::Current
+        && ctx.binding_authority(&device_identity_key(target), binding)
+            == BindingSchemaAuthority::Current
+}
+
 /// Convenience for handlers that only need the durable record state.
 pub fn binding_record_state(record: Option<&SchemaBindingRecord>) -> &'static str {
     match record {
@@ -648,6 +808,11 @@ pub struct SchemaBindingExpiryReport {
     pub unverifiable: Vec<String>,
     /// Device addresses whose approval was actually revoked.
     pub revoked: Vec<String>,
+    /// Device addresses whose approval was revoked because its schema
+    /// was DEFINITELY superseded — a different verified effective
+    /// schema exists (M6-CR-05). Unverifiable authority is never
+    /// auto-revoked here; authorization boundaries fail closed on it.
+    pub schema_superseded: Vec<String>,
 }
 
 /// Bounded reconciliation interval for the periodic driver. Combined
@@ -672,6 +837,7 @@ pub async fn reconcile_schema_binding_expiry(
     registry: &ApiRegistry,
     collector_manager: Option<&crate::assignment::CollectorManager>,
     now_ns: i64,
+    yang_library: Option<&YangLibrary>,
 ) -> Result<SchemaBindingExpiryReport> {
     let mut report = SchemaBindingExpiryReport::default();
     let Some(store) = registry.sqlite_store() else {
@@ -679,6 +845,9 @@ pub async fn reconcile_schema_binding_expiry(
         // exist; nothing to reconcile.
         return Ok(report);
     };
+    // M6-CR-05: one resolver per pass — the active catalogue verifies
+    // once regardless of how many devices inherit it.
+    let mut authority = yang_library.map(|library| SchemaAuthorityContext::new(library, &store));
     for target in registry.list_all_targets()? {
         let Some(binding) = target.schema_binding.as_ref() else {
             continue;
@@ -687,12 +856,31 @@ pub async fn reconcile_schema_binding_expiry(
             continue;
         }
         report.evaluated += 1;
-        let (stale_bucket, reason) = match binding_evidence_state(&store, binding, now_ns) {
-            BindingEvidenceState::Current => continue,
-            BindingEvidenceState::Expired => (&mut report.expired, "evidence_expired"),
-            BindingEvidenceState::Unverifiable => {
-                (&mut report.unverifiable, "evidence_unverifiable")
+        // Fresh evidence is necessary but NOT sufficient: the approved
+        // schema must still be the device's verified effective schema.
+        // A global activation or selection change whose revocation was
+        // interrupted leaves a `Current`-evidence approval that no
+        // longer matches effective authority — revoke it here so the
+        // durable record and collector withdrawal converge.
+        let stale = match binding_evidence_state(&store, binding, now_ns) {
+            BindingEvidenceState::Current => {
+                let superseded = authority.as_mut().is_some_and(|ctx| {
+                    ctx.binding_authority(&device_identity_key(&target), binding)
+                        == BindingSchemaAuthority::Superseded
+                });
+                if superseded {
+                    Some((&mut report.schema_superseded, "schema_superseded"))
+                } else {
+                    None
+                }
             }
+            BindingEvidenceState::Expired => Some((&mut report.expired, "evidence_expired")),
+            BindingEvidenceState::Unverifiable => {
+                Some((&mut report.unverifiable, "evidence_unverifiable"))
+            }
+        };
+        let Some((stale_bucket, reason)) = stale else {
+            continue;
         };
         stale_bucket.push(target.address.clone());
         let revoked = registry.revoke_schema_binding_if_current(
@@ -723,6 +911,7 @@ pub async fn run_schema_binding_expiry_reconciler(
     collector_manager: Option<std::sync::Arc<crate::assignment::CollectorManager>>,
     interval: std::time::Duration,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    yang_library: Option<YangLibrary>,
 ) {
     let clock = SchemaBindingClock::system();
     loop {
@@ -730,6 +919,7 @@ pub async fn run_schema_binding_expiry_reconciler(
             registry.as_ref(),
             collector_manager.as_deref(),
             clock.now(),
+            yang_library.as_ref(),
         )
         .await
         {
@@ -739,6 +929,7 @@ pub async fn run_schema_binding_expiry_reconciler(
                     evaluated = report.evaluated,
                     expired = report.expired.len(),
                     unverifiable = report.unverifiable.len(),
+                    schema_superseded = report.schema_superseded.len(),
                     revoked = report.revoked.len(),
                     "schema-binding expiry reconciliation revoked stale approvals"
                 );
@@ -997,7 +1188,7 @@ mod tests {
                 .is_some()
         );
 
-        let report = reconcile_schema_binding_expiry(&registry, None, NOW)
+        let report = reconcile_schema_binding_expiry(&registry, None, NOW, None)
             .await
             .unwrap();
         assert_eq!(report.evaluated, 1);
@@ -1015,7 +1206,7 @@ mod tests {
         assert_eq!(record.revoke_reason.as_deref(), Some("evidence_expired"));
 
         // Idempotent: a second pass finds nothing to revoke.
-        let report2 = reconcile_schema_binding_expiry(&registry, None, NOW)
+        let report2 = reconcile_schema_binding_expiry(&registry, None, NOW, None)
             .await
             .unwrap();
         assert_eq!(report2.evaluated, 0);
@@ -1031,7 +1222,7 @@ mod tests {
         let fresh_row = snapshot_row(&key, address, 0, "ev-fp", Some(NOW - 1000));
         let (registry, _store, _target, _id) = bound_device(&dir, address, &fresh_row).await;
 
-        let report = reconcile_schema_binding_expiry(&registry, None, NOW)
+        let report = reconcile_schema_binding_expiry(&registry, None, NOW, None)
             .await
             .unwrap();
         assert_eq!(report.evaluated, 1);
@@ -1056,7 +1247,7 @@ mod tests {
         let mismatched = snapshot_row(&key, address, 0, "different-fp", Some(NOW - 1000));
         let (registry, _store, _target, _id) = bound_device(&dir, address, &mismatched).await;
 
-        let report = reconcile_schema_binding_expiry(&registry, None, NOW)
+        let report = reconcile_schema_binding_expiry(&registry, None, NOW, None)
             .await
             .unwrap();
         assert!(report.unverifiable.contains(&address.to_string()));
@@ -1365,5 +1556,336 @@ mod tests {
         )
         .unwrap();
         assert_eq!(store.selection_epoch(&key).unwrap(), 3);
+    }
+
+    // ── M6-CR-05 effective-schema authority ──────────────────────────
+
+    const CR05_YANG_A: &str = r#"
+module cr05-mod-a {
+  yang-version 1.1;
+  namespace "urn:example:cr05-a";
+  prefix c05a;
+  revision 2024-01-01;
+  container system-a { leaf mtu { type uint32; } }
+}
+"#;
+    const CR05_YANG_B: &str = r#"
+module cr05-mod-b {
+  yang-version 1.1;
+  namespace "urn:example:cr05-b";
+  prefix c05b;
+  revision 2024-01-01;
+  container system-b { leaf mtu { type uint32; } }
+}
+"#;
+
+    fn cr05_library(dir: &tempfile::TempDir) -> crate::yang::YangLibrary {
+        crate::yang::YangLibrary::open(
+            dir.path().join("yanglib").join("lib"),
+            dir.path().join("yanglib").join("cache"),
+            "K",
+        )
+        .expect("yang library")
+    }
+
+    fn cr05_compile(
+        library: &crate::yang::YangLibrary,
+        module_name: &str,
+        yang: &str,
+    ) -> crate::yang_schema::CompiledCatalogue {
+        let input = crate::yang_schema::ModuleInput {
+            module: crate::yang_schema::parse_module(yang).expect("fixture parses"),
+            vendor_scope: "test".to_string(),
+            source_kind: "inline".to_string(),
+            source_ref: module_name.to_string(),
+            trust: "trusted".to_string(),
+            checksum_sha256: format!("inline-{module_name}"),
+            approved: false,
+            license: String::new(),
+            platforms: vec!["*".to_string()],
+            pinned_ref: String::new(),
+            source_id: String::new(),
+        };
+        let catalogue = crate::yang_schema::compile_parsed(
+            vec![input],
+            &crate::yang_schema::CompileOptions::default(),
+        );
+        assert_eq!(
+            catalogue.status, "complete",
+            "fixture must compile complete"
+        );
+        crate::yang_schema::persist_compiled(library, &catalogue).expect("persist bundle");
+        catalogue
+    }
+
+    fn cr05_selection(
+        device_key: &str,
+        address: &str,
+        schema_id: &str,
+    ) -> crate::sqlite_store::DeviceSchemaSelection {
+        crate::sqlite_store::DeviceSchemaSelection {
+            device_key: device_key.to_string(),
+            device_address: address.to_string(),
+            schema_id: schema_id.to_string(),
+            selection_source: "admin".to_string(),
+            selected_by: Some("admin".to_string()),
+            note: None,
+            selection_revision: 0,
+            created_at_ns: 1,
+            updated_at_ns: 1,
+        }
+    }
+
+    /// The full explicit-vs-inherited authority matrix: an approval is
+    /// authority only while its schema is the device's verified
+    /// EFFECTIVE schema.
+    #[test]
+    fn binding_schema_authority_covers_explicit_and_inherited_matrix() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = cr05_library(&dir);
+        let store = SqliteStore::open(dir.path()).unwrap();
+        let cat_a = cr05_compile(&library, "cr05-mod-a", CR05_YANG_A);
+        let cat_b = cr05_compile(&library, "cr05-mod-b", CR05_YANG_B);
+        crate::yang_schema::activate_compiled(&library, &cat_a.schema_id).unwrap();
+
+        let mut binding_a = binding(1, "ev");
+        binding_a.schema_id = cat_a.schema_id.clone();
+        let mut binding_b = binding_a.clone();
+        binding_b.schema_id = cat_b.schema_id.clone();
+
+        // ── Inherited global (no selection row) ──────────────────────
+        let inherited_key = crate::registry::device_identity_key(&bound_target("10.9.9.1"));
+        assert_eq!(
+            binding_schema_authority(&library, &store, &inherited_key, &binding_a),
+            BindingSchemaAuthority::Current
+        );
+        // Global activation A→B with the revocation never run
+        // (interruption window): the inherited approval is superseded.
+        crate::yang_schema::activate_compiled(&library, &cat_b.schema_id).unwrap();
+        assert_eq!(
+            binding_schema_authority(&library, &store, &inherited_key, &binding_a),
+            BindingSchemaAuthority::Superseded
+        );
+        assert_eq!(
+            binding_schema_authority(&library, &store, &inherited_key, &binding_b),
+            BindingSchemaAuthority::Current
+        );
+
+        // ── Explicit selection wins over the global catalogue ───────
+        let explicit_key = crate::registry::device_identity_key(&bound_target("10.9.9.2"));
+        store
+            .set_device_schema_selection_fenced(
+                &cr05_selection(&explicit_key, "10.9.9.2", &cat_a.schema_id),
+                0,
+                "admin",
+                "select",
+            )
+            .unwrap();
+        // Global is B; the explicit A selection still authorizes A and
+        // supersedes B — global activation never touches explicit devices.
+        assert_eq!(
+            binding_schema_authority(&library, &store, &explicit_key, &binding_a),
+            BindingSchemaAuthority::Current
+        );
+        assert_eq!(
+            binding_schema_authority(&library, &store, &explicit_key, &binding_b),
+            BindingSchemaAuthority::Superseded
+        );
+
+        // ── Explicit selection whose bundle cannot verify ───────────
+        // Names a well-formed but absent bundle: Unverifiable, NEVER a
+        // silent fallback to the (different) global catalogue.
+        let broken_key = crate::registry::device_identity_key(&bound_target("10.9.9.3"));
+        store
+            .set_device_schema_selection_fenced(
+                &cr05_selection(
+                    &broken_key,
+                    "10.9.9.3",
+                    "ysc-00000000000000000000000000000000",
+                ),
+                0,
+                "admin",
+                "select",
+            )
+            .unwrap();
+        assert_eq!(
+            binding_schema_authority(&library, &store, &broken_key, &binding_b),
+            BindingSchemaAuthority::Unverifiable
+        );
+
+        // ── Inherited with corrupt active pointer ───────────────────
+        let pointer = library
+            .root()
+            .join(crate::yang_schema::COMPILED_DIR)
+            .join(crate::yang_schema::ACTIVE_POINTER);
+        std::fs::write(&pointer, b"not-json").unwrap();
+        let corrupt_key = crate::registry::device_identity_key(&bound_target("10.9.9.4"));
+        assert_eq!(
+            binding_schema_authority(&library, &store, &corrupt_key, &binding_b),
+            BindingSchemaAuthority::Unverifiable
+        );
+        // The explicit selection is unaffected by the corrupt pointer.
+        assert_eq!(
+            binding_schema_authority(&library, &store, &explicit_key, &binding_a),
+            BindingSchemaAuthority::Current
+        );
+
+        // ── Non-schema-bound modes carry no schema authority ────────
+        let mut legacy = binding_a.clone();
+        legacy.mode = "legacy".to_string();
+        assert_eq!(
+            binding_schema_authority(&library, &store, &explicit_key, &legacy),
+            BindingSchemaAuthority::Unverifiable
+        );
+    }
+
+    /// Add one schema-bound device to an existing registry/store,
+    /// approved against `schema_id` with fresh evidence.
+    fn bind_device_on_registry(
+        registry: &ApiRegistry,
+        store: &SqliteStore,
+        address: &str,
+        schema_id: &str,
+    ) {
+        let key = crate::registry::device_identity_key(&bound_target(address));
+        let row = snapshot_row(&key, address, 0, "ev-fp", Some(NOW - 1000));
+        let snapshot_id = store.save_yang_applicability_snapshot(&row).unwrap();
+
+        let mut target = bound_target(address);
+        // A schema-bound approval is itself the explicit collection
+        // plan — production activation commits AcquisitionMode::Explicit.
+        target.acquisition = AcquisitionMode::Explicit;
+        let binding = target.schema_binding.as_mut().unwrap();
+        binding.schema_id = schema_id.to_string();
+        binding.snapshot_id = snapshot_id;
+
+        let mut plain = target.clone();
+        plain.schema_binding = None;
+        registry
+            .add_device_with_audit(plain, "test", "test_add")
+            .unwrap();
+        registry
+            .assign_device_with_audit(address, Some("c1".to_string()), "test", "test_assign")
+            .unwrap();
+        let record = activation_record(&target);
+        let config_revision = registry.get_device(address).unwrap().unwrap().updated_at_ns;
+        registry
+            .activate_schema_binding(
+                target.clone(),
+                record,
+                0,
+                config_revision,
+                "admin",
+                "activate",
+                None,
+            )
+            .unwrap();
+    }
+
+    /// M6-CR-05 durable reconciliation: a global activation whose
+    /// revocation never ran leaves a fresh-evidence approval that the
+    /// reconciler must retire — while an explicitly selected device on
+    /// the SAME old schema keeps its authority.
+    #[tokio::test]
+    async fn reconcile_revokes_inherited_schema_drift_and_spares_explicit() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = cr05_library(&dir);
+        let cat_a = cr05_compile(&library, "cr05-mod-a", CR05_YANG_A);
+        crate::yang_schema::activate_compiled(&library, &cat_a.schema_id).unwrap();
+        let cat_b = cr05_compile(&library, "cr05-mod-b", CR05_YANG_B);
+
+        let registry =
+            Arc::new(ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap());
+        let store = registry.sqlite_store().unwrap();
+
+        // Device 1 inherits the global catalogue; device 2 pins an
+        // explicit selection to the same schema A. Both approvals were
+        // evaluated against A with fresh evidence.
+        bind_device_on_registry(
+            registry.as_ref(),
+            store.as_ref(),
+            "10.9.8.1",
+            &cat_a.schema_id,
+        );
+        bind_device_on_registry(
+            registry.as_ref(),
+            store.as_ref(),
+            "10.9.8.2",
+            &cat_a.schema_id,
+        );
+        let key2 = crate::registry::device_identity_key(
+            &registry.get_device("10.9.8.2").unwrap().unwrap(),
+        );
+        store
+            .set_device_schema_selection_fenced(
+                &cr05_selection(&key2, "10.9.8.2", &cat_a.schema_id),
+                0,
+                "admin",
+                "select",
+            )
+            .unwrap();
+
+        // Baseline: both approvals are current effective-schema authority.
+        let baseline =
+            reconcile_schema_binding_expiry(registry.as_ref(), None, NOW, Some(&library))
+                .await
+                .unwrap();
+        assert!(baseline.revoked.is_empty());
+        assert!(baseline.schema_superseded.is_empty());
+
+        // Global activation A→B whose revocation pass never ran
+        // (interruption window): only the INHERITING device drifts.
+        crate::yang_schema::activate_compiled(&library, &cat_b.schema_id).unwrap();
+        let report = reconcile_schema_binding_expiry(registry.as_ref(), None, NOW, Some(&library))
+            .await
+            .unwrap();
+        assert_eq!(report.schema_superseded, vec!["10.9.8.1".to_string()]);
+        assert_eq!(report.revoked, vec!["10.9.8.1".to_string()]);
+
+        let inherited = registry.get_device("10.9.8.1").unwrap().unwrap();
+        assert!(inherited.schema_binding.is_none());
+        assert_eq!(inherited.acquisition, AcquisitionMode::Disabled);
+        let record = store
+            .get_schema_binding(&crate::registry::device_identity_key(&inherited))
+            .unwrap()
+            .expect("record");
+        assert_eq!(record.state, "revoked");
+        assert_eq!(record.revoke_reason.as_deref(), Some("schema_superseded"));
+
+        // The explicitly selected device keeps its approval — global
+        // activation is not its authority source.
+        let explicit = registry.get_device("10.9.8.2").unwrap().unwrap();
+        assert!(explicit.schema_binding.is_some());
+        assert_eq!(explicit.acquisition, AcquisitionMode::Explicit);
+
+        // A new approval created while the drifted one was being
+        // reconciled must survive the pass: bind device 3 against the
+        // CURRENT global schema B, then re-run — nothing is revoked.
+        bind_device_on_registry(
+            registry.as_ref(),
+            store.as_ref(),
+            "10.9.8.3",
+            &cat_b.schema_id,
+        );
+        let report2 = reconcile_schema_binding_expiry(registry.as_ref(), None, NOW, Some(&library))
+            .await
+            .unwrap();
+        assert!(report2.revoked.is_empty());
+        assert!(
+            registry
+                .get_device("10.9.8.2")
+                .unwrap()
+                .unwrap()
+                .schema_binding
+                .is_some()
+        );
+        assert!(
+            registry
+                .get_device("10.9.8.3")
+                .unwrap()
+                .unwrap()
+                .schema_binding
+                .is_some()
+        );
     }
 }

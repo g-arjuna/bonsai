@@ -472,3 +472,18 @@ UI: the schema workspace exposes the executor selector, live job card
 (state/collector/reason/snapshot), bounded status polling and the
 resulting snapshot's provenance; refresh on a schema-bound device
 requires explicit confirmation because it can invalidate the approval.
+
+**Effective-schema authority (M6-CR-05):** a schema-bound approval is
+authority only while the schema it was evaluated against remains the
+device's verified *effective* schema — the durable explicit selection
+when present, else the globally active catalogue. Evidence freshness
+alone is never a schema revocation guarantee: an interrupted global
+activation or selection transition (durable pointer/selection commit
+without its revocation pass), a restart before reconciliation, or a
+missing/corrupt/partial/compiler-incompatible effective bundle all
+fail closed at every ongoing authorization boundary — collector
+assignment build, lifecycle admission, local subscriber start, and
+the bounded expiry reconciler (which durably revokes only DEFINITELY
+superseded approvals; unverifiable authority is never auto-revoked,
+authorization simply refuses it). An explicit selection whose bundle
+cannot be verified never silently falls back to the global catalogue.

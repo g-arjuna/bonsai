@@ -428,11 +428,6 @@ async fn start_core_lab(pki: &Pki, _device: TargetConfig) -> CoreLab {
         }
     });
     let sessions = Arc::new(SubscriptionSessionRegistry::new());
-    let manager = Arc::new(
-        CollectorManager::new(Arc::clone(&registry), Arc::clone(&credentials), vec![])
-            .with_session_registry(Arc::clone(&sessions)),
-    );
-    let sidecars = Arc::new(SidecarRegistry::new(vec![]));
 
     // Integrity-verified compiled catalogue persisted+activated in the
     // same library the admission path opens.
@@ -441,6 +436,15 @@ async fn start_core_lab(pki: &Pki, _device: TargetConfig) -> CoreLab {
     let catalogue = compile_app();
     yang_schema::persist_compiled(&library, &catalogue).unwrap();
     yang_schema::activate_compiled(&library, &catalogue.schema_id).unwrap();
+
+    let manager = Arc::new(
+        CollectorManager::new(Arc::clone(&registry), Arc::clone(&credentials), vec![])
+            .with_session_registry(Arc::clone(&sessions))
+            .with_yang_library(Some(
+                YangLibrary::open(yang_dir.join("lib"), yang_dir.join("cache"), "K").unwrap(),
+            )),
+    );
+    let sidecars = Arc::new(SidecarRegistry::new(vec![]));
 
     let svc = CoreService::new(
         graph,

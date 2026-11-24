@@ -114,6 +114,13 @@ pub struct CollectorManager {
     /// Production uses the system clock; tests inject a controllable
     /// source so the 24-hour window is deterministic.
     schema_binding_clock: crate::schema_binding::SchemaBindingClock,
+    /// YANG library for effective-schema authority checks (M6-CR-05):
+    /// a schema-bound approval is authority only while its schema is
+    /// the device's verified effective schema — explicit selection or
+    /// the globally active catalogue. `None` fails closed: schema-bound
+    /// approvals can never verify effective authority and are not
+    /// delivered.
+    yang_library: Option<crate::yang::YangLibrary>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -212,8 +219,18 @@ impl CollectorManager {
             event_tx: Mutex::new(None),
             health_emitter: None,
             schema_binding_clock: crate::schema_binding::SchemaBindingClock::system(),
+            yang_library: None,
         };
         manager
+    }
+
+    /// Bind the YANG library used to resolve each device's effective
+    /// schema for schema-bound authority checks (M6-CR-05). `None` (or
+    /// an unopened library) fails closed: schema-bound approvals can
+    /// never verify effective authority and are not delivered.
+    pub fn with_yang_library(mut self, library: Option<crate::yang::YangLibrary>) -> Self {
+        self.yang_library = library;
+        self
     }
 
     pub fn with_health_emitter(
@@ -894,6 +911,17 @@ impl CollectorManager {
         let schema_bound_aware = protocol_version >= SCHEMA_BOUND_CONTRACT_VERSION;
         let mut assignments = Vec::new();
         let mut blocked = Vec::new();
+        // M6-CR-05: one effective-schema resolver per sync — the global
+        // active catalogue verifies once regardless of how many devices
+        // inherit it. Absent library/store fails closed for every
+        // schema-bound approval.
+        let sqlite = self.registry.sqlite_store();
+        let mut schema_authority = match (self.yang_library.as_ref(), sqlite.as_deref()) {
+            (Some(library), Some(store)) => Some(
+                crate::schema_binding::SchemaAuthorityContext::new(library, store),
+            ),
+            _ => None,
+        };
         for target in targets {
             // Schema-bound authority is carried inside ManagedDevice and
             // echoed on lifecycle events; collectors below contract v5
@@ -946,28 +974,35 @@ impl CollectorManager {
                     }
                     _ => Some("schema_binding_evidence_unverifiable"),
                 };
-                // M6 corrective review (commit-first selection): the
-                // fenced selection write commits BEFORE the incompatible
-                // approval's revocation runs. An interruption between
-                // them leaves an active approval whose approved schema no
-                // longer matches the device's durable selection — and no
-                // later pass re-derives that mismatch. Fail closed at
-                // this authorization boundary: when a durable selection
-                // exists, the approval only authorizes the schema it was
-                // evaluated against. A selection-store read failure is
-                // unverifiable authority, never a pass.
+                // M6-CR-05 effective-schema authority: the approval only
+                // authorizes the schema that is STILL the device's
+                // verified effective schema — the durable explicit
+                // selection when present, else the globally active
+                // catalogue. This subsumes the CR-03 selection-drift
+                // check and closes the inherited-global interruption
+                // window: a global activation committed without its
+                // revocation pass, a restart before reconciliation, or
+                // a missing/corrupt/partial/compiler-incompatible
+                // effective bundle all fail closed here — evidence
+                // freshness alone is never a schema revocation
+                // guarantee. Unverifiable authority (store/library read
+                // failure, absent effective schema) is never a pass.
                 if reason.is_none() {
-                    let drift = self.registry.sqlite_store().map(|store| {
-                        store
-                            .get_device_schema_selection(&crate::registry::device_identity_key(
-                                &target,
-                            ))
-                            .map(|sel| sel.is_some_and(|s| s.schema_id != binding.schema_id))
-                    });
-                    reason = match drift {
-                        Some(Ok(true)) => Some("schema_binding_schema_mismatch"),
-                        Some(Ok(false)) | None => None,
-                        Some(Err(_)) => Some("schema_binding_evidence_unverifiable"),
+                    let authority = match schema_authority.as_mut() {
+                        Some(ctx) => ctx.binding_authority(
+                            &crate::registry::device_identity_key(&target),
+                            binding,
+                        ),
+                        None => crate::schema_binding::BindingSchemaAuthority::Unverifiable,
+                    };
+                    reason = match authority {
+                        crate::schema_binding::BindingSchemaAuthority::Current => None,
+                        crate::schema_binding::BindingSchemaAuthority::Superseded => {
+                            Some("schema_binding_schema_mismatch")
+                        }
+                        crate::schema_binding::BindingSchemaAuthority::Unverifiable => {
+                            Some("schema_binding_schema_unverifiable")
+                        }
                     };
                 }
                 if let Some(reason) = reason {
@@ -1502,11 +1537,13 @@ mod tests {
 
     fn schema_bound_activation(
         target: &TargetConfig,
+        schema_id: &str,
+        snapshot_id: i64,
     ) -> (TargetConfig, crate::sqlite_store::SchemaBindingRecord) {
         let binding = crate::config::SchemaBindingConfig {
             mode: "schema_bound".to_string(),
-            schema_id: "a".repeat(64),
-            snapshot_id: 9,
+            schema_id: schema_id.to_string(),
+            snapshot_id,
             content_id: Some("content-1".to_string()),
             datastore: Some("ietf-datastores:operational".to_string()),
             evidence_fingerprint: "ev-fp".to_string(),
@@ -1539,12 +1576,150 @@ mod tests {
         (bound, record)
     }
 
+    /// Fresh, fingerprint-matching applicability evidence for `bound` —
+    /// BindingEvidenceState::Current at the assignment boundary.
+    fn fresh_schema_evidence(
+        store: &crate::sqlite_store::SqliteStore,
+        bound: &TargetConfig,
+        schema_id: &str,
+    ) -> i64 {
+        let key = crate::registry::device_identity_key(bound);
+        let snap = crate::sqlite_store::YangApplicabilitySnapshotRow {
+            id: 0,
+            device_key: key,
+            device_address: bound.address.clone(),
+            collector_id: Some("c1".to_string()),
+            schema_id: Some(schema_id.to_string()),
+            content_id: Some("content-1".to_string()),
+            datastore: Some("ietf-datastores:operational".to_string()),
+            overall_status: "applicable".to_string(),
+            outcome: "ok".to_string(),
+            result_json: "{}".to_string(),
+            capabilities_json: None,
+            yang_library_json: None,
+            evidence_fingerprint: "ev-fp".to_string(),
+            observed_at_ns: Some(crate::graph::common::now_ns()),
+            evaluated_at_ns: crate::graph::common::now_ns(),
+            error: None,
+            created_at_ns: crate::graph::common::now_ns(),
+            executor: Some("core_direct".to_string()),
+            observing_collector_id: None,
+            discovery_job_id: None,
+            collector_session_generation: None,
+            authority_epoch: None,
+            evidence_received_at_ns: None,
+        };
+        store.save_yang_applicability_snapshot(&snap).unwrap()
+    }
+
+    const ASGN_YANG_A: &str = r#"
+module asgn-mod-a {
+  yang-version 1.1;
+  namespace "urn:example:asgn-a";
+  prefix asgna;
+  revision 2024-01-01;
+  container system-a { leaf mtu { type uint32; } }
+}
+"#;
+    const ASGN_YANG_B: &str = r#"
+module asgn-mod-b {
+  yang-version 1.1;
+  namespace "urn:example:asgn-b";
+  prefix asgnb;
+  revision 2024-01-01;
+  container system-b { leaf mtu { type uint32; } }
+}
+"#;
+
+    /// Compile+persist a complete trusted catalogue bundle.
+    fn compile_assignment_catalogue(
+        library: &crate::yang::YangLibrary,
+        module_name: &str,
+        yang: &str,
+    ) -> crate::yang_schema::CompiledCatalogue {
+        let input = crate::yang_schema::ModuleInput {
+            module: crate::yang_schema::parse_module(yang).expect("fixture parses"),
+            vendor_scope: "test".to_string(),
+            source_kind: "inline".to_string(),
+            source_ref: module_name.to_string(),
+            trust: "trusted".to_string(),
+            checksum_sha256: format!("inline-{module_name}"),
+            approved: false,
+            license: String::new(),
+            platforms: vec!["*".to_string()],
+            pinned_ref: String::new(),
+            source_id: String::new(),
+        };
+        let catalogue = crate::yang_schema::compile_parsed(
+            vec![input],
+            &crate::yang_schema::CompileOptions::default(),
+        );
+        assert_eq!(catalogue.status, "complete");
+        crate::yang_schema::persist_compiled(library, &catalogue).expect("persist");
+        catalogue
+    }
+
+    /// Library handle at the fixture's `yanglib/` roots — tests open a
+    /// second handle for compile/activate while the manager owns one.
+    fn assignment_test_library(dir: &tempfile::TempDir) -> crate::yang::YangLibrary {
+        crate::yang::YangLibrary::open(
+            dir.path().join("yanglib").join("lib"),
+            dir.path().join("yanglib").join("cache"),
+            "K",
+        )
+        .expect("yang library")
+    }
+
+    /// manager_with_custom_target plus a wired YANG library so
+    /// schema-bound authority checks can resolve effective schema.
+    async fn manager_with_custom_target_and_library(
+        target: TargetConfig,
+    ) -> (CollectorManager, Arc<ApiRegistry>, tempfile::TempDir) {
+        unsafe { std::env::set_var("BONSAI_ASSIGNMENT_TEST_VAULT", "test-passphrase") };
+        let dir = tempfile::tempdir().unwrap();
+        let registry =
+            Arc::new(ApiRegistry::open(dir.path().join("registry.json"), vec![]).unwrap());
+        let credentials = Arc::new(
+            CredentialVault::open(dir.path().join("vault"), "BONSAI_ASSIGNMENT_TEST_VAULT")
+                .unwrap(),
+        );
+        let library = crate::yang::YangLibrary::open(
+            dir.path().join("yanglib").join("lib"),
+            dir.path().join("yanglib").join("cache"),
+            "K",
+        )
+        .unwrap();
+        registry
+            .add_device_with_audit(target.clone(), "test", "test_add")
+            .unwrap();
+        registry
+            .assign_device_with_audit(
+                &target.address,
+                Some("c1".to_string()),
+                "test",
+                "test_assign",
+            )
+            .unwrap();
+        (
+            CollectorManager::new(registry.clone(), credentials, vec![])
+                .with_yang_library(Some(library)),
+            registry,
+            dir,
+        )
+    }
+
     #[tokio::test]
     async fn schema_bound_assignment_requires_v5_and_roundtrips_binding() {
-        let (manager, registry, _dir) =
-            manager_with_custom_target(schema_bound_target("10.0.0.7")).await;
+        let (manager, registry, dir) =
+            manager_with_custom_target_and_library(schema_bound_target("10.0.0.7")).await;
+        let library = assignment_test_library(&dir);
+        let catalogue = compile_assignment_catalogue(&library, "asgn-mod-a", ASGN_YANG_A);
+        crate::yang_schema::activate_compiled(&library, &catalogue.schema_id).unwrap();
         let stored = registry.get_device("10.0.0.7").unwrap().unwrap();
-        let (bound, record) = schema_bound_activation(&stored);
+        let (mut bound, record) = schema_bound_activation(&stored, &catalogue.schema_id, 0);
+        let store = registry.sqlite_store().unwrap();
+        bound.schema_binding.as_mut().unwrap().snapshot_id =
+            fresh_schema_evidence(store.as_ref(), &bound, &catalogue.schema_id);
         let config_revision = bound.updated_at_ns;
         registry
             .activate_schema_binding(bound, record, 0, config_revision, "admin", "activate", None)
@@ -1581,10 +1756,15 @@ mod tests {
             .unwrap();
         let update2 = rx2.recv().await.expect("v5 sync");
         assert_eq!(update2.assignments.len(), 1);
-        let device = update2.assignments[0].device.as_ref().unwrap();
+        let delivered = &update2.assignments[0];
+        assert!(
+            !delivered.rejected,
+            "verified effective schema must authorize: {:?}",
+            delivered.reject_reason
+        );
+        let device = delivered.device.as_ref().unwrap();
         assert_eq!(device.schema_binding_mode, "schema_bound");
-        assert_eq!(device.schema_id, "a".repeat(64));
-        assert_eq!(device.snapshot_id, 9);
+        assert_eq!(device.schema_id, catalogue.schema_id);
         assert_eq!(device.evidence_fingerprint, "ev-fp");
         assert_eq!(device.plan_id, "plan-1");
         assert_eq!(device.binding_fingerprint, "bind-fp");
@@ -1601,47 +1781,26 @@ mod tests {
         // committing the durable selection WITHOUT running the
         // revocation — the stale approval must not keep authorizing
         // collection at the next assignment boundary.
-        let (manager, registry, _dir) =
-            manager_with_custom_target(schema_bound_target("10.0.0.8")).await;
+        let (manager, registry, dir) =
+            manager_with_custom_target_and_library(schema_bound_target("10.0.0.8")).await;
+        let library = assignment_test_library(&dir);
+        let cat_a = compile_assignment_catalogue(&library, "asgn-mod-a", ASGN_YANG_A);
+        let cat_b = compile_assignment_catalogue(&library, "asgn-mod-b", ASGN_YANG_B);
+        crate::yang_schema::activate_compiled(&library, &cat_a.schema_id).unwrap();
         let stored = registry.get_device("10.0.0.8").unwrap().unwrap();
-        let (mut bound, record) = schema_bound_activation(&stored);
+        let (mut bound, record) = schema_bound_activation(&stored, &cat_a.schema_id, 0);
         // Fresh, fingerprint-matching evidence → BindingEvidenceState::Current.
         let store = registry.sqlite_store().unwrap();
-        let key = crate::registry::device_identity_key(&bound);
-        let snap = crate::sqlite_store::YangApplicabilitySnapshotRow {
-            id: 0,
-            device_key: key.clone(),
-            device_address: "10.0.0.8".to_string(),
-            collector_id: Some("c1".to_string()),
-            schema_id: Some("a".repeat(64)),
-            content_id: Some("content-1".to_string()),
-            datastore: Some("ietf-datastores:operational".to_string()),
-            overall_status: "applicable".to_string(),
-            outcome: "ok".to_string(),
-            result_json: "{}".to_string(),
-            capabilities_json: None,
-            yang_library_json: None,
-            evidence_fingerprint: "ev-fp".to_string(),
-            observed_at_ns: Some(crate::graph::common::now_ns()),
-            evaluated_at_ns: crate::graph::common::now_ns(),
-            error: None,
-            created_at_ns: crate::graph::common::now_ns(),
-            executor: Some("core_direct".to_string()),
-            observing_collector_id: None,
-            discovery_job_id: None,
-            collector_session_generation: None,
-            authority_epoch: None,
-            evidence_received_at_ns: None,
-        };
-        let snap_id = store.save_yang_applicability_snapshot(&snap).unwrap();
-        bound.schema_binding.as_mut().unwrap().snapshot_id = snap_id;
+        bound.schema_binding.as_mut().unwrap().snapshot_id =
+            fresh_schema_evidence(store.as_ref(), &bound, &cat_a.schema_id);
         let config_revision = bound.updated_at_ns;
         registry
             .activate_schema_binding(bound, record, 0, config_revision, "admin", "activate", None)
             .unwrap();
 
-        // Control: with CURRENT evidence and NO durable selection the
-        // approval still authorizes — the check must not over-revoke.
+        // Control: with CURRENT evidence, a verified effective schema
+        // matching the approval, and NO durable selection the approval
+        // authorizes — the check must not over-revoke.
         let (mut rx0, _g0) = manager
             .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
             .await
@@ -1659,12 +1818,15 @@ mod tests {
         );
         drop(rx0);
 
-        // Interruption window: selection commits to a DIFFERENT schema;
-        // approval revocation never ran.
+        // Interruption window: selection commits to a DIFFERENT verified
+        // schema; approval revocation never ran.
+        let key = crate::registry::device_identity_key(
+            &registry.get_device("10.0.0.8").unwrap().unwrap(),
+        );
         let selection = crate::sqlite_store::DeviceSchemaSelection {
             device_key: key,
             device_address: "10.0.0.8".to_string(),
-            schema_id: "b".repeat(64),
+            schema_id: cat_b.schema_id.clone(),
             selection_source: "admin".to_string(),
             selected_by: Some("admin".to_string()),
             note: None,
@@ -1691,6 +1853,95 @@ mod tests {
             "approval bound to superseded schema must not authorize"
         );
         assert_eq!(stale.reject_reason, "schema_binding_schema_mismatch");
+    }
+
+    #[tokio::test]
+    async fn schema_bound_inherited_binding_fails_closed_after_global_activation() {
+        // M6-CR-05: a device with NO explicit selection inherits the
+        // global catalogue. A global activation whose revocation pass
+        // never ran (crash/I/O interruption between the durable
+        // active-pointer commit and the approval revocation) must not
+        // leave the old approval authorizing at the next assignment
+        // boundary — evidence freshness is not a schema guarantee.
+        let (manager, registry, dir) =
+            manager_with_custom_target_and_library(schema_bound_target("10.0.0.9")).await;
+        let library = assignment_test_library(&dir);
+        let cat_a = compile_assignment_catalogue(&library, "asgn-mod-a", ASGN_YANG_A);
+        let cat_b = compile_assignment_catalogue(&library, "asgn-mod-b", ASGN_YANG_B);
+        crate::yang_schema::activate_compiled(&library, &cat_a.schema_id).unwrap();
+        let stored = registry.get_device("10.0.0.9").unwrap().unwrap();
+        let (mut bound, record) = schema_bound_activation(&stored, &cat_a.schema_id, 0);
+        let store = registry.sqlite_store().unwrap();
+        bound.schema_binding.as_mut().unwrap().snapshot_id =
+            fresh_schema_evidence(store.as_ref(), &bound, &cat_a.schema_id);
+        let config_revision = bound.updated_at_ns;
+        registry
+            .activate_schema_binding(bound, record, 0, config_revision, "admin", "activate", None)
+            .unwrap();
+
+        // Control: inherited A + binding A + fresh evidence → authorized.
+        let (mut rx0, _g0) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let update0 = rx0.recv().await.expect("control sync");
+        let control = update0
+            .assignments
+            .iter()
+            .find(|a| a.device.as_ref().is_some_and(|d| d.address == "10.0.0.9"))
+            .expect("control assignment");
+        assert!(
+            !control.rejected,
+            "inherited approval under the active schema must authorize: {:?}",
+            control.reject_reason
+        );
+        drop(rx0);
+
+        // Interruption: active pointer durably commits B; the
+        // incompatible-approval revocation never runs.
+        crate::yang_schema::activate_compiled(&library, &cat_b.schema_id).unwrap();
+
+        let (mut rx, _gen) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let update = rx.recv().await.expect("post-activation sync");
+        let stale = update
+            .assignments
+            .iter()
+            .find(|a| a.device.as_ref().is_some_and(|d| d.address == "10.0.0.9"))
+            .expect("stale assignment entry");
+        assert!(
+            stale.rejected,
+            "inherited approval superseded by global activation must not authorize"
+        );
+        assert_eq!(stale.reject_reason, "schema_binding_schema_mismatch");
+        drop(rx);
+
+        // A missing/corrupt effective authority is equally fail-closed:
+        // remove the active pointer entirely.
+        let pointer = dir
+            .path()
+            .join("yanglib")
+            .join("lib")
+            .join(crate::yang_schema::COMPILED_DIR)
+            .join(crate::yang_schema::ACTIVE_POINTER);
+        std::fs::remove_file(&pointer).unwrap();
+        let (mut rx2, _g2) = manager
+            .register_collector("c1".to_string(), crate::api::PROTOCOL_VERSION_CURRENT, true)
+            .await
+            .unwrap();
+        let update2 = rx2.recv().await.expect("post-pointer-removal sync");
+        let unverifiable = update2
+            .assignments
+            .iter()
+            .find(|a| a.device.as_ref().is_some_and(|d| d.address == "10.0.0.9"))
+            .expect("assignment entry");
+        assert!(unverifiable.rejected);
+        assert_eq!(
+            unverifiable.reject_reason, "schema_binding_schema_unverifiable",
+            "absent effective authority must fail closed, not fall back"
+        );
     }
 
     async fn manager_with_mtls_device() -> (CollectorManager, Arc<ApiRegistry>, tempfile::TempDir) {

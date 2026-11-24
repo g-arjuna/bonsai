@@ -2303,6 +2303,12 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
         let mut stream = req.into_inner();
         let mut accepted = 0_u64;
         let mut rejected = 0_u64;
+        // M6-CR-05: the YANG library for effective-schema authority is
+        // opened lazily on the first schema-bound event — one handle
+        // per stream, never per event. `Some(None)` records a failed
+        // open so every subsequent bound event fails closed without
+        // retrying IO.
+        let mut lifecycle_yang_library: Option<Option<crate::yang::YangLibrary>> = None;
 
         while let Some(event) = stream
             .message()
@@ -2507,6 +2513,75 @@ impl<S: BonsaiStore + 'static> BonsaiGraph for BonsaiService<S> {
                         device = %event.device_address,
                         reason,
                         "lifecycle event denied: schema-bound approval evidence expired"
+                    );
+                    continue;
+                }
+            }
+
+            // M6-CR-05 effective-schema authority: fresh evidence is not
+            // a schema revocation guarantee. A schema-bound approval is
+            // authority only while its schema remains the device's
+            // verified EFFECTIVE schema — explicit durable selection or
+            // the globally active catalogue. An interrupted global
+            // activation or selection transition, a missing/corrupt/
+            // partial/compiler-incompatible effective bundle, or an
+            // unavailable authority source all fail closed here, before
+            // any manifest or session state is applied — identical
+            // semantics to the assignment-build boundary.
+            if let Some(binding) = bound_binding
+                && binding.mode == "schema_bound"
+                && let Some(target) = assigned_target.as_ref()
+            {
+                if lifecycle_yang_library.is_none() {
+                    lifecycle_yang_library = Some(
+                        match (self.sqlite_store.as_ref(), self.yang_roots.as_ref()) {
+                            (Some(_), Some((lib, cache, key))) => crate::yang::YangLibrary::open(
+                                std::path::Path::new(lib),
+                                std::path::Path::new(cache),
+                                key.as_str(),
+                            )
+                            .ok(),
+                            _ => None,
+                        },
+                    );
+                }
+                let authority = match (
+                    self.sqlite_store.as_ref(),
+                    lifecycle_yang_library
+                        .as_ref()
+                        .and_then(|slot| slot.as_ref()),
+                ) {
+                    (Some(store), Some(library)) => {
+                        crate::schema_binding::binding_schema_authority(
+                            library,
+                            store.as_ref(),
+                            &crate::registry::device_identity_key(target),
+                            binding,
+                        )
+                    }
+                    _ => crate::schema_binding::BindingSchemaAuthority::Unverifiable,
+                };
+                let reason = match authority {
+                    crate::schema_binding::BindingSchemaAuthority::Current => None,
+                    crate::schema_binding::BindingSchemaAuthority::Superseded => {
+                        Some("schema_binding_schema_mismatch")
+                    }
+                    crate::schema_binding::BindingSchemaAuthority::Unverifiable => {
+                        Some("schema_binding_schema_unverifiable")
+                    }
+                };
+                if let Some(reason) = reason {
+                    rejected += 1;
+                    metrics::counter!(
+                        "bonsai_subscription_lifecycle_rejected_total",
+                        "reason" => reason
+                    )
+                    .increment(1);
+                    tracing::warn!(
+                        collector_id = %grant.collector_id(),
+                        device = %event.device_address,
+                        reason,
+                        "lifecycle event denied: schema-bound approval schema is not the effective authority"
                     );
                     continue;
                 }
