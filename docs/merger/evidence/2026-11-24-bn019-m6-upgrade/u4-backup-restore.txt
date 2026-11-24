@@ -1,0 +1,38 @@
+BN-019 U4 — bounded backup/restore check (supported tooling), 2026-11-24
+======================================================================
+
+Scope: disposable bn019u2 compose project volumes only
+(bn019u2_bonsai_graph_dev, bn019u2_bonsai_creds_dev). The owner's
+bonsai-bonsai-* deployment volumes were NOT touched
+(COMPOSE_PROJECT_NAME=bn019u2 scoped resolution).
+
+Backup (scripts/backup_volumes.sh, run from /tmp/bn019-u2):
+  COMPOSE_PROJECT_NAME=bn019u2 scripts/backup_volumes.sh \
+    /tmp/bn019-u2-backup-2026-11-24
+  -> bn019u2_bonsai_creds_dev.tar.gz  (1.3K)
+  -> bn019u2_bonsai_graph_dev.tar.gz  (2.4M)
+  debian:trixie-slim pulled for the tar helper image.
+
+Restore (scripts/restore_volumes.sh, services stopped first):
+  docker stop bn019u2-bonsai-standalone-1 bn019u2-bonsai-routing-1
+  echo y | COMPOSE_PROJECT_NAME=bn019u2 scripts/restore_volumes.sh \
+    /tmp/bn019-u2-backup-2026-11-24
+  -> both volumes wiped + re-extracted from the archives just created.
+
+Post-restore verification:
+  docker start ... -> both containers "Up (healthy)" within ~45 s.
+  bonsai-standalone boot log: config store intact
+  ("config store already has data, skipping JSON migration"),
+  startup phase="ready" elapsed_ms=4766, no errors/panics.
+  API still enforces auth (GET /api/devices -> 401 unauthenticated).
+  Device/schema state survived: ghost 192.0.2.10 again rejected by the
+  plaintext-transport policy on startup (same fail-closed behavior as
+  pre-backup), confirming durable config rows were restored.
+
+Classification: PASS — LIVE LAB (same-version backup+restore through
+the supported scripts; NOT a cross-version or corruption-recovery drill).
+Rollback to the pre-upgrade binary/database: NOT_EXECUTED — old image
+bonsai:bn019u2-cdfcac1 and pre-upgrade DB copies under /tmp/bn019-u3/
+are retained locally, but no packaged rollback drill was run (starting
+the v3-compiler binary against post-upgrade state is not a supported
+path and was not attempted).

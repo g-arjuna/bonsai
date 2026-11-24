@@ -1,0 +1,5 @@
+schema_bindings 0
+device_schema_selections 0
+compiled_schema_references ERR no such table: compiled_schema_references
+targets ERR no such table: targets
+---bindings---

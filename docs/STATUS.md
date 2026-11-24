@@ -1,5 +1,22 @@
 # Bonsai current state
 
+BN-019 packaged upgrade slice — **executed 2026-11-24** on merged
+main `18fa577` (PR #80): real packaged images `bonsai:bn019u2-cdfcac1`
+(old baseline) → `bonsai:bn019u2-18fa577` (corrected). Leg A: disposable
+runtime seeded via `wp28_fixture_seed` — old image ran the real
+`AuthStore::ensure_migrated` pipeline (users=1 api_keys=1
+jwt_revocations=1 malformed=2 quarantined=7, 12 graph tombstones), and
+the new image booted on the same mounted runtime/credentials with all
+migrated auth still working and SQLite `user_version` unchanged at 15.
+Leg B: live SR Linux lab compose recreated on the new image — the
+pre-upgrade compiler-v3 schema binding and explicit device selection
+failed closed (`schema_binding_not_authoritative`,
+`catalogue_integrity_failure`, `schema_version_changed`), durable rows
+preserved; operator re-validation (v4 recompile `ysc-51aa768…`,
+applicability refresh, approval rev 2) restored observed telemetry.
+Evidence: `docs/merger/evidence/2026-11-24-bn019-m6-upgrade/`. L4
+canonical lab tier remains NOT_EXECUTED; bounded slice only.
+
 M6 final correctness review update — **PR #80**
 (`fix/m6g-deviation-preconditions`, on reviewed main `cdfcac1`)
 corrects defects found by the independent post-merge review; canonical

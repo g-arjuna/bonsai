@@ -1,0 +1,21 @@
+name: bonsai-bn019
+
+# BN-019 packaged-upgrade assurance — dedicated single-node SR Linux gNMI
+# target. Distinct management subnet (172.100.119.0/24): no overlap with
+# m6f-srlinux (.102), m6f-xrd (.103), m6f-ceos (.104), m6f-frr (.110),
+# bn006-srl (.216), bn006-eos-srl (.218), or bn003 labs (.207/.208).
+#
+# The containerlab nokia_srlinux kind provisions the management interface
+# and the gNMI server on TCP/57400 with clab-profile TLS certificates.
+
+mgmt:
+  network: bonsai-bn019
+  ipv4-subnet: 172.100.119.0/24
+
+topology:
+  defaults:
+    kind: nokia_srlinux
+    image: ghcr.io/nokia/srlinux@sha256:ad3d4a533674cf2e2e7321fef38806a6c66e3d56a3e8693c45fc2b4206078dd6
+  nodes:
+    srl1:
+      mgmt-ipv4: 172.100.119.11

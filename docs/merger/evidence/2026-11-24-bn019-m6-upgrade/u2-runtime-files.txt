@@ -1,0 +1,14 @@
+total 13940
+drwx------ 5 bonsai bonsai    4096 Nov 24 07:48 .
+drwxr-xr-x 1 bonsai bonsai    4096 Nov 24 07:45 ..
+-rw-r--r-- 1 bonsai bonsai 2506752 Nov 24 07:45 bonsai.db
+-rw-r--r-- 1 bonsai bonsai  375263 Nov 24 08:15 bonsai.db.wal
+-rw------- 1 bonsai bonsai   86016 Nov 24 07:48 bonsai_auth.db
+-rw-r--r-- 1 bonsai bonsai 5632000 Nov 24 07:57 bonsai_config.db
+-rw-r--r-- 1 bonsai bonsai   32768 Nov 24 08:09 bonsai_config.db-shm
+-rw-r--r-- 1 bonsai bonsai 5607352 Nov 24 08:09 bonsai_config.db-wal
+drwxr-xr-x 2 bonsai bonsai    4096 Nov 24 07:34 config-store
+-rw-r--r-- 1 bonsai bonsai       0 Nov 24 07:45 routing-bmp.journal
+-rw-r--r-- 1 bonsai bonsai       0 Nov 24 07:45 routing-events.jsonl
+drwxr-xr-x 2 bonsai bonsai    4096 Nov 24 07:45 yang_cache
+drwxr-xr-x 4 bonsai bonsai    4096 Nov 24 08:05 yang_catalogue
