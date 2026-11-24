@@ -109,3 +109,81 @@ named volumes — real packaged upgrade, not a fresh install).
   diagnostics); the bounded slice used the targeted 13-module closure.
 - L4 canonical lab tier was NOT run; this slice is targeted BN-019
   evidence, not full L4 acceptance.
+
+## Acceptance matrix and classification corrections (addendum, 2026-11-24)
+
+Corrections to the classifications above, after independent review. The
+evidence files are unchanged; only the interpretation is refined.
+
+| Requirement | Evidence | Result |
+|---|---|---|
+| Real packaged upgrade (old→new image, same volumes) | `u2-provenance.txt`, image IDs, compose recreate | PASS — PACKAGED |
+| SQLite schema preservation v15 → v15 | `PRAGMA user_version` 15 before/after (`u2-sqlite-pre-summary.txt`, boot logs) | PASS — PACKAGED |
+| SQLite v14 → v15 migration | Both images are schema v15; no packaged v14 fixture exercised. Unit-level migration chain exists (`src/sqlite_store.rs` migrate 1→15); no dedicated v14→v15 regression found — tracked as outstanding, see below | PARTIAL |
+| Legacy AuthStore migration | `u3-old-image-boot-migration.log` (`users=1 api_keys=1 jwt_revocations=1 malformed=2 quarantined=7`), `u3-old-configitems-tombstones.json` | PASS — PACKAGED |
+| AuthStore negative conditions (revoked JWT rejected, wrong key 401, tombstones cannot authorize) | Wrong-key 401 claimed in drill; committed artifact shows positive auth only. `tests/bn022_auth_storage.rs` (`migrated_graph_rows_cannot_authorize`, quarantine/conflict negatives) cover the semantics | PARTIAL — packaged positive evidence + regression coverage |
+| Old-schema authority rejection (compiler v3 → v4) | `u3-live-boot-and-recovery.log` fail-closed block + stale applicability | PASS — PACKAGED |
+| Explicit operator recovery | recompile v4 `ysc-51aa768`, refresh, activate rev 2, ghost reselect rev 2 | PASS — PACKAGED |
+| Inherited (global catalogue) authority recovery | srl1 `172.100.119.11` has `selected_schema_id: null` (inherits global active schema). Pre-upgrade effective = v3 `ysc-0f4cc548`; post-recovery effective = v4 `ysc-51aa768` with observed SAMPLE telemetry (`bn019-u3-preview2.json`, `u3-device-srl1-post-recovery.json`) | PASS — PACKAGED (inherited mode) |
+| CR-05 inherited global drift between two valid v4 bundles | Deterministic regressions on merged main (PR #80) | PASS — REGRESSION (packaged leg exercised compiler-version drift, not same-version bundle drift) |
+| Collector convergence / unrelated device continuity | Only one live device (srl1) + ghost (unreachable, see below). No second independent valid device in the packaged leg | PARTIAL |
+| Ghost device schema withdrawal | Ghost `192.0.2.10` is unreachable; post-upgrade rejection is the plaintext-transport policy (`migration_required`), which masks any schema-path behavior. NOT evidence for device-scoped withdrawal or multi-device isolation | NOT_EXECUTED (packaged); device-scoped withdrawal covered by `tests/gnmi_subscription_e2e.rs` multi-device regression — PASS — REGRESSION |
+| Restart safety | Post-restore restart of both containers healthy, `phase="ready"`, auth enforced (401), device state intact (`u4-backup-restore.txt`) | PASS — LIVE LAB |
+| Interrupted transition | Not fault-injected in packaged leg; commit-first fencing covered by `schema_binding_schema_mismatch` regression (M6-CR-03/05, PR #80) | PASS — REGRESSION |
+| Backup/restore | `scripts/backup_volumes.sh` + `restore_volumes.sh` on bn019u2 volumes, post-restore healthy + state intact (`u4-backup-restore.txt`) | PASS — LIVE LAB (same-version tooling check, not corruption/cross-version drill) |
+| Rollback (old binary + pre-upgrade data) | Old image `bonsai:bn019u2-cdfcac1` retained locally; pre-upgrade DB copies under `/tmp/bn019-u3/`; no packaged rollback drill executed | NOT_EXECUTED |
+| Historical graph preservation | Graph volume backed up/restored byte-identical; tombstone audit rows preserved (`u3-old-configitems-tombstones.json`) | PASS — PACKAGED + LIVE LAB |
+| Bounded soak | `u3-bounded-soak-stats.csv`: first sample 2026-11-24T08:40:28Z, last 08:54:56Z → ~14.5 min elapsed, 3 containers, docker stats 60 s cadence | PASS — bounded packaged smoke/soak observation (~14.5 min, not a duration certification) |
+| Full-duration soak (BN-009/BN-019 release criterion) | Not run | NOT_EXECUTED — outstanding release condition |
+| Canonical L4 | Not run; live-lab legs above are targeted BN-019 evidence only | NOT_EXECUTED |
+
+### U1 vs U2 distinction
+
+- **U2 (executed here):** genuine packaged upgrade `cdfcac1` → `18fa577`,
+  both SQLite schema v15 — proves compiler-v3→v4 authority transition and
+  v15 persistence across a real image/container/volume upgrade.
+- **U1 (SQLite v14 → v15 packaged migration):** NOT executed — no faithful
+  earlier-version packaged fixture was produced, and none is claimed.
+  The v15 step (selection-epoch table + backfill) is small; a bounded
+  v14→v15 persistent-database regression is being added separately rather
+  than rebuilding a historical image for appearances.
+- **AuthStore migration** is a separate mechanism (graph records →
+  `bonsai_auth.db`), not SQLite schema migration; it is evidenced by Leg A.
+
+### Persisted rows vs active authority
+
+Pre-upgrade `schema_bindings` (rev 1) and `device_schema_selections`
+(ghost, rev 1) rows were preserved, not deleted — correct behavior:
+historical approval evidence is retained. Post-upgrade they are NOT
+operational authority: the v3 binding fails closed
+(`schema_binding_not_authoritative`), the ghost's stale v3 selection
+resolves to `catalogue_integrity_failure`, and only explicit operator
+re-validation produced rev-2 authority. No stale persisted row was
+presented as an active executable plan (binding preview correctly
+rejected with `snapshot_not_fresh`/`SchemaVersionChanged`).
+
+### Soak/resource observations (bounded)
+
+Host: 8 CPU / 46.7 GiB, compose project `bn019u2`, 2 bonsai containers +
+1 SR Linux containerlab node; `docker stats` at 60 s cadence,
+2026-11-24T08:40:28Z → 08:54:56Z (~14.5 min, 15 samples per container).
+Standalone Core RSS 585–616 MiB (mem_pct ~1.2%), routing sidecar
+~9.3 MiB; CPU 0.00–1.80% per sample (docker-stats instantaneous %, not
+cumulative — treat as indicative only). No container restarts observed
+during the window; SAMPLE telemetry continuity verified separately via
+post-recovery observed paths. WAL/DB sizes: graph volume backup 2.4 MB,
+creds volume 1.3 KB at backup time. This is a bounded packaged
+smoke/soak observation on a single-device lab — NOT enterprise scale
+certification. The full-duration BN-009/BN-019 soak remains an
+outstanding release condition.
+
+### SR Linux schema coverage limitation
+
+Targeted closure used for the successful subscription: 13 modules /
+420 paths, compiled `ysc-51aa768a66cde438a6fd39a8d4c6c2d2` (compiler v4).
+The broad 542-module SR Linux 26.3.1 catalogue compilation remains
+`partial` with 1,666 diagnostics (multiple diagnostics share root
+causes; not 1,666 independent defects). Proven: the architecture
+supports a genuine SR Linux acquisition workflow end-to-end. Not
+proven: full native-model coverage of the SR Linux YANG surface.
+Retained as a scoped YANG completeness / vendor-coverage backlog item.
