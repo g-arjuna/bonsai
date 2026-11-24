@@ -252,8 +252,14 @@ fn untested_status() -> String {
 /// Outcome of profile selection — always explicit, never a silent default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selection {
-    /// Best-matching profile for (platform, version).
+    /// Best-matching profile for (platform, version) with a KNOWN
+    /// release — may drive executable native parsing.
     Selected(Box<NosFeatureProfile>),
+    /// Metadata/discovery candidate only: a wildcard profile matched a
+    /// platform whose release is UNKNOWN. May identify a candidate for
+    /// inventory/coverage display but must never authorize executable
+    /// native parsing.
+    Candidate(Box<NosFeatureProfile>),
     /// Platform family known but no profile covers this version.
     UnsupportedVersion { platform: String, version: String },
     /// No profile registered for the platform family at all.
@@ -263,6 +269,12 @@ pub enum Selection {
     /// component version). Distinct from version unsupported: the release
     /// may be known while the hardware/namespace scope is not covered.
     OutOfScope { platform: String, reason: String },
+    /// Two or more profiles are equally applicable — explicit conflict,
+    /// never arbitrary first-match selection.
+    Ambiguous {
+        platform: String,
+        candidates: Vec<String>,
+    },
 }
 
 /// Query for profile selection.
@@ -280,6 +292,88 @@ pub struct ProfileQuery {
     pub release: Option<SoftwareRelease>,
     /// Device hardware/ASIC/namespace scope. `None` = unspecified.
     pub hardware: Option<HardwareScope>,
+}
+
+/// Effective support assessment for a feature after consulting the
+/// declared `support` state AND advisory evidence. Evidence can
+/// contradict or negatively qualify a declaration but can never upgrade
+/// `Unknown` to `Supported` — a vendor document is a scoped reference
+/// claim, not proof of runtime applicability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SupportAssessment {
+    Supported,
+    Unsupported,
+    Unknown,
+    /// Declared support and evidence claims contradict each other.
+    Conflicting,
+}
+
+/// Compute the effective support state of a feature flag.
+fn assess_support(flag: &FeatureFlag) -> SupportAssessment {
+    let has_unsupported_evidence = flag
+        .evidence
+        .iter()
+        .any(|e| e.claim == SupportState::Unsupported);
+    let has_supported_evidence = flag
+        .evidence
+        .iter()
+        .any(|e| e.claim == SupportState::Supported);
+    let has_unknown_evidence = flag
+        .evidence
+        .iter()
+        .any(|e| e.claim == SupportState::Unknown);
+    let _ = has_unknown_evidence;
+    match flag.support {
+        SupportState::Unsupported => SupportAssessment::Unsupported,
+        SupportState::Supported => {
+            // Explicit unsupported evidence against a supported
+            // declaration is contradictory — never silently resolved.
+            if has_unsupported_evidence {
+                SupportAssessment::Conflicting
+            } else {
+                SupportAssessment::Supported
+            }
+        }
+        SupportState::Unknown => {
+            if has_unsupported_evidence && has_supported_evidence {
+                SupportAssessment::Conflicting
+            } else if has_unsupported_evidence {
+                // Negative evidence qualifies an unknown declaration.
+                SupportAssessment::Unsupported
+            } else {
+                // Advisory supported/unknown evidence never upgrades an
+                // unknown declaration to proven support.
+                SupportAssessment::Unknown
+            }
+        }
+    }
+}
+
+/// Applicability of an observation namespace on a selected profile.
+/// Distinct from device-level profile selection: a profile may be
+/// recognized for a device while specific namespaces remain unverified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NamespaceStatus {
+    /// Namespace is explicitly verified by the profile.
+    Applicable,
+    /// Namespace is known but NOT verified by this profile.
+    Unsupported,
+    /// Namespace coverage is unspecified — must not be assumed.
+    Unknown,
+}
+
+/// Whether `feature` applies on `profile` at observation `namespace`.
+/// `None` namespace = device/feature-level applicability only (no
+/// observation scope claimed).
+pub fn namespace_status(profile: &NosFeatureProfile, namespace: &str) -> NamespaceStatus {
+    if namespace.is_empty() || profile.verified_namespaces.is_empty() {
+        return NamespaceStatus::Unknown;
+    }
+    if profile.verified_namespaces.iter().any(|n| n == namespace) {
+        NamespaceStatus::Applicable
+    } else {
+        NamespaceStatus::Unsupported
+    }
 }
 
 /// Registry of feature profiles. Profiles register declaratively; core
@@ -335,13 +429,39 @@ impl ProfileRegistry {
             None => None,
         };
 
+        // Structured release and the legacy version string must not
+        // silently contradict each other when both are supplied.
+        let metadata_conflict = match (&query.release, version) {
+            (Some(r), v) if !v.is_empty() && v != "*" && r.raw != v => true,
+            _ => false,
+        };
+
         let platform_exact =
             |p: &NosFeatureProfile| p.platform_family == platform || p.platform_family == family;
         // A profile is scope-applicable only when its release and hardware
-        // constraints accept the query. Constraint failures are tracked so
-        // a known-but-out-of-scope platform reports OutOfScope rather than
+        // constraints accept the query AND its own release metadata is
+        // internally consistent. Constraint failures are tracked so a
+        // known-but-out-of-scope platform reports OutOfScope rather than
         // UnsupportedVersion/Platform.
         let scope_ok = |p: &NosFeatureProfile| -> Result<(), String> {
+            if metadata_conflict {
+                return Err(
+                    "conflicting release metadata: structured release and version disagree"
+                        .to_string(),
+                );
+            }
+            // Self-consistency: a pinned legacy version constraint that
+            // contradicts the structured release constraint's raw value
+            // is a broken profile, not a match.
+            if let (Some(rc), true) = (&p.release_constraint, p.version_match != "*")
+                && let Some(raw) = &rc.raw
+                && !version_matches(&p.version_match, raw)
+            {
+                return Err(format!(
+                    "profile release metadata contradicts itself (version_match '{}' vs release raw '{raw}')",
+                    p.version_match
+                ));
+            }
             if let Some(rc) = &p.release_constraint
                 && !rc.matches(release)
             {
@@ -357,17 +477,12 @@ impl ProfileRegistry {
             }
             Ok(())
         };
-        let version_exact = |p: &NosFeatureProfile| {
-            p.version_match == "*" || version_matches(&p.version_match, version)
-        };
-        // "exact version" means the profile constrains to this version
-        // (not "*"); any-version is the fallback tier.
         let version_pinned = |p: &NosFeatureProfile| {
             p.version_match != "*" && version_matches(&p.version_match, version)
         };
 
-        let mut best: Option<&NosFeatureProfile> = None;
         let mut best_tier = 0u8;
+        let mut best: Vec<&NosFeatureProfile> = Vec::new();
         let mut scope_failure: Option<String> = None;
         for p in &self.profiles {
             if !platform_exact(p) {
@@ -388,15 +503,30 @@ impl ProfileRegistry {
             } else {
                 continue;
             };
-            // version_exact unused beyond pinning; "*" matches everything.
-            let _ = version_exact;
-            if tier > best_tier || (tier == best_tier && best.is_none()) {
-                best = Some(p);
+            if tier > best_tier {
                 best_tier = tier;
+                best.clear();
+            }
+            if tier == best_tier {
+                best.push(p);
             }
         }
-        if let Some(p) = best {
-            return Selection::Selected(Box::new(p.clone()));
+        // Ambiguity is explicit: equally applicable profiles — including
+        // duplicate registrations — conflict rather than silently picking
+        // registration order.
+        if best.len() > 1 {
+            return Selection::Ambiguous {
+                platform: platform.to_string(),
+                candidates: best.iter().map(|p| p.profile_id.clone()).collect(),
+            };
+        }
+        if let Some(p) = best.first() {
+            // A wildcard match against an UNKNOWN release is a discovery
+            // candidate only — never executable applicability.
+            if release.is_none() && p.version_match == "*" {
+                return Selection::Candidate(Box::new((*p).clone()));
+            }
+            return Selection::Selected(Box::new((*p).clone()));
         }
         if self.profiles.iter().any(|p| platform_exact(p)) {
             if let Some(reason) = scope_failure {
@@ -416,21 +546,89 @@ impl ProfileRegistry {
         }
     }
 
-    /// Feature lookup on a selected profile — disabled and absent features
-    /// are distinct outcomes.
-    pub fn feature_status(profile: &NosFeatureProfile, feature: &str) -> FeatureStatus {
-        match profile.features.get(feature) {
-            None => FeatureStatus::Absent,
-            Some(f) if !f.enabled => FeatureStatus::Disabled,
-            Some(_) => FeatureStatus::Enabled,
+    /// Registry self-check: duplicate profile ids and internally
+    /// contradictory release metadata are rejected explicitly. Selection
+    /// skips self-inconsistent profiles, but callers registering profiles
+    /// from untrusted config should run this first.
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        let mut seen = std::collections::BTreeMap::new();
+        for p in &self.profiles {
+            if seen.insert(p.profile_id.as_str(), ()).is_some() {
+                errors.push(format!("duplicate profile_id '{}'", p.profile_id));
+            }
+            if p.version_match != "*"
+                && let Some(rc) = &p.release_constraint
+                && let Some(raw) = &rc.raw
+                && !version_matches(&p.version_match, raw)
+            {
+                errors.push(format!(
+                    "profile '{}' release metadata contradicts itself",
+                    p.profile_id
+                ));
+            }
         }
+        errors
+    }
+
+    /// Feature lookup on a selected profile — disabled, unsupported,
+    /// unknown and absent features are distinct outcomes. This is the
+    /// device/feature-level view: it does NOT establish applicability for
+    /// a specific observation namespace — use
+    /// [`Self::feature_status_in_namespace`] for that.
+    pub fn feature_status(profile: &NosFeatureProfile, feature: &str) -> FeatureStatus {
+        Self::feature_status_inner(profile, feature, None)
+    }
+
+    /// Feature lookup scoped to an observation namespace (e.g. SONiC
+    /// "asic-0"). A selected profile does not authorize normalization of
+    /// an unverified namespace: `asic-2`/`host`/unknown scopes return
+    /// explicit non-applicable statuses, never silent `Enabled`.
+    pub fn feature_status_in_namespace(
+        profile: &NosFeatureProfile,
+        feature: &str,
+        namespace: &str,
+    ) -> FeatureStatus {
+        Self::feature_status_inner(profile, feature, Some(namespace))
+    }
+
+    fn feature_status_inner(
+        profile: &NosFeatureProfile,
+        feature: &str,
+        namespace: Option<&str>,
+    ) -> FeatureStatus {
+        let Some(flag) = profile.features.get(feature) else {
+            return FeatureStatus::Absent;
+        };
+        if !flag.enabled {
+            return FeatureStatus::Disabled;
+        }
+        match assess_support(flag) {
+            SupportAssessment::Unsupported => return FeatureStatus::Unsupported,
+            SupportAssessment::Conflicting => return FeatureStatus::Conflicting,
+            SupportAssessment::Unknown => return FeatureStatus::Unknown,
+            SupportAssessment::Supported => {}
+        }
+        if let Some(ns) = namespace {
+            match namespace_status(profile, ns) {
+                NamespaceStatus::Applicable => {}
+                NamespaceStatus::Unsupported => return FeatureStatus::OutOfScope,
+                NamespaceStatus::Unknown => return FeatureStatus::Unknown,
+            }
+        }
+        FeatureStatus::Enabled
     }
 
     /// Validate a requested feature *set* as a composition (BN-024-03A):
-    /// every feature must exist and be enabled, all `requires`
-    /// prerequisites must be present in the set, and no `conflicts`
-    /// pair may co-occur. Returns every violation found — callers get the
-    /// full conflict list, not just the first.
+    /// every feature must exist and be applicable, all `requires`
+    /// prerequisites must be declared, applicable and present in the set,
+    /// no `conflicts` pair may co-occur, and the `requires` graph must be
+    /// acyclic. Returns every violation found — callers get the full
+    /// conflict list, not just the first.
+    ///
+    /// Device/feature-level check: pass `None` for namespace-insensitive
+    /// validation; use [`Self::validate_feature_set_in_scope`] when an
+    /// observation namespace must be verified.
     ///
     /// This checks declarative applicability only; it does not implement
     /// IS-IS/SR/PCE semantics and grants no collection or graph authority.
@@ -438,22 +636,73 @@ impl ProfileRegistry {
         profile: &NosFeatureProfile,
         requested: &[String],
     ) -> Result<(), Vec<String>> {
+        Self::validate_feature_set_inner(profile, requested, None)
+    }
+
+    /// Composition check scoped to an observation namespace: every
+    /// requested feature must additionally be verified for `namespace`.
+    pub fn validate_feature_set_in_scope(
+        profile: &NosFeatureProfile,
+        requested: &[String],
+        namespace: &str,
+    ) -> Result<(), Vec<String>> {
+        Self::validate_feature_set_inner(profile, requested, Some(namespace))
+    }
+
+    fn validate_feature_set_inner(
+        profile: &NosFeatureProfile,
+        requested: &[String],
+        namespace: Option<&str>,
+    ) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
+        let status_of = |name: &str| -> FeatureStatus {
+            match namespace {
+                Some(ns) => Self::feature_status_in_namespace(profile, name, ns),
+                None => Self::feature_status(profile, name),
+            }
+        };
         let set: std::collections::BTreeSet<&str> = requested.iter().map(String::as_str).collect();
         for feature in requested {
-            match Self::feature_status(profile, feature) {
+            match status_of(feature) {
                 FeatureStatus::Absent => {
                     errors.push(format!("feature '{feature}' is not declared"))
                 }
                 FeatureStatus::Disabled => errors.push(format!("feature '{feature}' is disabled")),
+                FeatureStatus::Unsupported => {
+                    errors.push(format!("feature '{feature}' is unsupported"))
+                }
+                FeatureStatus::Unknown => {
+                    errors.push(format!("feature '{feature}' support is unknown"))
+                }
+                FeatureStatus::Conflicting => errors.push(format!(
+                    "feature '{feature}' has conflicting support evidence"
+                )),
+                FeatureStatus::OutOfScope => errors.push(format!(
+                    "feature '{feature}' is not verified for the observation namespace"
+                )),
                 FeatureStatus::Enabled => {}
             }
             if let Some(flag) = profile.features.get(feature) {
                 for req in &flag.requires {
+                    if !profile.features.contains_key(req) {
+                        errors.push(format!(
+                            "feature '{feature}' requires undeclared feature '{req}'"
+                        ));
+                        continue;
+                    }
                     if !set.contains(req.as_str()) {
                         errors.push(format!(
                             "feature '{feature}' requires '{req}' which is not in the set"
                         ));
+                        continue;
+                    }
+                    // A prerequisite that is itself disabled, unsupported,
+                    // unknown or out of scope cannot ground applicability.
+                    match status_of(req) {
+                        FeatureStatus::Enabled => {}
+                        other => errors.push(format!(
+                            "prerequisite '{req}' of '{feature}' is not applicable ({other:?})"
+                        )),
                     }
                 }
             }
@@ -466,6 +715,36 @@ impl ProfileRegistry {
                     }
                 }
             }
+        }
+        // Cycle detection over the declared requires graph (bounded:
+        // only edges between declared features are followed).
+        fn visit(
+            node: &str,
+            profile: &NosFeatureProfile,
+            state: &mut std::collections::BTreeMap<String, u8>,
+            errors: &mut Vec<String>,
+        ) {
+            match state.get(node) {
+                Some(1) => {
+                    errors.push(format!("circular feature dependency at '{node}'"));
+                    return;
+                }
+                Some(2) => return,
+                _ => {}
+            }
+            state.insert(node.to_string(), 1);
+            if let Some(flag) = profile.features.get(node) {
+                for req in &flag.requires {
+                    if profile.features.contains_key(req) {
+                        visit(req, profile, state, errors);
+                    }
+                }
+            }
+            state.insert(node.to_string(), 2);
+        }
+        let mut state = std::collections::BTreeMap::new();
+        for feature in requested {
+            visit(feature, profile, &mut state, &mut errors);
         }
         if errors.is_empty() {
             Ok(())
@@ -483,11 +762,24 @@ impl Default for ProfileRegistry {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeatureStatus {
+    /// Enabled AND evidence-backed supported AND (when a namespace is
+    /// given) verified for that observation scope — applicable.
     Enabled,
     Disabled,
     /// Feature not declared by the profile — consumers must treat as
     /// unsupported, never as implicitly enabled.
     Absent,
+    /// Explicitly unsupported on this platform/release/hardware — a
+    /// boolean `enabled` flag cannot override this.
+    Unsupported,
+    /// Support cannot be established — never treated as absent/down and
+    /// never silently selects a parser.
+    Unknown,
+    /// Declared support and applicability evidence contradict each other.
+    Conflicting,
+    /// Feature is enabled but the observation namespace/scope is not
+    /// verified by this profile (e.g. SONiC "asic-2"/"host").
+    OutOfScope,
 }
 
 /// Extract the family portion of a canonical platform id
@@ -496,16 +788,24 @@ fn platform_family(platform: &str) -> &str {
     platform.split(['.', '-']).next().unwrap_or(platform)
 }
 
-/// Version constraint match: "*" any, "=X" exact, "X" or "X.Y" prefix.
+/// Version constraint match. Two DISTINCT declared policies:
+/// - `"*"` matches any *known* version string (callers must separately
+///   reject unknown/empty versions for executable use — see `select`).
+/// - `"=X"` is EXACT equality only — `"=17.9"` never matches `"17.9.1"`.
+/// - `"X"`/`"X.Y"` without `=` is the declared prefix policy:
+///   `"17.9"` matches `"17.9"` and `"17.9.1"` but not `"17.10"`.
+/// Empty or `"*"` device versions never match a constraining pattern.
 fn version_matches(pattern: &str, version: &str) -> bool {
     if pattern == "*" {
-        return true;
+        return !version.is_empty() && version != "*";
     }
-    let pat = pattern.strip_prefix('=').unwrap_or(pattern);
     if version.is_empty() || version == "*" {
         return false;
     }
-    version == pat || version.starts_with(&format!("{pat}."))
+    if let Some(pat) = pattern.strip_prefix('=') {
+        return version == pat;
+    }
+    version == pattern || version.starts_with(&format!("{pattern}."))
 }
 
 #[cfg(test)]
@@ -519,7 +819,7 @@ mod tests {
             scope_notes: vec![],
             requires: vec![],
             conflicts: vec![],
-            support: SupportState::Unknown,
+            support: SupportState::Supported,
             evidence: vec![],
         }
     }
@@ -541,7 +841,7 @@ mod tests {
                         scope_notes: vec!["CONFIG_DB+STATE_DB per namespace".into()],
                         requires: vec![],
                         conflicts: vec![],
-                        support: SupportState::Unknown,
+                        support: SupportState::Supported,
                         evidence: vec![],
                     },
                 ),
@@ -725,6 +1025,7 @@ mod tests {
             ProfileRegistry::feature_status(&p, "evpn"),
             FeatureStatus::Absent
         );
+        // Device-level feature status does not claim a namespace.
         assert_eq!(
             ProfileRegistry::feature_status(&p, "interfaces"),
             FeatureStatus::Enabled
@@ -732,7 +1033,113 @@ mod tests {
     }
 
     #[test]
-    fn exact_version_beats_family_wildcard() {
+    fn namespace_scope_gates_observation_applicability() {
+        let r = registry();
+        let Selection::Selected(p) = r.select(&ProfileQuery {
+            platform: "sonic".into(),
+            version: "2025.1".into(),
+            release: None,
+            hardware: None,
+        }) else {
+            panic!("no sonic profile")
+        };
+        // Verified ASIC namespaces are applicable.
+        for ns in ["asic-0", "asic-1"] {
+            assert_eq!(
+                ProfileRegistry::feature_status_in_namespace(&p, "interfaces", ns),
+                FeatureStatus::Enabled,
+                "{ns} must be applicable"
+            );
+        }
+        // Unverified ASIC namespace and host scope are explicit
+        // non-applicable — never silently Enabled.
+        for ns in ["asic-2", "host"] {
+            assert_eq!(
+                ProfileRegistry::feature_status_in_namespace(&p, "interfaces", ns),
+                FeatureStatus::OutOfScope,
+                "{ns} must be out of scope"
+            );
+        }
+        // Unknown/empty scope is Unknown, not applicable.
+        assert_eq!(
+            ProfileRegistry::feature_status_in_namespace(&p, "interfaces", ""),
+            FeatureStatus::Unknown
+        );
+        assert_eq!(namespace_status(&p, "asic-2"), NamespaceStatus::Unsupported);
+        // A profile with unspecified namespaces reports Unknown coverage.
+        let Selection::Selected(sr) = r.select(&query("example.srnos", "1.0")) else {
+            panic!("srnos profile must select")
+        };
+        assert_eq!(namespace_status(&sr, "default"), NamespaceStatus::Unknown);
+        assert_eq!(
+            ProfileRegistry::feature_status_in_namespace(&sr, "isis", "default"),
+            FeatureStatus::Unknown
+        );
+        // Scoped composition validation enforces the same boundary.
+        let errs =
+            ProfileRegistry::validate_feature_set_in_scope(&p, &["interfaces".into()], "asic-2")
+                .expect_err("asic-2 must fail scoped validation");
+        assert!(errs.iter().any(|e| e.contains("namespace")));
+        assert!(
+            ProfileRegistry::validate_feature_set_in_scope(&p, &["interfaces".into()], "asic-0")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn support_state_gates_enabled_flag() {
+        let mut p = sonic_profile();
+        // enabled=true but support=Unsupported must not report Enabled.
+        p.features.get_mut("interfaces").unwrap().support = SupportState::Unsupported;
+        assert_eq!(
+            ProfileRegistry::feature_status(&p, "interfaces"),
+            FeatureStatus::Unsupported
+        );
+        // enabled=true but support=Unknown reports Unknown.
+        p.features.get_mut("interfaces").unwrap().support = SupportState::Unknown;
+        assert_eq!(
+            ProfileRegistry::feature_status(&p, "interfaces"),
+            FeatureStatus::Unknown
+        );
+        // Contradictory evidence against a Supported declaration.
+        p.features.get_mut("interfaces").unwrap().support = SupportState::Supported;
+        p.features.get_mut("interfaces").unwrap().evidence = vec![
+            ApplicabilityEvidence {
+                kind: "vendor_document".into(),
+                source: "doc".into(),
+                revision: None,
+                scope: None,
+                claim: SupportState::Supported,
+            },
+            ApplicabilityEvidence {
+                kind: "observed_capture".into(),
+                source: "fixture".into(),
+                revision: None,
+                scope: None,
+                claim: SupportState::Unsupported,
+            },
+        ];
+        assert_eq!(
+            ProfileRegistry::feature_status(&p, "interfaces"),
+            FeatureStatus::Conflicting
+        );
+        // Advisory supported evidence alone never upgrades Unknown.
+        p.features.get_mut("interfaces").unwrap().support = SupportState::Unknown;
+        p.features.get_mut("interfaces").unwrap().evidence = vec![ApplicabilityEvidence {
+            kind: "vendor_document".into(),
+            source: "doc".into(),
+            revision: None,
+            scope: None,
+            claim: SupportState::Supported,
+        }];
+        assert_eq!(
+            ProfileRegistry::feature_status(&p, "interfaces"),
+            FeatureStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn exact_version_is_exact_and_prefix_is_declared_policy() {
         let mut r = ProfileRegistry::new();
         r.register(NosFeatureProfile {
             profile_id: "fam-any".into(),
@@ -754,16 +1161,143 @@ mod tests {
             features: BTreeMap::new(),
             verification: "fixture_only".into(),
         });
+        r.register(NosFeatureProfile {
+            profile_id: "cisco-17-prefix".into(),
+            platform_family: "cisco.iosxe".into(),
+            version_match: "17.9".into(), // declared prefix policy
+            release_constraint: None,
+            hardware_constraints: vec![],
+            verified_namespaces: vec![],
+            features: BTreeMap::new(),
+            verification: "fixture_only".into(),
+        });
+        // "=17.9" is exact: it must NOT match "17.9.4". Only the
+        // declared prefix profile "17.9" applies -> Selected.
         match r.select(&ProfileQuery {
             platform: "cisco.iosxe".into(),
             version: "17.9.4".into(),
             release: None,
             hardware: None,
         }) {
-            // "=17.9" prefix-matches "17.9.4" → exact-ish tier wins.
-            Selection::Selected(p) => assert_eq!(p.profile_id, "cisco-17"),
-            other => panic!("expected cisco-17, got {other:?}"),
+            Selection::Selected(p) => assert_eq!(p.profile_id, "cisco-17-prefix"),
+            other => panic!("expected cisco-17-prefix, got {other:?}"),
         }
+        // On the exact version "17.9" BOTH pinned profiles apply at the
+        // same tier -> explicit Ambiguous, never first-match.
+        match r.select(&ProfileQuery {
+            platform: "cisco.iosxe".into(),
+            version: "17.9".into(),
+            release: None,
+            hardware: None,
+        }) {
+            Selection::Ambiguous { candidates, .. } => {
+                assert!(candidates.contains(&"cisco-17".to_string()));
+                assert!(candidates.contains(&"cisco-17-prefix".to_string()));
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wildcard_on_unknown_release_is_discovery_only() {
+        let r = registry();
+        // Unknown release ("*"/empty version) cannot select executable.
+        for v in ["*", ""] {
+            match r.select(&ProfileQuery {
+                platform: "sonic".into(),
+                version: v.into(),
+                release: None,
+                hardware: None,
+            }) {
+                Selection::Candidate(p) => assert_eq!(p.profile_id, "sonic-1"),
+                other => panic!("version '{v}' must be Candidate, got {other:?}"),
+            }
+        }
+        // Conflicting structured/legacy release metadata is explicit.
+        match r.select(&ProfileQuery {
+            platform: "sonic".into(),
+            version: "2025.1".into(),
+            release: Some(SoftwareRelease {
+                raw: "2024.2".into(),
+                train: None,
+                build: None,
+                components: BTreeMap::new(),
+            }),
+            hardware: None,
+        }) {
+            Selection::OutOfScope { reason, .. } => {
+                assert!(reason.contains("conflicting release metadata"), "{reason}")
+            }
+            other => panic!("expected OutOfScope, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ambiguous_profiles_are_explicit_conflict() {
+        let mut r = ProfileRegistry::new();
+        for id in ["dup-a", "dup-b"] {
+            r.register(NosFeatureProfile {
+                profile_id: id.into(),
+                platform_family: "acme".into(),
+                version_match: "*".into(),
+                release_constraint: None,
+                hardware_constraints: vec![],
+                verified_namespaces: vec![],
+                features: BTreeMap::new(),
+                verification: "untested".into(),
+            });
+        }
+        match r.select(&ProfileQuery {
+            platform: "acme.box".into(),
+            version: "1.0".into(),
+            release: None,
+            hardware: None,
+        }) {
+            Selection::Ambiguous { candidates, .. } => {
+                assert_eq!(candidates.len(), 2);
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+        // Registry validation flags duplicate ids.
+        let mut r2 = ProfileRegistry::new();
+        let p = NosFeatureProfile {
+            profile_id: "same".into(),
+            platform_family: "acme".into(),
+            version_match: "*".into(),
+            release_constraint: None,
+            hardware_constraints: vec![],
+            verified_namespaces: vec![],
+            features: BTreeMap::new(),
+            verification: "untested".into(),
+        };
+        r2.register(p.clone());
+        r2.register(p);
+        assert!(r2.validate().iter().any(|e| e.contains("duplicate")));
+    }
+
+    #[test]
+    fn feature_composition_rejects_undeclared_prereq_and_cycles() {
+        let mut p = isis_sr_profile();
+        // Undeclared prerequisite.
+        p.features.get_mut("isis.sr_mpls").unwrap().requires = vec!["isis.nonexistent".into()];
+        let errs =
+            ProfileRegistry::validate_feature_set(&p, &["isis".into(), "isis.sr_mpls".into()])
+                .expect_err("undeclared prerequisite");
+        assert!(errs.iter().any(|e| e.contains("undeclared")));
+        // Disabled prerequisite.
+        let mut p = isis_sr_profile();
+        p.features.get_mut("isis").unwrap().enabled = false;
+        let errs =
+            ProfileRegistry::validate_feature_set(&p, &["isis".into(), "isis.sr_mpls".into()])
+                .expect_err("disabled prerequisite");
+        assert!(errs.iter().any(|e| e.contains("not applicable")));
+        // Cycle: a requires b, b requires a.
+        let mut p = isis_sr_profile();
+        p.features.get_mut("isis").unwrap().requires = vec!["isis.sr_mpls".into()];
+        let errs =
+            ProfileRegistry::validate_feature_set(&p, &["isis".into(), "isis.sr_mpls".into()])
+                .expect_err("cycle");
+        assert!(errs.iter().any(|e| e.contains("circular")));
     }
 
     #[test]

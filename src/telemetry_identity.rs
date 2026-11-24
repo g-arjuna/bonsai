@@ -375,6 +375,14 @@ pub struct CanonicalDevice {
 /// Deterministic outcome of resolving an observed identity against a
 /// set of trusted bindings. `observed` always carries the raw evidence;
 /// canonical ids are populated only for `Resolved`.
+///
+/// Trust boundary: `resolver_attested` is set ONLY inside
+/// [`IdentityResolver::resolve_against`] when the resolver itself
+/// produced a `Resolved` outcome against trusted bindings. It is never
+/// serialized and cannot be set through struct literals outside this
+/// module, so a hand-built `IdentityResolution` (including one with
+/// `status: Resolved`) can never mint downstream authority such as a
+/// typed-fact [`crate::typed_facts::AuthorityGrant`].
 #[derive(Debug, Clone, Serialize)]
 pub struct IdentityResolution {
     pub status: IdentityStatus,
@@ -388,9 +396,35 @@ pub struct IdentityResolution {
     pub provenance: Option<BindingProvenance>,
     /// The original observed envelope, evidence preserved verbatim.
     pub observed: TelemetrySourceIdentity,
+    /// Set only by [`IdentityResolver`] for `Resolved` outcomes; skipped
+    /// by serde so a resolution restored from stored data is unattested.
+    #[serde(skip)]
+    resolver_attested: bool,
 }
 
 impl IdentityResolution {
+    /// Resolution for observations that never crossed the trusted
+    /// resolver (e.g. offline adapters holding only the observed
+    /// envelope). Carries no canonical ids and is never attested.
+    pub fn unattested(status: IdentityStatus, observed: TelemetrySourceIdentity) -> Self {
+        Self {
+            status,
+            device_id: None,
+            canonical_exporter_id: None,
+            binding_id: None,
+            provenance: None,
+            observed,
+            resolver_attested: false,
+        }
+    }
+
+    /// Whether this resolution was produced by [`IdentityResolver`]
+    /// against trusted bindings AND resolved uniquely. Only such
+    /// resolutions may feed authority-granting paths.
+    pub fn is_resolver_attested(&self) -> bool {
+        self.resolver_attested
+    }
+
     /// Whether this resolution may drive authoritative device state.
     pub fn may_update_authoritative_state(&self) -> bool {
         self.status.may_update_authoritative_state()
@@ -524,6 +558,9 @@ impl IdentityResolver {
                 _ => (IdentityStatus::Ambiguous, None, None, None, None),
             };
 
+        // Only a unique binding-backed Resolved outcome is attested;
+        // every other status (and every hand-built value) is not.
+        let resolver_attested = status == IdentityStatus::Resolved && binding_id.is_some();
         IdentityResolution {
             status,
             device_id,
@@ -531,6 +568,7 @@ impl IdentityResolver {
             binding_id,
             provenance,
             observed: observed.clone(),
+            resolver_attested,
         }
     }
 }

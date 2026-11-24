@@ -28,6 +28,7 @@ pub mod health_emitter;
 pub mod http_server;
 pub mod ingest;
 pub mod integrations;
+pub mod interface_facts;
 pub mod investigation_runtime;
 pub mod investigation_trigger;
 pub mod mcp_client;

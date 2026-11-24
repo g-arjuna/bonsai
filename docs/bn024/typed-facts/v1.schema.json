@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://bonsai.dev/schemas/typed-fact/v1.json",
   "title": "Bonsai Typed Fact v1",
-  "description": "Canonical typed-fact ABI (BN-024-02). Serialized form of bonsai::typed_facts::TypedFact. This schema describes data only; it confers no graph-write authority.",
+  "description": "Canonical typed-fact ABI (BN-024-02). Serialized form of bonsai::typed_facts::TypedFact. This schema describes data only; it confers no graph-write authority. Rust TypedFact::validate() is authoritative for invariants the schema cannot express (payload fields/state XOR, digest recomputation, grant-to-fact binding, lifecycle timestamps).",
   "type": "object",
   "required": [
     "schema_version",
@@ -12,6 +12,8 @@
     "source",
     "observed_at",
     "payload",
+    "payload_sha256",
+    "evidence_sha256",
     "quality",
     "trust",
     "lifecycle"
@@ -27,7 +29,7 @@
     "fact_id": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "SHA-256 over canonical identity tuple assigned by TypedFact::seal()."
+      "description": "SHA-256 over the canonical identity tuple (entity key + observation key + interpretation identity + semantic payload digest + evidence digest) assigned by TypedFact::seal() and re-verified by validate()."
     },
     "fact_kind": { "type": "string", "minLength": 1 },
     "subject": {
@@ -36,8 +38,13 @@
       "additionalProperties": false,
       "properties": {
         "device_id": { "type": "string", "minLength": 1 },
+        "scope": { "type": "string", "description": "Canonical tenant/environment identity scope; absent = default scope." },
         "namespace": { "type": "string", "minLength": 1 },
-        "vrf": { "type": "string" }
+        "network_namespace": { "type": "string", "description": "ASIC/network namespace (SONiC asic-0/host, FRR default, ...); independent of namespace." },
+        "entity": { "type": "string", "description": "Entity identity within the namespace (interface name, prefix, neighbor address, ...)." },
+        "vrf": { "type": "string" },
+        "afi_safi": { "type": "string" },
+        "plane": { "type": "string", "description": "Truth plane: operational | configured | effective | startup | ..." }
       }
     },
     "source": {
@@ -49,7 +56,8 @@
         "source_kind": { "type": "string", "minLength": 1 },
         "capture_id": { "type": "string", "minLength": 1 },
         "session_epoch": { "type": "integer", "minimum": 0 },
-        "sequence": { "type": "integer", "minimum": 0 }
+        "sequence": { "type": "integer", "minimum": 0 },
+        "exporter_id": { "type": "string", "description": "Protocol-level exporter claim (BMP exporter, gNMI target, host key ref). Evidence only — never canonical device identity." }
       }
     },
     "observed_at": { "type": "string", "format": "date-time" },
@@ -58,18 +66,30 @@
     "valid_until": { "type": "string", "format": "date-time" },
     "payload": {
       "type": "object",
-      "required": ["produced_by"],
+      "required": ["produced_by", "parser_revision"],
       "additionalProperties": false,
       "properties": {
         "produced_by": { "type": "string", "minLength": 1 },
+        "parser_revision": { "type": "string", "description": "Parser implementation revision identifying the exact extraction logic (template version, code version or content digest)." },
+        "mapping_revision": { "type": "string", "description": "Normalization ruleset version applied after parsing; absent = no mapping layer recorded." },
         "fields": {
-          "description": "Structured fact body; absent iff state is present."
+          "description": "Structured fact body (JSON object). Absent iff state is present; the fields/state XOR is enforced by Rust validate(), not by this schema."
         },
         "state": {
           "enum": ["empty", "invalid_input", "unsupported", "unstructured_fallback", "unknown_quality"],
           "description": "Required when fields is absent; forbidden when fields is present."
         }
       }
+    },
+    "payload_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 over the canonical semantic payload (fields XOR state plus interpretation identity). Recomputed by validate(); post-seal mutation is detected."
+    },
+    "evidence_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 over the canonical evidence reference list — binds the fact to its supporting observation content digests."
     },
     "quality": {
       "type": "object",
@@ -87,19 +107,46 @@
     },
     "authority": {
       "type": "object",
-      "required": ["identity_status"],
+      "required": [
+        "identity_status",
+        "identity_scope",
+        "subject_device_id",
+        "namespace",
+        "collector_id",
+        "source_kind",
+        "capture_id",
+        "session_epoch",
+        "sequence"
+      ],
       "additionalProperties": false,
       "properties": {
         "identity_status": { "enum": ["resolved", "provisional", "ambiguous", "unknown", "conflicting"] },
-        "resolved_device_id": { "type": "string" }
+        "resolved_device_id": { "type": "string" },
+        "resolved_exporter_id": { "type": "string" },
+        "identity_scope": { "type": "string" },
+        "subject_device_id": { "type": "string", "minLength": 1 },
+        "subject_scope": { "type": "string" },
+        "namespace": { "type": "string", "minLength": 1 },
+        "network_namespace": { "type": "string" },
+        "entity": { "type": "string" },
+        "vrf": { "type": "string" },
+        "afi_safi": { "type": "string" },
+        "plane": { "type": "string" },
+        "collector_id": { "type": "string", "minLength": 1 },
+        "source_kind": { "type": "string", "minLength": 1 },
+        "capture_id": { "type": "string", "minLength": 1 },
+        "session_epoch": { "type": "integer", "minimum": 0 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "exporter_id": { "type": "string" }
       },
-      "description": "Verified authority grant evidence. Grants are only minted in-process from a trusted IdentityResolution; deserialized grants are unattested and confer no eligibility."
+      "description": "Authority grant evidence bound to this exact fact's subject/source axes. Grants are minted in-process from a trusted IdentityResolution; deserialized grants are unattested (attested flag is never serialized) and confer no eligibility. Rust validate() rejects grants whose bound axes do not match the fact."
     },
     "lifecycle": {
       "enum": ["active", "withdrawn", "superseded", "stale"]
     },
     "withdrawn_reason": { "type": "string", "minLength": 1 },
     "superseded_by": { "type": "string", "minLength": 1, "pattern": "^[0-9a-f]{64}$" },
+    "lifecycle_changed_at": { "type": "string", "format": "date-time", "description": "Required for withdrawn/superseded; forbidden for active; optional for stale." },
     "evidence": {
       "type": "array",
       "items": {

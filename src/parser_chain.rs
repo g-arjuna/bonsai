@@ -83,6 +83,26 @@ pub struct ParseResponse {
     /// "invalid_input"). Absent on older sidecars; never fabricated client-side.
     #[serde(default)]
     pub outcome: Option<String>,
+    /// Typed per-backend attempt diagnostics reported by newer sidecars:
+    /// every backend tried, its declared outcome and a bounded sanitized
+    /// reason — preserving *why* structured parsing failed (unsupported,
+    /// backend_unavailable, parser_error) separately from the fallback
+    /// payload that was ultimately returned. Empty on older sidecars.
+    #[serde(default)]
+    pub attempts: Vec<SidecarAttempt>,
+}
+
+/// One backend attempt inside a sidecar `/parse` response.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SidecarAttempt {
+    /// Backend identity ("genie", "textfsm", ...).
+    pub backend: String,
+    /// Declared attempt outcome using the OUTCOME_* vocabulary.
+    #[serde(default)]
+    pub outcome: String,
+    /// Bounded sanitized reason (never raw device output or credentials).
+    #[serde(default)]
+    pub detail: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -100,6 +120,11 @@ pub struct ParseAttempt {
     /// One of the OUTCOME_* constants describing why the attempt ended as it did.
     #[serde(default)]
     pub outcome: String,
+    /// Typed sub-attempt diagnostics from the sidecar (why each backend
+    /// succeeded or failed before fallback) — empty for the native
+    /// line-split backend and older sidecars.
+    #[serde(default)]
+    pub backend_attempts: Vec<SidecarAttempt>,
     /// SHA-256 of the canonical JSON encoding of `parsed_json` ("" when absent).
     #[serde(default)]
     pub parsed_sha256: String,
@@ -246,6 +271,7 @@ impl ParserChain {
                     backend_used: String::new(),
                     quality: QUALITY_UNKNOWN.to_string(),
                     outcome: OUTCOME_TIMEOUT.to_string(),
+                    backend_attempts: Vec::new(),
                     parsed_sha256: String::new(),
                     parsed_bytes: 0,
                 });
@@ -276,6 +302,7 @@ impl ParserChain {
                         backend_used: response.backend_used.clone().unwrap_or_default(),
                         quality: verdict.quality().to_string(),
                         outcome: verdict.outcome().to_string(),
+                        backend_attempts: response.attempts.clone(),
                     });
                     let executed_index = executed.len();
                     executed.push((attempt_index, parser.clone(), response, verdict));
@@ -297,6 +324,7 @@ impl ParserChain {
                     backend_used: String::new(),
                     quality: QUALITY_UNKNOWN.to_string(),
                     outcome: failure.outcome.to_string(),
+                    backend_attempts: Vec::new(),
                     parsed_sha256: String::new(),
                     parsed_bytes: 0,
                 }),
@@ -481,6 +509,7 @@ impl SidecarParserClient {
                     vendor: Some(request.vendor.clone()),
                     command: Some(request.command_pattern.clone()),
                     outcome: Some(OUTCOME_UNSTRUCTURED_FALLBACK.to_string()),
+                    attempts: Vec::new(),
                 };
                 Ok(ExecutedAttempt {
                     verdict: Verdict::Unstructured,
@@ -730,6 +759,24 @@ fn classify_response(
                 format!("parser sidecar outcome '{outcome}' contradicts backend classification"),
             ));
         }
+    }
+
+    // Sidecar-reported per-backend diagnostics are advisory evidence, but the
+    // client still bounds them: an unbounded `attempts` array or detail string
+    // must not become a side channel for arbitrary sidecar payloads.
+    const MAX_BACKEND_ATTEMPTS: usize = 32;
+    const MAX_ATTEMPT_DETAIL_BYTES: usize = 512;
+    let mut response = response;
+    response.attempts.truncate(MAX_BACKEND_ATTEMPTS);
+    for attempt in &mut response.attempts {
+        if attempt.detail.len() > MAX_ATTEMPT_DETAIL_BYTES {
+            let mut end = MAX_ATTEMPT_DETAIL_BYTES;
+            while !attempt.detail.is_char_boundary(end) {
+                end -= 1;
+            }
+            attempt.detail.truncate(end);
+        }
+        attempt.backend.truncate(64);
     }
 
     Ok(ExecutedAttempt { response, verdict })
@@ -1427,6 +1474,7 @@ mod tests {
             backend_used: String::new(),
             quality: quality.to_string(),
             outcome: String::new(),
+            backend_attempts: Vec::new(),
             parsed_sha256: String::new(),
             parsed_bytes: 0,
         }

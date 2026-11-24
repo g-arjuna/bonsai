@@ -219,7 +219,13 @@ def _git_head(repo_dir: str) -> str | None:
 
 def verify(manifest: dict, checkout_root: str, require_revision: bool = True) -> list[str]:
     errors: list[str] = []
-    revision_checked: set[str] = set()
+    # HEAD is a property of the checkout, so it is looked up once per repo
+    # dir — but the pinned-revision comparison is per *source*: two manifest
+    # entries may legitimately pin different revisions of the same repository,
+    # and each must be checked against its own immutable_revision. Scoping the
+    # "already checked" set by repo_dir alone would silently skip that check.
+    head_cache: dict[str, str | None] = {}
+    non_git_reported: set[str] = set()
     for src in manifest.get("sources", []):
         sid = src.get("source_id", "?")
         repo_url = src.get("upstream_repository", "")
@@ -231,20 +237,21 @@ def verify(manifest: dict, checkout_root: str, require_revision: bool = True) ->
 
         # Verify the checkout is actually at the pinned immutable revision —
         # content hashes alone cannot prove revision identity.
-        if repo_dir not in revision_checked:
-            revision_checked.add(repo_dir)
-            head = _git_head(repo_dir)
-            if head is None:
-                if require_revision:
-                    errors.append(
-                        f"{sid}: checkout {repo_dir} is not a git repository; "
-                        "cannot verify pinned immutable_revision"
-                    )
-            elif head != src.get("immutable_revision"):
+        if repo_dir not in head_cache:
+            head_cache[repo_dir] = _git_head(repo_dir)
+        head = head_cache[repo_dir]
+        if head is None:
+            if require_revision and repo_dir not in non_git_reported:
+                non_git_reported.add(repo_dir)
                 errors.append(
-                    f"{sid}: checkout {repo_dir} HEAD {head[:12]}… does not "
-                    f"match pinned revision {str(src.get('immutable_revision'))[:12]}…"
+                    f"{sid}: checkout {repo_dir} is not a git repository; "
+                    "cannot verify pinned immutable_revision"
                 )
+        elif head != src.get("immutable_revision"):
+            errors.append(
+                f"{sid}: checkout {repo_dir} HEAD {head[:12]}… does not "
+                f"match pinned revision {str(src.get('immutable_revision'))[:12]}…"
+            )
 
         containment = _check_path_containment(repo_dir, upstream_path)
         if containment:

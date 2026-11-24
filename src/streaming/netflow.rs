@@ -774,18 +774,14 @@ pub fn resolve_flow_identity(
         Some(principal) => {
             IdentityResolver::resolve_verified_ingress(observed, bindings, principal)
         }
-        None => IdentityResolution {
-            status: if observed.exporter_id.is_some() || observed.reported_identity.is_some() {
+        None => IdentityResolution::unattested(
+            if observed.exporter_id.is_some() || observed.reported_identity.is_some() {
                 IdentityStatus::Provisional
             } else {
                 IdentityStatus::Unknown
             },
-            device_id: None,
-            canonical_exporter_id: None,
-            binding_id: None,
-            provenance: None,
-            observed: observed.clone(),
-        },
+            observed.clone(),
+        ),
     }
 }
 

@@ -229,6 +229,37 @@ def test_verify_detects_wrong_revision(tmp_path: Path) -> None:
     assert up.verify(manifest, str(tmp_path)) == []
 
 
+def test_verify_checks_each_sources_pinned_revision(tmp_path: Path) -> None:
+    """Two sources may pin different revisions of the same repository.
+
+    Regression: scoping the checked-set by repo dir meant only the first
+    source's immutable_revision was compared to HEAD — a second source
+    pinning a different (wrong) revision was silently skipped.
+    """
+    import subprocess
+    repo = tmp_path / "acme-widget"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "init")
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True
+                          ).stdout.strip()
+    (repo / "data.txt").write_text("x")
+    sha = hashlib.sha256(b"x").hexdigest()
+    good = _fake_manifest_entry("acme-widget", head)["sources"][0]
+    good["source_id"] = "acme:good"
+    good["content_sha256"] = sha
+    bad = dict(good)
+    bad["source_id"] = "acme:bad"
+    bad["immutable_revision"] = "0" * 40
+    manifest = {"manifest_version": 1, "sources": [good, bad]}
+    errors = up.verify(manifest, str(tmp_path))
+    assert len(errors) == 1
+    assert "acme:bad" in errors[0]
+    assert "does not match pinned revision" in errors[0]
+
+
 def test_verify_rejects_path_escape(tmp_path: Path) -> None:
     """upstream_path containing '..' must not read outside the checkout."""
     import subprocess

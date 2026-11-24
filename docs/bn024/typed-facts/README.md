@@ -39,13 +39,18 @@ extension seam on this stable schema.
   fact, orthogonal to parse quality. `TrustClass::authority_eligible()`
   describes the claim class only — it is NOT an authorization check.
 - **Authority requires a grant.** `TypedFact::authority_eligible()`
-  returns true only when the trust claim is `corroborated`/`authoritative`
-  AND `authority` holds an attested `AuthorityGrant`. Grants are minted
-  solely by `AuthorityGrant::from_resolution()` from a trusted Core
-  `IdentityResolution` (`IdentityStatus::Resolved`); the attestation flag
-  is never serialized, so a fact restored from JSON/journal/API data is
-  always unattested and must have authority re-derived by the consumer —
-  the same boundary as `VerifiedIngressPrincipal`.
+  returns true only when the trust claim is `corroborated`/`authoritative`,
+  `payload.fields` is present, AND `authority` holds an attested
+  `AuthorityGrant` bound to this fact's exact subject/source axes.
+  Grants are minted solely by `AuthorityGrant::for_fact()` from a trusted
+  Core `IdentityResolution` that the `IdentityResolver` itself attested
+  (`is_resolver_attested`); a hand-built `IdentityResolution` — even with
+  `status: Resolved` — mints nothing. The attestation flag is never
+  serialized, so a fact restored from JSON/journal/API data is always
+  unattested and must have authority re-derived by the consumer — the
+  same boundary as `VerifiedIngressPrincipal`. `validate()` rejects a
+  grant whose bound axes do not match the fact, and any post-issuance
+  mutation of subject/source/payload breaks eligibility.
 - A serialized `trust: "authoritative"` (with or without an `authority`
   block) is representable evidence but never self-authorizing; covered by
   `forged_trust_claim_is_not_authority` and
@@ -65,11 +70,20 @@ reject further transitions. Withdrawal annotates the same `fact_id`
 
 ## Identity & evidence
 
-- `fact_id` = SHA-256 over canonical JSON (recursively key-sorted) of
-  (schema_version, device_id, namespace, vrf, fact_kind, produced_by,
-  payload_sha256, capture_id, collector_id) via `seal()`. Binding
-  schema_version and parser identity means parser/schema evolution cannot
-  silently collide with or reinterpret historical facts.
+- `fact_id` = SHA-256 over canonical JSON (recursively key-sorted) of the
+  full identity tuple — schema_version, subject identity axes
+  (device_id, scope, namespace, network_namespace, entity, vrf,
+  afi_safi, plane), fact_kind, observation axes (capture_id, collector_id,
+  source_kind, session_epoch, sequence, exporter_id), interpretation
+  identity (produced_by, parser_revision, mapping_revision), semantic
+  `payload_sha256` and `evidence_sha256` — via `seal()`. Binding schema
+  version, parser revision and every identity dimension means parser or
+  schema evolution cannot silently collide with or reinterpret
+  historical facts, and identical entity names in different namespaces
+  (e.g. SONiC `asic-0` vs `asic-1`) never share an identity.
+  `payload_sha256`/`evidence_sha256` are recomputed by `validate()`, so
+  post-seal mutation is detected; lifecycle/temporal fields are NOT part
+  of the identity (withdrawal annotates, never re-keys).
 - `source` mirrors `ObservationSource` axes (collector_id, session_epoch,
   sequence) so BMP and CLI evidence join on the same identity.
 - `evidence[]` carries SHA-256 digests + optional locators for raw
@@ -88,11 +102,13 @@ ABI only requires internal consistency.
 
 ## Tests
 
-20 unit/property-style tests in `src/typed_facts.rs` cover: seal stability,
+Unit/property-style tests in `src/typed_facts.rs` cover: seal stability,
 payload-state exclusivity, lifecycle terminality, trust boundary,
-schema-version gating, roundtrip, committed-fixture validity, authority
-grant derivation/attestation loss, forged-claim rejection, and
-schema/producer-bound fact identity. `tests/test_bn024_typed_facts.py`
-gates JSON-schema ↔ Rust-serialization drift (fixture validation, enum/
-required-field rejection, lifecycle conditionals, forged-claim
-representability).
+schema-version gating, roundtrip, committed-fixture validity, digest
+recomputation/mutation detection, grant derivation/attestation loss,
+subject-binding and cross-subject transfer rejection, identity-dimension
+independence (observation vs interpretation vs digest), forged-claim
+rejection, and schema/producer-bound fact identity.
+`tests/test_bn024_typed_facts.py` gates JSON-schema ↔
+Rust-serialization drift (fixture validation, enum/required-field
+rejection, lifecycle conditionals, forged-claim representability).

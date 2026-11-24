@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
 
 import paramiko
@@ -38,6 +39,15 @@ def read_bounded(stream, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
+def read_bounded_timeout(stream, max_bytes: int, timeout_secs: int) -> bytes:
+    # A channel that stops producing data must not block the capture
+    # forever: recv() is bounded by a per-read socket timeout and any
+    # stall surfaces as an explicit timeout error.
+    channel = stream.channel
+    channel.settimeout(timeout_secs)
+    return read_bounded(stream, max_bytes)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", required=True)
@@ -57,7 +67,15 @@ def main() -> int:
         return 2
 
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # Fail closed on unknown host keys: capture credentials must never be
+    # sent to an unverified endpoint. Pre-provision host keys via
+    # `ssh-keyscan -H <host> >> ~/.ssh/known_hosts` (or the system
+    # known_hosts file) before running captures.
+    client.load_system_host_keys()
+    user_known_hosts = os.path.expanduser("~/.ssh/known_hosts")
+    if os.path.exists(user_known_hosts):
+        client.load_host_keys(user_known_hosts)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(
             hostname=args.host,
@@ -72,15 +90,20 @@ def main() -> int:
         )
         _, stdout, stderr = client.exec_command(args.command, timeout=args.timeout_secs)
         try:
-            output = read_bounded(stdout, args.max_bytes).decode("utf-8", errors="replace")
+            output = read_bounded_timeout(
+                stdout, args.max_bytes, args.timeout_secs
+            ).decode("utf-8", errors="replace")
             error_output = (
-                read_bounded(stderr, args.max_bytes)
+                read_bounded_timeout(stderr, args.max_bytes, args.timeout_secs)
                 .decode("utf-8", errors="replace")
                 .strip()
             )
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 4
+        except (socket.timeout, TimeoutError):
+            print("capture timed out waiting for device output", file=sys.stderr)
+            return 5
         exit_status = stdout.channel.recv_exit_status()
         if exit_status != 0:
             print(

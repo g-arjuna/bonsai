@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
@@ -13,6 +14,17 @@ use crate::parser_chain::{ParseRequest, ParserChain};
 
 const DEFAULT_SSH_PORT: u16 = 22;
 const CLI_CAPTURE_SCRIPT: &str = "scripts/cli_capture.py";
+/// Hard wall-clock deadline for one capture-helper invocation. The helper's
+/// own `--timeout-secs` bounds connect/auth/command phases; this deadline
+/// additionally covers interpreter startup and guarantees a wedged helper
+/// cannot stall enrichment indefinitely.
+const CLI_CAPTURE_DEADLINE: Duration = Duration::from_secs(90);
+/// The helper emits one JSON document whose `raw_output` is capped at 4 MiB;
+/// allow JSON/escaping overhead but reject anything beyond this as a
+/// contract violation rather than buffering it unboundedly.
+const MAX_CAPTURE_HELPER_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+/// Stderr is diagnostic only — keep failure messages bounded.
+const MAX_CAPTURE_STDERR_BYTES: usize = 8 * 1024;
 
 pub struct ParserChainCliEnricher {
     parser_chain: ParserChain,
@@ -178,10 +190,31 @@ async fn capture_raw_output(
             .arg(command_pattern)
             .env("BONSAI_CAPTURE_PASSWORD", &credentials.password)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
-        match cmd.output().await {
+        let output = match tokio::time::timeout(CLI_CAPTURE_DEADLINE, cmd.output()).await {
+            Ok(result) => result,
+            Err(_) => {
+                failures.push(format!(
+                    "{} exceeded the {}s capture deadline",
+                    candidate.display(),
+                    CLI_CAPTURE_DEADLINE.as_secs()
+                ));
+                continue;
+            }
+        };
+        match output {
             Ok(output) if output.status.success() => {
+                if output.stdout.len() > MAX_CAPTURE_HELPER_OUTPUT_BYTES {
+                    failures.push(format!(
+                        "{} produced {} bytes of stdout (limit {} bytes)",
+                        candidate.display(),
+                        output.stdout.len(),
+                        MAX_CAPTURE_HELPER_OUTPUT_BYTES
+                    ));
+                    continue;
+                }
                 let result: CliCaptureResult = serde_json::from_slice(&output.stdout)
                     .with_context(|| {
                         format!(
@@ -192,11 +225,14 @@ async fn capture_raw_output(
                 return Ok(result.raw_output);
             }
             Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = stderr.trim();
+                let truncated: String = stderr.chars().take(MAX_CAPTURE_STDERR_BYTES).collect();
                 failures.push(format!(
                     "{} exited with {}: {}",
                     candidate.display(),
                     output.status,
-                    String::from_utf8_lossy(&output.stderr).trim()
+                    truncated
                 ));
             }
             Err(error) => {

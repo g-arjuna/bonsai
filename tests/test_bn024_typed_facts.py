@@ -105,9 +105,30 @@ def test_forged_authority_claim_is_schema_valid_but_only_a_claim(
     forged = copy.deepcopy(fixture)
     forged["trust"] = "authoritative"
     jsonschema.validate(forged, schema)  # claim is representable
-    # And a forged `authority` block without resolution provenance is
-    # still just serialized evidence — the Rust side marks it unattested.
-    forged["authority"] = {"identity_status": "resolved"}
+    # And a forged `authority` grant — even one whose bound axes exactly
+    # match this fact — is still just serialized evidence: the Rust side
+    # marks every deserialized grant unattested and it confers no
+    # eligibility.
+    forged["authority"] = {
+        "identity_status": "resolved",
+        "resolved_device_id": forged["subject"]["device_id"],
+        "identity_scope": "default",
+        "subject_device_id": forged["subject"]["device_id"],
+        "namespace": forged["subject"]["namespace"],
+        "entity": forged["subject"].get("entity"),
+        "vrf": forged["subject"].get("vrf"),
+        "afi_safi": forged["subject"].get("afi_safi"),
+        "plane": forged["subject"].get("plane"),
+        "collector_id": forged["source"]["collector_id"],
+        "source_kind": forged["source"]["source_kind"],
+        "capture_id": forged["source"]["capture_id"],
+        "session_epoch": forged["source"]["session_epoch"],
+        "sequence": forged["source"]["sequence"],
+    }
+    # Drop absent axes rather than emitting explicit nulls.
+    forged["authority"] = {
+        k: v for k, v in forged["authority"].items() if v is not None
+    }
     jsonschema.validate(forged, schema)
 
 
@@ -117,7 +138,11 @@ def test_payload_state_and_fields_are_mutually_exclusive(schema, fixture) -> Non
     express the XOR, so this drift is documented — the Rust gate is
     authoritative. Pin the representable shapes here."""
     no_fields = copy.deepcopy(fixture)
-    no_fields["payload"] = {"produced_by": "genie", "state": "empty"}
+    no_fields["payload"] = {
+        "produced_by": "genie",
+        "parser_revision": "genie-parser-26.10",
+        "state": "empty",
+    }
     jsonschema.validate(no_fields, schema)
 
     bad_state = copy.deepcopy(fixture)
