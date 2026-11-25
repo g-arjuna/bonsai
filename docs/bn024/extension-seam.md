@@ -128,9 +128,10 @@ First executable slice of the seam, built on the contract above:
 
 - SuzieQ pinned @ `75198b5`: `suzieq/config/interfaces.yml` declares
   the same `vtysh show int vrf all` + `ip -d address show` pair for
-  `cumulus`/`sonic` under `version: all`; `service.py` selects the
-  first matching defn (order-dependent, `all` matches unknown
-  versions). Bonsai's `ReleaseConstraint` is equality-only and
+  `cumulus`/`sonic` (`sonic: copy: cumulus`) under `version: all`;
+  `suzieq/poller/worker/services/service.py::_get_def_for_version`
+  returns the first satisfying defn (`all` matches unknown versions,
+  order-dependent). Bonsai's `ReleaseConstraint` is equality-only and
   `Candidate`-gates unknown releases — deliberate deviation recorded
   in `source-crosswalk/README.md` finding 6.
 - SONiC namespace model: upstream collapses host/ASIC namespaces
