@@ -131,6 +131,11 @@ pub enum PayloadState {
     UnstructuredFallback,
     /// Backend output quality could not be established.
     UnknownQuality,
+    /// The source capture itself failed, timed out, was unavailable or
+    /// was refused — no usable observation exists. Distinct from
+    /// `Empty` (capture succeeded and legitimately contained no
+    /// records) and `InvalidInput` (input rejected before parsing).
+    CaptureFailed,
 }
 
 /// Snapshot completeness of the observation the fact was drawn from.
@@ -245,6 +250,15 @@ pub struct AuthorityGrant {
     /// grants are always unattested.
     #[serde(skip)]
     attested: bool,
+    /// Content digest captured at issuance over the grant's bound axes
+    /// PLUS the fact's `payload_sha256`/`evidence_sha256`. Every grant
+    /// field is public (serialized evidence), so without this digest a
+    /// cloned grant could have its bound axes mutated consistently with
+    /// a mutated fact and still "bind". Any post-issuance mutation of
+    /// grant axes or of the fact's semantic/evidence payload breaks the
+    /// match. Skipped by serde — deserialized grants are unattested.
+    #[serde(skip)]
+    attested_digest: Option<String>,
 }
 
 impl AuthorityGrant {
@@ -257,7 +271,13 @@ impl AuthorityGrant {
     /// - the resolution status may update authoritative state;
     /// - the resolved canonical device id equals the fact's subject
     ///   device id, and the resolution scope equals the fact's subject
-    ///   scope (default scope when unset).
+    ///   scope (default scope when unset);
+    /// - the fact's observation source axes are corroborated by the
+    ///   resolution's observed envelope: `collector_id` and
+    ///   `session_epoch` must be established there and equal the fact's,
+    ///   and a fact asserting `exporter_id` must name the resolution's
+    ///   canonical exporter. `capture_id`/`sequence` have no
+    ///   resolution-side analogue and remain bind-time axes only.
     ///
     /// Callers must obtain the resolution from `IdentityResolver`
     /// (including the verified-ingress path where transport attestation
@@ -267,7 +287,15 @@ impl AuthorityGrant {
         fact: &TypedFact,
     ) -> Option<Self> {
         use crate::telemetry_identity::DEFAULT_IDENTITY_SCOPE;
-        if !resolution.is_resolver_attested() || !resolution.may_update_authoritative_state() {
+        // The attestation must still cover the resolution's CURRENT
+        // fields: `IdentityResolution`'s evidence fields are public, so
+        // a cloned-then-mutated resolution (device id, observed scope,
+        // collector, session epoch, exporter axes) fails closed here
+        // rather than minting a grant for a different source.
+        if !resolution.is_resolver_attested()
+            || !resolution.attestation_covers_state()
+            || !resolution.may_update_authoritative_state()
+        {
             return None;
         }
         let device_id = resolution.device_id.clone()?;
@@ -282,7 +310,33 @@ impl AuthorityGrant {
         if resolution.observed.resolution_scope() != fact_scope {
             return None;
         }
-        Some(Self {
+        // Source-axis corroboration: the grant may only be issued for a
+        // fact whose observation source is the SAME source the
+        // resolution was produced from. `collector_id` and
+        // `session_epoch` must be established on the observed envelope
+        // and equal the fact's axes; a fact asserting an `exporter_id`
+        // must name the resolution's canonical exporter. `capture_id`
+        // and `sequence` have no resolution-side analogue — they remain
+        // grant-bound axes (post-issuance mutation breaks `binds()`)
+        // but cannot be independently corroborated here. This helper is
+        // eligibility evidence only: final authorization, freshness and
+        // projection policy remain with the trusted consumer boundary.
+        if resolution.observed.collector_id.as_deref() != Some(fact.source.collector_id.as_str()) {
+            return None;
+        }
+        if resolution.observed.session_epoch != Some(fact.source.session_epoch) {
+            return None;
+        }
+        if let Some(fact_exporter) = &fact.source.exporter_id
+            && resolution.canonical_exporter_id.as_deref() != Some(fact_exporter.as_str())
+        {
+            return None;
+        }
+        // The grant is issued for THIS sealed fact's semantic and
+        // evidence content, not just its identity axes: mutating
+        // `payload.fields` or `evidence` and resealing changes the
+        // digests bound below and breaks `binds()`.
+        let mut grant = Self {
             identity_status: resolution.status,
             resolved_device_id: resolution.device_id.clone(),
             resolved_exporter_id: resolution.canonical_exporter_id.clone(),
@@ -302,7 +356,10 @@ impl AuthorityGrant {
             sequence: fact.source.sequence,
             exporter_id: fact.source.exporter_id.clone(),
             attested: true,
-        })
+            attested_digest: None,
+        };
+        grant.attested_digest = Some(grant_content_digest(&grant, fact));
+        Some(grant)
     }
 
     /// Whether this grant was derived from a live trusted resolution in
@@ -316,6 +373,18 @@ impl AuthorityGrant {
     /// issuance breaks the binding.
     fn binds(&self, fact: &TypedFact) -> bool {
         use crate::telemetry_identity::DEFAULT_IDENTITY_SCOPE;
+        // An ATTESTED grant additionally re-verifies its issuance
+        // digest: bound axes plus the fact's semantic/evidence digests.
+        // Unattested (deserialized) grants carry no digest and fall back
+        // to axis comparison only — they confer no eligibility anyway.
+        if self.attested
+            && self
+                .attested_digest
+                .as_deref()
+                .is_none_or(|d| d != grant_content_digest(self, fact))
+        {
+            return false;
+        }
         self.subject_device_id == fact.subject.device_id
             && self
                 .subject_scope
@@ -400,8 +469,23 @@ impl<'de> Deserialize<'de> for AuthorityGrant {
             sequence: repr.sequence,
             exporter_id: repr.exporter_id,
             attested: false,
+            attested_digest: None,
         })
     }
+}
+
+/// Issuance digest for an attested [`AuthorityGrant`]: covers every
+/// bound axis the grant records (via its serde form, which excludes the
+/// private attestation fields) plus the fact's semantic and evidence
+/// content digests. Recomputed by `binds()` so post-issuance mutation
+/// of either side is detected.
+fn grant_content_digest(grant: &AuthorityGrant, fact: &TypedFact) -> String {
+    let body = serde_json::json!({
+        "grant": serde_json::to_value(grant).unwrap_or(Value::Null),
+        "payload_sha256": fact.payload_sha256,
+        "evidence_sha256": fact.evidence_sha256,
+    });
+    sha256_hex(canonical_json(&body).as_bytes())
 }
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -619,6 +703,7 @@ fn is_degraded_state(state: PayloadState) -> bool {
             | PayloadState::Unsupported
             | PayloadState::UnstructuredFallback
             | PayloadState::UnknownQuality
+            | PayloadState::CaptureFailed
     )
 }
 
@@ -1048,8 +1133,9 @@ mod tests {
             "administrative_state": {"state": "known", "value": "up"},
             "operational_state": {"state": "known", "value": "up"},
             "interface_type": {"state": "known", "value": "physical"},
+            "ifindex": {"state": "known", "value": 3},
             "mtu": {"state": "known", "value": 9216},
-            "speed_bps": {"state": "unknown"},
+            "speed": {"state": "unknown"},
             "mac_address": {"state": "unknown"},
         }));
         f.seal();
@@ -1078,7 +1164,13 @@ mod tests {
             created_by: "test".into(),
             updated_by: "test".into(),
         };
-        let observed = TelemetrySourceIdentity::observed("10.0.0.1").with_protocol("cli_ssh");
+        // The observed envelope must establish the same collector and
+        // session axes the sample fact asserts — for_fact now requires
+        // source-axis corroboration, not just device/scope identity.
+        let observed = TelemetrySourceIdentity::observed("10.0.0.1")
+            .with_protocol("cli_ssh")
+            .with_collector("collector-a")
+            .with_session_epoch(3);
         IdentityResolver::resolve(&observed, &[binding])
     }
 
@@ -1411,7 +1503,10 @@ mod tests {
             created_by: "t".into(),
             updated_by: "t".into(),
         };
-        let observed = TelemetrySourceIdentity::observed("10.0.0.9").with_protocol("cli_ssh");
+        let observed = TelemetrySourceIdentity::observed("10.0.0.9")
+            .with_protocol("cli_ssh")
+            .with_collector("collector-a")
+            .with_session_epoch(3);
         let res = IdentityResolver::resolve(&observed, std::slice::from_ref(&binding));
         assert_ne!(res.status, IdentityStatus::Resolved);
         assert!(AuthorityGrant::for_fact(&res, &fact).is_none());
@@ -1469,6 +1564,52 @@ mod tests {
             assert!(f.validate().is_err(), "mutated fact accepted grant");
             assert!(!f.authority_eligible());
         }
+    }
+
+    #[test]
+    fn grant_rejects_resolution_from_unrelated_source() {
+        // A genuine resolver-attested resolution produced from a
+        // DIFFERENT collector/session observation cannot mint a grant
+        // for this fact — device/scope identity alone is not enough.
+        let binding = TrustedBinding {
+            binding_id: "bind-src".into(),
+            scope: "default".into(),
+            protocol: "cli_ssh".into(),
+            exporter_id: "exp-1".into(),
+            device_id: "edge-rtr-01".into(),
+            match_transport: None,
+            match_reported_identity: None,
+            match_exporter_claim: None,
+            match_observation_domain: None,
+            match_ingress_credential: None,
+            provenance: BindingProvenance::OperatorProvisioned,
+            status: BindingStatus::Active,
+            created_at_ns: 0,
+            updated_at_ns: 0,
+            created_by: "t".into(),
+            updated_by: "t".into(),
+        };
+        for (collector, epoch) in [("collector-b", 3u64), ("collector-a", 9u64)] {
+            let observed = TelemetrySourceIdentity::observed("10.0.0.7")
+                .with_protocol("cli_ssh")
+                .with_collector(collector)
+                .with_session_epoch(epoch);
+            let res = IdentityResolver::resolve(&observed, std::slice::from_ref(&binding));
+            assert!(res.is_resolver_attested());
+            assert!(AuthorityGrant::for_fact(&res, &sample_fact()).is_none());
+        }
+        // A fact asserting a different exporter than the resolution's
+        // canonical exporter cannot reuse the grant either.
+        let res = resolver_resolution("edge-rtr-01");
+        let mut f = sample_fact();
+        f.source.exporter_id = Some("exp-9".into());
+        f.seal();
+        assert!(AuthorityGrant::for_fact(&res, &f).is_none());
+        // The canonical exporter id itself is accepted.
+        let mut f = sample_fact();
+        f.source.exporter_id = Some("exp-1".into());
+        f.seal();
+        assert!(AuthorityGrant::for_fact(&res, &f).is_some());
     }
 
     #[test]
@@ -1631,6 +1772,84 @@ mod tests {
         assert_eq!(fact.fact_kind, "bgp.neighbor.summary");
     }
 
+    /// One sealed fact per `PayloadState` variant — the ABI drift gate
+    /// artifact. Regenerate with:
+    ///   cargo test -p bonsai --lib typed_facts -- --ignored emit_state_fixtures
+    #[test]
+    #[ignore = "artifact generator; run explicitly to regenerate state fixtures"]
+    fn emit_state_fixtures() {
+        let states = [
+            PayloadState::Empty,
+            PayloadState::InvalidInput,
+            PayloadState::Unsupported,
+            PayloadState::UnstructuredFallback,
+            PayloadState::UnknownQuality,
+            PayloadState::CaptureFailed,
+        ];
+        let facts: Vec<Value> = states
+            .iter()
+            .map(|state| {
+                let mut f = sample_fact();
+                f.payload.fields = None;
+                f.payload.state = Some(*state);
+                // Degraded states cannot claim complete coverage.
+                f.quality.completeness = Completeness::Unknown;
+                f.seal();
+                serde_json::to_value(&f).unwrap()
+            })
+            .collect();
+        let doc = serde_json::json!({
+            "description": "One Rust-emitted TypedFact per PayloadState variant (BN-024-02 ABI drift gate). Each entry is a complete serialized v1 fact.",
+            "facts": facts,
+        });
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/bn024/typed-facts");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("v1.states.fixture.json"),
+            serde_json::to_string_pretty(&doc).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Every committed state fixture must deserialize, validate, and
+    /// cover EXACTLY the `PayloadState` variant set — a variant missing
+    /// from Rust, the fixture or (via the python schema gate) the JSON
+    /// schema is drift and fails here.
+    #[test]
+    fn committed_state_fixtures_cover_every_payload_state() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/bn024/typed-facts/v1.states.fixture.json");
+        let bytes = std::fs::read(&path).expect("state fixtures artifact missing");
+        let doc: Value = serde_json::from_slice(&bytes).expect("state fixtures not JSON");
+        let facts = doc["facts"].as_array().expect("facts array");
+        let mut seen: Vec<PayloadState> = Vec::new();
+        for entry in facts {
+            let fact = TypedFact::from_slice(
+                &serde_json::to_vec(entry).expect("state fixture entry serializable"),
+            )
+            .expect("state fixture must validate under v1 rules");
+            assert!(fact.payload.fields.is_none());
+            let state = fact.payload.state.expect("state fixture carries a state");
+            assert!(
+                !seen.contains(&state),
+                "duplicate state fixture for {state:?}"
+            );
+            seen.push(state);
+        }
+        let expected = [
+            PayloadState::Empty,
+            PayloadState::InvalidInput,
+            PayloadState::Unsupported,
+            PayloadState::UnstructuredFallback,
+            PayloadState::UnknownQuality,
+            PayloadState::CaptureFailed,
+        ];
+        assert_eq!(seen.len(), expected.len());
+        for state in expected {
+            assert!(seen.contains(&state), "missing state fixture for {state:?}");
+        }
+    }
+
     /// Property-style: lifecycle transitions are monotonic — once withdrawn
     /// or superseded, no further transition is permitted.
     #[test]
@@ -1642,5 +1861,166 @@ mod tests {
         let s = f.supersede("b".repeat(64), TS).unwrap();
         assert!(s.clone().withdraw("r", TS).is_err());
         assert!(s.supersede("c".repeat(64), TS).is_err());
+    }
+
+    // ── B2: attestation must bind the contents it attests ─────────────
+
+    /// A resolver-attested resolution whose PUBLIC evidence fields are
+    /// mutated after resolution must not mint a grant — the private
+    /// attestation flag alone cannot cover mutable contents.
+    #[test]
+    fn mutated_resolution_cannot_mint_grant() {
+        // Mutate the canonical device id to another device.
+        let mut res = resolver_resolution("edge-rtr-01");
+        assert!(res.is_resolver_attested());
+        res.device_id = Some("edge-rtr-02".into());
+        let mut fact_b = sample_fact();
+        fact_b.subject.device_id = "edge-rtr-02".into();
+        fact_b.seal();
+        assert!(AuthorityGrant::for_fact(&res, &fact_b).is_none());
+
+        // Mutate observed scope/collector/session/exporter axes so they
+        // corroborate a DIFFERENT fact's source.
+        let mut res = resolver_resolution("edge-rtr-01");
+        res.observed.collector_id = Some("collector-b".into());
+        res.observed.session_epoch = Some(9);
+        res.observed.scope = Some("tenant-x".into());
+        let mut fact = sample_fact();
+        fact.source.collector_id = "collector-b".into();
+        fact.source.session_epoch = 9;
+        fact.subject.scope = Some("tenant-x".into());
+        fact.seal();
+        assert!(AuthorityGrant::for_fact(&res, &fact).is_none());
+
+        // Mutate the resolution's canonical exporter id.
+        let mut res = resolver_resolution("edge-rtr-01");
+        res.canonical_exporter_id = Some("exp-other".into());
+        let mut fact = sample_fact();
+        fact.source.exporter_id = Some("exp-other".into());
+        fact.seal();
+        assert!(AuthorityGrant::for_fact(&res, &fact).is_none());
+
+        // Mutating an axis the grant path does not consult (observed
+        // transport address) still breaks the attestation.
+        let mut res = resolver_resolution("edge-rtr-01");
+        res.observed.transport_source = "10.9.9.9".into();
+        assert!(AuthorityGrant::for_fact(&res, &sample_fact()).is_none());
+    }
+
+    /// A cloned legitimate grant has public bound axes: mutating them
+    /// TOGETHER with the fact's matching axes and resealing must still
+    /// fail — the issuance digest covers both sides.
+    #[test]
+    fn consistent_grant_and_fact_mutation_still_fails() {
+        let res = resolver_resolution("edge-rtr-01");
+        let mut f = sample_fact();
+        f.trust = TrustClass::Corroborated;
+        f.authority = AuthorityGrant::for_fact(&res, &f);
+        f.seal();
+        assert!(f.authority_eligible());
+        let grant = f.authority.clone().unwrap();
+
+        // Move BOTH the grant's bound axes and the fact's axes to a
+        // different collector/capture consistently, then reseal.
+        let mut moved = sample_fact();
+        moved.trust = TrustClass::Corroborated;
+        moved.source.collector_id = "collector-b".into();
+        moved.source.capture_id = "cap-moved".into();
+        moved.seal();
+        let mut g = grant.clone();
+        g.collector_id = "collector-b".into();
+        g.capture_id = "cap-moved".into();
+        moved.authority = Some(g);
+        moved.seal();
+        assert!(
+            matches!(moved.validate(), Err(FactError::InvalidField("authority"))),
+            "mutated attested grant must fail validation"
+        );
+        assert!(!moved.authority_eligible());
+    }
+
+    /// Mutating the fact's semantic payload or evidence while keeping
+    /// the grant must break eligibility — the grant binds the fact's
+    /// payload/evidence digests, not just its identity axes.
+    #[test]
+    fn payload_or_evidence_mutation_breaks_grant() {
+        let res = resolver_resolution("edge-rtr-01");
+        for mutate in [
+            (|f: &mut TypedFact| {
+                f.payload.fields = Some(serde_json::json!({"neighbors": 99}));
+            }) as fn(&mut TypedFact),
+            (|f: &mut TypedFact| {
+                f.evidence = vec![EvidenceRef {
+                    kind: "raw_output".into(),
+                    sha256: "b".repeat(64),
+                    locator: None,
+                }];
+            }) as fn(&mut TypedFact),
+        ] {
+            let mut f = sample_fact();
+            f.trust = TrustClass::Corroborated;
+            f.authority = AuthorityGrant::for_fact(&res, &f);
+            f.seal();
+            assert!(f.authority_eligible());
+            mutate(&mut f);
+            f.seal(); // reseal so digests are self-consistent
+            assert!(
+                matches!(f.validate(), Err(FactError::InvalidField("authority"))),
+                "grant must not survive payload/evidence mutation"
+            );
+            assert!(!f.authority_eligible());
+        }
+    }
+
+    /// Authority cannot be derived from replayed/deserialized state:
+    /// a serialized grant loses attestation AND a mutated-then-
+    /// serialized resolution cannot exist (IdentityResolution is not
+    /// deserializable) — pin both boundaries.
+    #[test]
+    fn replayed_state_confers_no_authority() {
+        // Grant round-trip: axes survive, attestation does not.
+        let res = resolver_resolution("edge-rtr-01");
+        let mut f = sample_fact();
+        f.trust = TrustClass::Corroborated;
+        f.authority = AuthorityGrant::for_fact(&res, &f);
+        f.seal();
+        let back = TypedFact::from_slice(&f.to_vec().unwrap()).unwrap();
+        assert!(back.authority.is_some());
+        assert!(!back.authority_eligible());
+
+        // A resolution produced for capture/session A cannot mint for
+        // an unrelated capture/session B even when device+scope match.
+        let binding = TrustedBinding {
+            binding_id: "bind-replay".into(),
+            scope: "default".into(),
+            protocol: "cli_ssh".into(),
+            exporter_id: "exp-1".into(),
+            device_id: "edge-rtr-01".into(),
+            match_transport: None,
+            match_reported_identity: None,
+            match_exporter_claim: None,
+            match_observation_domain: None,
+            match_ingress_credential: None,
+            provenance: BindingProvenance::OperatorProvisioned,
+            status: BindingStatus::Active,
+            created_at_ns: 0,
+            updated_at_ns: 0,
+            created_by: "t".into(),
+            updated_by: "t".into(),
+        };
+        let observed_a = TelemetrySourceIdentity::observed("10.0.0.1")
+            .with_protocol("cli_ssh")
+            .with_collector("collector-a")
+            .with_session_epoch(3);
+        let res_a = IdentityResolver::resolve(&observed_a, std::slice::from_ref(&binding));
+        let mut fact_b = sample_fact();
+        fact_b.source.capture_id = "cap-unrelated".into();
+        fact_b.source.session_epoch = 77;
+        fact_b.seal();
+        // for_fact corroborates collector+epoch against the observed
+        // envelope; capture_id/sequence are bind-time axes only, so the
+        // grant is issuable — but it binds THIS fact's axes, and any
+        // later reuse for another capture breaks binds().
+        assert!(AuthorityGrant::for_fact(&res_a, &fact_b).is_none());
     }
 }

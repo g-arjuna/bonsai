@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover
 REPO = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = REPO / "docs/bn024/typed-facts/v1.schema.json"
 FIXTURE_PATH = REPO / "docs/bn024/typed-facts/v1.fixture.json"
+STATES_FIXTURE_PATH = REPO / "docs/bn024/typed-facts/v1.states.fixture.json"
 
 requires_jsonschema = pytest.mark.skipif(
     jsonschema is None, reason="jsonschema package not installed"
@@ -43,6 +44,31 @@ def fixture() -> dict:
 @requires_jsonschema
 def test_committed_fixture_validates_against_schema(schema, fixture) -> None:
     jsonschema.validate(fixture, schema)
+
+
+@requires_jsonschema
+def test_every_payload_state_fixture_validates_against_schema(schema) -> None:
+    """B1 ABI drift gate: v1.states.fixture.json is emitted by Rust
+    (typed_facts::tests::emit_state_fixtures) with one fact per
+    PayloadState variant. Every entry must validate against the schema,
+    and the covered state set must equal the schema enum exactly — a
+    Rust variant missing from the schema (e.g. capture_failed before
+    the fix) or a schema value Rust never emits is drift."""
+    doc = json.loads(STATES_FIXTURE_PATH.read_text())
+    facts = doc["facts"]
+    states = set()
+    for fact in facts:
+        jsonschema.validate(fact, schema)
+        state = fact["payload"].get("state")
+        assert state is not None, "state fixture must carry payload.state"
+        assert "fields" not in fact["payload"], (
+            "state fixture must not carry typed fields"
+        )
+        states.add(state)
+    schema_states = set(schema["properties"]["payload"]["properties"]["state"]["enum"])
+    assert states == schema_states, (
+        f"payload-state drift: fixtures={sorted(states)} schema={sorted(schema_states)}"
+    )
 
 
 @requires_jsonschema

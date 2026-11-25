@@ -21,6 +21,7 @@
 //!   constitute a trusted identity by themselves.
 
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
 
 /// Confidence/trust state of a source-identity resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -400,6 +401,15 @@ pub struct IdentityResolution {
     /// by serde so a resolution restored from stored data is unattested.
     #[serde(skip)]
     resolver_attested: bool,
+    /// Content digest captured at attestation time over the resolution's
+    /// full serialized evidence (status, canonical ids, binding id,
+    /// provenance and the observed envelope). The public fields remain
+    /// mutable for evidence inspection, but ANY post-attestation
+    /// mutation changes the serialization and fails
+    /// [`Self::attestation_covers_state`] — a private boolean alone
+    /// cannot attest mutable contents. Skipped by serde like the flag.
+    #[serde(skip)]
+    attested_digest: Option<String>,
 }
 
 impl IdentityResolution {
@@ -415,6 +425,7 @@ impl IdentityResolution {
             provenance: None,
             observed,
             resolver_attested: false,
+            attested_digest: None,
         }
     }
 
@@ -423,6 +434,29 @@ impl IdentityResolution {
     /// resolutions may feed authority-granting paths.
     pub fn is_resolver_attested(&self) -> bool {
         self.resolver_attested
+    }
+
+    /// Whether the attestation still covers the CURRENT field values.
+    /// Recomputes the digest captured at resolution time over the
+    /// serialized evidence; any mutation of `status`, canonical ids,
+    /// `binding_id`, `provenance` or the `observed` envelope after
+    /// resolution — including via `Clone` — breaks the match. Unattested
+    /// resolutions always return `false`.
+    pub fn attestation_covers_state(&self) -> bool {
+        if !self.resolver_attested {
+            return false;
+        }
+        let Some(expected) = &self.attested_digest else {
+            return false;
+        };
+        let current = serde_json::to_vec(self)
+            .map(|b| {
+                let mut h = sha2::Sha256::new();
+                sha2::Digest::update(&mut h, &b);
+                format!("{:x}", sha2::Digest::finalize(h))
+            })
+            .unwrap_or_default();
+        *expected == current
     }
 
     /// Whether this resolution may drive authoritative device state.
@@ -561,7 +595,7 @@ impl IdentityResolver {
         // Only a unique binding-backed Resolved outcome is attested;
         // every other status (and every hand-built value) is not.
         let resolver_attested = status == IdentityStatus::Resolved && binding_id.is_some();
-        IdentityResolution {
+        let mut resolution = IdentityResolution {
             status,
             device_id,
             canonical_exporter_id,
@@ -569,7 +603,19 @@ impl IdentityResolver {
             provenance,
             observed: observed.clone(),
             resolver_attested,
+            attested_digest: None,
+        };
+        if resolver_attested {
+            // Bind the attestation to the exact evidence it covers:
+            // serde skips both private flags, so the digest covers every
+            // public field. Post-attestation mutation is detectable.
+            if let Ok(b) = serde_json::to_vec(&resolution) {
+                let mut h = sha2::Sha256::new();
+                sha2::Digest::update(&mut h, &b);
+                resolution.attested_digest = Some(format!("{:x}", sha2::Digest::finalize(h)));
+            }
         }
+        resolution
     }
 }
 

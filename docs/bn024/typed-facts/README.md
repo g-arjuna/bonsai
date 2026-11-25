@@ -27,7 +27,12 @@ extension seam on this stable schema.
 
 - `payload.fields: None` requires `payload.state` ∈ {`empty`,
   `invalid_input`, `unsupported`, `unstructured_fallback`,
-  `unknown_quality`}; `fields` and `state` are mutually exclusive.
+  `unknown_quality`, `capture_failed`}; `fields` and `state` are
+  mutually exclusive. `v1.states.fixture.json` carries one Rust-emitted
+  fact per `PayloadState` variant and is the drift gate: the schema
+  enum, the fixture set and `PayloadState` must agree exactly
+  (`tests/test_bn024_typed_facts.py` fails if `jsonschema` is absent —
+  ABI validation never silently skips).
 - `quality.completeness` ∈ {`complete`, `partial`, `unknown`} — unknown is
   representable, not an error.
 - `valid_from`/`valid_until` absent means *unknown validity*, not infinite.

@@ -1,0 +1,257 @@
+{
+  "description": "One Rust-emitted TypedFact per PayloadState variant (BN-024-02 ABI drift gate). Each entry is a complete serialized v1 fact.",
+  "facts": [
+    {
+      "evidence": [
+        {
+          "kind": "raw_output",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "evidence_sha256": "bb86d8bcd002979b443e57c0cc30bcef8e6239ca4b81cafdaf52be63e0e3ce49",
+      "fact_id": "b4e218766b2e97182aa267101e9893715ffdb37990312632ff2704f1d654e2dd",
+      "fact_kind": "bgp.neighbor.summary",
+      "ingested_at": "2026-11-24T10:00:01Z",
+      "lifecycle": "active",
+      "observed_at": "2026-11-24T10:00:00Z",
+      "payload": {
+        "mapping_revision": "bn024-map-1",
+        "parser_revision": "genie-parser-26.10",
+        "produced_by": "genie",
+        "state": "empty"
+      },
+      "payload_sha256": "0e1a4b282e42f595f5bdf6ed8eb97ac469a8c118a0af8806cad6e36888f302ac",
+      "quality": {
+        "completeness": "unknown"
+      },
+      "schema_version": 1,
+      "source": {
+        "capture_id": "cap-0001",
+        "collector_id": "collector-a",
+        "sequence": 42,
+        "session_epoch": 3,
+        "source_kind": "cli_ssh"
+      },
+      "subject": {
+        "afi_safi": "ipv4-unicast",
+        "device_id": "edge-rtr-01",
+        "entity": "10.0.0.2",
+        "namespace": "routing",
+        "plane": "operational",
+        "vrf": "default"
+      },
+      "trust": "device_asserted",
+      "valid_from": "2026-11-24T09:59:00Z"
+    },
+    {
+      "evidence": [
+        {
+          "kind": "raw_output",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "evidence_sha256": "bb86d8bcd002979b443e57c0cc30bcef8e6239ca4b81cafdaf52be63e0e3ce49",
+      "fact_id": "7d1b7f28eec6f2215e840ed0f2af5214cab4f0dbf4b97b60804164b149ee633e",
+      "fact_kind": "bgp.neighbor.summary",
+      "ingested_at": "2026-11-24T10:00:01Z",
+      "lifecycle": "active",
+      "observed_at": "2026-11-24T10:00:00Z",
+      "payload": {
+        "mapping_revision": "bn024-map-1",
+        "parser_revision": "genie-parser-26.10",
+        "produced_by": "genie",
+        "state": "invalid_input"
+      },
+      "payload_sha256": "269ae28d5e4357c917d4c89c727b4131cc76618bd519b557c97d81ed22833ab3",
+      "quality": {
+        "completeness": "unknown"
+      },
+      "schema_version": 1,
+      "source": {
+        "capture_id": "cap-0001",
+        "collector_id": "collector-a",
+        "sequence": 42,
+        "session_epoch": 3,
+        "source_kind": "cli_ssh"
+      },
+      "subject": {
+        "afi_safi": "ipv4-unicast",
+        "device_id": "edge-rtr-01",
+        "entity": "10.0.0.2",
+        "namespace": "routing",
+        "plane": "operational",
+        "vrf": "default"
+      },
+      "trust": "device_asserted",
+      "valid_from": "2026-11-24T09:59:00Z"
+    },
+    {
+      "evidence": [
+        {
+          "kind": "raw_output",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "evidence_sha256": "bb86d8bcd002979b443e57c0cc30bcef8e6239ca4b81cafdaf52be63e0e3ce49",
+      "fact_id": "50a2e1052cbf31aac9225c372b495fd2a2dec40fb0e69384bbb4a7d21ef65a97",
+      "fact_kind": "bgp.neighbor.summary",
+      "ingested_at": "2026-11-24T10:00:01Z",
+      "lifecycle": "active",
+      "observed_at": "2026-11-24T10:00:00Z",
+      "payload": {
+        "mapping_revision": "bn024-map-1",
+        "parser_revision": "genie-parser-26.10",
+        "produced_by": "genie",
+        "state": "unsupported"
+      },
+      "payload_sha256": "0d3c4f51e6ab43dea6ecea8b10aee8bf3a0138095fd4a6b82be7db3f3289ad52",
+      "quality": {
+        "completeness": "unknown"
+      },
+      "schema_version": 1,
+      "source": {
+        "capture_id": "cap-0001",
+        "collector_id": "collector-a",
+        "sequence": 42,
+        "session_epoch": 3,
+        "source_kind": "cli_ssh"
+      },
+      "subject": {
+        "afi_safi": "ipv4-unicast",
+        "device_id": "edge-rtr-01",
+        "entity": "10.0.0.2",
+        "namespace": "routing",
+        "plane": "operational",
+        "vrf": "default"
+      },
+      "trust": "device_asserted",
+      "valid_from": "2026-11-24T09:59:00Z"
+    },
+    {
+      "evidence": [
+        {
+          "kind": "raw_output",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "evidence_sha256": "bb86d8bcd002979b443e57c0cc30bcef8e6239ca4b81cafdaf52be63e0e3ce49",
+      "fact_id": "29543798617998bba5ff7b66e74bc4dcfc290d52ed2e0b74097a6302dbd1dffa",
+      "fact_kind": "bgp.neighbor.summary",
+      "ingested_at": "2026-11-24T10:00:01Z",
+      "lifecycle": "active",
+      "observed_at": "2026-11-24T10:00:00Z",
+      "payload": {
+        "mapping_revision": "bn024-map-1",
+        "parser_revision": "genie-parser-26.10",
+        "produced_by": "genie",
+        "state": "unstructured_fallback"
+      },
+      "payload_sha256": "e4738aa935944769832b260d7ccaec76fd091dbc7664c096678f20fdda97043b",
+      "quality": {
+        "completeness": "unknown"
+      },
+      "schema_version": 1,
+      "source": {
+        "capture_id": "cap-0001",
+        "collector_id": "collector-a",
+        "sequence": 42,
+        "session_epoch": 3,
+        "source_kind": "cli_ssh"
+      },
+      "subject": {
+        "afi_safi": "ipv4-unicast",
+        "device_id": "edge-rtr-01",
+        "entity": "10.0.0.2",
+        "namespace": "routing",
+        "plane": "operational",
+        "vrf": "default"
+      },
+      "trust": "device_asserted",
+      "valid_from": "2026-11-24T09:59:00Z"
+    },
+    {
+      "evidence": [
+        {
+          "kind": "raw_output",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "evidence_sha256": "bb86d8bcd002979b443e57c0cc30bcef8e6239ca4b81cafdaf52be63e0e3ce49",
+      "fact_id": "386c409376514227d7fa2c3a8a17c5f0db044b20134c12179e67cce41f9e1c35",
+      "fact_kind": "bgp.neighbor.summary",
+      "ingested_at": "2026-11-24T10:00:01Z",
+      "lifecycle": "active",
+      "observed_at": "2026-11-24T10:00:00Z",
+      "payload": {
+        "mapping_revision": "bn024-map-1",
+        "parser_revision": "genie-parser-26.10",
+        "produced_by": "genie",
+        "state": "unknown_quality"
+      },
+      "payload_sha256": "65711607be195a4d780ed0644671497becbfeb44f252bae44abc74f5def081b0",
+      "quality": {
+        "completeness": "unknown"
+      },
+      "schema_version": 1,
+      "source": {
+        "capture_id": "cap-0001",
+        "collector_id": "collector-a",
+        "sequence": 42,
+        "session_epoch": 3,
+        "source_kind": "cli_ssh"
+      },
+      "subject": {
+        "afi_safi": "ipv4-unicast",
+        "device_id": "edge-rtr-01",
+        "entity": "10.0.0.2",
+        "namespace": "routing",
+        "plane": "operational",
+        "vrf": "default"
+      },
+      "trust": "device_asserted",
+      "valid_from": "2026-11-24T09:59:00Z"
+    },
+    {
+      "evidence": [
+        {
+          "kind": "raw_output",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "evidence_sha256": "bb86d8bcd002979b443e57c0cc30bcef8e6239ca4b81cafdaf52be63e0e3ce49",
+      "fact_id": "90def1051aaf080ebd25b0b92b34911fad29db92f373648be0916175250eb316",
+      "fact_kind": "bgp.neighbor.summary",
+      "ingested_at": "2026-11-24T10:00:01Z",
+      "lifecycle": "active",
+      "observed_at": "2026-11-24T10:00:00Z",
+      "payload": {
+        "mapping_revision": "bn024-map-1",
+        "parser_revision": "genie-parser-26.10",
+        "produced_by": "genie",
+        "state": "capture_failed"
+      },
+      "payload_sha256": "ab57a768260a32f263684bb67f39599d7e984c242750f0aa9c8c7f625b74b0e2",
+      "quality": {
+        "completeness": "unknown"
+      },
+      "schema_version": 1,
+      "source": {
+        "capture_id": "cap-0001",
+        "collector_id": "collector-a",
+        "sequence": 42,
+        "session_epoch": 3,
+        "source_kind": "cli_ssh"
+      },
+      "subject": {
+        "afi_safi": "ipv4-unicast",
+        "device_id": "edge-rtr-01",
+        "entity": "10.0.0.2",
+        "namespace": "routing",
+        "plane": "operational",
+        "vrf": "default"
+      },
+      "trust": "device_asserted",
+      "valid_from": "2026-11-24T09:59:00Z"
+    }
+  ]
+}

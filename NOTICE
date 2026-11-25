@@ -18,3 +18,16 @@ rbmp-mrt, bmppy, rbmp-server.
 Bonsai-only additions: UI, inventory, configuration, authentication,
 src/routing_service orchestration, graph projection, remediation/assurance
 executor, and all src/ product code.
+
+Third-party test fixture:
+
+This repository includes test fixture data derived from SuzieQ OSS
+(https://github.com/netenglabs/suzieq), licensed under the Apache
+License 2.0. The upstream LICENSE text is vendored verbatim at
+tests/fixtures/bn024/interface-cumulus/LICENSE.apache-2.0.
+Pinned upstream revision:
+75198b5585ebef91f0659b6b1ec3c964cc2cd1ad.
+Upstream source file: tests/integration/texttfsm/input/cl_interfaces.txt,
+split into per-command fixture files (see
+tests/fixtures/bn024/interface-cumulus/PROVENANCE.md for hashes and
+modification details).
