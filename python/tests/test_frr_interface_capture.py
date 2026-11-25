@@ -66,6 +66,10 @@ class FakeChannel:
     def exit_status_ready(self):
         return not self.stdout_chunks and not self.stderr_chunks
 
+    @property
+    def eof_received(self):
+        return not self.stdout_chunks and not self.stderr_chunks
+
     def recv_exit_status(self):
         return self.status
 
