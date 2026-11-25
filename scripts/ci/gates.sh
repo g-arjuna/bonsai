@@ -212,6 +212,7 @@ L2_INTEGRATION_TESTS="
   bn022_auth_storage
   bn022_auth_closure
   bn022_sec19_sec20
+  bn02404_native_interface_api
   m3_syslog_tcp_availability
   gnmi_selective_acquisition
   gnmi_security_connectivity

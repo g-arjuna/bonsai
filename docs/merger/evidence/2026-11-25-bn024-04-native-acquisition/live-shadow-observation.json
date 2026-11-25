@@ -1,0 +1,597 @@
+{
+  "observation_id": "native-frr-interface-ad229bfde19336aa8ccebe24ed8059028115b4f8c81010cf0a152a9f05a2b878",
+  "device_address": "172.100.208.12",
+  "device_id": "containerlab:clab-bonsai-bn003-vrf-frr2",
+  "captured_at_ns": 1795618117021787388,
+  "capture_started_at_ns": 1795618116566415074,
+  "captured_at": "2026-11-25T14:48:37.021Z",
+  "transport": "verified_ssh_read_only_cli",
+  "acquisition_contract": "frr_vtysh_show_interface_json",
+  "interface_command": "vtysh -c 'show interface json'",
+  "version_command": "vtysh -c 'show version json'",
+  "host_key": {
+    "algorithm": "ssh-ed25519",
+    "sha256": "SHA256:w/HyErTm6v1GknV7Mcae7K5xUMVnIVDvlFE5TfSoT1E"
+  },
+  "platform": "frr",
+  "release_raw": "10.6.1_git",
+  "release_build": "quay.io/frrouting/frr@sha256:813497af103e972600f6161012b3bf2a2a1c5ea10d09cd1eacd74f1dc510a57b",
+  "network_namespace": "default",
+  "network_namespace_evidence": "fixed verified SSH session in device default network namespace; no namespace override",
+  "device_hostname_reported": "frr2",
+  "interface_output_sha256": "b61b12df7142a9fcfacb4718eb9fc2b3210cd91a68122a87254dd093855c489a",
+  "interface_output_bytes": 2796,
+  "raw_interface_json": "{\n  \"eth0\":{\n    \"administrativeStatus\":\"up\",\n    \"operationalStatus\":\"up\",\n    \"linkDetection\":true,\n    \"linkUps\":0,\n    \"linkDowns\":0,\n    \"vrfName\":\"default\",\n    \"mplsEnabled\":false,\n    \"linkDown\":false,\n    \"linkDownV6\":false,\n    \"mcForwardingV4\":false,\n    \"mcForwardingV6\":false,\n    \"bgpRAConfigured\":false,\n    \"multicastConfig\":\"Not specified by CLI\",\n    \"shutdownConfig\":\"Not specified by CLI\",\n    \"mplsConfig\":\"Not specified by CLI\",\n    \"speedChecked\":1,\n    \"pseudoInterface\":false,\n    \"index\":2,\n    \"metric\":0,\n    \"mtu\":1500,\n    \"speed\":10000,\n    \"txqlen\":0,\n    \"flags\":\"<UP,LOWER_UP,BROADCAST,RUNNING,MULTICAST>\",\n    \"type\":\"Ethernet\",\n    \"hardwareAddress\":\"6e:5b:f7:50:04:e3\",\n    \"ipAddresses\":[\n      {\n        \"address\":\"172.100.208.12/24\",\n        \"secondary\":false,\n        \"noPrefixRoute\":false,\n        \"unnumbered\":false\n      }\n    ],\n    \"interfaceType\":\"VETH\",\n    \"interfaceSlaveType\":\"None\",\n    \"lacpBypass\":false,\n    \"evpnMh\":{},\n    \"protodown\":\"off\",\n    \"parentIfindex\":21\n  },\n  \"eth1\":{\n    \"administrativeStatus\":\"down\",\n    \"linkUps\":0,\n    \"linkDowns\":0,\n    \"vrfName\":\"default\",\n    \"description\":\"to-frr1-global\",\n    \"mplsEnabled\":false,\n    \"linkDown\":false,\n    \"linkDownV6\":false,\n    \"mcForwardingV4\":false,\n    \"mcForwardingV6\":false,\n    \"bgpRAConfigured\":false,\n    \"multicastConfig\":\"Not specified by CLI\",\n    \"shutdownConfig\":\"Not specified by CLI\",\n    \"mplsConfig\":\"Not specified by CLI\",\n    \"speedChecked\":1,\n    \"pseudoInterface\":true\n  },\n  \"eth2\":{\n    \"administrativeStatus\":\"down\",\n    \"linkUps\":0,\n    \"linkDowns\":0,\n    \"vrfName\":\"default\",\n    \"description\":\"to-frr1-vrf\",\n    \"mplsEnabled\":false,\n    \"linkDown\":false,\n    \"linkDownV6\":false,\n    \"mcForwardingV4\":false,\n    \"mcForwardingV6\":false,\n    \"bgpRAConfigured\":false,\n    \"multicastConfig\":\"Not specified by CLI\",\n    \"shutdownConfig\":\"Not specified by CLI\",\n    \"mplsConfig\":\"Not specified by CLI\",\n    \"speedChecked\":1,\n    \"pseudoInterface\":true\n  },\n  \"lo\":{\n    \"administrativeStatus\":\"up\",\n    \"operationalStatus\":\"up\",\n    \"linkDetection\":true,\n    \"linkUps\":0,\n    \"linkDowns\":0,\n    \"vrfName\":\"default\",\n    \"mplsEnabled\":false,\n    \"linkDown\":false,\n    \"linkDownV6\":false,\n    \"mcForwardingV4\":false,\n    \"mcForwardingV6\":false,\n    \"bgpRAConfigured\":false,\n    \"multicastConfig\":\"Not specified by CLI\",\n    \"shutdownConfig\":\"Not specified by CLI\",\n    \"mplsConfig\":\"Not specified by CLI\",\n    \"speedChecked\":1,\n    \"pseudoInterface\":false,\n    \"index\":1,\n    \"metric\":0,\n    \"mtu\":65536,\n    \"speed\":0,\n    \"txqlen\":1000,\n    \"flags\":\"<UP,LOWER_UP,LOOPBACK,RUNNING>\",\n    \"type\":\"Loopback\",\n    \"ipAddresses\":[],\n    \"interfaceType\":\"Other\",\n    \"interfaceSlaveType\":\"None\",\n    \"lacpBypass\":false,\n    \"evpnMh\":{},\n    \"protodown\":\"off\"\n  }\n}\n",
+  "raw_output_omitted_reason": null,
+  "profile_id": "frr-10.6.1-structured-interfaces",
+  "profile_fingerprint": "105562de981a1c5e8bebac7bd9ddca8960b18eab92113579a3d665f834c6a7eb",
+  "normalizer_id": "interface_frr_json_normalizer",
+  "normalizer_revision": "frr-iface-json-2026.11-r2",
+  "mapping_revision": "bn024-iface-map-3",
+  "qualification": "Qualified",
+  "shadow_only": true,
+  "capture_id": "frr-interface-capture-1795618117021787388",
+  "session_epoch": 1795618116566415074,
+  "sequence": 1,
+  "facts_emitted": 4,
+  "facts_validated": 4,
+  "facts_retained": 4,
+  "fact_retention_truncated": false,
+  "facts": [
+    {
+      "evidence": [
+        {
+          "kind": "raw_output_frr_show_interface_json",
+          "sha256": "b61b12df7142a9fcfacb4718eb9fc2b3210cd91a68122a87254dd093855c489a"
+        }
+      ],
+      "evidence_sha256": "bba3418ff163a60831e93a2bede135fc4c86f632559c76e24e259ac8527e7fa1",
+      "fact_id": "5592f7b4934bf16fb2cbaad8f7bf3446e860f0d9e41ff96a46bedf92e65a03bd",
+      "fact_kind": "interface.state",
+      "lifecycle": "active",
+      "observed_at": "2026-11-25T14:48:37.021Z",
+      "payload": {
+        "fields": {
+          "administrative_state": {
+            "state": "known",
+            "value": "up"
+          },
+          "ifindex": {
+            "state": "known",
+            "value": 2
+          },
+          "interface_name": "eth0",
+          "interface_type": {
+            "state": "known",
+            "value": "physical"
+          },
+          "ip_addresses": {
+            "state": "known",
+            "value": [
+              "172.100.208.12/24"
+            ]
+          },
+          "ipv6_addresses": {
+            "state": "known",
+            "value": []
+          },
+          "mac_address": {
+            "state": "known",
+            "value": "6e:5b:f7:50:04:e3"
+          },
+          "mtu": {
+            "state": "known",
+            "value": 1500
+          },
+          "operational_state": {
+            "state": "known",
+            "value": "up"
+          },
+          "parent_relationship": {
+            "kind": "unresolved",
+            "target": "ifindex:21"
+          },
+          "speed": {
+            "state": "known",
+            "value": {
+              "unit": "megabits_per_second",
+              "value": 10000
+            }
+          }
+        },
+        "mapping_revision": "bn024-iface-map-3",
+        "parser_revision": "frr-iface-json-2026.11-r2",
+        "produced_by": "native_frr_structured"
+      },
+      "payload_sha256": "d04567039ab55c5af6f76e674952c714119ba97cc26104f6e713069e18156404",
+      "quality": {
+        "completeness": "partial",
+        "notes": [
+          "parent reference target 'ifindex:21' is not an eligible interface in this observation; relationship unresolved",
+          "interfaceType detail 'VETH' decoded as zebra interface detail; canonical type uses the FRR type field"
+        ]
+      },
+      "schema_version": 1,
+      "source": {
+        "capture_id": "frr-interface-capture-1795618117021787388",
+        "collector_id": "bn02404-live-test",
+        "sequence": 1,
+        "session_epoch": 1795618116566415074,
+        "source_kind": "cli_ssh_structured"
+      },
+      "subject": {
+        "device_id": "containerlab:clab-bonsai-bn003-vrf-frr2",
+        "entity": "eth0",
+        "namespace": "interface",
+        "network_namespace": "default",
+        "plane": "operational",
+        "vrf": "default"
+      },
+      "trust": "device_asserted"
+    },
+    {
+      "evidence": [
+        {
+          "kind": "raw_output_frr_show_interface_json",
+          "sha256": "b61b12df7142a9fcfacb4718eb9fc2b3210cd91a68122a87254dd093855c489a"
+        }
+      ],
+      "evidence_sha256": "bba3418ff163a60831e93a2bede135fc4c86f632559c76e24e259ac8527e7fa1",
+      "fact_id": "ed15f8d0f4414d2ea80739f930f5750b4b374008d436bece4ca8508d6aab4695",
+      "fact_kind": "interface.state",
+      "lifecycle": "active",
+      "observed_at": "2026-11-25T14:48:37.021Z",
+      "payload": {
+        "fields": {
+          "administrative_state": {
+            "state": "known",
+            "value": "down"
+          },
+          "description": "to-frr1-global",
+          "ifindex": {
+            "detail": "ifindex not observed",
+            "state": "unknown"
+          },
+          "interface_name": "eth1",
+          "interface_type": {
+            "detail": "interface type not observed",
+            "state": "unknown"
+          },
+          "ip_addresses": {
+            "detail": "no ipv4 observed",
+            "state": "unknown"
+          },
+          "ipv6_addresses": {
+            "detail": "no ipv6 observed",
+            "state": "unknown"
+          },
+          "mac_address": {
+            "detail": "macaddr not observed",
+            "state": "unknown"
+          },
+          "mtu": {
+            "detail": "mtu not observed",
+            "state": "unknown"
+          },
+          "operational_state": {
+            "detail": "operationalStatus not observed",
+            "state": "unknown"
+          },
+          "speed": {
+            "detail": "speed not observed",
+            "state": "unknown"
+          }
+        },
+        "mapping_revision": "bn024-iface-map-3",
+        "parser_revision": "frr-iface-json-2026.11-r2",
+        "produced_by": "native_frr_structured"
+      },
+      "payload_sha256": "30039dbb8772aa3e2c8b89db2ff9a693af653e9820f79bfb92905579819c423f",
+      "quality": {
+        "completeness": "complete",
+        "notes": [
+          "pseudo-interface record has partial operational detail"
+        ]
+      },
+      "schema_version": 1,
+      "source": {
+        "capture_id": "frr-interface-capture-1795618117021787388",
+        "collector_id": "bn02404-live-test",
+        "sequence": 1,
+        "session_epoch": 1795618116566415074,
+        "source_kind": "cli_ssh_structured"
+      },
+      "subject": {
+        "device_id": "containerlab:clab-bonsai-bn003-vrf-frr2",
+        "entity": "eth1",
+        "namespace": "interface",
+        "network_namespace": "default",
+        "plane": "operational",
+        "vrf": "default"
+      },
+      "trust": "device_asserted"
+    },
+    {
+      "evidence": [
+        {
+          "kind": "raw_output_frr_show_interface_json",
+          "sha256": "b61b12df7142a9fcfacb4718eb9fc2b3210cd91a68122a87254dd093855c489a"
+        }
+      ],
+      "evidence_sha256": "bba3418ff163a60831e93a2bede135fc4c86f632559c76e24e259ac8527e7fa1",
+      "fact_id": "0c6d6b447f452af23bd144713e7582f467768fb0c1d9dea753a1a735c26c8104",
+      "fact_kind": "interface.state",
+      "lifecycle": "active",
+      "observed_at": "2026-11-25T14:48:37.021Z",
+      "payload": {
+        "fields": {
+          "administrative_state": {
+            "state": "known",
+            "value": "down"
+          },
+          "description": "to-frr1-vrf",
+          "ifindex": {
+            "detail": "ifindex not observed",
+            "state": "unknown"
+          },
+          "interface_name": "eth2",
+          "interface_type": {
+            "detail": "interface type not observed",
+            "state": "unknown"
+          },
+          "ip_addresses": {
+            "detail": "no ipv4 observed",
+            "state": "unknown"
+          },
+          "ipv6_addresses": {
+            "detail": "no ipv6 observed",
+            "state": "unknown"
+          },
+          "mac_address": {
+            "detail": "macaddr not observed",
+            "state": "unknown"
+          },
+          "mtu": {
+            "detail": "mtu not observed",
+            "state": "unknown"
+          },
+          "operational_state": {
+            "detail": "operationalStatus not observed",
+            "state": "unknown"
+          },
+          "speed": {
+            "detail": "speed not observed",
+            "state": "unknown"
+          }
+        },
+        "mapping_revision": "bn024-iface-map-3",
+        "parser_revision": "frr-iface-json-2026.11-r2",
+        "produced_by": "native_frr_structured"
+      },
+      "payload_sha256": "d5f5d4a0d410437a3109f79e493fc8d9d9c8ae92ed43d446d85573c2679466c3",
+      "quality": {
+        "completeness": "complete",
+        "notes": [
+          "pseudo-interface record has partial operational detail"
+        ]
+      },
+      "schema_version": 1,
+      "source": {
+        "capture_id": "frr-interface-capture-1795618117021787388",
+        "collector_id": "bn02404-live-test",
+        "sequence": 1,
+        "session_epoch": 1795618116566415074,
+        "source_kind": "cli_ssh_structured"
+      },
+      "subject": {
+        "device_id": "containerlab:clab-bonsai-bn003-vrf-frr2",
+        "entity": "eth2",
+        "namespace": "interface",
+        "network_namespace": "default",
+        "plane": "operational",
+        "vrf": "default"
+      },
+      "trust": "device_asserted"
+    },
+    {
+      "evidence": [
+        {
+          "kind": "raw_output_frr_show_interface_json",
+          "sha256": "b61b12df7142a9fcfacb4718eb9fc2b3210cd91a68122a87254dd093855c489a"
+        }
+      ],
+      "evidence_sha256": "bba3418ff163a60831e93a2bede135fc4c86f632559c76e24e259ac8527e7fa1",
+      "fact_id": "08e4ee1dad583ab0befc6b4223d78d72daaad7a4ea36e63adf6f9fd185dee036",
+      "fact_kind": "interface.state",
+      "lifecycle": "active",
+      "observed_at": "2026-11-25T14:48:37.021Z",
+      "payload": {
+        "fields": {
+          "administrative_state": {
+            "state": "known",
+            "value": "up"
+          },
+          "ifindex": {
+            "state": "known",
+            "value": 1
+          },
+          "interface_name": "lo",
+          "interface_type": {
+            "state": "known",
+            "value": "loopback"
+          },
+          "ip_addresses": {
+            "state": "known",
+            "value": []
+          },
+          "ipv6_addresses": {
+            "state": "known",
+            "value": []
+          },
+          "mac_address": {
+            "detail": "macaddr not observed",
+            "state": "unknown"
+          },
+          "mtu": {
+            "state": "known",
+            "value": 65536
+          },
+          "operational_state": {
+            "state": "known",
+            "value": "up"
+          },
+          "speed": {
+            "detail": "device reported no speed",
+            "state": "unknown"
+          }
+        },
+        "mapping_revision": "bn024-iface-map-3",
+        "parser_revision": "frr-iface-json-2026.11-r2",
+        "produced_by": "native_frr_structured"
+      },
+      "payload_sha256": "16022dd2450ad32931d42dea42abb11d85fd9993b5e116e6e4e86ff461c2deaa",
+      "quality": {
+        "completeness": "complete",
+        "notes": [
+          "interfaceType detail 'Other' decoded as zebra interface detail; canonical type uses the FRR type field"
+        ]
+      },
+      "schema_version": 1,
+      "source": {
+        "capture_id": "frr-interface-capture-1795618117021787388",
+        "collector_id": "bn02404-live-test",
+        "sequence": 1,
+        "session_epoch": 1795618116566415074,
+        "source_kind": "cli_ssh_structured"
+      },
+      "subject": {
+        "device_id": "containerlab:clab-bonsai-bn003-vrf-frr2",
+        "entity": "lo",
+        "namespace": "interface",
+        "network_namespace": "default",
+        "plane": "operational",
+        "vrf": "default"
+      },
+      "trust": "device_asserted"
+    }
+  ],
+  "diagnostics_retained": 4,
+  "diagnostic_retention_truncated": false,
+  "interface_diagnostics": [
+    {
+      "addresses_omitted": 0,
+      "admin_state_raw": "up",
+      "ifindex": 2,
+      "ifname": "eth0",
+      "ip_addresses": [
+        "172.100.208.12/24"
+      ],
+      "ipv6_addresses": [],
+      "mac_raw": "6e:5b:f7:50:04:e3",
+      "master_raw": null,
+      "mtu_raw": "1500",
+      "oper_state_raw": "up",
+      "speed_raw": "10000 Mbps",
+      "type_raw": "Ethernet",
+      "vlan_raw": null,
+      "vrf": "default"
+    },
+    {
+      "addresses_omitted": 0,
+      "admin_state_raw": "down",
+      "ifindex": null,
+      "ifname": "eth1",
+      "ip_addresses": [],
+      "ipv6_addresses": [],
+      "mac_raw": null,
+      "master_raw": null,
+      "mtu_raw": null,
+      "oper_state_raw": null,
+      "speed_raw": null,
+      "type_raw": null,
+      "vlan_raw": null,
+      "vrf": "default"
+    },
+    {
+      "addresses_omitted": 0,
+      "admin_state_raw": "down",
+      "ifindex": null,
+      "ifname": "eth2",
+      "ip_addresses": [],
+      "ipv6_addresses": [],
+      "mac_raw": null,
+      "master_raw": null,
+      "mtu_raw": null,
+      "oper_state_raw": null,
+      "speed_raw": null,
+      "type_raw": null,
+      "vlan_raw": null,
+      "vrf": "default"
+    },
+    {
+      "addresses_omitted": 0,
+      "admin_state_raw": "up",
+      "ifindex": 1,
+      "ifname": "lo",
+      "ip_addresses": [],
+      "ipv6_addresses": [],
+      "mac_raw": null,
+      "master_raw": null,
+      "mtu_raw": "65536",
+      "oper_state_raw": "up",
+      "speed_raw": "0 Mbps",
+      "type_raw": "Loopback",
+      "vlan_raw": null,
+      "vrf": "default"
+    }
+  ],
+  "normalization_report": {
+    "addresses_omitted": 0,
+    "applicability": "frr structured show-interface-json",
+    "conflicts_omitted": 0,
+    "duplicate_ifnames": 0,
+    "entities_accepted": 4,
+    "entities_encountered": 4,
+    "entities_omitted": 0,
+    "expected_interface_total": 4,
+    "facts_emitted": 4,
+    "facts_rejected": 0,
+    "field_coverage": {
+      "administrative_state": {
+        "invalid": 0,
+        "known": 4,
+        "unknown": 0,
+        "unsupported": 0
+      },
+      "ifindex": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "interface_type": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "ip_addresses": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "ipv6_addresses": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "mac_address": {
+        "invalid": 0,
+        "known": 1,
+        "unknown": 3,
+        "unsupported": 0
+      },
+      "mtu": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "operational_state": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "speed": {
+        "invalid": 0,
+        "known": 1,
+        "unknown": 3,
+        "unsupported": 0
+      }
+    },
+    "interfaces_observed": 4,
+    "invalid_entities": 0,
+    "merge_conflicts": 0,
+    "nos": "frr",
+    "notes": [
+      "standalone FRR structured evidence; not SONiC or Cumulus qualification evidence",
+      "speed interpreted as Mbps according to the FRR interface model",
+      "FRR parent references are lower-link evidence; master references are bridge/bond slave evidence only",
+      "requirements revision bn024-iface-requirements-r1 exempts pseudo interfaces from absent operational core fields"
+    ],
+    "output_facts_omitted": 0,
+    "records_decoded": 4,
+    "sources": [
+      {
+        "bytes": 2796,
+        "captured_at": "2026-11-25T14:48:37.021Z",
+        "outcome": "complete",
+        "parsed": true,
+        "rejected": false,
+        "source": "frr_vtysh_show_interface_json"
+      }
+    ],
+    "status_facts_emitted": 0,
+    "unparsed_lines": 0,
+    "validated_field_coverage": {
+      "administrative_state": {
+        "invalid": 0,
+        "known": 4,
+        "unknown": 0,
+        "unsupported": 0
+      },
+      "ifindex": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "interface_type": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "ip_addresses": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "ipv6_addresses": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "mac_address": {
+        "invalid": 0,
+        "known": 1,
+        "unknown": 3,
+        "unsupported": 0
+      },
+      "mtu": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "operational_state": {
+        "invalid": 0,
+        "known": 2,
+        "unknown": 2,
+        "unsupported": 0
+      },
+      "speed": {
+        "invalid": 0,
+        "known": 1,
+        "unknown": 3,
+        "unsupported": 0
+      }
+    }
+  },
+  "acquisition_classification": "live_authorized_ssh_readonly"
+}

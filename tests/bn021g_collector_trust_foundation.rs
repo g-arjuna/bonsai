@@ -414,6 +414,7 @@ fn target(
         password_env: None,
         username: None,
         password: None,
+        software_build: None,
         hostname: Some(hostname.to_string()),
         role: Some(role.to_string()),
         site: Some(site.to_string()),

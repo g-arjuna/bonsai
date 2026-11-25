@@ -267,6 +267,7 @@ pub(super) async fn save_managed_device(
 ) -> Result<Json<MutationResponse>, (StatusCode, String)> {
     let acquisition_specified = req.acquisition.is_some();
     let security_specified = req.security.is_some();
+    let software_build_specified = req.software_build.is_some();
     let mut target = target_from_request(req)?;
     if let Ok(Some(existing)) = state.registry.get_device(&target.address) {
         if target.credential_alias.is_none() {
@@ -326,6 +327,9 @@ pub(super) async fn save_managed_device(
         }
         if target.vendor.is_none() {
             target.vendor = existing.vendor;
+        }
+        if !software_build_specified {
+            target.software_build = existing.software_build;
         }
         // BN-015-U1: pass the inventory-only marker through unchanged —
         // the registry owns the lifecycle transition. An inventory-only
@@ -650,15 +654,32 @@ pub(super) async fn remove_managed_device_handler(
     Json(req): Json<RemoveManagedDeviceRequest>,
 ) -> Result<Json<MutationResponse>, (StatusCode, String)> {
     match state.registry.remove_device(&req.address) {
-        Ok(Some(device)) => Ok(Json(MutationResponse {
-            success: true,
-            error: String::new(),
-            device: Some(managed_device_json(
-                device,
-                &HashMap::new(),
-                &state.registry.list_overrides().unwrap_or_default(),
-            )),
-        })),
+        Ok(Some(device)) => {
+            let invalidation =
+                crate::enrichment::frr_interfaces::invalidate_device_native_interface_state(
+                    &state.store,
+                    &device,
+                )
+                .await;
+            if let Err(error) = invalidation {
+                return Ok(Json(MutationResponse {
+                    success: false,
+                    error: format!(
+                        "device removed, but native interface evidence invalidation failed: {error}"
+                    ),
+                    device: None,
+                }));
+            }
+            Ok(Json(MutationResponse {
+                success: true,
+                error: String::new(),
+                device: Some(managed_device_json(
+                    device,
+                    &HashMap::new(),
+                    &state.registry.list_overrides().unwrap_or_default(),
+                )),
+            }))
+        }
         Ok(None) => Ok(Json(MutationResponse {
             success: false,
             error: format!("device '{}' not found", req.address),
@@ -1258,6 +1279,7 @@ pub(super) fn managed_device_json(
         inventory_platform: target.inventory_platform.unwrap_or_default(),
         inventory_status: target.inventory_status.unwrap_or_default(),
         inventory_tenant: target.inventory_tenant.unwrap_or_default(),
+        software_build: target.software_build.unwrap_or_default(),
         schema_binding: target.schema_binding.clone(),
         updated_at_ns: target.updated_at_ns,
     }
@@ -1332,6 +1354,12 @@ pub(super) fn target_from_request(
         inventory_platform: None,
         inventory_status: None,
         inventory_tenant: None,
+        software_build: req
+            .software_build
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string),
         paths: vec![],
         optional: false,
         schema_binding: None,
@@ -3634,5 +3662,34 @@ mod tests {
         assert_eq!(dev.role.as_deref(), Some("spine"), "role preserved");
         assert!(dev.enabled, "lifecycle preserved");
         assert!(!dev.selected_paths.is_empty(), "acquisition plan preserved");
+    }
+}
+
+#[cfg(test)]
+mod bn02404_tests {
+    use super::*;
+
+    #[test]
+    fn software_build_request_is_declared_qualification_metadata() {
+        let req: ManagedDeviceRequest = serde_json::from_value(serde_json::json!({
+            "address": "192.0.2.12",
+            "vendor": "frr",
+            "software_build": "quay.io/frrouting/frr@sha256:813497af103e972600f6161012b3bf2a2a1c5ea10d09cd1eacd74f1dc510a57b"
+        }))
+        .unwrap();
+        let target = target_from_request(req).unwrap();
+        assert_eq!(
+            target.software_build.as_deref(),
+            Some(
+                "quay.io/frrouting/frr@sha256:813497af103e972600f6161012b3bf2a2a1c5ea10d09cd1eacd74f1dc510a57b"
+            )
+        );
+        let req: ManagedDeviceRequest = serde_json::from_value(serde_json::json!({
+            "address": "192.0.2.12",
+            "software_build": "   "
+        }))
+        .unwrap();
+        let target = target_from_request(req).unwrap();
+        assert_eq!(target.software_build, None);
     }
 }

@@ -2077,6 +2077,13 @@ pub struct TargetConfig {
     /// Inventory-declared tenant label. `None` when the source has none.
     #[serde(default)]
     pub inventory_tenant: Option<String>,
+    /// Immutable software artifact/build identity declared by inventory or
+    /// the operator (for example an immutable container image reference).
+    /// This is declared deployment metadata, not device-attested evidence;
+    /// exact-release native profiles may require it when a version string
+    /// such as a mutable `_git` build is insufficient qualification.
+    #[serde(default)]
+    pub software_build: Option<String>,
     /// M6C-2 schema-bound acquisition approval. Present only after an
     /// Admin activation committed a verified-catalogue + fresh-evidence
     /// plan binding; absent means legacy acquisition semantics.

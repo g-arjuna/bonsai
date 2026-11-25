@@ -6,7 +6,7 @@ pub mod queries;
 #[cfg(test)]
 pub mod test_fixtures;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -4686,6 +4686,119 @@ impl GraphStore {
         })
         .await
         .context("list_config_items task")?
+    }
+
+    /// Point lookup for one ConfigItem by primary id. Use this instead of
+    /// class-wide scans when the caller already knows the exact record key.
+    pub async fn get_config_item(&self, id: &str) -> Result<Option<ConfigItemRecord>> {
+        let db = Arc::clone(&self.db);
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("config item lookup connection")?;
+            let mut stmt = conn.prepare(
+                "MATCH (c:ConfigItem {id: $id}) \
+                 RETURN c.id, c.config_class, c.vendor, c.name, c.version, \
+                        c.content_json, c.enabled, c.created_by",
+            )?;
+            Ok(conn
+                .execute(&mut stmt, vec![("id", Value::String(id))])?
+                .next()
+                .map(|row| ConfigItemRecord {
+                    id: read_str(&row[0]),
+                    config_class: read_str(&row[1]),
+                    vendor: read_str(&row[2]),
+                    name: read_str(&row[3]),
+                    version: read_str(&row[4]),
+                    content_json: read_str(&row[5]),
+                    enabled: match &row[6] {
+                        lbug::Value::Bool(b) => *b,
+                        _ => true,
+                    },
+                    created_by: read_str(&row[7]),
+                }))
+        })
+        .await
+        .context("get_config_item task")?
+    }
+
+    /// Serialized compare-and-write transaction over a small explicit set of
+    /// ConfigItem ids. The ids are point-read inside the store write lock and
+    /// transaction; the caller inspects them and returns the replacement rows
+    /// plus its result. This is the smallest reusable primitive for features
+    /// that must reject stale/replayed state at the persistence boundary
+    /// rather than after a separate read.
+    ///
+    /// The closure is synchronous because it executes inside the blocking
+    /// store transaction. It must remain small and must not perform I/O.
+    /// Replacement ids outside the declared id set are rejected. Protected
+    /// ConfigItem structural rules are still enforced for every row.
+    pub async fn compare_write_config_items<F, R>(&self, ids: Vec<String>, f: F) -> Result<R>
+    where
+        F: FnOnce(BTreeMap<String, Option<ConfigItemRecord>>) -> Result<(Vec<ConfigItemRecord>, R)>
+            + Send
+            + 'static,
+        R: Send + 'static,
+    {
+        let db = Arc::clone(&self.db);
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::task::spawn_blocking(move || {
+            let _guard = write_lock.lock().expect("write lock poisoned");
+            let conn = Connection::new(&db).context("config compare-write connection")?;
+            conn.query("BEGIN TRANSACTION")
+                .context("begin config compare-write transaction")?;
+            let result = (|| {
+                let mut existing = BTreeMap::new();
+                for id in &ids {
+                    let mut stmt = conn.prepare(
+                        "MATCH (c:ConfigItem {id: $id}) \
+                         RETURN c.id, c.config_class, c.vendor, c.name, c.version, \
+                                c.content_json, c.enabled, c.created_by",
+                    )?;
+                    let row = conn
+                        .execute(&mut stmt, vec![("id", Value::String(id.clone()))])?
+                        .next()
+                        .map(|row| ConfigItemRecord {
+                            id: read_str(&row[0]),
+                            config_class: read_str(&row[1]),
+                            vendor: read_str(&row[2]),
+                            name: read_str(&row[3]),
+                            version: read_str(&row[4]),
+                            content_json: read_str(&row[5]),
+                            enabled: match &row[6] {
+                                lbug::Value::Bool(b) => *b,
+                                _ => true,
+                            },
+                            created_by: read_str(&row[7]),
+                        });
+                    existing.insert(id.clone(), row);
+                }
+                let (writes, output) = f(existing)?;
+                for item in &writes {
+                    if !ids.iter().any(|id| id == &item.id) {
+                        anyhow::bail!(
+                            "config compare-write attempted to write undeclared id '{}'",
+                            item.id
+                        );
+                    }
+                    upsert_config_item_guarded(&conn, item, false, None)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                }
+                Ok::<_, anyhow::Error>(output)
+            })();
+            match result {
+                Ok(output) => {
+                    conn.query("COMMIT")
+                        .context("commit config compare-write transaction")?;
+                    Ok(output)
+                }
+                Err(error) => {
+                    let _ = conn.query("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })
+        .await
+        .context("compare_write_config_items task")?
     }
 
     /// Targeted `(name, config_class)` lookup for a single ConfigItem id.
@@ -11430,6 +11543,7 @@ mod tests {
                 inventory_platform: None,
                 inventory_status: None,
                 inventory_tenant: None,
+                software_build: None,
                 security: None,
                 client_cert: None,
                 client_key: None,
@@ -11566,6 +11680,7 @@ mod tests {
             inventory_platform: None,
             inventory_status: None,
             inventory_tenant: None,
+            software_build: None,
             security: None,
             client_cert: None,
             client_key: None,

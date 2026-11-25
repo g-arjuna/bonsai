@@ -781,6 +781,7 @@ async fn run_device_cli_local(command: DeviceCliCommand, cfg: config::Config) ->
                     password_env: add.password_env,
                     username: None,
                     password: None,
+                    software_build: None,
                     hostname: add.hostname,
                     role: add.role,
                     site: add.site,

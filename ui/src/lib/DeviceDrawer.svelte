@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { relativeTime, absoluteTime, shortTime } from '$lib/timeutil.js';
   import { navigate } from '$lib/router.svelte.js';
   import { selectionKey } from '$lib/pathkey.js';
@@ -44,6 +44,19 @@
 
   let flowsData = $state(null);
   let flowsLoading = $state(false);
+  let me = $state(null);
+  let nativeIfaceApplicable = $state(false);
+  let nativeIfaceEvidence = $state(null);
+  let nativeIfaceAcquisition = $state(null);
+  let nativeIfaceLoading = $state(false);
+  let nativeIfaceError = $state('');
+  let nativeIfaceBusy = $state(false);
+  let nativeIfaceMessage = $state('');
+  let nativeIfaceRequestedFor = $state('');
+  // Monotonic fences for asynchronous device/native-evidence requests. They
+  // are not rendered state; incrementing one makes every older response stale.
+  let deviceGeneration = 0;
+  let nativeIfaceGeneration = 0;
 
   const TABS = ['interfaces', 'peers', 'paths', 'schema', 'recommendations', 'events', 'detections', 'readiness', 'config', 'enrichment', 'cmdb', 'telemetry', 'flows', 'audit'];
 
@@ -60,10 +73,21 @@
       loading = true;
       error = null;
       device = null;
+      const requestedAddress = address;
+      const generation = ++deviceGeneration;
       enrichmentProps = [];
       enrichmentConflicts = [];
       cmdbData = null;
       flowsData = null;
+      nativeIfaceGeneration += 1;
+      nativeIfaceApplicable = false;
+      nativeIfaceEvidence = null;
+      nativeIfaceAcquisition = null;
+      nativeIfaceError = '';
+      nativeIfaceMessage = '';
+      nativeIfaceRequestedFor = '';
+      nativeIfaceLoading = false;
+      nativeIfaceBusy = false;
       configHistory = { snapshots: [], changes: [] };
       readiness = null;
       recommendations = null;
@@ -75,10 +99,21 @@
       customMode = 'SAMPLE';
       customSampleSeconds = '10';
       reparseMessage = '';
-      fetch('/api/devices/' + encodeURIComponent(address))
+      fetch('/api/devices/' + encodeURIComponent(requestedAddress))
         .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
-        .then(d => { device = d; loading = false; })
-        .catch(e => { error = e.message; loading = false; });
+        .then(d => {
+          if (generation !== deviceGeneration || requestedAddress !== address) return;
+          device = d;
+          const vendor = (d?.vendor || '').toLowerCase();
+          const platform = (d?.inventory_platform || d?.platform || '').toLowerCase();
+          nativeIfaceApplicable = vendor.includes('frr') || platform.includes('frr');
+          loading = false;
+        })
+        .catch(e => {
+          if (generation !== deviceGeneration || requestedAddress !== address) return;
+          error = e.message;
+          loading = false;
+        });
     }
   });
 
@@ -142,6 +177,207 @@
         })
         .catch(() => { configLoading = false; });
     }
+  });
+
+  function isStandaloneFrrDevice() {
+    return nativeIfaceApplicable || !!nativeIfaceEvidence;
+  }
+
+  function nativeIfaceFacts() {
+    return nativeIfaceEvidence?.facts || [];
+  }
+
+  function ifaceField(fact, key) {
+    return fact?.payload?.fields?.[key];
+  }
+
+  function observedValue(field, fallback = 'unknown') {
+    if (field == null) return fallback;
+    if (typeof field !== 'object' || Array.isArray(field)) return field;
+    if (field.state === 'known') return field.value ?? fallback;
+    return field.state || fallback;
+  }
+
+  function observedText(field, fallback = 'unknown') {
+    const value = observedValue(field, fallback);
+    if (Array.isArray(value)) return value.join(', ') || 'none observed';
+    if (value && typeof value === 'object') return JSON.stringify(value);
+    return String(value ?? fallback);
+  }
+
+  function ifaceDisplayName(fact) {
+    return fact?.subject?.entity || fact?.payload?.fields?.interface_name || 'unknown';
+  }
+
+  function ifaceAddressSummary(fields) {
+    return `v4 ${observedText(fields?.ip_addresses, 'unknown')}; v6 ${observedText(fields?.ipv6_addresses, 'unknown')}`;
+  }
+
+  function nativeCoverage() {
+    const report = nativeIfaceEvidence?.normalization_report || {};
+    const observed = report.entities_accepted ?? report.entities_observed ?? 0;
+    const expected = report.expected_interface_total;
+    const decoded = report.records_decoded ?? 0;
+    const validated = nativeIfaceEvidence?.usable_entity_facts ?? nativeIfaceEvidence?.facts_validated ?? 0;
+    return { observed, expected, decoded, validated };
+  }
+
+  function nativeInterpretation() {
+    const outcome = nativeIfaceEvidence?.interpretation_outcome || 'unknown';
+    return {
+      outcome,
+      label: outcome.replaceAll('_', ' '),
+      degraded: !['complete_usable', 'partial_usable', 'genuine_complete_empty'].includes(outcome),
+      partial: outcome === 'partial_usable'
+    };
+  }
+
+  function nativeErrorText(text, fallback) {
+    try {
+      const parsed = JSON.parse(text || '{}');
+      const code = parsed.reason_code || parsed.error;
+      const description = parsed.description;
+      if (code && description) return `${description} (${code})`;
+      if (description) return description;
+    } catch { /* plain-text compatibility */ }
+    return text || fallback;
+  }
+
+  async function refreshNativeAcquisitionState(requestedAddress, generation) {
+    try {
+      const r = await fetch('/api/devices/' + encodeURIComponent(requestedAddress) + '/native-interfaces/frr');
+      if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+      if (!r.ok) {
+        await r.text();
+        if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+        if (r.status === 401 || r.status === 403) {
+          nativeIfaceEvidence = null;
+          nativeIfaceAcquisition = null;
+        }
+        return;
+      }
+      const d = await r.json();
+      if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+      nativeIfaceAcquisition = d.acquisition || null;
+      if (d.evidence) {
+        nativeIfaceEvidence = { ...(d.evidence || {}), freshness: d.freshness, age_seconds: d.age_seconds, stale_after_seconds: d.stale_after_seconds, interpretation_outcome: d.interpretation_outcome || d.evidence?.interpretation_outcome };
+      }
+    } catch { /* retain the explicit collection failure already displayed */ }
+  }
+
+  async function loadNativeInterfaces(force = false) {
+    if (!address) return;
+    if (!force && nativeIfaceRequestedFor === address) return;
+    const requestedAddress = address;
+    const generation = ++nativeIfaceGeneration;
+    nativeIfaceRequestedFor = requestedAddress;
+    nativeIfaceLoading = true;
+    nativeIfaceError = '';
+    try {
+      const r = await fetch('/api/devices/' + encodeURIComponent(requestedAddress) + '/native-interfaces/frr');
+      if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+      if (r.status === 404) {
+        nativeIfaceEvidence = null;
+        nativeIfaceError = 'No native interface shadow evidence yet. An operator can collect a bounded snapshot.';
+      } else if (r.status === 401 || r.status === 403) {
+        nativeIfaceEvidence = null;
+        nativeIfaceAcquisition = null;
+        nativeIfaceError = 'Native interface evidence is denied for this scope or role.';
+      } else if (!r.ok) {
+        const text = await r.text();
+        if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+        nativeIfaceEvidence = null;
+        nativeIfaceError = nativeErrorText(text, 'Native interface evidence request failed.');
+      } else {
+        const d = await r.json();
+        if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+        nativeIfaceAcquisition = d.acquisition || null;
+        if (!d.evidence) {
+          nativeIfaceEvidence = null;
+          if (d.state === 'acquisition_failed' || d.state === 'interpretation_degraded') {
+            nativeIfaceError = `Latest native acquisition failed (${d.acquisition?.last_failure_class || d.latest_attempt?.failure_class || 'unknown'}); no usable shadow evidence is retained.`;
+          } else {
+            nativeIfaceError = 'No native interface shadow evidence yet. An operator can collect a bounded snapshot.';
+          }
+        } else {
+          nativeIfaceEvidence = { ...(d.evidence || {}), freshness: d.freshness, age_seconds: d.age_seconds, stale_after_seconds: d.stale_after_seconds, interpretation_outcome: d.interpretation_outcome || d.evidence?.interpretation_outcome };
+          if (d.acquisition?.last_attempt_outcome === 'failed' || d.acquisition?.last_attempt_outcome === 'degraded') {
+            nativeIfaceError = `Latest native acquisition failed (${d.acquisition?.last_failure_class || 'unknown'}); showing the last usable shadow observation, not a refreshed result.`;
+          }
+        }
+      }
+    } catch {
+      if (generation === nativeIfaceGeneration && requestedAddress === address) {
+        nativeIfaceError = 'Native interface evidence request failed.';
+      }
+    } finally {
+      if (generation === nativeIfaceGeneration && requestedAddress === address) {
+        nativeIfaceLoading = false;
+      }
+    }
+  }
+
+  async function collectNativeInterfaces() {
+    if (!address || nativeIfaceBusy) return;
+    const requestedAddress = address;
+    const generation = ++nativeIfaceGeneration;
+    nativeIfaceBusy = true;
+    nativeIfaceMessage = '';
+    nativeIfaceError = '';
+    try {
+      const r = await fetch('/api/devices/' + encodeURIComponent(requestedAddress) + '/native-interfaces/frr/collect', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}'
+      });
+      const text = await r.text();
+      if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+      if (!r.ok) {
+        if (r.status === 401 || r.status === 403) {
+          nativeIfaceEvidence = null;
+          nativeIfaceAcquisition = null;
+        }
+        nativeIfaceError = nativeErrorText(text, 'Native interface collection failed.');
+        await refreshNativeAcquisitionState(requestedAddress, generation);
+      } else {
+        const d = JSON.parse(text);
+        if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+        const result = d.result || {};
+        const outcome = (d.outcome || 'success').replaceAll('_', ' ');
+        nativeIfaceMessage = `Capture ${outcome}: ${result.usable_entity_facts ?? result.facts_validated}/${result.facts_emitted} usable/validated facts (${result.qualification}, shadow only).`;
+        nativeIfaceEvidence = null;
+        nativeIfaceRequestedFor = '';
+        nativeIfaceBusy = false;
+        void loadNativeInterfaces(true);
+      }
+    } catch {
+      if (generation === nativeIfaceGeneration && requestedAddress === address) {
+        nativeIfaceError = 'Native interface collection request failed.';
+        await refreshNativeAcquisitionState(requestedAddress, generation);
+      }
+    } finally {
+      if (generation === nativeIfaceGeneration && requestedAddress === address) {
+        nativeIfaceBusy = false;
+      }
+    }
+  }
+
+  $effect(() => {
+    if (activeTab === 'interfaces' && device && isStandaloneFrrDevice() && nativeIfaceRequestedFor !== address) {
+      loadNativeInterfaces();
+    }
+  });
+
+  onDestroy(() => {
+    deviceGeneration += 1;
+    nativeIfaceGeneration += 1;
+  });
+
+  onMount(async () => {
+    try {
+      const r = await fetch('/api/auth/me');
+      if (r.ok) me = await r.json();
+    } catch { /* server remains the authorization boundary */ }
   });
 
   // Group enrichment properties by source_name
@@ -431,6 +667,86 @@
               {/each}
             </tbody>
           </table>
+        {/if}
+
+        {#if isStandaloneFrrDevice()}
+          <section class="native-iface-panel" aria-label="Native FRR interface evidence">
+            <div class="native-iface-head">
+              <div>
+                <h4 class="section-head" style="margin:0;">Native state evidence</h4>
+                <div class="muted" style="font-size:11px;">Standalone FRR · shadow-only · no authoritative projection</div>
+              </div>
+              {#if me && ['operator', 'admin'].includes(me.role)}
+                <button class="ghost" onclick={collectNativeInterfaces} disabled={nativeIfaceBusy}>
+                  {nativeIfaceBusy ? 'Collecting…' : 'Collect snapshot'}
+                </button>
+              {:else}
+                <span class="meta-chip">operator role required</span>
+              {/if}
+            </div>
+            {#if nativeIfaceMessage}
+              <div class="native-note success">{nativeIfaceMessage}</div>
+            {/if}
+            {#if nativeIfaceLoading}
+              <div class="loading">Loading native interface evidence…</div>
+            {:else if nativeIfaceEvidence}
+              {@const cov = nativeCoverage()}
+              {@const interpretation = nativeInterpretation()}
+              {#if nativeIfaceError}
+                <div class="native-note warn">{nativeIfaceError}</div>
+              {/if}
+              <div class="native-summary">
+                <span class="badge {nativeIfaceEvidence.freshness === 'stale' ? 'warn' : 'info'}">{nativeIfaceEvidence.freshness || 'snapshot'}</span>
+                <span class="badge {interpretation.degraded || interpretation.partial ? 'warn' : 'info'}">interpretation {interpretation.label}</span>
+                <span class="badge info">shadow only</span>
+                <span class="muted">{nativeIfaceEvidence.release_raw}{nativeIfaceEvidence.release_build ? ' · declared build ' + nativeIfaceEvidence.release_build : ''}</span>
+                <span class="muted">{cov.observed} interfaces observed</span>
+                <span class="muted">expected population {cov.expected ?? 'unknown'}</span>
+                <span class="muted">{cov.validated} validated entity facts</span>
+                <span class="muted" title={nativeIfaceEvidence.captured_at}>{nativeIfaceEvidence.age_seconds != null ? Math.floor(nativeIfaceEvidence.age_seconds / 60) + 'm old' : nativeIfaceEvidence.captured_at}</span>
+              </div>
+              {#if nativeIfaceAcquisition?.last_attempt_outcome === 'failed' || nativeIfaceAcquisition?.last_attempt_outcome === 'degraded'}
+                <div class="native-note warn">Latest acquisition did not produce usable evidence ({nativeIfaceAcquisition.last_failure_class || nativeIfaceAcquisition.last_interpretation_outcome || 'unknown'}); showing the last usable shadow observation, not a refreshed result.</div>
+              {/if}
+              {#if nativeIfaceEvidence.freshness === 'stale'}
+                <div class="native-note warn">Evidence is stale; collect a new authorized snapshot before relying on it.</div>
+              {/if}
+              <div class="audit-grid" style="margin:8px 0 10px;">
+                <span class="muted">Acquisition</span><span><code>{nativeIfaceEvidence.acquisition_contract}</code> over {nativeIfaceEvidence.transport}</span>
+                <span class="muted">Profile</span><span>{nativeIfaceEvidence.profile_id}</span>
+                <span class="muted">Revisions</span><span><code>{nativeIfaceEvidence.normalizer_revision}</code> / <code>{nativeIfaceEvidence.mapping_revision || '—'}</code></span>
+                <span class="muted">Output digest</span><span><code>{nativeIfaceEvidence.interface_output_sha256?.slice(0, 16)}…</code> ({nativeIfaceEvidence.interface_output_bytes} bytes)</span>
+                <span class="muted">SSH host key</span><span>{nativeIfaceEvidence.host_key_verified ? 'verified against pinned known-hosts policy' : 'verification state unknown'}</span>
+              </div>
+              {#if nativeIfaceFacts().length === 0}
+                <div class="empty">No typed interface facts retained. This is explicit evidence absence, not an empty interface table.</div>
+              {:else}
+                <table>
+                  <thead><tr><th>Interface</th><th>State</th><th>Type</th><th>Addresses</th><th>Evidence</th></tr></thead>
+                  <tbody>
+                    {#each nativeIfaceFacts() as fact}
+                      {@const fields = fact.payload?.fields || {}}
+                      <tr>
+                        <td><code>{ifaceDisplayName(fact)}</code><div class="muted" style="font-size:10px;">{fact.subject?.network_namespace || 'default'}</div></td>
+                        <td>{observedText(fields.operational_state, fact.payload?.state || 'unknown')}<div class="muted" style="font-size:10px;">admin {observedText(fields.administrative_state, 'unknown')}</div></td>
+                        <td>{observedText(fields.interface_type)}<div class="muted" style="font-size:10px;">ifindex {observedText(fields.ifindex)}</div></td>
+                        <td style="max-width:150px; overflow-wrap:anywhere;">{ifaceAddressSummary(fields)}</td>
+                        <td title={fact.fact_id}><code>{String(fact.fact_id || '').slice(0, 12)}…</code><div class="muted" style="font-size:10px;">{fact.quality?.completeness || 'unknown'} · {fact.lifecycle || 'active'}</div></td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+                {#each nativeIfaceFacts().filter(f => f.quality?.notes?.length).slice(0, 4) as fact}
+                  <div class="muted" style="font-size:11px; margin-top:4px;"><code>{ifaceDisplayName(fact)}</code>: {fact.quality.notes.join('; ')}</div>
+                {/each}
+                {#if nativeIfaceEvidence.fact_retention_truncated}
+                  <div class="native-note warn">Fact display is retention-bounded: {nativeIfaceEvidence.facts_retained}/{nativeIfaceEvidence.facts_emitted} retained.</div>
+                {/if}
+              {/if}
+            {:else if nativeIfaceError}
+              <div class="native-note warn">{nativeIfaceError}</div>
+            {/if}
+          </section>
         {/if}
 
       {:else if activeTab === 'peers'}
@@ -1105,6 +1421,12 @@
   }
 
   .flow-summary { display: flex; gap: 18px; font-size: 0.82rem; margin-bottom: 10px; flex-wrap: wrap; }
+  .native-iface-panel { margin: 14px 0 18px; padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: rgba(255,255,255,0.025); }
+  .native-iface-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:8px; }
+  .native-summary { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:11px; margin-bottom:8px; }
+  .native-note { margin:8px 0; padding:7px 9px; border-radius:5px; font-size:12px; border:1px solid var(--border); overflow-wrap:anywhere; }
+  .native-note.warn { background:rgba(255,180,50,0.10); border-color:rgba(255,180,50,0.35); }
+  .native-note.success { background:rgba(50,200,100,0.08); border-color:rgba(50,200,100,0.28); }
   .audit-grid {
     display: grid;
     grid-template-columns: 110px 1fr;

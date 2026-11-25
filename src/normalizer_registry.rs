@@ -836,6 +836,9 @@ fn nos_for_platform(platform_family_id: &str) -> Option<NormalizerNos> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    const FRR_LAB_ARTIFACT: &str = "quay.io/frrouting/frr@sha256:813497af103e972600f6161012b3bf2a2a1c5ea10d09cd1eacd74f1dc510a57b";
+
     use crate::interface_normalizer::{CaptureOutcome, CommandCapture, ObservationContext};
     use crate::nos_features::{ProfileQuery, builtin_profiles, builtin_registry};
 
@@ -866,6 +869,7 @@ mod tests {
         context.network_namespace = namespace;
         context.platform = Some("frr");
         context.release_raw = release;
+        context.release_build = release.map(|_| FRR_LAB_ARTIFACT);
         crate::frr_interface_json::FrrInterfaceJsonObservation {
             capture: CommandCapture::new(json, CaptureOutcome::Complete),
             context,
@@ -877,7 +881,12 @@ mod tests {
         reg.select_receipt(&ProfileQuery {
             platform: "frr".into(),
             version: "10.6.1_git".into(),
-            release: None,
+            release: Some(SoftwareRelease {
+                raw: "10.6.1_git".into(),
+                train: None,
+                build: Some(FRR_LAB_ARTIFACT.into()),
+                components: BTreeMap::new(),
+            }),
             hardware: None,
         })
     }
@@ -938,6 +947,36 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn same_git_version_with_different_build_artifact_is_not_qualified() {
+        let json = include_str!(
+            "../tests/fixtures/bn024/interface-frr-json/show-interface-json-frr-10.6.1.json"
+        );
+        let profiles = builtin_registry();
+        let receipt = frr_receipt(&profiles);
+        assert!(matches!(receipt.selection(), Selection::Selected(_)));
+        let nr = NormalizerRegistry::builtin();
+        let mut obs = frr_json_obs(json, Some("default"), Some("10.6.1_git"));
+        obs.context.release_build = Some(
+            "quay.io/frrouting/frr@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        );
+        assert!(matches!(
+            nr.dispatch_frr_json(&receipt, "interfaces.frr_json", &obs),
+            Err(DispatchError::ObservationReleaseMismatch { .. })
+        ));
+
+        // A query with only the mutable `_git` version string and no
+        // immutable artifact identity does not even select the constrained
+        // profile for executable use.
+        let weak_receipt = profiles.select_receipt(&ProfileQuery {
+            platform: "frr".into(),
+            version: "10.6.1_git".into(),
+            release: None,
+            hardware: None,
+        });
+        assert!(!matches!(weak_receipt.selection(), Selection::Selected(_)));
     }
 
     #[test]

@@ -15,9 +15,12 @@
 //! the MAC when present, `vrfName` is the VRF binding, and `ipAddresses[]`
 //! entries carry address/prefix strings. Pseudo-interface records may omit
 //! most operational attributes; those omissions remain explicit unknowns.
-//! `parentIfindex` is preserved as diagnostic evidence only — it is never
-//! converted into a named parent or LAG relationship without the target
-//! identity in the same observation.
+//! `parentIfindex` is lower-link parent evidence only. It is resolved into
+//! a typed parent relationship only when the target identity is present and
+//! uniquely identifiable in the same observation; it is never treated as
+//! LAG membership. Numeric or explicit references that are missing,
+//! duplicate, contradictory or self-referential remain explicitly
+//! unresolved rather than becoming topology edges.
 //!
 //! Format strictness policy (exact-release qualification): every field of
 //! the observed 10.6.1_git schema is decoded as optional, so a record
@@ -35,8 +38,9 @@
 //! errors; they are never coerced.
 
 use serde::Deserialize;
+use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::interface_facts::{
     FACT_KIND_INTERFACE_STATE, FieldAvailability, InterfaceStatePayload, MasterKind,
@@ -45,16 +49,17 @@ use crate::interface_facts::{
 use crate::interface_normalizer::{
     CaptureOutcome, CommandCapture, FieldCoverage, InterfaceDiagnostic, NormalizationOutput,
     NormalizationReport, NormalizerLimits, ObservationContext, SourceCaptureReport, addr_field,
-    admin_state_of, classify_master, interface_type_of, mac_of, mtu_of, parse_rfc3339,
-    sanitize_bounded, sha256_hex, unavailable,
+    admin_state_of, interface_type_of, mac_of, parse_rfc3339, sanitize_bounded, sha256_hex,
+    unavailable,
 };
 use crate::typed_facts::{
     Completeness, EvidenceRef, FactPayload, FactSource, FactSubject, Lifecycle, PayloadState,
     Quality, TrustClass, TypedFact,
 };
 
-pub const FRR_JSON_PARSER_REVISION: &str = "frr-iface-json-2026.11-r1";
-pub const FRR_JSON_MAPPING_REVISION: &str = "bn024-iface-map-2";
+pub const FRR_JSON_PARSER_REVISION: &str = "frr-iface-json-2026.11-r2";
+pub const FRR_JSON_MAPPING_REVISION: &str = "bn024-iface-map-3";
+pub const FRR_JSON_REQUIREMENT_REVISION: &str = "bn024-iface-requirements-r1";
 pub const FRR_JSON_ACQUISITION_CONTRACT: &str = "frr_vtysh_show_interface_json";
 
 /// Structured single-source observation. Unlike the two-command CLI
@@ -80,6 +85,67 @@ struct FrrIpAddress {
     unnumbered: Option<bool>,
 }
 
+const MAX_ADDRESSES_PER_INTERFACE: usize = 64;
+
+/// Bounded decoded representation of one interface address array. Entries
+/// past the stable retained boundary are consumed as ignored JSON values
+/// and represented only by `total_entries`; interpretation must therefore
+/// never fabricate family-wide absence.
+#[derive(Debug)]
+struct FrrAddressList {
+    entries: Vec<FrrIpAddress>,
+    total_entries: usize,
+}
+
+impl<'de> Deserialize<'de> for FrrAddressList {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct AddressVisitor;
+
+        impl<'de> Visitor<'de> for AddressVisitor {
+            type Value = FrrAddressList;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a bounded array of FRR IP address objects")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut entries = Vec::with_capacity(MAX_ADDRESSES_PER_INTERFACE.min(64));
+                let mut total_entries = 0usize;
+                while total_entries < MAX_ADDRESSES_PER_INTERFACE {
+                    let Some(entry) = seq.next_element::<FrrIpAddress>()? else {
+                        return Ok(FrrAddressList {
+                            entries,
+                            total_entries,
+                        });
+                    };
+                    total_entries += 1;
+                    entries.push(entry);
+                }
+                while seq.next_element::<IgnoredAny>()?.is_some() {
+                    total_entries += 1;
+                    if total_entries > 100_000 {
+                        return Err(serde::de::Error::custom(
+                            "unbounded FRR interface address array",
+                        ));
+                    }
+                }
+                Ok(FrrAddressList {
+                    entries,
+                    total_entries,
+                })
+            }
+        }
+
+        deserializer.deserialize_seq(AddressVisitor)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)] // decoded to enforce the exact source schema; semantic use is explicit below
@@ -102,7 +168,7 @@ struct FrrInterfaceRecord {
     #[serde(rename = "hardwareAddress")]
     hardware_address: Option<String>,
     #[serde(rename = "ipAddresses")]
-    ip_addresses: Option<Vec<FrrIpAddress>>,
+    ip_addresses: Option<FrrAddressList>,
     #[serde(rename = "interfaceType")]
     interface_type_detail: Option<String>,
     #[serde(rename = "interfaceSlaveType")]
@@ -238,8 +304,8 @@ impl<'de> Deserialize<'de> for FrrInterfaceMap {
     where
         D: serde::Deserializer<'de>,
     {
-        struct Visitor;
-        impl<'de> serde::de::Visitor<'de> for Visitor {
+        struct InterfaceMapVisitor;
+        impl<'de> Visitor<'de> for InterfaceMapVisitor {
             type Value = FrrInterfaceMap;
 
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -248,7 +314,7 @@ impl<'de> Deserialize<'de> for FrrInterfaceMap {
 
             fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
             where
-                A: serde::de::MapAccess<'de>,
+                A: MapAccess<'de>,
             {
                 let mut out = BTreeMap::new();
                 while let Some(name) = access.next_key::<String>()? {
@@ -263,7 +329,7 @@ impl<'de> Deserialize<'de> for FrrInterfaceMap {
                 Ok(FrrInterfaceMap(out))
             }
         }
-        deserializer.deserialize_map(Visitor)
+        deserializer.deserialize_map(InterfaceMapVisitor)
     }
 }
 
@@ -293,9 +359,254 @@ fn context_error(context: &ObservationContext<'_>) -> Option<String> {
     None
 }
 
+const MAX_REPORT_NOTES: usize = 24;
+const MAX_REPORT_NOTE_BYTES: usize = 4096;
+const MAX_FACT_QUALITY_NOTES: usize = 12;
+const MAX_FACT_QUALITY_NOTE_BYTES: usize = 1024;
+
+fn bounded_note(text: impl AsRef<str>, max_chars: usize) -> String {
+    sanitize_bounded(text.as_ref(), max_chars)
+}
+
+fn append_bounded_note(notes: &mut Vec<String>, text: impl AsRef<str>) {
+    if notes.len() >= MAX_REPORT_NOTES {
+        return;
+    }
+    notes.push(bounded_note(text, 240));
+}
+
+fn finish_bounded_notes(notes: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut bytes = 0usize;
+    let mut truncated = notes.len() > MAX_REPORT_NOTES;
+    for note in notes.into_iter().take(MAX_REPORT_NOTES) {
+        let note = bounded_note(note, 240);
+        let next = bytes.saturating_add(note.len());
+        if next > MAX_REPORT_NOTE_BYTES {
+            truncated = true;
+            break;
+        }
+        bytes = next;
+        out.push(note);
+    }
+    if truncated && out.len() < MAX_REPORT_NOTES {
+        let marker = "diagnostic output truncated at bounded budget";
+        if bytes + marker.len() <= MAX_REPORT_NOTE_BYTES {
+            out.push(marker.into());
+        }
+    }
+    out
+}
+
+fn finish_fact_quality_notes(notes: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut bytes = 0usize;
+    let mut truncated = notes.len() > MAX_FACT_QUALITY_NOTES;
+    for note in notes.into_iter().take(MAX_FACT_QUALITY_NOTES) {
+        let note = bounded_note(note, 160);
+        let next = bytes.saturating_add(note.len());
+        if next > MAX_FACT_QUALITY_NOTE_BYTES {
+            truncated = true;
+            break;
+        }
+        bytes = next;
+        out.push(note);
+    }
+    if truncated && out.len() < MAX_FACT_QUALITY_NOTES {
+        let marker = "fact quality notes truncated";
+        if bytes + marker.len() <= MAX_FACT_QUALITY_NOTE_BYTES {
+            out.push(marker.into());
+        }
+    }
+    out
+}
+
+#[derive(Clone, Debug)]
+enum IndexResolution {
+    Unique(String),
+    Ambiguous,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReferenceStatus {
+    Resolved,
+    Missing,
+    Ambiguous,
+    Invalid,
+    Contradictory,
+    SelfReference,
+}
+
+impl ReferenceStatus {
+    fn is_resolved(self) -> bool {
+        self == Self::Resolved
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ReferenceResolution {
+    target: String,
+    status: ReferenceStatus,
+}
+
+fn sanitize_reference(raw: Option<&String>) -> Option<Option<String>> {
+    raw.map(|value| {
+        let value = sanitize_bounded(value, 255);
+        valid_name(&value).then_some(value)
+    })
+}
+
+fn resolve_reference(
+    explicit: Option<&String>,
+    ifindex: Option<u64>,
+    name_by_index: &BTreeMap<u64, IndexResolution>,
+    eligible_names: &BTreeSet<String>,
+    self_name: &str,
+) -> Option<ReferenceResolution> {
+    let explicit_sanitized = sanitize_reference(explicit);
+    let explicit_target = explicit_sanitized.as_ref().and_then(|v| v.clone());
+    let explicit_invalid = explicit_sanitized.as_ref().is_some_and(Option::is_none);
+    let by_index = ifindex.map(|index| {
+        if index == 0 {
+            (None, ReferenceStatus::Invalid)
+        } else {
+            match name_by_index.get(&index) {
+                Some(IndexResolution::Unique(name)) => {
+                    (Some(name.clone()), ReferenceStatus::Resolved)
+                }
+                Some(IndexResolution::Ambiguous) => {
+                    (Some(format!("ifindex:{index}")), ReferenceStatus::Ambiguous)
+                }
+                None => (Some(format!("ifindex:{index}")), ReferenceStatus::Missing),
+            }
+        }
+    });
+
+    let (target, status) = match (explicit.is_some(), by_index) {
+        (true, Some((index_target, index_status))) => {
+            if explicit_invalid {
+                ("invalid-reference".to_string(), ReferenceStatus::Invalid)
+            } else if index_status == ReferenceStatus::Resolved
+                && explicit_target.as_deref() == index_target.as_deref()
+            {
+                (explicit_target.clone().unwrap(), ReferenceStatus::Resolved)
+            } else {
+                (
+                    explicit_target
+                        .clone()
+                        .or(index_target)
+                        .unwrap_or_else(|| "invalid-reference".to_string()),
+                    ReferenceStatus::Contradictory,
+                )
+            }
+        }
+        (true, None) => {
+            if explicit_invalid {
+                ("invalid-reference".to_string(), ReferenceStatus::Invalid)
+            } else {
+                let target = explicit_target.clone().unwrap();
+                if eligible_names.contains(&target) {
+                    (target, ReferenceStatus::Resolved)
+                } else {
+                    (target, ReferenceStatus::Missing)
+                }
+            }
+        }
+        (false, Some((index_target, index_status))) => (
+            index_target.unwrap_or_else(|| "invalid-reference".to_string()),
+            index_status,
+        ),
+        (false, None) => return None,
+    };
+
+    let status = if status == ReferenceStatus::Resolved && target == self_name {
+        ReferenceStatus::SelfReference
+    } else {
+        status
+    };
+    Some(ReferenceResolution { target, status })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetTypeEvidence {
+    Absent,
+    Unrecognized,
+    Kind(MasterKind),
+}
+
+fn target_type_evidence(
+    target: &str,
+    zif_type_by_name: &BTreeMap<String, String>,
+) -> TargetTypeEvidence {
+    let Some(raw) = zif_type_by_name.get(target) else {
+        return TargetTypeEvidence::Absent;
+    };
+    match raw.to_ascii_lowercase().as_str() {
+        "bond" => TargetTypeEvidence::Kind(MasterKind::Lag),
+        "bridge" => TargetTypeEvidence::Kind(MasterKind::Bridge),
+        "vrf" => TargetTypeEvidence::Kind(MasterKind::Vrf),
+        _ => TargetTypeEvidence::Unrecognized,
+    }
+}
+
+fn classify_master_relationship(
+    rec: &FrrInterfaceRecord,
+    resolution: &ReferenceResolution,
+    zif_type_by_name: &BTreeMap<String, String>,
+) -> MasterKind {
+    if !resolution.status.is_resolved() {
+        return MasterKind::Unresolved;
+    }
+    let slave_kind = rec
+        .interface_slave_type
+        .as_deref()
+        .map(|v| v.to_ascii_lowercase());
+    let explicit_kind = match slave_kind.as_deref() {
+        Some("bond") => Some(MasterKind::Lag),
+        Some("bridge") => Some(MasterKind::Bridge),
+        // A VRF enslavement flag contradicts the strict bridge/bond-slave
+        // semantics of masterInterface/masterIfindex. VRF binding remains
+        // represented on the subject and must never become a master edge.
+        Some("vrf") | Some("other") | Some("none") => None,
+        Some(_) => None,
+        None => None,
+    };
+    let evidence = target_type_evidence(&resolution.target, zif_type_by_name);
+    match (explicit_kind, evidence) {
+        (Some(kind), TargetTypeEvidence::Absent) => kind,
+        (Some(kind), TargetTypeEvidence::Kind(seen)) if kind == seen => kind,
+        (Some(_), TargetTypeEvidence::Kind(_)) => MasterKind::Unresolved,
+        (Some(_), TargetTypeEvidence::Unrecognized) => MasterKind::Unresolved,
+        (None, TargetTypeEvidence::Kind(MasterKind::Lag)) => MasterKind::Lag,
+        (None, TargetTypeEvidence::Kind(MasterKind::Bridge)) => MasterKind::Bridge,
+        // VRF target evidence is not a master-relationship class.
+        // VRF/parent/unrecognized target evidence is never a valid master
+        // relationship class for FRR's strict bridge/bond-slave field.
+        (None, TargetTypeEvidence::Kind(_)) => MasterKind::Unresolved,
+        (None, TargetTypeEvidence::Absent | TargetTypeEvidence::Unrecognized) => {
+            MasterKind::Unresolved
+        }
+    }
+}
+
+fn record_field_state(
+    coverage: &mut BTreeMap<String, FieldCoverage>,
+    name: &str,
+    state: FieldAvailability,
+) {
+    let entry = coverage.entry(name.into()).or_default();
+    match state {
+        FieldAvailability::Known => entry.known += 1,
+        FieldAvailability::Unknown => entry.unknown += 1,
+        FieldAvailability::Unsupported => entry.unsupported += 1,
+        FieldAvailability::Invalid => entry.invalid += 1,
+    }
+}
+
 fn status_fact(
     obs: &FrrInterfaceJsonObservation<'_>,
     state: PayloadState,
+    completeness: Completeness,
     note: &str,
     evidence: Vec<EvidenceRef>,
 ) -> TypedFact {
@@ -335,9 +646,9 @@ fn status_fact(
         payload_sha256: String::new(),
         evidence_sha256: String::new(),
         quality: Quality {
-            completeness: Completeness::Unknown,
+            completeness,
             missing_fields: vec![],
-            notes: vec![note.into()],
+            notes: finish_fact_quality_notes(vec![note.into()]),
         },
         trust: TrustClass::DeviceAsserted,
         authority: None,
@@ -381,7 +692,9 @@ fn invalid_output(
         locator: None,
     }];
     let mut facts = vec![];
-    let f = status_fact(obs, state, reason, evidence);
+    // Pre-parse refusals/capture failures have no established coverage;
+    // never claim partial success for bytes that were not interpreted.
+    let f = status_fact(obs, state, Completeness::Unknown, reason, evidence);
     if f.validate().is_ok() {
         facts.push(f);
     }
@@ -413,9 +726,14 @@ fn invalid_output(
             facts_rejected: usize::from(emitted == 0),
             output_facts_omitted: 0,
             conflicts_omitted: 0,
+            records_decoded: None,
+            entities_encountered: None,
+            entities_accepted: Some(0),
+            status_facts_emitted: Some(emitted),
+            validated_field_coverage: Some(BTreeMap::new()),
             context_error: None,
             capture_skew_seconds: None,
-            notes: vec![reason.into()],
+            notes: finish_bounded_notes(vec![reason.into()]),
         },
     }
 }
@@ -456,10 +774,25 @@ fn oper_json(raw: Option<&str>) -> ObservedField<crate::interface_facts::OperSta
     }
 }
 
+/// MTU is a 32-bit quantity. In FRR JSON a present zero is invalid source
+/// data, unlike an absent optional field which is unknown.
+fn mtu_json(raw: Option<u64>) -> ObservedField<u32> {
+    match raw {
+        None => unavailable(FieldAvailability::Unknown, Some("mtu not observed")),
+        Some(0) => unavailable(FieldAvailability::Invalid, Some("mtu 0 failed validation")),
+        Some(v) if v <= u32::MAX as u64 => ObservedField::known(v as u32),
+        Some(v) => unavailable(
+            FieldAvailability::Invalid,
+            Some(format!("mtu {v} out of range")),
+        ),
+    }
+}
+
 /// Normalize the structured observation. Every emitted fact is canonical-
 /// validated before return; malformed JSON, unexpected fields, failed
-/// captures, oversized input and invalid observation context are explicit
-/// non-success outcomes, never empty success.
+/// captures, malformed capture metadata, oversized input and invalid
+/// observation context are explicit non-success outcomes, never empty
+/// success.
 pub fn normalize_frr_interface_json(
     obs: &FrrInterfaceJsonObservation<'_>,
     limits: NormalizerLimits,
@@ -477,6 +810,7 @@ pub fn normalize_frr_interface_json(
         out.facts.clear();
         out.report.facts_emitted = 0;
         out.report.facts_rejected = 0;
+        out.report.status_facts_emitted = Some(0);
         return out;
     }
     if bytes > limits.max_input_bytes {
@@ -497,6 +831,18 @@ pub fn normalize_frr_interface_json(
             limits,
         );
     }
+    if let Some(captured_at) = obs.capture.captured_at {
+        if parse_rfc3339(captured_at).is_none() {
+            return invalid_output(
+                obs,
+                "capture metadata 'captured_at' is not RFC-3339; observation rejected",
+                PayloadState::InvalidInput,
+                bytes,
+                limits,
+            );
+        }
+    }
+
     let decoded: BTreeMap<String, FrrInterfaceRecord> =
         match serde_json::from_str::<FrrInterfaceMap>(obs.capture.output) {
             Ok(v) => v.0,
@@ -510,6 +856,7 @@ pub fn normalize_frr_interface_json(
                 );
             }
         };
+    let records_decoded = decoded.len();
 
     let sha = sha256_hex(obs.capture.output.as_bytes());
     let evidence = || {
@@ -519,68 +866,82 @@ pub fn normalize_frr_interface_json(
             locator: None,
         }]
     };
+
+    // Relationship targets may only be resolved against validated entities
+    // inside the entity-resource budget. Invalid or budget-omitted records
+    // are visible through counters but are never relationship authorities.
+    let mut eligible_names = BTreeSet::new();
+    for (entity_index, (name, _rec)) in decoded.iter().enumerate() {
+        if entity_index < limits.max_entities && valid_name(name) {
+            eligible_names.insert(name.clone());
+        }
+    }
+
+    let mut name_by_index: BTreeMap<u64, IndexResolution> = BTreeMap::new();
+    let mut zif_type_by_name: BTreeMap<String, String> = BTreeMap::new();
+    for (entity_index, (name, rec)) in decoded.iter().enumerate() {
+        if entity_index >= limits.max_entities || !valid_name(name) {
+            continue;
+        }
+        if let Some(index) = rec.index.filter(|index| *index > 0) {
+            match name_by_index.get_mut(&index) {
+                None => {
+                    name_by_index.insert(index, IndexResolution::Unique(name.clone()));
+                }
+                // Duplicate kernel ifindices are contradictory evidence.
+                // Three or more claimants leave the entry in Ambiguous; the
+                // first contradiction never becomes a "winner" and a later
+                // claimant never removes the ambiguity.
+                Some(slot) => *slot = IndexResolution::Ambiguous,
+            }
+        }
+        if let Some(detail) = rec.interface_type_detail.as_ref() {
+            zif_type_by_name.insert(name.clone(), detail.clone());
+        }
+    }
+
     let mut facts = Vec::new();
     let mut diagnostics = Vec::new();
     let mut coverage: BTreeMap<String, FieldCoverage> = BTreeMap::new();
+    let mut validated_coverage: BTreeMap<String, FieldCoverage> = BTreeMap::new();
     let mut entities_omitted = 0usize;
     let mut invalid_entities = 0usize;
     let mut output_facts_omitted = 0usize;
     let mut facts_rejected = 0usize;
     let mut rejected_samples = Vec::new();
     let mut addresses_omitted_total = 0usize;
-    // parentIfindex is numeric evidence. It may be resolved only when the
-    // target interface is present in this same observation; duplicate or
-    // absent indices remain unresolved rather than becoming guessed names.
-    let mut name_by_index: BTreeMap<u64, String> = BTreeMap::new();
-    let mut type_by_name: BTreeMap<String, String> = BTreeMap::new();
-    for (candidate_name, candidate) in &decoded {
-        if let Some(index) = candidate.index {
-            match name_by_index.insert(index, candidate_name.clone()) {
-                None => {}
-                Some(existing) if existing == *candidate_name => {}
-                Some(_) => {
-                    // Contradictory duplicate kernel indices are not safe
-                    // relationship evidence for either interface.
-                    name_by_index.remove(&index);
-                }
-            }
-        }
-        if let Some(kind) = &candidate.interface_kind {
-            type_by_name.insert(candidate_name.clone(), kind.clone());
-        }
-    }
+    let mut entities_accepted = 0usize;
+
     for (entity_index, (name, rec)) in decoded.iter().enumerate() {
         if entity_index >= limits.max_entities {
             entities_omitted += 1;
-            continue;
-        }
-        if facts.len() >= limits.max_output_facts {
-            output_facts_omitted += 1;
             continue;
         }
         if !valid_name(name) {
             invalid_entities += 1;
             continue;
         }
+        if facts.len() >= limits.max_output_facts {
+            output_facts_omitted += 1;
+            continue;
+        }
+
         let admin = admin_state_of(rec.administrative_status.as_deref());
         let oper = oper_json(rec.operational_status.as_deref());
         let ifindex = ifindex_json(rec.index);
         let itype = interface_type_of(rec.interface_kind.as_deref(), name);
-        let mtu_s = rec.mtu.map(|v| v.to_string());
-        let mtu = mtu_of(mtu_s.as_deref());
+        let mtu = mtu_json(rec.mtu);
         let speed = speed_mbps(rec.speed);
         let mac = mac_of(rec.hardware_address.as_deref());
         let description = rec.description.as_deref().map(|d| sanitize_bounded(d, 240));
+
         let mut v4 = vec![];
         let mut v6 = vec![];
         let mut malformed_addrs = 0usize;
         let mut address_entries_omitted = 0usize;
         if let Some(addrs) = &rec.ip_addresses {
-            for (idx, a) in addrs.iter().enumerate() {
-                if idx >= 64 {
-                    address_entries_omitted += 1;
-                    continue;
-                }
+            address_entries_omitted = addrs.total_entries.saturating_sub(addrs.entries.len());
+            for a in &addrs.entries {
                 if let Some(s) = &a.address {
                     if s.contains(':') {
                         v6.push(s.clone())
@@ -599,10 +960,17 @@ pub fn normalize_frr_interface_json(
                     FieldAvailability::Invalid,
                     Some("ipAddresses entry missing address"),
                 )
+            } else if address_entries_omitted > 0 && values.is_empty() {
+                // Entries beyond the retained boundary may have belonged to
+                // this family. An empty retained family is therefore unknown,
+                // never fabricated as observed-none.
+                unavailable(
+                    FieldAvailability::Unknown,
+                    Some("address entries omitted at bounded budget; family coverage incomplete"),
+                )
             } else if rec.ip_addresses.is_some() && values.is_empty() {
-                // `ipAddresses` was present and empty for this family:
-                // observed-none is Known([]), distinct from the field
-                // being absent entirely.
+                // `ipAddresses` was present and complete for this family:
+                // observed-none is Known([]), distinct from field absence.
                 ObservedField::known(Vec::new())
             } else {
                 addr_field(values, want_v6, address_entries_omitted, empty_detail)
@@ -610,130 +978,44 @@ pub fn normalize_frr_interface_json(
         };
         let ip4 = address_list(&v4, false, "no ipv4 observed");
         let ip6 = address_list(&v6, true, "no ipv6 observed");
-        let slave_kind = match rec.interface_slave_type.as_deref() {
-            Some("Bond") => MasterKind::Lag,
-            Some("Bridge") => MasterKind::Bridge,
-            _ => MasterKind::Unresolved,
-        };
-        let explicit_numeric_contradiction = |explicit: Option<&String>, index: Option<u64>| match (
-            explicit,
-            index.and_then(|i| name_by_index.get(&i)),
-        ) {
-            (Some(name), Some(indexed_name)) => indexed_name != name,
-            _ => false,
-        };
-        let parent_ref_contradicts =
-            explicit_numeric_contradiction(rec.parent_interface.as_ref(), rec.parent_ifindex);
-        let master_ref_contradicts =
-            explicit_numeric_contradiction(rec.master_interface.as_ref(), rec.master_ifindex);
-        let self_or = |target: &str, kind: MasterKind| {
-            if target == name.as_str() {
-                MasterKind::Unresolved
-            } else {
-                kind
-            }
-        };
-        let (master_relationship, relationship_target_is_name) = if parent_ref_contradicts {
-            // Explicit and numeric parent evidence disagree. Preserve the
-            // explicit target as unresolved evidence but do not populate a
-            // parent edge or infer a type from either side.
-            (
-                rec.parent_interface
-                    .as_ref()
-                    .map(|target| MasterRelationship {
-                        target: target.clone(),
-                        kind: MasterKind::Unresolved,
-                    }),
-                true,
-            )
-        } else if master_ref_contradicts {
-            (
-                rec.master_interface
-                    .as_ref()
-                    .map(|target| MasterRelationship {
-                        target: target.clone(),
-                        kind: MasterKind::Unresolved,
-                    }),
-                true,
-            )
-        } else if let Some(target) = rec.parent_interface.as_ref() {
-            // `parentInterface` is FRR's explicit lower-link parent name,
-            // not an inference from a numeric index.
-            (
-                Some(MasterRelationship {
-                    target: target.clone(),
-                    kind: self_or(target, MasterKind::Parent),
-                }),
-                true,
-            )
-        } else if let Some(target) = rec.master_interface.as_ref() {
-            // `masterInterface` is emitted only for bridge/bond slave
-            // records. Prefer the explicit slave kind; use the target's
-            // own type as corroboration when present.
-            let classified = if slave_kind != MasterKind::Unresolved {
-                slave_kind
-            } else {
-                classify_master(target, &type_by_name)
-            };
-            (
-                Some(MasterRelationship {
-                    target: target.clone(),
-                    kind: self_or(target, classified),
-                }),
-                true,
-            )
-        } else if let Some(master_index) = rec.master_ifindex {
-            let resolved = name_by_index.get(&master_index);
-            let target = resolved
-                .cloned()
-                .unwrap_or_else(|| format!("ifindex:{master_index}"));
-            let classified = if slave_kind != MasterKind::Unresolved {
-                slave_kind
-            } else if resolved.is_some() {
-                classify_master(&target, &type_by_name)
-            } else {
-                MasterKind::Unresolved
-            };
-            let kind = if resolved.is_some() {
-                self_or(&target, classified)
-            } else {
-                classified
-            };
-            (
-                Some(MasterRelationship { target, kind }),
-                resolved.is_some(),
-            )
-        } else if let Some(parent_index) = rec.parent_ifindex {
-            let resolved = name_by_index.get(&parent_index);
-            let target = resolved
-                .cloned()
-                .unwrap_or_else(|| format!("ifindex:{parent_index}"));
-            let classified = if resolved.is_some() {
-                classify_master(&target, &type_by_name)
-            } else {
-                MasterKind::Unresolved
-            };
-            let kind = if resolved.is_some() {
-                self_or(&target, classified)
-            } else {
-                classified
-            };
-            (
-                Some(MasterRelationship { target, kind }),
-                resolved.is_some(),
-            )
-        } else {
-            (None, false)
-        };
-        let (parent_interface, member_of) = match master_relationship.as_ref() {
-            Some(rel) if rel.kind == MasterKind::Parent && relationship_target_is_name => {
-                (Some(rel.target.clone()), None)
-            }
-            Some(rel) if rel.kind == MasterKind::Lag && relationship_target_is_name => {
-                (None, Some(rel.target.clone()))
-            }
-            _ => (None, None),
-        };
+
+        let parent_resolution = resolve_reference(
+            rec.parent_interface.as_ref(),
+            rec.parent_ifindex,
+            &name_by_index,
+            &eligible_names,
+            name,
+        );
+        let master_resolution = resolve_reference(
+            rec.master_interface.as_ref(),
+            rec.master_ifindex,
+            &name_by_index,
+            &eligible_names,
+            name,
+        );
+        let parent_relationship = parent_resolution
+            .as_ref()
+            .map(|resolution| MasterRelationship {
+                target: resolution.target.clone(),
+                kind: if resolution.status.is_resolved() {
+                    MasterKind::Parent
+                } else {
+                    MasterKind::Unresolved
+                },
+            });
+        let master_relationship = master_resolution
+            .as_ref()
+            .map(|resolution| MasterRelationship {
+                target: resolution.target.clone(),
+                kind: classify_master_relationship(rec, resolution, &zif_type_by_name),
+            });
+        let parent_interface = parent_relationship
+            .as_ref()
+            .and_then(|rel| (rel.kind == MasterKind::Parent).then_some(rel.target.clone()));
+        let member_of = master_relationship
+            .as_ref()
+            .and_then(|rel| (rel.kind == MasterKind::Lag).then_some(rel.target.clone()));
+
         let payload = InterfaceStatePayload {
             interface_name: name.clone(),
             normalized_name: None,
@@ -747,12 +1029,15 @@ pub fn normalize_frr_interface_json(
             description,
             parent_interface,
             member_of,
+            parent_relationship: parent_relationship.clone(),
             master_relationship: master_relationship.clone(),
             source_conflicts: vec![],
             ip_addresses: Some(ip4.clone()),
             ipv6_addresses: Some(ip6.clone()),
         };
-        let observed_fields: [(&str, FieldAvailability); 7] = [
+
+        let mut local_coverage: BTreeMap<String, FieldCoverage> = BTreeMap::new();
+        let observed_fields: [(&str, FieldAvailability); 9] = [
             ("administrative_state", admin.state),
             ("operational_state", oper.state),
             ("ifindex", ifindex.state),
@@ -760,69 +1045,121 @@ pub fn normalize_frr_interface_json(
             ("mtu", mtu.state),
             ("speed", speed.state),
             ("mac_address", mac.state),
+            ("ip_addresses", ip4.state),
+            ("ipv6_addresses", ip6.state),
         ];
-        let mut missing_fields = vec![];
-        for (fname, st) in observed_fields {
-            let e = coverage.entry(fname.to_string()).or_default();
-            match st {
-                FieldAvailability::Known => e.known += 1,
-                FieldAvailability::Unknown => e.unknown += 1,
-                FieldAvailability::Unsupported => e.unsupported += 1,
-                FieldAvailability::Invalid => e.invalid += 1,
-            }
-            if st != FieldAvailability::Known && missing_fields.len() < 32 {
-                missing_fields.push(fname.to_string());
+        for (fname, state) in observed_fields {
+            record_field_state(&mut coverage, fname, state);
+            record_field_state(&mut local_coverage, fname, state);
+        }
+
+        let pseudo = rec.pseudo_interface == Some(true);
+        let mut required_missing = vec![];
+        if !pseudo {
+            for (fname, state) in [
+                ("administrative_state", admin.state),
+                ("operational_state", oper.state),
+                ("ifindex", ifindex.state),
+                ("interface_type", itype.state),
+                ("mtu", mtu.state),
+            ] {
+                if state != FieldAvailability::Known {
+                    required_missing.push(fname.to_string());
+                }
             }
         }
-        for (fname, field) in [("ip_addresses", &ip4), ("ipv6_addresses", &ip6)] {
-            coverage.entry(fname.to_string()).or_default().record(field);
-            if field.state != FieldAvailability::Known && missing_fields.len() < 32 {
-                missing_fields.push(fname.to_string());
+        let mut missing_fields = required_missing.clone();
+        if malformed_addrs > 0 && missing_fields.len() < 32 {
+            missing_fields.push("ip_addresses".into());
+            missing_fields.push("ipv6_addresses".into());
+        } else {
+            if ip4.state == FieldAvailability::Invalid && missing_fields.len() < 32 {
+                missing_fields.push("ip_addresses".into());
+            }
+            if ip6.state == FieldAvailability::Invalid && missing_fields.len() < 32 {
+                missing_fields.push("ipv6_addresses".into());
             }
         }
+        missing_fields.truncate(32);
+
         let mut qnotes = vec![];
-        if rec.pseudo_interface == Some(true) {
+        if pseudo {
             qnotes.push("pseudo-interface record has partial operational detail".into());
         }
-        if parent_ref_contradicts || master_ref_contradicts {
-            qnotes.push(
-                "explicit and numeric parent/master references contradict; relationship unresolved"
-                    .into(),
-            );
+        for (label, resolution) in [
+            ("parent", parent_resolution.as_ref()),
+            ("master", master_resolution.as_ref()),
+        ] {
+            let Some(resolution) = resolution else {
+                continue;
+            };
+            match resolution.status {
+                ReferenceStatus::Resolved => {}
+                ReferenceStatus::Missing => qnotes.push(format!(
+                    "{label} reference target '{}' is not an eligible interface in this observation; relationship unresolved",
+                    resolution.target
+                )),
+                ReferenceStatus::Ambiguous => qnotes.push(format!(
+                    "{label} reference uses duplicate kernel ifindex evidence; relationship unresolved"
+                )),
+                ReferenceStatus::Invalid => qnotes.push(format!(
+                    "{label} reference is invalid; relationship unresolved"
+                )),
+                ReferenceStatus::Contradictory => qnotes.push(format!(
+                    "explicit and numeric {label} references contradict; relationship unresolved"
+                )),
+                ReferenceStatus::SelfReference => qnotes.push(format!(
+                    "{label} reference points to the interface itself; relationship unresolved"
+                )),
+            }
         }
         if let Some(rel) = &master_relationship {
-            if rel.kind == MasterKind::Unresolved {
+            if rel.kind == MasterKind::Unresolved
+                && master_resolution
+                    .as_ref()
+                    .is_some_and(|r| r.status.is_resolved())
+            {
                 qnotes.push(
-                    "parentIfindex target/type not established in this observation; relationship unresolved"
+                    "master target type or slave-type evidence is insufficient/contradictory; relationship unresolved"
                         .into(),
                 );
-            } else {
-                qnotes.push(format!(
-                    "parentIfindex resolved within the same observation as {:?}",
-                    rel.kind
-                ));
             }
         }
         if rec
             .interface_slave_type
             .as_deref()
-            .is_some_and(|v| v != "None")
+            .is_some_and(|v| v.eq_ignore_ascii_case("vrf"))
+        {
+            qnotes.push(
+                "interfaceSlaveType 'Vrf' is represented by the subject VRF binding, not a master edge"
+                    .into(),
+            );
+        }
+        if let Some(detail) = rec.interface_type_detail.as_deref()
+            && detail != "None"
         {
             qnotes.push(format!(
-                "interfaceSlaveType '{}' decoded as evidence; relationship classification uses the resolved target type",
-                rec.interface_slave_type.as_deref().unwrap_or_default()
+                "interfaceType detail '{}' decoded as zebra interface detail; canonical type uses the FRR type field",
+                sanitize_bounded(detail, 80)
             ));
         }
-        if rec
-            .interface_type_detail
-            .as_deref()
-            .is_some_and(|v| v != "None")
-        {
-            qnotes.push(format!(
-                "interfaceType detail '{}' decoded as kernel detail; canonical type uses the FRR type field",
-                rec.interface_type_detail.as_deref().unwrap_or_default()
-            ));
-        }
+
+        let relationship_unresolved = parent_relationship
+            .iter()
+            .chain(master_relationship.iter())
+            .any(|rel| rel.kind == MasterKind::Unresolved);
+        let semantic_gap = !required_missing.is_empty()
+            || malformed_addrs > 0
+            || address_entries_omitted > 0
+            || relationship_unresolved;
+        let completeness = if obs.capture.outcome == CaptureOutcome::Unknown {
+            Completeness::Unknown
+        } else if obs.capture.outcome == CaptureOutcome::Complete && !semantic_gap {
+            Completeness::Complete
+        } else {
+            Completeness::Partial
+        };
+
         let fields = match serde_json::to_value(&payload) {
             Ok(v) => v,
             Err(e) => {
@@ -832,16 +1169,6 @@ pub fn normalize_frr_interface_json(
                 }
                 continue;
             }
-        };
-        let completeness = if obs.capture.outcome == CaptureOutcome::Complete
-            && missing_fields.is_empty()
-            && malformed_addrs == 0
-        {
-            Completeness::Complete
-        } else if obs.capture.outcome == CaptureOutcome::Unknown {
-            Completeness::Unknown
-        } else {
-            Completeness::Partial
         };
         let mut fact = TypedFact {
             schema_version: crate::typed_facts::SCHEMA_VERSION,
@@ -881,7 +1208,7 @@ pub fn normalize_frr_interface_json(
             quality: Quality {
                 completeness,
                 missing_fields,
-                notes: qnotes,
+                notes: finish_fact_quality_notes(qnotes),
             },
             trust: TrustClass::DeviceAsserted,
             authority: None,
@@ -905,7 +1232,7 @@ pub fn normalize_frr_interface_json(
             mac_raw: rec.hardware_address.clone(),
             master_raw: master_relationship
                 .as_ref()
-                .map(|rel| format!("{} ({:?})", rel.target, rel.kind)),
+                .map(|rel| format!("master {} ({:?})", rel.target, rel.kind)),
             vlan_raw: None,
             ip_addresses: v4,
             ipv6_addresses: v6,
@@ -920,48 +1247,109 @@ pub fn normalize_frr_interface_json(
             }
             continue;
         }
+        for (fname, counts) in local_coverage {
+            let aggregate = validated_coverage.entry(fname).or_default();
+            aggregate.known += counts.known;
+            aggregate.unknown += counts.unknown;
+            aggregate.unsupported += counts.unsupported;
+            aggregate.invalid += counts.invalid;
+        }
+        entities_accepted += 1;
         facts.push(fact);
     }
 
+    let mut status_facts_emitted = 0usize;
     if facts.is_empty() {
-        let f = status_fact(
-            obs,
-            PayloadState::Empty,
-            "no interface records in structured observation",
-            evidence(),
-        );
+        let (state, note) = if decoded.is_empty() {
+            (
+                PayloadState::Empty,
+                "structured observation decoded successfully and contained no interface records"
+                    .to_string(),
+            )
+        } else if output_facts_omitted > 0
+            && invalid_entities == 0
+            && entities_omitted == 0
+            && facts_rejected == 0
+        {
+            (
+                PayloadState::OutputBudgetExhausted,
+                format!(
+                    "structured observation decoded {records_decoded} interface records, but the effective output-fact budget exhausted before any fact was emitted ({output_facts_omitted} omitted)"
+                ),
+            )
+        } else {
+            (
+                PayloadState::NoUsableRecords,
+                format!(
+                    "structured observation decoded {records_decoded} interface records but produced no usable validated entity fact (invalid entities={invalid_entities}, entities omitted={entities_omitted}, validation rejections={facts_rejected}, output-budget omissions={output_facts_omitted})"
+                ),
+            )
+        };
+        let status_completeness =
+            if state == PayloadState::Empty && obs.capture.outcome == CaptureOutcome::Complete {
+                Completeness::Complete
+            } else if state == PayloadState::OutputBudgetExhausted {
+                Completeness::Partial
+            } else {
+                Completeness::Unknown
+            };
+        let f = status_fact(obs, state, status_completeness, &note, evidence());
         if f.validate().is_ok() {
+            status_facts_emitted = 1;
             facts.push(f);
         } else {
             facts_rejected += 1;
         }
     }
-    let mut notes = vec![
-        "standalone FRR structured evidence; not SONiC or Cumulus qualification evidence".into(),
-        "speed interpreted as Mbps according to the FRR interface model".into(),
-        "parentIfindex is diagnostic evidence only; no relationship is inferred without a named target".into(),
-    ];
+
+    let mut notes = Vec::new();
+    append_bounded_note(
+        &mut notes,
+        "standalone FRR structured evidence; not SONiC or Cumulus qualification evidence",
+    );
+    append_bounded_note(
+        &mut notes,
+        "speed interpreted as Mbps according to the FRR interface model",
+    );
+    append_bounded_note(
+        &mut notes,
+        "FRR parent references are lower-link evidence; master references are bridge/bond slave evidence only",
+    );
+    append_bounded_note(
+        &mut notes,
+        format!(
+            "requirements revision {} exempts pseudo interfaces from absent operational core fields",
+            FRR_JSON_REQUIREMENT_REVISION
+        ),
+    );
     if entities_omitted > 0 {
-        notes.push(format!(
-            "{entities_omitted} entities omitted at resource limit"
-        ));
-    }
-    if output_facts_omitted > 0 {
-        notes.push(format!(
-            "{output_facts_omitted} facts omitted at effective output-fact budget"
-        ));
-    }
-    if facts_rejected > 0 {
-        notes.push(format!(
-            "{facts_rejected} facts rejected by canonical validation"
-        ));
-        notes.extend(
-            rejected_samples
-                .into_iter()
-                .map(|s| format!("rejected: {s}")),
+        append_bounded_note(
+            &mut notes,
+            format!("{entities_omitted} entities omitted at resource limit"),
         );
     }
-    let interfaces_observed = diagnostics.len();
+    if output_facts_omitted > 0 {
+        append_bounded_note(
+            &mut notes,
+            format!("{output_facts_omitted} facts omitted at effective output-fact budget"),
+        );
+    }
+    if facts_rejected > 0 {
+        append_bounded_note(
+            &mut notes,
+            format!("{facts_rejected} facts rejected by canonical validation"),
+        );
+        for sample in rejected_samples.into_iter().take(8) {
+            append_bounded_note(&mut notes, format!("rejected: {sample}"));
+        }
+    }
+    if addresses_omitted_total > 0 {
+        append_bounded_note(
+            &mut notes,
+            format!("{addresses_omitted_total} address entries omitted at bounded budget"),
+        );
+    }
+
     let facts_emitted = facts.len();
     NormalizationOutput {
         facts,
@@ -969,7 +1357,12 @@ pub fn normalize_frr_interface_json(
         report: NormalizationReport {
             nos: "frr",
             applicability: "frr structured show-interface-json",
-            interfaces_observed,
+            interfaces_observed: entities_accepted,
+            records_decoded: Some(records_decoded),
+            entities_encountered: Some(records_decoded),
+            entities_accepted: Some(entities_accepted),
+            status_facts_emitted: Some(status_facts_emitted),
+            validated_field_coverage: Some(validated_coverage),
             expected_interface_total: None,
             facts_emitted,
             duplicate_ifnames: 0,
@@ -992,7 +1385,7 @@ pub fn normalize_frr_interface_json(
             conflicts_omitted: 0,
             context_error: None,
             capture_skew_seconds: None,
-            notes,
+            notes: finish_bounded_notes(notes),
         },
     }
 }
@@ -1077,12 +1470,13 @@ mod tests {
             eth0.ipv6_addresses.as_ref().unwrap().value.as_deref(),
             Some(Vec::<String>::new().as_slice())
         );
-        let eth0_master = eth0
-            .master_relationship
+        let eth0_parent = eth0
+            .parent_relationship
             .as_ref()
             .expect("parentIfindex evidence must be preserved");
-        assert_eq!(eth0_master.target, "ifindex:21");
-        assert_eq!(eth0_master.kind, MasterKind::Unresolved);
+        assert_eq!(eth0_parent.target, "ifindex:21");
+        assert_eq!(eth0_parent.kind, MasterKind::Unresolved);
+        assert_eq!(eth0.master_relationship, None);
         assert_eq!(eth0.member_of, None);
         assert_eq!(eth0.parent_interface, None);
         assert_eq!(out.report.expected_interface_total, None);
@@ -1195,7 +1589,7 @@ mod tests {
     }
 
     #[test]
-    fn same_observation_parent_ifindex_resolution_establishes_lag_membership() {
+    fn same_observation_master_ifindex_resolution_establishes_lag_membership() {
         let json = r#"{
           "bond0": {
             "administrativeStatus": "up",
@@ -1204,7 +1598,8 @@ mod tests {
             "index": 10,
             "mtu": 1500,
             "speed": 20000,
-            "type": "Bond"
+            "type": "Bond",
+            "interfaceType": "bond"
           },
           "eth9": {
             "administrativeStatus": "up",
@@ -1215,7 +1610,7 @@ mod tests {
             "speed": 10000,
             "type": "Ethernet",
             "interfaceSlaveType": "Bond",
-            "parentIfindex": 10
+            "masterIfindex": 10
           }
         }"#;
         let out = normalize_frr_interface_json(&obs(json), NormalizerLimits::default());
@@ -1365,8 +1760,8 @@ mod tests {
             .map(payload)
             .expect("eth9 payload");
         let rel = eth9
-            .master_relationship
-            .expect("unresolved evidence retained");
+            .parent_relationship
+            .expect("unresolved parent evidence retained");
         assert_eq!(rel.target, "bond0");
         assert_eq!(rel.kind, MasterKind::Unresolved);
         assert_eq!(eth9.member_of, None);
@@ -1490,13 +1885,15 @@ mod tests {
             success["acquisition"]["contract"].as_str().unwrap(),
             FRR_JSON_ACQUISITION_CONTRACT
         );
-        // Coverage honesty: the success case reports the genuine observed
-        // entity count with an explicitly unknown denominator — never a
-        // fabricated total derived from parsed rows.
+        // Coverage honesty: a complete decoded object map has a real
+        // population denominator; partial/failed acquisitions remain unknown.
         let cov = &success["entity_coverage"];
         assert_eq!(cov["observed"].as_u64().unwrap(), 4);
-        assert!(cov["expected_total"].is_null());
-        assert_eq!(cov["denominator"].as_str().unwrap(), "unknown");
+        assert_eq!(cov["expected_total"].as_u64().unwrap(), 4);
+        assert_eq!(
+            cov["denominator"].as_str().unwrap(),
+            "complete decoded object map"
+        );
         // No case may claim authoritative projection or baseline evaluation.
         // Cases that never reach normalization correctly present no
         // projection at all ("none"/absent) rather than a fake shadow result.
@@ -1511,6 +1908,156 @@ mod tests {
                 assert_eq!(b, "not_evaluated");
             }
         }
+    }
+
+    #[test]
+    fn bn02404_repro_all_rejected_population_is_not_empty_table() {
+        let json = r#"{
+          "bad\nname": {"administrativeStatus":"up","operationalStatus":"up","index":2}
+        }"#;
+        let out = normalize_frr_interface_json(&obs(json), NormalizerLimits::default());
+        assert_ne!(
+            out.facts[0].payload.state,
+            Some(PayloadState::Empty),
+            "a nonempty population rejected for invalid identity must not masquerade as an empty table"
+        );
+        assert_eq!(out.report.invalid_entities, 1);
+    }
+
+    #[test]
+    fn bn02404_repro_three_duplicate_indices_never_resolve() {
+        let json = r#"{
+          "bond0": {"administrativeStatus":"up","operationalStatus":"up","index":10,"type":"Bond"},
+          "eth1": {"administrativeStatus":"up","operationalStatus":"up","index":7,"type":"Ethernet"},
+          "eth2": {"administrativeStatus":"up","operationalStatus":"up","index":7,"type":"Ethernet"},
+          "eth3": {"administrativeStatus":"up","operationalStatus":"up","index":7,"type":"Ethernet"},
+          "eth4": {"administrativeStatus":"up","operationalStatus":"up","index":8,"type":"Ethernet","parentIfindex":7}
+        }"#;
+        // Three duplicate claimants must never collapse to the last one.
+        let out = normalize_frr_interface_json(&obs(json), NormalizerLimits::default());
+        let eth4 = out
+            .facts
+            .iter()
+            .find(|f| f.subject.entity.as_deref() == Some("eth4"))
+            .map(payload)
+            .expect("eth4 payload");
+        let rel = eth4
+            .parent_relationship
+            .expect("parent relationship evidence");
+        assert_eq!(rel.kind, MasterKind::Unresolved);
+        assert_eq!(eth4.parent_interface, None);
+    }
+
+    #[test]
+    fn bn02404_repro_truncated_family_is_not_observed_none() {
+        let addrs: Vec<_> = (0..64)
+            .map(|i| serde_json::json!({"address": format!("10.0.0.{i}/32")}))
+            .chain(std::iter::once(
+                serde_json::json!({"address": "2001:db8::1/64"}),
+            ))
+            .collect();
+        let json = serde_json::json!({
+            "eth0": {
+                "administrativeStatus":"up",
+                "operationalStatus":"up",
+                "index":2,
+                "type":"Ethernet",
+                "ipAddresses": addrs
+            }
+        })
+        .to_string();
+        let out = normalize_frr_interface_json(&obs(&json), NormalizerLimits::default());
+        let eth0 = payload(&out.facts[0]);
+        let v6 = eth0.ipv6_addresses.as_ref().expect("ipv6 field");
+        assert_ne!(
+            v6.state,
+            FieldAvailability::Known,
+            "an IPv6 entry beyond the retained boundary must not fabricate an empty IPv6 family"
+        );
+        assert_eq!(out.report.addresses_omitted, 1);
+    }
+
+    #[test]
+    fn bn02404_repro_malformed_capture_timestamp_is_rejected() {
+        let mut capture = obs("{}");
+        capture.capture =
+            CommandCapture::new("{}", CaptureOutcome::Complete).captured_at("not-a-timestamp");
+        let out = normalize_frr_interface_json(&capture, NormalizerLimits::default());
+        assert_eq!(
+            out.facts[0].payload.state,
+            Some(PayloadState::InvalidInput),
+            "invalid capture metadata must fail closed"
+        );
+        assert!(out.facts[0].validate().is_ok());
+    }
+
+    #[test]
+    fn bn02404_repro_bond_parent_is_lower_layer_not_lag_membership() {
+        let json = r#"{
+          "bond0": {"administrativeStatus":"up","operationalStatus":"up","index":10,"type":"Bond"},
+          "bond0.100": {"administrativeStatus":"up","operationalStatus":"up","index":11,"type":"Vlan","parentIfindex":10}
+        }"#;
+        let out = normalize_frr_interface_json(&obs(json), NormalizerLimits::default());
+        let vlan = out
+            .facts
+            .iter()
+            .find(|f| f.subject.entity.as_deref() == Some("bond0.100"))
+            .map(payload)
+            .expect("vlan payload");
+        assert_eq!(vlan.member_of, None);
+        assert_eq!(vlan.parent_interface.as_deref(), Some("bond0"));
+        assert_eq!(
+            vlan.parent_relationship.map(|r| r.kind),
+            Some(MasterKind::Parent)
+        );
+        assert_eq!(vlan.master_relationship, None);
+    }
+
+    #[test]
+    fn simultaneous_parent_and_master_relationships_remain_distinct() {
+        let json = r#"{
+          "bond0": {"administrativeStatus":"up","operationalStatus":"up","index":10,"type":"Bond"},
+          "br0": {"administrativeStatus":"up","operationalStatus":"up","index":20,"type":"Bridge","interfaceType":"bridge"},
+          "eth1": {
+            "administrativeStatus":"up","operationalStatus":"up","index":11,"type":"Ethernet",
+            "interfaceSlaveType":"Bridge","masterIfindex":20,"parentIfindex":10
+          }
+        }"#;
+        let out = normalize_frr_interface_json(&obs(json), NormalizerLimits::default());
+        let eth1 = out
+            .facts
+            .iter()
+            .find(|f| f.subject.entity.as_deref() == Some("eth1"))
+            .map(payload)
+            .expect("eth1 payload");
+        assert_eq!(eth1.parent_interface.as_deref(), Some("bond0"));
+        let parent = eth1.parent_relationship.expect("parent relationship");
+        assert_eq!(parent.target, "bond0");
+        assert_eq!(parent.kind, MasterKind::Parent);
+        let master = eth1.master_relationship.expect("master relationship");
+        assert_eq!(master.target, "br0");
+        assert_eq!(master.kind, MasterKind::Bridge);
+        assert_eq!(eth1.member_of, None);
+    }
+
+    #[test]
+    fn bn02404_repro_contradictory_slave_and_target_type_is_unresolved() {
+        let json = r#"{
+          "br0": {"administrativeStatus":"up","operationalStatus":"up","index":10,"type":"Bridge","interfaceType":"bridge"},
+          "eth1": {"administrativeStatus":"up","operationalStatus":"up","index":11,"type":"Ethernet","interfaceSlaveType":"Bond","masterIfindex":10}
+        }"#;
+        let out = normalize_frr_interface_json(&obs(json), NormalizerLimits::default());
+        let eth1 = out
+            .facts
+            .iter()
+            .find(|f| f.subject.entity.as_deref() == Some("eth1"))
+            .map(payload)
+            .expect("eth1 payload");
+        assert_eq!(eth1.member_of, None);
+        assert_eq!(
+            eth1.master_relationship.map(|r| r.kind),
+            Some(MasterKind::Unresolved)
+        );
     }
 
     #[test]

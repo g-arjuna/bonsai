@@ -1,0 +1,29 @@
+ROOT PYTHON (pytest -q -rs)
+............................................................             [100%]
+60 passed in 6.93s
+
+SDK PYTHON (pytest -q -rs)
+........................................................................ [ 22%]
+........................................................................ [ 45%]
+................s....................................................... [ 67%]
+........................................................................ [ 90%]
+...............................                                          [100%]
+=============================== warnings summary ===============================
+tests/test_embeddings.py::test_compute_spectral_embedding_output_shape
+tests/test_embeddings.py::test_compute_spectral_embedding_pads_small_graph
+tests/test_embeddings.py::test_compute_spectral_embedding_isolated_device
+tests/test_embeddings.py::test_compute_spectral_embedding_star_topology
+tests/test_embeddings.py::test_compute_spectral_embedding_reproducible
+tests/test_embeddings.py::test_compute_spectral_embedding_reproducible
+tests/test_embeddings.py::test_run_embedding_pipeline_end_to_end
+  /home/arjuna/Desktop/bonsai-bn024-04/.venv/lib/python3.12/site-packages/sklearn/manifold/_spectral_embedding.py:366: RuntimeWarning: k >= N for N * N square matrix. Attempting to use scipy.linalg.eigh instead.
+    _, diffusion_map = eigsh(
+
+tests/test_embeddings.py::test_compute_spectral_embedding_isolated_device
+  /home/arjuna/Desktop/bonsai-bn024-04/.venv/lib/python3.12/site-packages/sklearn/manifold/_spectral_embedding.py:324: UserWarning: Graph is not fully connected, spectral embedding may not work as expected.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_gnn_scaffolding.py:303: torch is present; skipping no-torch path
+318 passed, 1 skipped, 1 deselected, 8 warnings in 24.73s
