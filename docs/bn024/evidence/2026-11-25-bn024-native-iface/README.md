@@ -96,3 +96,69 @@ here is authority-eligible.
   match (see above).
 - Perf: `interface_normalizer::perf::fixture_normalization_throughput`
   (ignored by default; run explicitly) — see run record below.
+
+## Review-fix pass (Stages A–E, post-`1130ef1`)
+
+Confirmed review findings A1–A7 addressed in the normalizer/ABI:
+
+- **A1 capture completeness**: `CaptureOutcome` per source command
+  (Complete/Partial/Unavailable/Failed/TimedOut/Truncated/Unsupported/
+  Unknown). Unusable captures are never parsed; `Unknown` parses but
+  caps every fact at `Completeness::Unknown`; degraded outcomes cap at
+  `Partial`. Entity/field conflicts and omissions also downgrade
+  completeness — `Complete` is claimed only when nothing is missing.
+- **A2 resource limits**: entity/address/unparsed/conflict bounds are
+  counted in `NormalizationReport` (`entities_omitted`,
+  `addresses_omitted`, `invalid_entities`, `facts_rejected`), never
+  silent; oversized input (>8 MiB) is refused via an `InvalidInput`
+  status fact.
+- **A3 per-source conflicts**: cross-source disagreements are preserved
+  as `SourceFieldConflict` evidence on the payload
+  (`source_conflicts`) with effective/alternate source+value and
+  resolution — never collapsed by first-wins.
+- **A4 identity/relationships**: `member_of` is populated ONLY for
+  independently-established LAG aggregates; `parent_interface` for
+  physical parents; `master_relationship` records the classified
+  target kind (Lag/Bridge/Vrf/Parent/Unresolved) for every reported
+  master.
+- **A5 admin vs operational**: admin state and operational state are
+  separate `ObservedField`s; iproute2 header `state` is operational
+  evidence (upstream ignores it — see oracle deviations), vtysh
+  "line protocol" remains preferred; admin-down never implies
+  oper-down.
+- **A6 address validation**: IPv4/IPv6 entries validated per family;
+  any invalid entry marks the whole address field `Invalid` (never a
+  typed fact containing it); MAC normalized/validated.
+- **A7 pre-return validation**: every emitted fact is validated
+  against the canonical ABI; failures are counted in
+  `report.facts_rejected`, never emitted.
+
+Stage B seam: `NormalizationReport.applicability` records the
+qualified profile scope (`platform=cumulus|sonic version=all`) —
+provenance for profile-registry routing, explicitly NOT release
+qualification (`version: all` remains an upstream selector claim;
+unknown device release is noted, `release_raw: None` on fixtures).
+
+Stage C: manifest entry added for the committed fixture split
+(`suzieq-oss:tests/integration/texttfsm/input/cl_interfaces.txt`,
+`test_fixture_redistribution`, hash-verified against the pinned
+checkout); `interface_oracle.py compare` now understands the typed
+payload (`member_of`/`parent_interface`/`master_relationship.target`,
+iproute2 operstate evidence, `::1/128` retention) and prints
+documented deviations separately from mismatches. Result on the
+genuine fixture: **28/28 interfaces, all compared fields match**,
+16 documented deviations (15 iproute2-operstate + 1 ::1/128).
+
+Stage D: evidence digests are computed once per observation (not per
+fact); the perf harness borrows fixture strings (no `Box::leak`).
+
+Stage E: `AuthorityGrant::for_fact` hardened — requires a
+resolver-attested resolution with `may_update_authoritative_state`,
+device/scope match, and binds every subject/source axis; attestation
+is never serialized. `PayloadState::CaptureFailed` added and treated
+as degraded.
+
+Fixture release honesty: `tests/fixtures/bn024/interface-cumulus/`
+remains the only committed upstream-derived content; `PROVENANCE.md`
+records origin/revision/sha256/split boundary and the manifest entry
+above is its machine-checkable counterpart.

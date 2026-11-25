@@ -1654,6 +1654,21 @@
       "review_status": "pending_review"
     },
     {
+      "source_id": "suzieq-oss:tests/integration/texttfsm/input/cl_interfaces.txt",
+      "upstream_repository": "https://github.com/netenglabs/suzieq",
+      "immutable_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+      "upstream_path": "tests/integration/texttfsm/input/cl_interfaces.txt",
+      "content_sha256": "f1384d1b2a569b84e5b6db95bf0c07e479679a0b58c9209de7c4d0292d6ca28e",
+      "content_kind": "file",
+      "license_identifier": "Apache-2.0",
+      "license_evidence": "LICENSE file at pinned revision (Apache License 2.0, sha256:c71d239df91726fc…); upstream test data under suzieq/tests covered by the repository Apache-2.0 grant",
+      "required_notice": "Apache-2.0 redistribution: retain upstream copyright and license notice. The committed split fixtures carry tests/fixtures/bn024/interface-cumulus/PROVENANCE.md recording origin, pinned revision, sha256 and split boundary; upstream LICENSE text is retained via the suzieq-oss:LICENSE manifest entry.",
+      "usage_classification": "test_fixture_redistribution",
+      "local_destination": "tests/fixtures/bn024/interface-cumulus",
+      "modification_status": "modified",
+      "review_status": "approved_reuse"
+    },
+    {
       "source_id": "ntc-templates-license",
       "upstream_repository": "https://github.com/networktocode/ntc-templates",
       "immutable_revision": "06fa33389fbcca31cd59aac5fd5cb2ce5c900939",
