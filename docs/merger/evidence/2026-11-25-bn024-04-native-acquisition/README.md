@@ -138,11 +138,12 @@ compare/write admission, degraded-versus-usable retention, bounded admission
 lifecycle, subprocess enforcement, blocking normalization, operator DTOs and
 browser failure/coverage semantics. Focused corrected-candidate evidence:
 
-- Rust integration binary `bn02404_native_interface_api`: **7 passed, 0 failed,
-  1 ignored live-gated test** (22.74 s execution). This includes canonical
+- Rust integration binary `bn02404_native_interface_api`: **8 passed, 0 failed,
+  1 ignored live-gated test** (19.93 s execution in the final regression run). This includes canonical
   address-reuse/fact-transfer rejection, concurrent stale/newer persistence,
   degraded evidence preserving last usable state, scoped authorization,
-  invalidation and restart persistence.
+  invalidation, restart persistence, deterministic old/new failure-success ordering
+  and exact-replay rejection.
 - Rust lib selection `enrichment::frr_interfaces::tests::`: **7 passed, 1
   ignored live-gated test**, including helper deadline, stdout/stderr overflow,
   inherited-pipe deadline and sequential admission-key eviction.

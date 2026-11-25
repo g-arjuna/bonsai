@@ -560,6 +560,110 @@ async fn concurrent_persistence_admits_newer_epoch_regardless_of_completion_orde
 }
 
 #[tokio::test]
+async fn stale_failure_success_and_exact_replay_are_fenced_at_persistence_boundary() {
+    let h = harness().await;
+    let mut success = fresh_evidence();
+    success.capture_started_at_ns -= 100;
+    success.captured_at_ns -= 90;
+    success.session_epoch = success.capture_started_at_ns as u64;
+    rewrite_fact_provenance(&mut success);
+    let device = target(&success.device_address, None, None);
+    persist_observation(&h.store, &success)
+        .await
+        .expect("initial successful observation");
+
+    // A failure from an acquisition that started before the admitted success
+    // may finish later, but cannot overwrite the newer successful attempt.
+    let err = bonsai::enrichment::frr_interfaces::record_acquisition_failure(
+        &h.store,
+        &device,
+        success.capture_started_at_ns - 10,
+        "capture_failed",
+        "older capture finished after newer success",
+    )
+    .await
+    .expect_err("older failure must be rejected at the persistence boundary");
+    assert!(err.to_string().contains("stale or replayed"));
+    let state = bonsai::enrichment::frr_interfaces::acquisition_state(&h.store, &device)
+        .await
+        .expect("decode state")
+        .expect("state");
+    assert_eq!(state.last_attempt_outcome, "success");
+
+    // A newer failure is operator-visible while preserving the last usable
+    // observation pointer.
+    let newer_failure_started = success.capture_started_at_ns + 10;
+    bonsai::enrichment::frr_interfaces::record_acquisition_failure(
+        &h.store,
+        &device,
+        newer_failure_started,
+        "capture_failed",
+        "newer capture failed",
+    )
+    .await
+    .expect("newer failure admitted");
+    let state = bonsai::enrichment::frr_interfaces::acquisition_state(&h.store, &device)
+        .await
+        .expect("decode state")
+        .expect("state");
+    assert_eq!(state.last_attempt_outcome, "failed");
+    assert_eq!(
+        state.last_successful_observation_id.as_deref(),
+        Some(success.observation_id.as_str())
+    );
+
+    // An older successful capture completing after that newer failure may be
+    // retained as older usable evidence, but it must not erase the newer
+    // latest-attempt failure.
+    let mut older_success = success.clone();
+    older_success.capture_started_at_ns = success.capture_started_at_ns + 5;
+    older_success.captured_at_ns = newer_failure_started + 20;
+    older_success.session_epoch = older_success.capture_started_at_ns as u64;
+    rewrite_fact_provenance(&mut older_success);
+    persist_observation(&h.store, &older_success)
+        .await
+        .expect("older usable evidence may be retained without altering latest failure");
+    let state = bonsai::enrichment::frr_interfaces::acquisition_state(&h.store, &device)
+        .await
+        .expect("decode state")
+        .expect("state");
+    assert_eq!(state.last_attempt_outcome, "failed");
+    assert_eq!(
+        state.last_successful_capture_started_at_ns,
+        Some(older_success.capture_started_at_ns)
+    );
+
+    // Repeating the exact same failure does not refresh freshness or attempt
+    // metadata.
+    let before = bonsai::enrichment::frr_interfaces::acquisition_state(&h.store, &device)
+        .await
+        .expect("decode state")
+        .expect("state");
+    let err = bonsai::enrichment::frr_interfaces::record_acquisition_failure(
+        &h.store,
+        &device,
+        newer_failure_started,
+        "capture_failed",
+        "exact replay",
+    )
+    .await
+    .expect_err("exact replayed failure must be rejected");
+    assert!(err.to_string().contains("stale or replayed"));
+    let after = bonsai::enrichment::frr_interfaces::acquisition_state(&h.store, &device)
+        .await
+        .expect("decode state")
+        .expect("state");
+    assert_eq!(
+        after.last_attempt_started_at_ns,
+        before.last_attempt_started_at_ns
+    );
+    assert_eq!(
+        after.last_attempt_finished_at_ns,
+        before.last_attempt_finished_at_ns
+    );
+}
+
+#[tokio::test]
 async fn degraded_interpretation_preserves_last_usable_evidence() {
     let h = harness().await;
     let observation = fresh_evidence();
