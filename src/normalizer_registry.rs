@@ -13,6 +13,10 @@
 //! shadow-only. No path in this module performs collection, I/O, graph
 //! access, authorization or authoritative projection.
 
+use crate::frr_interface_json::{
+    FRR_JSON_MAPPING_REVISION, FRR_JSON_PARSER_REVISION, FrrInterfaceJsonObservation,
+    normalize_frr_interface_json,
+};
 use crate::interface_normalizer::{
     INTERFACE_CLI_MAPPING_REVISION, INTERFACE_CLI_PARSER_REVISION, InterfaceObservation,
     NormalizationOutput, NormalizerLimits, NormalizerNos, ObservationContext,
@@ -31,6 +35,17 @@ pub enum NormalizerKind {
     /// `interface_normalizer` — the FRR `show int vrf all` +
     /// `ip -d address show` CLI observation pair.
     InterfaceFrrCli,
+    /// `interface_frr_json_normalizer` — standalone FRR
+    /// `show interface json` structured output.
+    InterfaceFrrJson,
+}
+
+/// Smallest useful versioned input extension for the interface feature:
+/// exact input variants preserve source format identity instead of an
+/// unrestricted JSON blob.
+pub enum InterfaceObservationInput<'a, 'src> {
+    CliPair(&'a InterfaceObservation<'src>),
+    FrrJson(&'a FrrInterfaceJsonObservation<'src>),
 }
 
 /// One registered normalizer binding.
@@ -205,15 +220,26 @@ impl NormalizerRegistry {
     /// normalizer, bound to its exact emitted parser/mapping revisions.
     pub fn builtin() -> Self {
         Self {
-            entries: vec![NormalizerEntry {
-                id: "interface_normalizer",
-                kind: NormalizerKind::InterfaceFrrCli,
-                qualified_families: &["sonic", "nvidia.cumulus"],
-                normalizer_revision: INTERFACE_CLI_PARSER_REVISION,
-                mapping_revision: INTERFACE_CLI_MAPPING_REVISION,
-                acquisition_kind: AcquisitionKind::CliObservation,
-                acquisition_contracts: &["vtysh_show_int_vrf_all", "ip_addr_show"],
-            }],
+            entries: vec![
+                NormalizerEntry {
+                    id: "interface_normalizer",
+                    kind: NormalizerKind::InterfaceFrrCli,
+                    qualified_families: &["sonic", "nvidia.cumulus"],
+                    normalizer_revision: INTERFACE_CLI_PARSER_REVISION,
+                    mapping_revision: INTERFACE_CLI_MAPPING_REVISION,
+                    acquisition_kind: AcquisitionKind::CliObservation,
+                    acquisition_contracts: &["vtysh_show_int_vrf_all", "ip_addr_show"],
+                },
+                NormalizerEntry {
+                    id: "interface_frr_json_normalizer",
+                    kind: NormalizerKind::InterfaceFrrJson,
+                    qualified_families: &["frr"],
+                    normalizer_revision: FRR_JSON_PARSER_REVISION,
+                    mapping_revision: FRR_JSON_MAPPING_REVISION,
+                    acquisition_kind: AcquisitionKind::CliObservation,
+                    acquisition_contracts: &["frr_vtysh_show_interface_json"],
+                },
+            ],
         }
     }
 
@@ -261,6 +287,77 @@ impl NormalizerRegistry {
             None,
             DispatchMode::Experimental,
             |limits| normalize_with_limits(obs, limits),
+        )
+    }
+
+    /// Dispatch the smallest versioned input envelope. Exact variants
+    /// preserve source-format identity; no generic JSON blob is accepted.
+    pub fn dispatch_input(
+        &self,
+        receipt: &SelectionReceipt,
+        feature: &str,
+        input: InterfaceObservationInput<'_, '_>,
+    ) -> Result<NormalizerRun, DispatchError> {
+        match input {
+            InterfaceObservationInput::CliPair(obs) => self.dispatch(receipt, feature, obs),
+            InterfaceObservationInput::FrrJson(obs) => {
+                self.dispatch_frr_json(receipt, feature, obs)
+            }
+        }
+    }
+
+    /// Experimental counterpart of [`Self::dispatch_input`].
+    pub fn dispatch_input_experimental(
+        &self,
+        receipt: &SelectionReceipt,
+        feature: &str,
+        input: InterfaceObservationInput<'_, '_>,
+    ) -> Result<NormalizerRun, DispatchError> {
+        match input {
+            InterfaceObservationInput::CliPair(obs) => {
+                self.dispatch_experimental(receipt, feature, obs)
+            }
+            InterfaceObservationInput::FrrJson(obs) => {
+                self.dispatch_frr_json_experimental(receipt, feature, obs)
+            }
+        }
+    }
+
+    /// Qualified dispatch of standalone-FRR structured interface JSON.
+    pub fn dispatch_frr_json(
+        &self,
+        receipt: &SelectionReceipt,
+        feature: &str,
+        obs: &FrrInterfaceJsonObservation,
+    ) -> Result<NormalizerRun, DispatchError> {
+        self.dispatch_inner(
+            receipt,
+            feature,
+            &obs.context,
+            None,
+            NormalizerKind::InterfaceFrrJson,
+            Some(obs.acquisition_contract),
+            DispatchMode::Qualified,
+            |limits| normalize_frr_interface_json(obs, limits),
+        )
+    }
+
+    /// Explicit experimental dispatch of standalone-FRR structured JSON.
+    pub fn dispatch_frr_json_experimental(
+        &self,
+        receipt: &SelectionReceipt,
+        feature: &str,
+        obs: &FrrInterfaceJsonObservation,
+    ) -> Result<NormalizerRun, DispatchError> {
+        self.dispatch_inner(
+            receipt,
+            feature,
+            &obs.context,
+            None,
+            NormalizerKind::InterfaceFrrJson,
+            Some(obs.acquisition_contract),
+            DispatchMode::Experimental,
+            |limits| normalize_frr_interface_json(obs, limits),
         )
     }
 
@@ -357,7 +454,7 @@ impl NormalizerRegistry {
                     got: actual_nos.unwrap_or(expected),
                 });
             }
-        } else {
+        } else if entry.kind != NormalizerKind::InterfaceFrrJson {
             return Err(DispatchError::PlatformNotQualified {
                 platform: profile.platform_family.clone(),
             });
@@ -537,6 +634,7 @@ fn platform_binding_error(
 fn input_kind_label(kind: NormalizerKind) -> &'static str {
     match kind {
         NormalizerKind::InterfaceFrrCli => "frr_cli_command_pair",
+        NormalizerKind::InterfaceFrrJson => "frr_show_interface_json",
     }
 }
 
@@ -739,7 +837,7 @@ fn nos_for_platform(platform_family_id: &str) -> Option<NormalizerNos> {
 mod tests {
     use super::*;
     use crate::interface_normalizer::{CaptureOutcome, CommandCapture, ObservationContext};
-    use crate::nos_features::{ProfileQuery, builtin_registry};
+    use crate::nos_features::{ProfileQuery, builtin_profiles, builtin_registry};
 
     fn obs(nos: NormalizerNos) -> InterfaceObservation<'static> {
         let mut context =
@@ -754,6 +852,91 @@ mod tests {
             vtysh: CommandCapture::new("", CaptureOutcome::Complete),
             ip_addr: CommandCapture::new("", CaptureOutcome::Complete),
             context,
+        }
+    }
+
+    fn frr_json_obs<'a>(
+        json: &'a str,
+        namespace: Option<&'a str>,
+        release: Option<&'a str>,
+    ) -> crate::frr_interface_json::FrrInterfaceJsonObservation<'a> {
+        let mut context =
+            ObservationContext::minimal("frr2", "col-1", "cap-frr-json", "2026-11-25T00:00:00Z");
+        context.session_epoch = 1;
+        context.network_namespace = namespace;
+        context.platform = Some("frr");
+        context.release_raw = release;
+        crate::frr_interface_json::FrrInterfaceJsonObservation {
+            capture: CommandCapture::new(json, CaptureOutcome::Complete),
+            context,
+            acquisition_contract: crate::frr_interface_json::FRR_JSON_ACQUISITION_CONTRACT,
+        }
+    }
+
+    fn frr_receipt(reg: &crate::nos_features::ProfileRegistry) -> SelectionReceipt {
+        reg.select_receipt(&ProfileQuery {
+            platform: "frr".into(),
+            version: "10.6.1_git".into(),
+            release: None,
+            hardware: None,
+        })
+    }
+
+    #[test]
+    fn standalone_frr_json_exact_release_dispatch_is_qualified_and_shadow_only() {
+        let json = include_str!(
+            "../tests/fixtures/bn024/interface-frr-json/show-interface-json-frr-10.6.1.json"
+        );
+        let profiles = builtin_registry();
+        let receipt = frr_receipt(&profiles);
+        assert!(matches!(receipt.selection(), Selection::Selected(_)));
+        let nr = NormalizerRegistry::builtin();
+        let obs = frr_json_obs(json, Some("default"), Some("10.6.1_git"));
+        let run = nr
+            .dispatch_frr_json(&receipt, "interfaces.frr_json", &obs)
+            .expect("genuine exact-release structured dispatch");
+        assert_eq!(run.qualification, ExecutionQualification::Qualified);
+        assert!(run.shadow_only);
+        assert_eq!(run.profile_id, "frr-10.6.1-structured-interfaces");
+        assert_eq!(
+            run.normalizer_revision,
+            crate::frr_interface_json::FRR_JSON_PARSER_REVISION
+        );
+        assert_eq!(
+            run.acquisition_contracts,
+            vec!["frr_vtysh_show_interface_json"]
+        );
+        assert_eq!(run.output.facts.len(), 4);
+        assert!(run.output.facts.iter().all(|f| f.validate().is_ok()));
+        assert!(run.output.facts.iter().all(|f| f.authority.is_none()));
+
+        let via_envelope = nr
+            .dispatch_input(
+                &receipt,
+                "interfaces.frr_json",
+                InterfaceObservationInput::FrrJson(&obs),
+            )
+            .expect("versioned input envelope dispatch");
+        assert_eq!(via_envelope.output.facts.len(), 4);
+    }
+
+    #[test]
+    fn standalone_frr_json_rejects_wrong_release_and_namespace() {
+        let json = include_str!(
+            "../tests/fixtures/bn024/interface-frr-json/show-interface-json-frr-10.6.1.json"
+        );
+        let profiles = builtin_registry();
+        let receipt = frr_receipt(&profiles);
+        let nr = NormalizerRegistry::builtin();
+        for obs in [
+            frr_json_obs(json, Some("default"), Some("10.7.0")),
+            frr_json_obs(json, Some("asic-0"), Some("10.6.1_git")),
+            frr_json_obs(json, None, Some("10.6.1_git")),
+        ] {
+            assert!(
+                nr.dispatch_frr_json(&receipt, "interfaces.frr_json", &obs)
+                    .is_err()
+            );
         }
     }
 
@@ -784,5 +967,52 @@ mod tests {
         assert!(!run.qualification_limitations.is_empty());
         assert_eq!(run.output.facts.len(), 1);
         assert!(run.output.facts.iter().all(|f| f.validate().is_ok()));
+    }
+
+    #[test]
+    fn wrong_observation_input_shape_fails_closed() {
+        let json = include_str!(
+            "../tests/fixtures/bn024/interface-frr-json/show-interface-json-frr-10.6.1.json"
+        );
+        let profiles = builtin_registry();
+        let frr_receipt = frr_receipt(&profiles);
+        let nr = NormalizerRegistry::builtin();
+
+        // The FRR JSON feature cannot consume the CLI command pair.
+        let cli = obs(NormalizerNos::Cumulus);
+        assert!(matches!(
+            nr.dispatch(&frr_receipt, "interfaces.frr_json", &cli),
+            Err(DispatchError::ObservationInputMismatch { .. })
+        ));
+
+        // Conversely, the CLI feature cannot consume structured JSON even
+        // when both are interface observations.
+        let mut reg = ProfileRegistry::new();
+        let mut p = builtin_profiles()
+            .into_iter()
+            .find(|p| p.profile_id == "cumulus-1")
+            .expect("builtin cumulus");
+        p.profile_id = "shape-contract-test".into();
+        p.version_match = "=shape-test-release".into();
+        p.release_constraint = Some(ReleaseConstraint {
+            raw: Some("shape-test-release".into()),
+            train: None,
+            build: None,
+            components: Default::default(),
+        });
+        p.verified_namespaces = vec!["default".into()];
+        p.verification = "release_qualified".into();
+        reg.register(p);
+        let receipt = reg.select_receipt(&ProfileQuery {
+            platform: "nvidia.cumulus".into(),
+            version: "shape-test-release".into(),
+            release: None,
+            hardware: None,
+        });
+        let structured = frr_json_obs(json, Some("default"), Some("shape-test-release"));
+        assert!(matches!(
+            nr.dispatch_frr_json(&receipt, "interfaces.frr_cli", &structured),
+            Err(DispatchError::ObservationInputMismatch { .. })
+        ));
     }
 }

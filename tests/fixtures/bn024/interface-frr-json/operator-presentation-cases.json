@@ -1,0 +1,17 @@
+{
+  "fixture_kind": "operator_presentation_contract",
+  "classification": "synthetic presentation fixture; not device evidence",
+  "source_feature": "interfaces.frr_json",
+  "primary_surface": "Device → Interfaces → State / Evidence / Coverage",
+  "aggregate_surface": "Data & Coverage → Native intelligence → Platform / Feature / Source",
+  "cases": [
+    {"case":"qualified_successful_observation","implementation":{"normalizer":"interface_frr_json_normalizer","parser_revision":"frr-iface-json-2026.11-r1","mapping_revision":"bn024-iface-map-2"},"applicability":{"platform":"frr","release":"10.6.1_git","namespace":"default","qualification":"qualified"},"acquisition":{"contract":"frr_vtysh_show_interface_json","outcome":"complete","freshness":"captured_at available"},"interpretation":"successful","entity_coverage":{"observed":4,"expected_total":null,"denominator":"unknown"},"field_coverage":"versioned per-field availability from NormalizationReport","projection":"shadow_only","baseline":"not_evaluated"},
+    {"case":"unqualified_experimental_observation","applicability":{"qualification":"experimental_unqualified"},"interpretation":"successful_but_not_promotable","projection":"shadow_only","limitation":"release and/or namespace qualification bypassed explicitly"},
+    {"case":"unsupported_nos_release","applicability":{"qualification":"unsupported"},"interpretation":"unsupported","safe_next_action":"do not dispatch; obtain exact release evidence or register a qualified profile"},
+    {"case":"unknown_namespace","applicability":{"namespace":null,"qualification":"unqualified"},"interpretation":"rejected","safe_next_action":"capture exact network namespace"},
+    {"case":"partial_field_interpretation","interpretation":"partial","example_entity":"eth1","missing_fields":["operational_state","ifindex","interface_type","mtu","speed","mac_address","ip_addresses","ipv6_addresses"],"projection":"shadow_only"},
+    {"case":"conflicting_source_values","interpretation":"conflicting","source_conflicts":"typed conflict records required before presentation; no authoritative winner is implied","projection":"shadow_only"},
+    {"case":"failed_or_stale_acquisition","acquisition":{"outcome":"failed_or_stale"},"interpretation":"capture_failed","entity_coverage":{"observed":0,"expected_total":null,"denominator":"unknown"},"withdrawal":"none; prior interface population is never withdrawn by a failed capture"},
+    {"case":"unsupported_feature","implementation":{"normalizer":null},"applicability":{"qualification":"unsupported"},"interpretation":"unsupported","projection":"none"}
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "hostName":"frr2",
+  "version":"10.6.1_git",
+  "name":"FRRouting",
+  "copyright":"Copyright 1996-2005 Kunihiro Ishiguro, et al.",
+  "gitInformation":"",
+  "configureLine":"'--prefix=\/usr' '--sysconfdir=\/etc' '--localstatedir=\/var' '--sbindir=\/usr\/lib\/frr' '--libdir=\/usr\/lib' '--enable-rpki' '--enable-vtysh' '--enable-multipath=64' '--enable-vty-group=frrvty' '--enable-user=frr' '--enable-group=frr' '--enable-pcre2posix' '--enable-scripting' 'CC=cc' 'CXX=c++'"
+}

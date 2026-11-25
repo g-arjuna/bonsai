@@ -154,6 +154,49 @@ First executable slice of the seam, built on the contract above:
   competing registry was created — selection reuses
   `platform_registry` canonical ids via `canonical_platform_id`.
 
+### BN-024-05 structured-source slice (2026-11-25, in progress)
+
+- Genuine standalone FRR `show interface json` evidence was captured
+  read-only from authorized lab container `clab-bonsai-bn003-vrf-frr2`
+  running FRRouting `10.6.1_git`; provenance is in
+  `tests/fixtures/bn024/interface-frr-json/PROVENANCE.md`. It is not
+  SONiC or NVIDIA Cumulus compatibility evidence.
+- `src/frr_interface_json.rs` implements exact typed decoding of the
+  FRR object-map format and reuses the shared `interface.state` typed
+  payload, evidence hashing, resource limits, diagnostics and canonical
+  fact validation. Missing values remain explicit unknowns; zero speed
+  is not fabricated as a bandwidth value.
+- FRR 10.6.1 source inspection (`zebra/interface.c`) establishes that
+  `index`, `mtu`, `speed`, `type`, `hardwareAddress`, `ipAddresses`,
+  `parentInterface`/`parentIfindex` and `masterInterface`/`masterIfindex`
+  are emitted by zebra. Speed is FRR's interface speed in Mbps; zero is
+  used when no speed is established. Optional fields are decoded for
+  schema enforcement, while genuinely unknown keys remain invalid input.
+  Format strictness is deliberate for an exact-release-qualified adapter:
+  FRR emits a fixed field set per build, so additive fields imply a
+  different (unqualified) build and are rejected as typed `invalid_input`
+  rather than silently ignored; missing optional fields within the schema
+  remain forward-compatible explicit unknowns, and wrong types for known
+  fields are format errors. Duplicate identity-bearing object keys are
+  rejected during decoding before map semantics could drop a record, and
+  contradictory explicit/numeric relationship references are preserved
+  only as unresolved evidence — never resolved into edges.
+- SuzieQ pinned @ `75198b5` has no standalone-FRR or FRR
+  `show interface json` interface normalizer: Cumulus/SONiC interfaces
+  use the text `vtysh show int vrf all` plus `ip -d address show` pair.
+  Structured FRR coverage is therefore an upstream coverage gap, and no
+  SuzieQ differential claim is made for this adapter.
+- Registry dispatch now binds exact input variants to normalizer kind;
+  a CLI-pair observation cannot execute the structured normalizer and
+  structured JSON cannot execute the CLI-pair feature.
+- Operator-facing coverage is represented by the normalization report:
+  observed entities, explicit unknown expected denominator
+  (`expected_interface_total: null`), per-field availability, capture
+  outcome, diagnostics, evidence references and shadow-only status.
+  `operator-presentation-cases.json` is a synthetic presentation contract
+  fixture covering success, experimental, unsupported, unknown namespace,
+  partial, conflict, failed/stale and unsupported-feature states; it is
+  not device evidence.
 
 ### Deferred (explicit)
 
