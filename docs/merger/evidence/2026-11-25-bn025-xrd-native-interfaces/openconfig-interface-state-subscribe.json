@@ -1,0 +1,152 @@
+{
+  "ok": true,
+  "error": null,
+  "responses": [
+    {
+      "timestamp": "1795632075569000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "Null0"
+                }
+              },
+              {
+                "name": "state"
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJjb3VudGVycyI6eyJpbi1wa3RzIjoiMCIsImluLW9jdGV0cyI6IjAiLCJpbi1tdWx0aWNhc3QtcGt0cyI6IjAiLCJpbi1icm9hZGNhc3QtcGt0cyI6IjAiLCJpbi11bmljYXN0LXBrdHMiOiIwIiwiaW4tZXJyb3JzIjoiMCIsImluLXVua25vd24tcHJvdG9zIjoiMCIsImluLWZjcy1lcnJvcnMiOiIwIiwiaW4tZGlzY2FyZHMiOiIwIiwib3V0LXBrdHMiOiIwIiwib3V0LW9jdGV0cyI6IjAiLCJvdXQtbXVsdGljYXN0LXBrdHMiOiIwIiwib3V0LWJyb2FkY2FzdC1wa3RzIjoiMCIsIm91dC11bmljYXN0LXBrdHMiOiIwIiwib3V0LWVycm9ycyI6IjAiLCJvdXQtZGlzY2FyZHMiOiIwIiwibGFzdC1yZWFkLXRpbWUiOiIwIn19"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795632075569000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "MgmtEth0/RP0/CPU0/0"
+                }
+              },
+              {
+                "name": "state"
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJjb3VudGVycyI6eyJpbi1wa3RzIjoiNDEiLCJpbi1vY3RldHMiOiIzMzQwIiwiaW4tbXVsdGljYXN0LXBrdHMiOiI2IiwiaW4tYnJvYWRjYXN0LXBrdHMiOiIwIiwiaW4tdW5pY2FzdC1wa3RzIjoiMzUiLCJpbi1lcnJvcnMiOiIwIiwiaW4tdW5rbm93bi1wcm90b3MiOiIwIiwiaW4tZmNzLWVycm9ycyI6IjAiLCJpbi1kaXNjYXJkcyI6IjAiLCJvdXQtcGt0cyI6IjEzMyIsIm91dC1vY3RldHMiOiIxNTIxMzgiLCJvdXQtbXVsdGljYXN0LXBrdHMiOiIwIiwib3V0LWJyb2FkY2FzdC1wa3RzIjoiMyIsIm91dC11bmljYXN0LXBrdHMiOiIxMzAiLCJvdXQtZXJyb3JzIjoiMCIsIm91dC1kaXNjYXJkcyI6IjAiLCJsYXN0LXJlYWQtdGltZSI6IjAifX0="
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795632076532000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "MgmtEth0/RP0/CPU0/0"
+                }
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJzdGF0ZSI6eyJvcGVuY29uZmlnLWlmLXNkbi1leHQ6Zm9yd2FyZGluZy12aWFibGUiOnRydWV9fQ=="
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795632076538000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "MgmtEth0/RP0/CPU0/0"
+                }
+              },
+              {
+                "name": "state"
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJuYW1lIjoiTWdtdEV0aDAvUlAwL0NQVTAvMCIsInR5cGUiOiJpYW5hLWlmLXR5cGU6ZXRoZXJuZXRDc21hY2QiLCJtdHUiOjE1MTQsImxvb3BiYWNrLW1vZGUiOiJOT05FIiwiZW5hYmxlZCI6dHJ1ZSwiaWZpbmRleCI6MywiYWRtaW4tc3RhdHVzIjoiVVAiLCJvcGVyLXN0YXR1cyI6IlVQIiwibGFzdC1jaGFuZ2UiOiIxNzk1NjMyMDMxMzkxNzkzOTc4IiwibG9naWNhbCI6ZmFsc2UsIm1hbmFnZW1lbnQiOnRydWUsImNwdSI6ZmFsc2UsImNvdW50ZXJzIjp7ImNhcnJpZXItdHJhbnNpdGlvbnMiOiIxIn19"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795632076538000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "Null0"
+                }
+              },
+              {
+                "name": "state"
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJuYW1lIjoiTnVsbDAiLCJ0eXBlIjoiaWFuYS1pZi10eXBlOm90aGVyIiwibXR1IjoxNTAwLCJsb29wYmFjay1tb2RlIjoiTk9ORSIsImVuYWJsZWQiOnRydWUsImlmaW5kZXgiOjIsImFkbWluLXN0YXR1cyI6IlVQIiwib3Blci1zdGF0dXMiOiJVUCIsImxhc3QtY2hhbmdlIjoiMTc5NTYzMjAxNjUxMzk3MjU3OSIsImxvZ2ljYWwiOnRydWUsIm1hbmFnZW1lbnQiOmZhbHNlLCJjcHUiOmZhbHNlLCJjb3VudGVycyI6eyJjYXJyaWVyLXRyYW5zaXRpb25zIjoiMSJ9fQ=="
+          }
+        }
+      ]
+    },
+    {
+      "sync_response": true
+    }
+  ],
+  "count": 6
+}

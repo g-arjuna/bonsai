@@ -26,6 +26,10 @@ use crate::nos_features::{
     AcquisitionKind, FeatureStatus, HardwareScope, ProfileRegistry, PromotionState,
     ReleaseConstraint, Selection, SelectionReceipt, SoftwareRelease,
 };
+use crate::xrd_openconfig_interfaces::{
+    XRD_OC_MAPPING_REVISION, XRD_OC_PARSER_REVISION, XrdOpenConfigInterfaceObservation,
+    normalize_xrd_openconfig_interfaces,
+};
 
 /// Normalizer implementations known to this registry. Ids match the
 /// `NormalizerRef.id` values profiles declare — profiles never name
@@ -38,6 +42,9 @@ pub enum NormalizerKind {
     /// `interface_frr_json_normalizer` — standalone FRR
     /// `show interface json` structured output.
     InterfaceFrrJson,
+    /// `interface_xrd_openconfig_normalizer` — Cisco XRd OpenConfig
+    /// gNMI subscribe-once interface state.
+    InterfaceXrdOpenConfig,
 }
 
 /// Smallest useful versioned input extension for the interface feature:
@@ -46,6 +53,7 @@ pub enum NormalizerKind {
 pub enum InterfaceObservationInput<'a, 'src> {
     CliPair(&'a InterfaceObservation<'src>),
     FrrJson(&'a FrrInterfaceJsonObservation<'src>),
+    XrdOpenConfig(&'a XrdOpenConfigInterfaceObservation<'src>),
 }
 
 /// One registered normalizer binding.
@@ -216,8 +224,8 @@ enum DispatchMode {
 }
 
 impl NormalizerRegistry {
-    /// The built-in registry: currently only the PR #86 interface
-    /// normalizer, bound to its exact emitted parser/mapping revisions.
+    /// The built-in registry: interface normalizers bound to their exact
+    /// emitted parser/mapping revisions.
     pub fn builtin() -> Self {
         Self {
             entries: vec![
@@ -238,6 +246,15 @@ impl NormalizerRegistry {
                     mapping_revision: FRR_JSON_MAPPING_REVISION,
                     acquisition_kind: AcquisitionKind::CliObservation,
                     acquisition_contracts: &["frr_vtysh_show_interface_json"],
+                },
+                NormalizerEntry {
+                    id: "interface_xrd_openconfig_normalizer",
+                    kind: NormalizerKind::InterfaceXrdOpenConfig,
+                    qualified_families: &["cisco.iosxr", "cisco"],
+                    normalizer_revision: XRD_OC_PARSER_REVISION,
+                    mapping_revision: XRD_OC_MAPPING_REVISION,
+                    acquisition_kind: AcquisitionKind::Gnmi,
+                    acquisition_contracts: &["xrd_openconfig_gnmi_subscribe_once_interfaces"],
                 },
             ],
         }
@@ -303,6 +320,9 @@ impl NormalizerRegistry {
             InterfaceObservationInput::FrrJson(obs) => {
                 self.dispatch_frr_json(receipt, feature, obs)
             }
+            InterfaceObservationInput::XrdOpenConfig(obs) => {
+                self.dispatch_xrd_openconfig(receipt, feature, obs)
+            }
         }
     }
 
@@ -319,6 +339,9 @@ impl NormalizerRegistry {
             }
             InterfaceObservationInput::FrrJson(obs) => {
                 self.dispatch_frr_json_experimental(receipt, feature, obs)
+            }
+            InterfaceObservationInput::XrdOpenConfig(obs) => {
+                self.dispatch_xrd_openconfig_experimental(receipt, feature, obs)
             }
         }
     }
@@ -358,6 +381,47 @@ impl NormalizerRegistry {
             Some(obs.acquisition_contract),
             DispatchMode::Experimental,
             |limits| normalize_frr_interface_json(obs, limits),
+        )
+    }
+
+    /// Qualified dispatch of Cisco XRd OpenConfig gNMI interface state.
+    /// Current built-in XRd evidence is fixture/live-lab provenance without
+    /// device-reported exact release binding, so profiles are expected to use
+    /// the experimental path until release identity is independently acquired.
+    pub fn dispatch_xrd_openconfig(
+        &self,
+        receipt: &SelectionReceipt,
+        feature: &str,
+        obs: &XrdOpenConfigInterfaceObservation,
+    ) -> Result<NormalizerRun, DispatchError> {
+        self.dispatch_inner(
+            receipt,
+            feature,
+            &obs.context,
+            None,
+            NormalizerKind::InterfaceXrdOpenConfig,
+            Some(obs.acquisition_contract),
+            DispatchMode::Qualified,
+            |limits| normalize_xrd_openconfig_interfaces(obs, limits),
+        )
+    }
+
+    /// Explicit experimental dispatch of Cisco XRd OpenConfig interface state.
+    pub fn dispatch_xrd_openconfig_experimental(
+        &self,
+        receipt: &SelectionReceipt,
+        feature: &str,
+        obs: &XrdOpenConfigInterfaceObservation,
+    ) -> Result<NormalizerRun, DispatchError> {
+        self.dispatch_inner(
+            receipt,
+            feature,
+            &obs.context,
+            None,
+            NormalizerKind::InterfaceXrdOpenConfig,
+            Some(obs.acquisition_contract),
+            DispatchMode::Experimental,
+            |limits| normalize_xrd_openconfig_interfaces(obs, limits),
         )
     }
 
@@ -454,7 +518,10 @@ impl NormalizerRegistry {
                     got: actual_nos.unwrap_or(expected),
                 });
             }
-        } else if entry.kind != NormalizerKind::InterfaceFrrJson {
+        } else if !matches!(
+            entry.kind,
+            NormalizerKind::InterfaceFrrJson | NormalizerKind::InterfaceXrdOpenConfig
+        ) {
             return Err(DispatchError::PlatformNotQualified {
                 platform: profile.platform_family.clone(),
             });
@@ -635,6 +702,7 @@ fn input_kind_label(kind: NormalizerKind) -> &'static str {
     match kind {
         NormalizerKind::InterfaceFrrCli => "frr_cli_command_pair",
         NormalizerKind::InterfaceFrrJson => "frr_show_interface_json",
+        NormalizerKind::InterfaceXrdOpenConfig => "xrd_openconfig_gnmi_interfaces",
     }
 }
 
@@ -1053,5 +1121,74 @@ mod tests {
             nr.dispatch_frr_json(&receipt, "interfaces.frr_cli", &structured),
             Err(DispatchError::ObservationInputMismatch { .. })
         ));
+    }
+
+    fn xrd_openconfig_obs<'a>(
+        json: &'a str,
+    ) -> crate::xrd_openconfig_interfaces::XrdOpenConfigInterfaceObservation<'a> {
+        let mut context =
+            ObservationContext::minimal("xrd-bn025", "col-1", "cap-xrd-oc", "2026-11-25T00:00:00Z");
+        context.session_epoch = 1;
+        context.network_namespace = Some("default");
+        context.platform = Some("cisco.iosxr");
+        context.release_raw = Some("24.4.2");
+        crate::xrd_openconfig_interfaces::XrdOpenConfigInterfaceObservation {
+            capture: CommandCapture::new(json, CaptureOutcome::Complete),
+            context,
+            acquisition_contract: crate::xrd_openconfig_interfaces::XRD_OC_ACQUISITION_CONTRACT,
+        }
+    }
+
+    #[test]
+    fn xrd_openconfig_fixture_dispatch_is_experimental_shadow_only() {
+        let json = include_str!(
+            "../tests/fixtures/bn025/xrd-openconfig-interfaces/openconfig-interface-root-subscribe-xrd-24.4.2.json"
+        );
+        let profiles = builtin_registry();
+        let receipt = profiles.select_receipt(&ProfileQuery {
+            platform: "cisco.iosxr".into(),
+            version: "24.4.2".into(),
+            release: None,
+            hardware: None,
+        });
+        assert!(matches!(receipt.selection(), Selection::Selected(_)));
+        let nr = NormalizerRegistry::builtin();
+        let obs = xrd_openconfig_obs(json);
+
+        assert!(matches!(
+            nr.dispatch_xrd_openconfig(&receipt, "interfaces.openconfig_gnmi", &obs),
+            Err(DispatchError::ProfileNotReleaseQualified { .. })
+        ));
+
+        let run = nr
+            .dispatch_xrd_openconfig_experimental(&receipt, "interfaces.openconfig_gnmi", &obs)
+            .expect("explicit experimental XRd OpenConfig fixture execution");
+        assert_eq!(
+            run.qualification,
+            ExecutionQualification::ExperimentalUnqualified
+        );
+        assert!(run.shadow_only);
+        assert!(!run.qualification_limitations.is_empty());
+        assert_eq!(
+            run.profile_id,
+            "cisco-iosxr-xrd-24.4.2-openconfig-interfaces"
+        );
+        assert_eq!(
+            run.acquisition_contracts,
+            vec!["xrd_openconfig_gnmi_subscribe_once_interfaces"]
+        );
+        assert_eq!(run.output.report.entities_accepted, Some(2));
+        assert_eq!(run.output.facts.len(), 2);
+        assert!(run.output.facts.iter().all(|f| f.validate().is_ok()));
+        assert!(run.output.facts.iter().all(|f| f.authority.is_none()));
+
+        let via_envelope = nr
+            .dispatch_input_experimental(
+                &receipt,
+                "interfaces.openconfig_gnmi",
+                InterfaceObservationInput::XrdOpenConfig(&obs),
+            )
+            .expect("versioned XRd input envelope dispatch");
+        assert_eq!(via_envelope.output.facts.len(), 2);
     }
 }

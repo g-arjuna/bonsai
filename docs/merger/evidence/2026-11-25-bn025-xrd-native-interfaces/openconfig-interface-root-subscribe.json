@@ -1,0 +1,218 @@
+{
+  "ok": true,
+  "error": null,
+  "responses": [
+    {
+      "timestamp": "1795632115611000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "Null0"
+                }
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJzdGF0ZSI6eyJjb3VudGVycyI6eyJpbi1wa3RzIjoiMCIsImluLW9jdGV0cyI6IjAiLCJpbi1tdWx0aWNhc3QtcGt0cyI6IjAiLCJpbi1icm9hZGNhc3QtcGt0cyI6IjAiLCJpbi11bmljYXN0LXBrdHMiOiIwIiwiaW4tZXJyb3JzIjoiMCIsImluLXVua25vd24tcHJvdG9zIjoiMCIsImluLWZjcy1lcnJvcnMiOiIwIiwiaW4tZGlzY2FyZHMiOiIwIiwib3V0LXBrdHMiOiIwIiwib3V0LW9jdGV0cyI6IjAiLCJvdXQtbXVsdGljYXN0LXBrdHMiOiIwIiwib3V0LWJyb2FkY2FzdC1wa3RzIjoiMCIsIm91dC11bmljYXN0LXBrdHMiOiIwIiwib3V0LWVycm9ycyI6IjAiLCJvdXQtZGlzY2FyZHMiOiIwIiwibGFzdC1yZWFkLXRpbWUiOiIwIn19fQ=="
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795632115611000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "MgmtEth0/RP0/CPU0/0"
+                }
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJzdGF0ZSI6eyJjb3VudGVycyI6eyJpbi1wa3RzIjoiNTgiLCJpbi1vY3RldHMiOiI1MDc0IiwiaW4tbXVsdGljYXN0LXBrdHMiOiI2IiwiaW4tYnJvYWRjYXN0LXBrdHMiOiIwIiwiaW4tdW5pY2FzdC1wa3RzIjoiNTIiLCJpbi1lcnJvcnMiOiIwIiwiaW4tdW5rbm93bi1wcm90b3MiOiIwIiwiaW4tZmNzLWVycm9ycyI6IjAiLCJpbi1kaXNjYXJkcyI6IjAiLCJvdXQtcGt0cyI6IjE1NCIsIm91dC1vY3RldHMiOiIxNTc2MDQiLCJvdXQtbXVsdGljYXN0LXBrdHMiOiIwIiwib3V0LWJyb2FkY2FzdC1wa3RzIjoiMyIsIm91dC11bmljYXN0LXBrdHMiOiIxNTEiLCJvdXQtZXJyb3JzIjoiMCIsIm91dC1kaXNjYXJkcyI6IjAiLCJsYXN0LXJlYWQtdGltZSI6IjAifX19"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795632115669000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "MgmtEth0/RP0/CPU0/0"
+                }
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJzdGF0ZSI6eyJvcGVuY29uZmlnLWlmLXNkbi1leHQ6Zm9yd2FyZGluZy12aWFibGUiOnRydWV9LCJvcGVuY29uZmlnLWlmLWV0aGVybmV0OmV0aGVybmV0Ijp7InN0YXRlIjp7Im1hYy1hZGRyZXNzIjoiZDI6NzI6Nzc6YmQ6MWQ6NjUiLCJhdXRvLW5lZ290aWF0ZSI6ZmFsc2UsImR1cGxleC1tb2RlIjoiRlVMTCIsInBvcnQtc3BlZWQiOiJTUEVFRF8xR0IiLCJlbmFibGUtZmxvdy1jb250cm9sIjpmYWxzZSwiaHctbWFjLWFkZHJlc3MiOiJkMjo3Mjo3NzpiZDoxZDo2NSIsIm5lZ290aWF0ZWQtcG9ydC1zcGVlZCI6IlNQRUVEX1VOS05PV04iLCJjb3VudGVycyI6eyJpbi1tYWMtcGF1c2UtZnJhbWVzIjoiMCIsImluLW92ZXJzaXplLWZyYW1lcyI6IjAiLCJpbi11bmRlcnNpemUtZnJhbWVzIjoiMCIsImluLWphYmJlci1mcmFtZXMiOiIwIiwiaW4tZnJhZ21lbnQtZnJhbWVzIjoiMCIsImluLTgwMjFxLWZyYW1lcyI6IjAiLCJpbi1jcmMtZXJyb3JzIjoiMCIsImluLW1heHNpemUtZXhjZWVkZWQiOiIwIiwib3V0LW1hYy1wYXVzZS1mcmFtZXMiOiIwIiwib3V0LTgwMjFxLWZyYW1lcyI6IjAiLCJvcGVuY29uZmlnLWlmLWV0aGVybmV0LWV4dDppbi1kaXN0cmlidXRpb24iOnsiaW4tZnJhbWVzLTY0LW9jdGV0cyI6IjAiLCJpbi1mcmFtZXMtNjUtMTI3LW9jdGV0cyI6IjAiLCJpbi1mcmFtZXMtMTI4LTI1NS1vY3RldHMiOiIwIiwiaW4tZnJhbWVzLTI1Ni01MTEtb2N0ZXRzIjoiMCIsImluLWZyYW1lcy01MTItMTAyMy1vY3RldHMiOiIwIiwiaW4tZnJhbWVzLTEwMjQtMTUxOC1vY3RldHMiOiIwIn19fX19"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795632115687000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "MgmtEth0/RP0/CPU0/0"
+                }
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJzdWJpbnRlcmZhY2VzIjp7InN1YmludGVyZmFjZSI6eyJpbmRleCI6MCwib3BlbmNvbmZpZy1pZi1pcDppcHY0Ijp7ImFkZHJlc3NlcyI6eyJhZGRyZXNzIjp7ImlwIjoiMTcyLjEwMC4xMDYuMjEiLCJzdGF0ZSI6eyJpcCI6IjE3Mi4xMDAuMTA2LjIxIiwicHJlZml4LWxlbmd0aCI6MjQsInR5cGUiOiJQUklNQVJZIiwib3JpZ2luIjoiU1RBVElDIn19fX19fX0="
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795632115704000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "MgmtEth0/RP0/CPU0/0"
+                }
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJzdWJpbnRlcmZhY2VzIjp7InN1YmludGVyZmFjZSI6eyJpbmRleCI6MCwib3BlbmNvbmZpZy1pZi1pcDppcHY0Ijp7InN0YXRlIjp7Im10dSI6MTUwMCwiZGhjcC1jbGllbnQiOmZhbHNlLCJjb3VudGVycyI6eyJpbi1wa3RzIjoiNTIiLCJpbi1vY3RldHMiOiI0NTYyIiwib3V0LXBrdHMiOiIwIiwib3V0LW9jdGV0cyI6IjAiLCJpbi1tdWx0aWNhc3QtcGt0cyI6IjAiLCJpbi1tdWx0aWNhc3Qtb2N0ZXRzIjoiMCIsIm91dC1tdWx0aWNhc3QtcGt0cyI6IjAiLCJvdXQtbXVsdGljYXN0LW9jdGV0cyI6IjAifX19fX19"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795632115741000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "MgmtEth0/RP0/CPU0/0"
+                }
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJzdGF0ZSI6eyJuYW1lIjoiTWdtdEV0aDAvUlAwL0NQVTAvMCIsInR5cGUiOiJpYW5hLWlmLXR5cGU6ZXRoZXJuZXRDc21hY2QiLCJtdHUiOjE1MTQsImxvb3BiYWNrLW1vZGUiOiJOT05FIiwiZW5hYmxlZCI6dHJ1ZSwiaWZpbmRleCI6MywiYWRtaW4tc3RhdHVzIjoiVVAiLCJvcGVyLXN0YXR1cyI6IlVQIiwibGFzdC1jaGFuZ2UiOiIxNzk1NjMyMDMxMzkxNzkzOTc4IiwibG9naWNhbCI6ZmFsc2UsIm1hbmFnZW1lbnQiOnRydWUsImNwdSI6ZmFsc2UsImNvdW50ZXJzIjp7ImNhcnJpZXItdHJhbnNpdGlvbnMiOiIxIn19fQ=="
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795632115741000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "Null0"
+                }
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJzdGF0ZSI6eyJuYW1lIjoiTnVsbDAiLCJ0eXBlIjoiaWFuYS1pZi10eXBlOm90aGVyIiwibXR1IjoxNTAwLCJsb29wYmFjay1tb2RlIjoiTk9ORSIsImVuYWJsZWQiOnRydWUsImlmaW5kZXgiOjIsImFkbWluLXN0YXR1cyI6IlVQIiwib3Blci1zdGF0dXMiOiJVUCIsImxhc3QtY2hhbmdlIjoiMTc5NTYzMjAxNjUxMzk3MjU3OSIsImxvZ2ljYWwiOnRydWUsIm1hbmFnZW1lbnQiOmZhbHNlLCJjcHUiOmZhbHNlLCJjb3VudGVycyI6eyJjYXJyaWVyLXRyYW5zaXRpb25zIjoiMSJ9fX0="
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "1795632115746000000",
+      "prefix": {
+        "origin": "openconfig-interfaces"
+      },
+      "update": [
+        {
+          "path": {
+            "elem": [
+              {
+                "name": "interfaces"
+              },
+              {
+                "name": "interface",
+                "key": {
+                  "name": "MgmtEth0/RP0/CPU0/0"
+                }
+              }
+            ]
+          },
+          "val": {
+            "json_ietf_val": "eyJob2xkLXRpbWUiOnsic3RhdGUiOnsidXAiOjEwLCJkb3duIjowfX19"
+          }
+        }
+      ]
+    },
+    {
+      "sync_response": true
+    }
+  ],
+  "count": 9
+}

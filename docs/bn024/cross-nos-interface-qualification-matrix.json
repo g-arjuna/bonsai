@@ -1,0 +1,79 @@
+{
+  "generated_at": "2026-11-25T19:00:00Z",
+  "classification_note": "D/I/N/S/P/V/O repository qualification vocabulary; no production, scale, vendor-wide or operational qualification is implied unless explicitly stated.",
+  "nos": [
+    {
+      "family": "frr",
+      "source_availability": "genuine authorized structured JSON fixture and prior live SSH evidence",
+      "implementation": "production shadow acquisition and typed facts merged in PR #89",
+      "release_qualification": "exact FRR 10.6.1_git lab artifact profile",
+      "acquisition_status": "Core-managed SSH slice merged; post-correction live re-execution not performed; L4 not executed",
+      "semantic_coverage": ["base interface identity", "admin/oper state", "ifindex", "type", "mtu", "speed", "mac", "ipv4", "ipv6", "partial relationships"],
+      "blocker": "corrected live browser/API journey and L4 matrix"
+    },
+    {
+      "family": "cisco.iosxr",
+      "source_availability": "genuine XRd 24.4.2 gNMI subscribe-once evidence, immutable image sha256:b3bd8e8ea4892d4dd9b0a32c223990965f6f874b6b7ebf732b27dd5ab3ca487f",
+      "implementation": "offline Rust OpenConfig normalizer and experimental registry/profile dispatch on feat/bn025-xrd-native-interfaces",
+      "release_qualification": "fixture/image provenance only; device-reported release/build absent, qualified dispatch fails closed",
+      "acquisition_status": "read-only live evidence captured; no production Core-managed acquisition or persistence",
+      "semantic_coverage": ["base interface identity", "admin/oper state", "ifindex", "type", "interface mtu", "speed", "mac", "subinterface-0 ipv4"],
+      "explicitly_unsupported": ["non-zero subinterface typed identity", "network-instance/VRF attachment", "LAG relationships"],
+      "blocker": "production acquisition integration, structured subinterface identity, shared operator exposure"
+    },
+    {
+      "family": "nokia.srlinux",
+      "source_availability": "historical genuine gNMI/YANG evidence; weak CLI fixture",
+      "implementation": "not implemented",
+      "release_qualification": "none for common typed interface feature",
+      "acquisition_status": "existing lab broken in this session",
+      "semantic_coverage": [],
+      "blocker": "repair/deploy authorized lab and implement native/model-driven Rust adapter"
+    },
+    {
+      "family": "arista.eos",
+      "source_availability": "cEOS 4.37.0F explicit acquisition evidence and CLI fixture",
+      "implementation": "not implemented",
+      "release_qualification": "none for common typed interface feature",
+      "acquisition_status": "explicit acquisition only; not schema-bound authority",
+      "semantic_coverage": [],
+      "blocker": "choose structured EOS JSON/OpenConfig source and implement adapter"
+    },
+    {
+      "family": "cisco.iosxe",
+      "source_availability": "no genuine versioned live evidence located in this session",
+      "implementation": "not implemented",
+      "release_qualification": "none",
+      "acquisition_status": "none",
+      "semantic_coverage": [],
+      "blocker": "authorized image/lab or genuine versioned capture"
+    },
+    {
+      "family": "juniper.junos",
+      "source_availability": "text CLI fixture only; no genuine versioned live evidence located",
+      "implementation": "not implemented",
+      "release_qualification": "none",
+      "acquisition_status": "none",
+      "semantic_coverage": [],
+      "blocker": "authorized device/image or genuine structured XML/JSON evidence"
+    },
+    {
+      "family": "sonic",
+      "source_availability": "upstream selector/architectural evidence only in this slice",
+      "implementation": "not implemented; FRR behavior must not be inherited as SONiC qualification",
+      "release_qualification": "none",
+      "acquisition_status": "none",
+      "semantic_coverage": [],
+      "blocker": "genuine namespace-aware STATE_DB/COUNTERS_DB/gNMI evidence"
+    },
+    {
+      "family": "nvidia.cumulus",
+      "source_availability": "historical genuine Cumulus SuzieQ CLI capture; no modern NVUE/kernel/FRR combined evidence",
+      "implementation": "legacy offline FRR-style CLI normalizer only",
+      "release_qualification": "fixture-only historical capture",
+      "acquisition_status": "no modern live acquisition",
+      "semantic_coverage": ["partial offline CLI semantics"],
+      "blocker": "modern authorized image/evidence for NVUE, kernel and FRR relationships"
+    }
+  ]
+}

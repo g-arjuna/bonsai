@@ -204,6 +204,7 @@ tower = { version = "0.5", features = ["util"] }
 
 # OpenAPI spec type (CV6 T1-1 / T1-2) — swagger-ui served via bundled HTML handler
 utoipa = "5"
+base64 = "0.22.1"
 
 [build-dependencies]
 tonic-build = "0.13"
