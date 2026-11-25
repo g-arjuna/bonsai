@@ -372,7 +372,9 @@ pub fn validate_typed(p: &InterfaceStatePayload) -> Result<(), FactError> {
     check_field(&p.operational_state, "operational_state", |_| true)?;
     check_field(&p.ifindex, "ifindex", |v| *v > 0)?;
     check_field(&p.interface_type, "interface_type", |_| true)?;
-    check_field(&p.mtu, "mtu", |v| *v > 0 && *v <= u16::MAX as u32)?;
+    // MTU is a 32-bit quantity: loopback interfaces legitimately report
+    // 65536 (e.g. Linux `lo`), exceeding the Ethernet u16 frame bound.
+    check_field(&p.mtu, "mtu", |v| *v > 0)?;
     check_field(&p.speed, "speed", |v| v.value > 0)?;
     check_field(&p.mac_address, "mac_address", |v| {
         // Stored value must already be in normalized form.

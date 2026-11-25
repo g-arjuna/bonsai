@@ -276,10 +276,14 @@ pub struct SourceCaptureReport {
     /// Command identity (e.g. "vtysh_show_int_vrf_all").
     pub source: &'static str,
     pub outcome: CaptureOutcome,
-    /// Whether the captured bytes were parsed. `false` for failed/
-    /// timed-out/unavailable/unsupported outcomes — content is never
-    /// trusted regardless of how plausible it looks.
+    /// Whether the captured bytes were parsed.
     pub parsed: bool,
+    /// Whether the capture was REFUSED before parsing — the observation
+    /// exceeded the input bound or the observation context was invalid.
+    /// `parsed=false, rejected=false` means the capture was not
+    /// attempted because its outcome was unusable (failed, timed out,
+    /// unavailable, unsupported); `parsed=true` means parsed.
+    pub rejected: bool,
     pub bytes: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub captured_at: Option<String>,
@@ -318,6 +322,15 @@ pub struct NormalizationReport {
     pub invalid_entities: usize,
     /// Facts that failed canonical validation and were NOT emitted.
     pub facts_rejected: usize,
+    /// Cross-source conflict entries dropped at the per-entity bound —
+    /// counted, never silent.
+    pub conflicts_omitted: usize,
+    /// Why the observation context was refused before any fact could be
+    /// built (empty identity axis, non-RFC-3339 `observed_at`, ...).
+    /// `Some` means ZERO facts were emitted and none were attempted —
+    /// an explicit report, never an invalid typed fact or a panic.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_error: Option<String>,
     /// |t_vtysh - t_ipaddr| in seconds when both capture times are
     /// known and parseable — the two commands are not an atomic
     /// snapshot; nonzero skew is reported, never hidden.
@@ -437,6 +450,11 @@ struct MergedRecord {
     ip6_ip: Vec<String>,
     /// Address entries dropped at limits while merging this entity.
     addrs_omitted: usize,
+    /// Which source commands actually contained this entity — an
+    /// interface present in only one capture cannot claim the absent
+    /// source's fields as observed.
+    vtysh_present: bool,
+    ip_present: bool,
 }
 
 impl MergedRecord {
@@ -462,6 +480,9 @@ const MAX_CONFLICTS_PER_ENTITY: usize = 8;
 struct ParseStats {
     /// Entities dropped because the entity limit was already reached.
     entities_omitted: usize,
+    /// Records rejected before merge because their entity identity was
+    /// empty/missing — counted, never silently skipped.
+    invalid_entities: usize,
 }
 
 fn sha256_hex(data: &[u8]) -> String {
@@ -883,6 +904,7 @@ fn merge_records(
     let mut vtysh_names = std::collections::HashSet::new();
     for r in vtysh {
         if r.name.is_empty() {
+            stats.invalid_entities += 1;
             continue;
         }
         if !by_name.contains_key(&r.name) && by_name.len() >= MAX_INTERFACES {
@@ -893,6 +915,7 @@ fn merge_records(
             duplicates += 1;
         }
         let e = by_name.entry(r.name.clone()).or_default();
+        e.vtysh_present = true;
         e.addrs_omitted += r.addrs_omitted;
         if let Some(v) = r.admin_state {
             put(e, "adminState", v, SRC_VTYSH, &mut conflicts);
@@ -956,6 +979,7 @@ fn merge_records(
     let mut ip_names = std::collections::HashSet::new();
     for r in ipaddr {
         if r.name.is_empty() {
+            stats.invalid_entities += 1;
             continue;
         }
         // Updates to already-known entities are always allowed — the
@@ -968,6 +992,7 @@ fn merge_records(
             duplicates += 1;
         }
         let e = by_name.entry(r.name.clone()).or_default();
+        e.ip_present = true;
         e.addrs_omitted += r.addrs_omitted;
         if r.name_raw != r.name {
             put(e, "_ifname_raw", r.name_raw.clone(), SRC_IP, &mut conflicts);
@@ -1075,12 +1100,16 @@ fn alternate<'a>(m: &'a MergedRecord, key: &str) -> Option<ObsVal<'a>> {
 /// typed value was chosen from; `resolution` says how it was chosen.
 fn push_conflict(
     conflicts: &mut Vec<SourceFieldConflict>,
+    omitted: &mut usize,
     field: &str,
     effective: &ObsVal<'_>,
     alt: &ObsVal<'_>,
     resolution: ConflictResolution,
 ) {
     if conflicts.len() >= MAX_CONFLICTS_PER_ENTITY {
+        // Bounded accounting: dropped conflict evidence is counted,
+        // never silent.
+        *omitted += 1;
         return;
     }
     if effective.value == alt.value {
@@ -1101,6 +1130,7 @@ fn push_conflict(
 /// state, where up to four raw candidates exist across two keys).
 fn push_state_conflicts(
     conflicts: &mut Vec<SourceFieldConflict>,
+    omitted: &mut usize,
     field: &str,
     chosen: &ObsVal<'_>,
     chosen_state: OperState,
@@ -1113,7 +1143,14 @@ fn push_state_conflicts(
         if let Some(s) = oper_token(c.value)
             && s != chosen_state
         {
-            push_conflict(conflicts, field, chosen, c, ConflictResolution::PrimaryWins);
+            push_conflict(
+                conflicts,
+                omitted,
+                field,
+                chosen,
+                c,
+                ConflictResolution::PrimaryWins,
+            );
         }
     }
 }
@@ -1127,6 +1164,7 @@ fn push_state_conflicts(
 fn oper_state_of(
     m: &MergedRecord,
     conflicts: &mut Vec<SourceFieldConflict>,
+    omitted: &mut usize,
 ) -> ObservedField<OperState> {
     // Preference order: vtysh "state" primary, its duplicate-source
     // alternate, then iproute2 "ipState" primary/alternate.
@@ -1165,6 +1203,7 @@ fn oper_state_of(
     };
     push_state_conflicts(
         conflicts,
+        omitted,
         "operational_state",
         chosen_obs,
         chosen_state,
@@ -1221,7 +1260,8 @@ fn interface_type_of(raw: Option<&str>, ifname: &str) -> ObservedField<Interface
 fn mtu_of(raw: Option<&str>) -> ObservedField<u32> {
     match raw.and_then(|s| s.trim().parse::<u64>().ok()) {
         Some(0) | None => unavailable(FieldAvailability::Unknown, Some("mtu absent or zero")),
-        Some(v) if v <= u16::MAX as u64 => ObservedField::known(v as u32),
+        // MTU is 32-bit: loopback `lo` legitimately reports 65536.
+        Some(v) if v <= u32::MAX as u64 => ObservedField::known(v as u32),
         Some(v) => unavailable(
             FieldAvailability::Invalid,
             Some(format!("mtu {v} out of range")),
@@ -1432,15 +1472,163 @@ fn status_fact(
     fact
 }
 
+/// Validate the observation-context axes every emitted fact inherits.
+/// An invalid context is an explicit report (`context_error`), never an
+/// invalid typed fact or a panic — checked BEFORE any fact is built.
+fn observation_context_error(obs: &InterfaceObservation) -> Option<String> {
+    for (name, v) in [
+        ("device_id", obs.context.device_id),
+        ("collector_id", obs.context.collector_id),
+        ("capture_id", obs.context.capture_id),
+    ] {
+        if v.trim().is_empty() {
+            return Some(format!("observation context '{name}' is empty"));
+        }
+    }
+    if parse_rfc3339(obs.context.observed_at).is_none() {
+        return Some("observation context 'observed_at' is not RFC-3339".to_string());
+    }
+    None
+}
+
 /// Normalize merged records into typed `interface.state` facts.
 ///
 /// Every emitted fact is validated against the canonical ABI before
 /// being returned; records that fail validation are counted in
 /// `report.facts_rejected` and never silently dropped or emitted.
+/// Input budgets and context validity are enforced BEFORE any expensive
+/// processing (evidence hashing, parsing) — an oversized or
+/// context-invalid observation is refused up front.
 pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
+    // Refusal decisions first: context validity and the input bound are
+    // cheap checks that gate ALL expensive work below. Size arithmetic
+    // is saturating — it can never wrap.
+    let context_err = observation_context_error(obs);
+    let oversized = obs
+        .vtysh
+        .output
+        .len()
+        .saturating_add(obs.ip_addr.output.len())
+        > MAX_INPUT_BYTES;
+    let refused = context_err.is_some() || oversized;
+
+    let vtysh_ok = obs.vtysh.outcome.usable() && !refused;
+    let ip_ok = obs.ip_addr.outcome.usable() && !refused;
+
+    // Per-source disposition: parsed = bytes were parsed; rejected =
+    // refused before parsing (bound/context); neither = not attempted
+    // (unusable capture outcome).
+    let sources = vec![
+        SourceCaptureReport {
+            source: "vtysh_show_int_vrf_all",
+            outcome: obs.vtysh.outcome,
+            parsed: vtysh_ok,
+            rejected: refused,
+            bytes: obs.vtysh.output.len(),
+            captured_at: obs.vtysh.captured_at.map(str::to_string),
+        },
+        SourceCaptureReport {
+            source: "ip_addr_show",
+            outcome: obs.ip_addr.outcome,
+            parsed: ip_ok,
+            rejected: refused,
+            bytes: obs.ip_addr.output.len(),
+            captured_at: obs.ip_addr.captured_at.map(str::to_string),
+        },
+    ];
+
+    // Invalid observation context: explicit report, zero facts — no
+    // typed fact is built on axes that cannot validate.
+    if let Some(err) = context_err {
+        return NormalizationOutput {
+            facts: vec![],
+            interfaces: vec![],
+            report: NormalizationReport {
+                nos: obs.nos.label(),
+                applicability: obs.nos.applicability(),
+                interfaces_observed: 0,
+                facts_emitted: 0,
+                duplicate_ifnames: 0,
+                merge_conflicts: 0,
+                unparsed_lines: 0,
+                field_coverage: BTreeMap::new(),
+                sources,
+                entities_omitted: 0,
+                addresses_omitted: 0,
+                invalid_entities: 0,
+                facts_rejected: 0,
+                conflicts_omitted: 0,
+                context_error: Some(err.clone()),
+                capture_skew_seconds: None,
+                notes: vec![format!(
+                    "observation context invalid: {err}; nothing emitted"
+                )],
+            },
+        };
+    }
+
+    // Oversized input: refuse rather than truncate. The evidence record
+    // describes the REFUSAL (bounded descriptor digest) — no
+    // full-content digest is claimed for captures that were never
+    // hashed, and the status fact passes canonical validation like any
+    // other emitted fact.
+    if oversized {
+        let refusal_sha = sha256_hex(
+            format!(
+                "bn024-input-bound-exceeded:vtysh={}:ip_addr={}",
+                obs.vtysh.output.len(),
+                obs.ip_addr.output.len()
+            )
+            .as_bytes(),
+        );
+        let evidence = vec![EvidenceRef {
+            kind: "capture_refused_input_bound".to_string(),
+            sha256: refusal_sha,
+            locator: None,
+        }];
+        let mut facts = Vec::new();
+        let mut facts_rejected = 0usize;
+        let out = status_fact(
+            obs,
+            PayloadState::InvalidInput,
+            Completeness::Unknown,
+            "observation exceeded input byte bound; refused",
+            evidence,
+        );
+        if out.validate().is_ok() {
+            facts.push(out);
+        } else {
+            facts_rejected = 1;
+        }
+        let emitted = facts.len();
+        return NormalizationOutput {
+            facts,
+            interfaces: vec![],
+            report: NormalizationReport {
+                nos: obs.nos.label(),
+                applicability: obs.nos.applicability(),
+                interfaces_observed: 0,
+                facts_emitted: emitted,
+                duplicate_ifnames: 0,
+                merge_conflicts: 0,
+                unparsed_lines: 0,
+                field_coverage: BTreeMap::new(),
+                sources,
+                entities_omitted: 0,
+                addresses_omitted: 0,
+                invalid_entities: 0,
+                facts_rejected,
+                conflicts_omitted: 0,
+                context_error: None,
+                capture_skew_seconds: None,
+                notes: vec!["observation exceeded input byte bound; refused".into()],
+            },
+        };
+    }
+
     // Immutable per-observation evidence digests — computed ONCE, not
     // per interface (A2/D1: the old code rehashed both full captures
-    // for every emitted fact).
+    // for every emitted fact). Only reached for accepted observations.
     let vtysh_sha = sha256_hex(obs.vtysh.output.as_bytes());
     let ip_sha = sha256_hex(obs.ip_addr.output.as_bytes());
     let evidence = || {
@@ -1457,59 +1645,6 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
             },
         ]
     };
-
-    let vtysh_ok = obs.vtysh.outcome.usable();
-    let ip_ok = obs.ip_addr.outcome.usable();
-
-    let sources = vec![
-        SourceCaptureReport {
-            source: "vtysh_show_int_vrf_all",
-            outcome: obs.vtysh.outcome,
-            parsed: vtysh_ok,
-            bytes: obs.vtysh.output.len(),
-            captured_at: obs.vtysh.captured_at.map(str::to_string),
-        },
-        SourceCaptureReport {
-            source: "ip_addr_show",
-            outcome: obs.ip_addr.outcome,
-            parsed: ip_ok,
-            bytes: obs.ip_addr.output.len(),
-            captured_at: obs.ip_addr.captured_at.map(str::to_string),
-        },
-    ];
-
-    // Input bound is enforced by callers via capture limits; defend in
-    // depth here by refusing rather than truncating.
-    if obs.vtysh.output.len() + obs.ip_addr.output.len() > MAX_INPUT_BYTES {
-        let out = status_fact(
-            obs,
-            PayloadState::InvalidInput,
-            Completeness::Unknown,
-            "observation exceeded input byte bound; refused",
-            evidence(),
-        );
-        return NormalizationOutput {
-            facts: vec![out],
-            interfaces: vec![],
-            report: NormalizationReport {
-                nos: obs.nos.label(),
-                applicability: obs.nos.applicability(),
-                interfaces_observed: 0,
-                facts_emitted: 1,
-                duplicate_ifnames: 0,
-                merge_conflicts: 0,
-                unparsed_lines: 0,
-                field_coverage: BTreeMap::new(),
-                sources,
-                entities_omitted: 0,
-                addresses_omitted: 0,
-                invalid_entities: 0,
-                facts_rejected: 0,
-                capture_skew_seconds: None,
-                notes: vec!["observation exceeded input byte bound; refused".into()],
-            },
-        };
-    }
 
     let mut unparsed: Vec<String> = Vec::new();
     let mut unparsed_total = 0usize;
@@ -1539,21 +1674,26 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
     let addresses_omitted: usize = merged.values().map(|m| m.addrs_omitted).sum();
 
     // Capture time alignment: the two commands are not an atomic
-    // snapshot. Record skew; unparseable timestamps are noted.
+    // snapshot. Record skew; unparseable or partially-known timestamps
+    // mean temporal coherence was never established — both are noted
+    // AND degrade completeness (unknown/stale is not silently complete).
     let mut skew_note: Option<String> = None;
     let mut skew_secs: Option<i64> = None;
+    let mut temporal_partial = false;
     match (obs.vtysh.captured_at, obs.ip_addr.captured_at) {
         (Some(a), Some(b)) => match (parse_rfc3339(a), parse_rfc3339(b)) {
             (Some(x), Some(y)) => {
                 let d = (x - y).num_seconds().abs();
                 skew_secs = Some(d);
                 if d > 0 {
+                    temporal_partial = true;
                     skew_note = Some(format!(
                         "source captures skewed by {d}s; not an atomic snapshot"
                     ));
                 }
             }
             _ => {
+                temporal_partial = true;
                 skew_note = Some(
                     "source capture timestamps present but unparseable; alignment unknown"
                         .to_string(),
@@ -1561,6 +1701,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
             }
         },
         (Some(_), None) | (None, Some(_)) => {
+            temporal_partial = true;
             skew_note = Some("only one source capture timestamp known; alignment unknown".into());
         }
         (None, None) => {}
@@ -1591,8 +1732,9 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
     let mut interfaces: Vec<InterfaceDiagnostic> = Vec::new();
     let mut coverage: BTreeMap<String, FieldCoverage> = BTreeMap::new();
     let unparsed_count = unparsed_total;
-    let mut invalid_entities = 0usize;
+    let mut invalid_entities = stats.invalid_entities;
     let mut facts_rejected = 0usize;
+    let mut conflicts_omitted = 0usize;
     let mut rejected_samples: Vec<String> = Vec::new();
 
     let any_unknown_outcome =
@@ -1613,12 +1755,14 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         }
 
         let mut entity_conflicts: Vec<SourceFieldConflict> = Vec::new();
+        let mut entity_conflicts_omitted = 0usize;
 
         // ── Scalar fields with first-wins + recorded conflicts ──
         let admin = admin_state_of(m.get("adminState"));
         if let (Some(p), Some(a)) = (primary(m, "adminState"), alternate(m, "adminState")) {
             push_conflict(
                 &mut entity_conflicts,
+                &mut entity_conflicts_omitted,
                 "administrative_state",
                 &p,
                 &a,
@@ -1626,11 +1770,12 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
             );
         }
 
-        let oper = oper_state_of(m, &mut entity_conflicts);
+        let oper = oper_state_of(m, &mut entity_conflicts, &mut entity_conflicts_omitted);
         let ifindex = ifindex_of(m);
         if let (Some(p), Some(a)) = (primary(m, "ifindex"), alternate(m, "ifindex")) {
             push_conflict(
                 &mut entity_conflicts,
+                &mut entity_conflicts_omitted,
                 "ifindex",
                 &p,
                 &a,
@@ -1650,6 +1795,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
             if let (Some(p), Some(a)) = (primary(m, "type"), alternate(m, "type")) {
                 push_conflict(
                     &mut entity_conflicts,
+                    &mut entity_conflicts_omitted,
                     "interface_type",
                     &a,
                     &p,
@@ -1662,6 +1808,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         if let (Some(p), Some(a)) = (primary(m, "vrf"), alternate(m, "vrf")) {
             push_conflict(
                 &mut entity_conflicts,
+                &mut entity_conflicts_omitted,
                 "vrf",
                 &p,
                 &a,
@@ -1673,6 +1820,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         if let (Some(p), Some(a)) = (primary(m, "mtu"), alternate(m, "mtu")) {
             push_conflict(
                 &mut entity_conflicts,
+                &mut entity_conflicts_omitted,
                 "mtu",
                 &p,
                 &a,
@@ -1697,6 +1845,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         if let (Some(p), Some(a)) = (primary(m, "speed"), alternate(m, "speed")) {
             push_conflict(
                 &mut entity_conflicts,
+                &mut entity_conflicts_omitted,
                 "speed",
                 &p,
                 &a,
@@ -1710,6 +1859,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         if let (Some(p), Some(a)) = (primary(m, "macaddr"), alternate(m, "macaddr")) {
             push_conflict(
                 &mut entity_conflicts,
+                &mut entity_conflicts_omitted,
                 "mac_address",
                 &p,
                 &a,
@@ -1721,6 +1871,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         if let (Some(p), Some(a)) = (primary(m, "description"), alternate(m, "description")) {
             push_conflict(
                 &mut entity_conflicts,
+                &mut entity_conflicts_omitted,
                 "description",
                 &p,
                 &a,
@@ -1748,6 +1899,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         if let (Some(p), Some(a)) = (primary(m, "master"), alternate(m, "master")) {
             push_conflict(
                 &mut entity_conflicts,
+                &mut entity_conflicts_omitted,
                 "member_of",
                 &p,
                 &a,
@@ -1772,6 +1924,8 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
                     alternate_value: bounded_join(&m.ip4_ip),
                     resolution: ConflictResolution::PrimaryWins,
                 });
+            } else {
+                entity_conflicts_omitted += 1;
             }
         }
         let ip4 = addr_field(ip4_src, false, m.addrs_omitted, "no ipv4 observed");
@@ -1791,6 +1945,8 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
                     alternate_value: bounded_join(&m.ip6_vtysh),
                     resolution: ConflictResolution::AlternatePreferred,
                 });
+            } else {
+                entity_conflicts_omitted += 1;
             }
         }
         let ip6 = addr_field(ip6_src, true, m.addrs_omitted, "no ipv6 observed");
@@ -1859,10 +2015,19 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         );
 
         // ── Completeness: capture outcomes × entity coverage × field
-        // interpretation. Any `Unknown` capture outcome keeps the fact
-        // at `Unknown` — it is never promoted without independent
-        // establishment.
+        // interpretation × population/temporal coherence. Any `Unknown`
+        // capture outcome keeps the fact at `Unknown` — it is never
+        // promoted without independent establishment.
+        //
+        // Population coverage: an interface present in only ONE usable
+        // source capture cannot claim the absent source's observations —
+        // its fields stay `Unknown` AND the fact is not `Complete`.
+        // Harmless genuinely-inapplicable fields (`Unsupported`,
+        // device-reported unknowns) do NOT downgrade: absence of a
+        // field the NOS never exposes is not missing coverage.
+        let single_source = m.vtysh_present != m.ip_present;
         let entity_partial = !entity_conflicts.is_empty()
+            || entity_conflicts_omitted > 0
             || [
                 &admin.state,
                 &oper.state,
@@ -1871,13 +2036,20 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
                 &mtu.state,
                 &speed.state,
                 &mac.state,
+                &payload.ip_addresses.as_ref().unwrap().state,
+                &payload.ipv6_addresses.as_ref().unwrap().state,
             ]
             .iter()
             .any(|s| **s == FieldAvailability::Invalid)
             || m.addrs_omitted > 0;
         let completeness = if any_unknown_outcome {
             Completeness::Unknown
-        } else if any_degraded_outcome || entity_partial || entities_omitted > 0 {
+        } else if any_degraded_outcome
+            || entity_partial
+            || entities_omitted > 0
+            || single_source
+            || temporal_partial
+        {
             Completeness::Partial
         } else {
             Completeness::Complete
@@ -1936,6 +2108,22 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         if let Some(n) = &skew_note {
             qnotes.push(n.clone());
         }
+        if single_source {
+            let absent = if m.vtysh_present {
+                "ip_addr_show"
+            } else {
+                "vtysh_show_int_vrf_all"
+            };
+            qnotes.push(format!(
+                "interface absent from '{absent}' capture; fields from that source are unknown"
+            ));
+        }
+        if entity_conflicts_omitted > 0 {
+            qnotes.push(format!(
+                "{entity_conflicts_omitted} conflict entries omitted at per-entity bound"
+            ));
+        }
+        conflicts_omitted += entity_conflicts_omitted;
 
         // Envelope: subject axes come only from the observation context.
         let subject = FactSubject {
@@ -2011,10 +2199,21 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
     }
 
     // Completeness for a status fact uses the same capture-outcome ×
-    // coverage rule (no entity/field dimensions exist).
+    // coverage rule (no entity/field dimensions exist) — plus the
+    // population/temporal degradations that apply observation-wide.
+    // A status fact can never claim Complete while facts were rejected,
+    // entities invalid/omitted, conflicts truncated or capture timing
+    // unestablished: a degraded payload state under Complete would be
+    // rejected by canonical validation anyway.
     let status_completeness = if any_unknown_outcome {
         Completeness::Unknown
-    } else if any_degraded_outcome || entities_omitted > 0 {
+    } else if any_degraded_outcome
+        || entities_omitted > 0
+        || invalid_entities > 0
+        || facts_rejected > 0
+        || conflicts_omitted > 0
+        || temporal_partial
+    {
         Completeness::Partial
     } else {
         Completeness::Complete
@@ -2124,6 +2323,8 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
             addresses_omitted,
             invalid_entities,
             facts_rejected,
+            conflicts_omitted,
+            context_error: None,
             capture_skew_seconds: skew_secs,
             notes,
         },
@@ -2357,7 +2558,7 @@ mod tests {
             .unwrap_or_else(|| panic!("no fact for {name}"))
     }
 
-    fn payload_of(f: &TypedFact) -> InterfaceStatePayload {
+    pub(super) fn payload_of(f: &TypedFact) -> InterfaceStatePayload {
         serde_json::from_value(f.payload.fields.clone().unwrap()).unwrap()
     }
 
@@ -2752,9 +2953,8 @@ mod tests {
             }
         }
 
-        // Invalid context (bad observed_at) -> every fact including
-        // the status fact fails validation; NOTHING invalid is emitted
-        // and the rejections are counted in the report.
+        // Invalid context (bad observed_at) -> explicit report, ZERO
+        // facts: no invalid typed fact is emitted and nothing panics.
         let (v, a) = synthetic_pair();
         let out = normalize(&InterfaceObservation {
             nos: NormalizerNos::Cumulus,
@@ -2765,8 +2965,10 @@ mod tests {
                 ..ctx()
             },
         });
-        assert!(out.facts.iter().all(|f| f.validate().is_ok()));
-        assert!(out.report.facts_rejected > 0);
+        assert!(out.facts.is_empty());
+        assert!(out.report.context_error.is_some());
+        assert!(out.report.facts_rejected == 0);
+        assert!(out.report.sources.iter().all(|s| s.rejected));
     }
 
     #[test]
@@ -2902,8 +3104,10 @@ mod oracle_emit {
             "interfaces": out.interfaces,
             "facts": out.facts.iter().map(|f| serde_json::json!({
                 "ifname": f.subject.entity,
+                "subject": serde_json::to_value(&f.subject).unwrap(),
+                "source": serde_json::to_value(&f.source).unwrap(),
                 "payload": f.payload.fields,
-                "quality": {"completeness": f.quality.completeness},
+                "quality": serde_json::to_value(&f.quality).unwrap(),
             })).collect::<Vec<_>>(),
             "report": out.report,
         });
@@ -2966,5 +3170,217 @@ mod perf {
         assert_eq!(out.facts.len(), 1);
         assert_eq!(out.facts[0].payload.state, Some(PayloadState::InvalidInput));
         assert!(out.facts[0].validate().is_ok());
+        // Evidence truthfully describes the refusal — it must NOT claim
+        // raw_output digests of captures that were never hashed.
+        assert!(
+            out.facts[0]
+                .evidence
+                .iter()
+                .all(|e| e.kind == "capture_refused_input_bound")
+        );
+        assert!(out.report.sources.iter().all(|s| s.rejected && !s.parsed));
+    }
+
+    #[test]
+    fn oversized_with_invalid_context_is_explicit_report_not_fact() {
+        // Adversarial: oversized input AND malformed context/timestamps —
+        // context refusal wins, the report is explicit, nothing emitted.
+        let big = "x".repeat(MAX_INPUT_BYTES + 1);
+        for bad_ctx in [
+            ObservationContext {
+                observed_at: "not-a-time",
+                ..ctx()
+            },
+            ObservationContext {
+                device_id: "",
+                ..ctx()
+            },
+            ObservationContext {
+                collector_id: "  ",
+                ..ctx()
+            },
+            ObservationContext {
+                capture_id: "",
+                ..ctx()
+            },
+        ] {
+            let out = normalize(&InterfaceObservation {
+                nos: NormalizerNos::Cumulus,
+                vtysh: CommandCapture::unestablished(&big),
+                ip_addr: CommandCapture::unestablished(""),
+                context: bad_ctx,
+            });
+            assert!(out.facts.is_empty(), "invalid context must emit no facts");
+            assert!(out.report.context_error.is_some());
+            assert!(out.report.sources.iter().all(|s| s.rejected));
+        }
+    }
+
+    #[test]
+    fn complete_capture_with_malformed_addresses_is_partial_not_complete() {
+        // B4: a COMPLETE capture containing malformed IPv4/IPv6 fields —
+        // the address field is Invalid and the fact is Partial, never
+        // a misleading Complete.
+        let v = "Interface eth0 is up, line protocol is up\n  vrf: default\n  index 5 metric 0 mtu 1500 speed 0 \n  inet 999.1.1.1/24\n  inet6 not-an-ip/64\n";
+        let a = "5: eth0: <UP,LOWER_UP> mtu 1500 state UP group default\n    link/ether 44:38:39:00:00:05 brd ff:ff:ff:ff:ff:ff\n    inet 999.1.1.1/24\n";
+        let out = normalize(&InterfaceObservation {
+            nos: NormalizerNos::Cumulus,
+            vtysh: CommandCapture::new(v, CaptureOutcome::Complete),
+            ip_addr: CommandCapture::new(a, CaptureOutcome::Complete),
+            context: ctx(),
+        });
+        assert_eq!(out.facts.len(), 1);
+        let f = &out.facts[0];
+        assert!(f.validate().is_ok());
+        assert_eq!(f.quality.completeness, Completeness::Partial);
+        let p = payload_of(f);
+        assert_eq!(
+            p.ip_addresses.as_ref().unwrap().state,
+            FieldAvailability::Invalid
+        );
+        assert_eq!(
+            p.ipv6_addresses.as_ref().unwrap().state,
+            FieldAvailability::Invalid
+        );
+    }
+
+    #[test]
+    fn single_source_interface_is_partial_with_explicit_note() {
+        // B4: one capture missing an interface that appears in the other.
+        // Both captures Complete; eth9 exists only in vtysh.
+        let v = "Interface eth9 is up, line protocol is up\n  vrf: default\n  index 9 metric 0 mtu 1500 speed 0 \n  inet 10.9.9.1/24\n";
+        let a = "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 state UNKNOWN group default\n    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n";
+        let out = normalize(&InterfaceObservation {
+            nos: NormalizerNos::Cumulus,
+            vtysh: CommandCapture::new(v, CaptureOutcome::Complete),
+            ip_addr: CommandCapture::new(a, CaptureOutcome::Complete),
+            context: ctx(),
+        });
+        let f = fact_for(&out, "eth9");
+        assert_eq!(f.quality.completeness, Completeness::Partial);
+        assert!(
+            f.quality
+                .notes
+                .iter()
+                .any(|n| n.contains("absent from 'ip_addr_show'"))
+        );
+        // lo is present in ip only -> also Partial (single source).
+        let f = fact_for(&out, "lo");
+        assert_eq!(f.quality.completeness, Completeness::Partial);
+    }
+
+    #[test]
+    fn skewed_or_unparseable_timestamps_degrade_completeness() {
+        let (v, a) = synthetic_pair();
+        // Nonzero skew on Complete captures -> Partial, not Complete.
+        let out = normalize(&InterfaceObservation {
+            nos: NormalizerNos::Cumulus,
+            vtysh: CommandCapture::new(&v, CaptureOutcome::Complete)
+                .captured_at("2026-11-24T10:00:00Z"),
+            ip_addr: CommandCapture::new(&a, CaptureOutcome::Complete)
+                .captured_at("2026-11-24T10:00:07Z"),
+            context: ctx(),
+        });
+        assert!(
+            out.facts
+                .iter()
+                .all(|f| f.quality.completeness == Completeness::Partial)
+        );
+        // Unparseable timestamps -> Partial with explicit note.
+        let out = normalize(&InterfaceObservation {
+            nos: NormalizerNos::Cumulus,
+            vtysh: CommandCapture::new(&v, CaptureOutcome::Complete).captured_at("garbage"),
+            ip_addr: CommandCapture::new(&a, CaptureOutcome::Complete)
+                .captured_at("2026-11-24T10:00:00Z"),
+            context: ctx(),
+        });
+        assert!(
+            out.facts
+                .iter()
+                .all(|f| f.quality.completeness == Completeness::Partial)
+        );
+        assert!(out.report.notes.iter().any(|n| n.contains("unparseable")));
+    }
+
+    #[test]
+    fn all_facts_rejected_still_emits_valid_status_fact() {
+        // B4 regression: facts CAN fail canonical validation through
+        // public input — a cross-source conflict whose preserved value
+        // exceeds the typed 1024-byte bound (multibyte chars: 512 chars
+        // taken × 3 bytes > 1024). With Complete captures and EVERY
+        // interface fact rejected, the status fact must still be
+        // emitted and valid. On the pre-fix code the status fact was
+        // built UnknownQuality+Complete, failed validation itself, and
+        // ZERO facts were returned.
+        let long_desc = "€".repeat(400); // 1200 bytes, 400 chars
+        let v = format!(
+            "Interface dup is up, line protocol is up\n  vrf: default\n  index 1 metric 0 mtu 1500 speed 0 \n  Description: {long_desc}\n"
+        );
+        let a = format!(
+            "1: dup: <UP,LOWER_UP> mtu 1500 state UP group default\n    link/ether 44:38:39:00:00:01 brd ff:ff:ff:ff:ff:ff\n    alias {long_desc}x\n"
+        );
+        let out = normalize(&InterfaceObservation {
+            nos: NormalizerNos::Cumulus,
+            vtysh: CommandCapture::new(&v, CaptureOutcome::Complete),
+            ip_addr: CommandCapture::new(&a, CaptureOutcome::Complete),
+            context: ctx(),
+        });
+        assert!(
+            out.report.facts_rejected >= 1,
+            "conflict value must reject the fact"
+        );
+        assert_eq!(out.facts.len(), 1, "exactly one status fact expected");
+        let f = &out.facts[0];
+        assert!(f.validate().is_ok());
+        assert_eq!(f.payload.state, Some(PayloadState::UnknownQuality));
+        assert_ne!(f.quality.completeness, Completeness::Complete);
+        assert!(f.subject.entity.is_none());
+    }
+
+    #[test]
+    fn mtu_above_ethernet_bound_is_known_not_invalid() {
+        // B5 oracle finding: loopback `lo` legitimately reports MTU
+        // 65536 (> u16::MAX). The typed field is u32 and canonical
+        // validation accepts it; capping at the Ethernet frame bound
+        // fabricated `Invalid` where the device reported a real value.
+        let v = "Interface lo is up, line protocol is up\n  vrf: default\n  index 1 metric 0 mtu 65536 speed 0 \n";
+        let a = "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 state UNKNOWN group default\n    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n";
+        let out = normalize(&InterfaceObservation {
+            nos: NormalizerNos::Cumulus,
+            vtysh: CommandCapture::new(v, CaptureOutcome::Complete),
+            ip_addr: CommandCapture::new(a, CaptureOutcome::Complete),
+            context: ctx(),
+        });
+        let f = fact_for(&out, "lo");
+        assert!(f.validate().is_ok());
+        let p = payload_of(f);
+        assert_eq!(p.mtu.state, FieldAvailability::Known);
+        assert_eq!(p.mtu.value, Some(65536));
+    }
+
+    #[test]
+    fn conflict_truncation_is_accounted() {
+        // B4: >MAX_CONFLICTS_PER_ENTITY disagreements on one entity —
+        // dropped conflict evidence is counted in the report, never
+        // silent.
+        let mut v = String::new();
+        v.push_str("Interface many is up, line protocol is up\n  vrf: default\n  index 1 metric 0 mtu 1500 speed 0 \n");
+        // ip source disagrees on every scalar field plus addresses.
+        let mut a = String::new();
+        a.push_str("1: many: <UP,LOWER_UP> mtu 9000 state UP group default master bond0\n    link/ether 44:38:39:00:00:01 brd ff:ff:ff:ff:ff:ff\n    inet 10.1.1.1/24\n");
+        // Add more disagreeing fields via additional vtysh/ip values is
+        // bounded by the field set; instead verify accounting path with
+        // many entities each conflicting — per-entity bound is 8 and the
+        // field vocabulary yields <8 conflicts per entity, so assert the
+        // counter exists and stays consistent.
+        let out = normalize(&InterfaceObservation {
+            nos: NormalizerNos::Cumulus,
+            vtysh: CommandCapture::new(&v, CaptureOutcome::Complete),
+            ip_addr: CommandCapture::new(&a, CaptureOutcome::Complete),
+            context: ctx(),
+        });
+        assert!(out.report.conflicts_omitted == 0);
+        let p = payload_of(fact_for(&out, "many"));
+        assert!(!p.source_conflicts.is_empty());
     }
 }

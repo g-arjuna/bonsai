@@ -76,8 +76,8 @@
           "description": "Structured fact body (JSON object). Absent iff state is present; the fields/state XOR is enforced by Rust validate(), not by this schema."
         },
         "state": {
-          "enum": ["empty", "invalid_input", "unsupported", "unstructured_fallback", "unknown_quality"],
-          "description": "Required when fields is absent; forbidden when fields is present."
+          "enum": ["empty", "invalid_input", "unsupported", "unstructured_fallback", "unknown_quality", "capture_failed"],
+          "description": "Required when fields is absent; forbidden when fields is present. 'capture_failed' = the source capture itself failed/timed out/unavailable — distinct from 'empty' (capture succeeded, no records) and 'invalid_input' (input rejected before parsing). Must stay in sync with PayloadState in src/typed_facts.rs; drift is gated by tests/test_bn024_typed_facts.py against v1.states.fixture.json."
         }
       }
     },

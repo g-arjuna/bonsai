@@ -159,33 +159,109 @@ def _norm_state(v):
     return str(v).lower()
 
 
+def _typed_field(payload: dict, name: str) -> dict:
+    return payload.get(name) or {}
+
+
+def _typed_value(payload: dict, name: str):
+    """Typed payload value iff the field state is `known`, else None."""
+    fld = _typed_field(payload, name)
+    return fld.get("value") if fld.get("state") == "known" else None
+
+
+# Post-cleaner upstream `type` strings -> the typed `interface_type`
+# classification the native normalizer is contracted to produce
+# (src/interface_facts.rs InterfaceType). This table is an independent
+# restatement of that contract for oracle purposes: an upstream type
+# absent here is an oracle coverage gap and fails closed rather than
+# being silently exempted. Upstream '' means "type not captured" and
+# requires the rust field to be non-`known`.
+UPSTREAM_TYPE_TO_TYPED = {
+    "": None,  # not captured -> rust must report unknown
+    "ethernet": "physical",
+    "bond": "port_channel",
+    "bond_slave": "physical",
+    "loopback": "loopback",
+    "vlan": "virtual",
+    "macvlan": "virtual",
+    "bridge": "virtual",
+    "vrf": "virtual",
+    "vxlan": "tunnel",
+}
+
+
 def compare(upstream_path: Path, rust_path: Path):
     up = {r["ifname"]: r for r in json.loads(upstream_path.read_text())}
     rust = json.loads(rust_path.read_text())
-    rints = {i["ifname"]: i for i in rust["interfaces"]}
-    facts = {f["ifname"]: f for f in rust["facts"] if f.get("ifname")}
+    rints = rust["interfaces"]
+    facts_list = rust["facts"]
 
     mismatches = []
-    only_up = sorted(set(up) - set(rints))
-    only_rust = sorted(set(rints) - set(up))
+    deviations = []
+    uncompared = []
+
+    # ── Artifact integrity: exactly one typed fact per interface ──────
+    # The dict comprehensions below would silently collapse duplicates;
+    # count first so a duplicated or missing fact is a hard mismatch.
+    fact_names = [f.get("ifname") for f in facts_list]
+    iface_names = [i["ifname"] for i in rints]
+    dup_facts = sorted({n for n in fact_names if n is not None and fact_names.count(n) > 1})
+    dup_ifaces = sorted({n for n in iface_names if iface_names.count(n) > 1})
+    if dup_facts:
+        mismatches.append(f"duplicate typed facts for ifnames: {dup_facts}")
+    if dup_ifaces:
+        mismatches.append(f"duplicate interface diagnostics: {dup_ifaces}")
+    fact_iface_set = {n for n in fact_names if n is not None}
+    iface_set = set(iface_names)
+    if fact_iface_set != iface_set:
+        mismatches.append(
+            f"fact/interface population differs: "
+            f"facts-only={sorted(fact_iface_set - iface_set)} "
+            f"interfaces-only={sorted(iface_set - fact_iface_set)}"
+        )
+    status_facts = [f for f in facts_list if f.get("ifname") is None]
+    for f in facts_list:
+        if f.get("ifname") is not None and not f.get("payload"):
+            mismatches.append(f"{f.get('ifname')}: fact missing typed payload")
+    rints_by_name = {i["ifname"]: i for i in rints}
+    facts = {n: f for n, f in zip(fact_names, facts_list) if n is not None}
+
+    # ── Section 1: interface population parity ────────────────────────
+    only_up = sorted(set(up) - iface_set)
+    only_rust = sorted(iface_set - set(up))
     if only_up:
         mismatches.append(f"ifnames only upstream: {only_up}")
     if only_rust:
         mismatches.append(f"ifnames only rust: {only_rust}")
 
-    deviations = []
-    for name in sorted(set(up) & set(rints)):
-        u, d = up[name], rints[name]
+    # ── Section 2: typed semantic payload parity ──────────────────────
+    for name in sorted(set(up) & iface_set):
+        u = up[name]
         f = facts.get(name, {})
         payload = f.get("payload") or {}
-        # adminState / state: compare typed payload values (upstream
+        subj = f.get("subject") or {}
+
+        # Subject identity axes: entity must be the interface name and
+        # namespace/device identity must be present and consistent.
+        if subj.get("entity") != name:
+            mismatches.append(
+                f"{name}.subject.entity: expected {name!r} got {subj.get('entity')!r}"
+            )
+        if not subj.get("device_id") or not subj.get("namespace"):
+            mismatches.append(f"{name}.subject: missing device_id/namespace")
+        pin = payload.get("interface_name")
+        if pin != name:
+            mismatches.append(
+                f"{name}.payload.interface_name: expected {name!r} got {pin!r}"
+            )
+
+        # adminState / state: typed payload values (upstream
         # admin-down forcing is part of the cleaner contract we mirror).
         for uf, pf in [("adminState", "administrative_state"), ("state", "operational_state")]:
             uv = _norm_state(u.get(uf))
-            fld = payload.get(pf) or {}
-            dv = fld.get("value") if fld.get("state") == "known" else None
-            dv = _norm_state(dv)
-            if uf == "state" and uv is None and dv is not None:
+            fld = _typed_field(payload, pf)
+            dv = _norm_state(_typed_value(payload, pf))
+            if uv is None and fld.get("state") == "known" and pf == "operational_state":
                 # KNOWN DEVIATION (documented): the upstream textfsm
                 # `state` Value is captured ONLY from the vtysh
                 # "line protocol is <state>" rule — the iproute2 header
@@ -201,36 +277,59 @@ def compare(upstream_path: Path, rust_path: Path):
                     "(iproute2 operstate evidence — documented deviation)"
                 )
                 continue
-            # upstream state vocabulary is up|down only; map rust
-            # lower_layer_down/testing conservatively to 'down'-class is
-            # wrong — flag any non-up/down rust value as mismatch unless
-            # upstream also lacks the field.
             if uv != dv:
                 mismatches.append(f"{name}.{uf}: upstream={uv!r} rust={dv!r} (state={fld.get('state')!r})")
-        # type (post-cleaner raw string vs post-_2nd raw string).
-        # Upstream cleaner rewrites 'ether'->'ethernet' cosmetically;
-        # apply the same fixup to the rust raw value before comparing.
-        ut = (u.get("type") or "").lower() or None
-        dt = (d.get("type_raw") or "").lower() or None
-        if dt == "ether":
-            dt = "ethernet"
-        if ut != dt:
-            mismatches.append(f"{name}.type: upstream={ut!r} rust={dt!r}")
-        # mtu
-        um, dm = u.get("mtu"), d.get("mtu_raw")
+
+        # interface_type: typed classification vs upstream post-cleaner
+        # type string via the explicit mapping table (fail closed on
+        # unmapped upstream vocabulary).
+        ut = (u.get("type") or "").lower()
+        expected = UPSTREAM_TYPE_TO_TYPED.get(ut, "__UNMAPPED__")
+        itf = _typed_field(payload, "interface_type")
+        if expected == "__UNMAPPED__":
+            mismatches.append(f"{name}.type: unmapped upstream type {ut!r}")
+        elif expected is None:
+            if itf.get("state") == "known":
+                mismatches.append(
+                    f"{name}.type: upstream type absent but rust typed "
+                    f"{itf.get('value')!r}"
+                )
+        else:
+            tv = itf.get("value") if itf.get("state") == "known" else None
+            if tv != expected:
+                mismatches.append(
+                    f"{name}.type: upstream={ut!r} expected_typed={expected!r} rust={tv!r}"
+                )
+
+        # mtu: typed ObservedField<u32> value vs upstream mtu.
+        um = u.get("mtu")
         um = int(um) if um not in (None, "") else None
-        dm = int(dm) if dm not in (None, "") else None
-        if um != dm:
-            mismatches.append(f"{name}.mtu: upstream={um!r} rust={dm!r}")
-        # macaddr
-        um, dm = (u.get("macaddr") or "").lower() or None, d.get("mac_raw")
-        if um != dm:
-            mismatches.append(f"{name}.macaddr: upstream={um!r} rust={dm!r}")
-        # master (upstream post-clean: parens stripped, lowercased).
-        # The typed payload distinguishes LAG membership (`member_of`),
-        # physical parent (`parent_interface`) and the raw classified
-        # relationship (`master_relationship.target`); the effective
-        # observed master target is whichever is populated.
+        mtf = _typed_field(payload, "mtu")
+        mv = mtf.get("value") if mtf.get("state") == "known" else None
+        if um is None:
+            if mtf.get("state") == "known":
+                mismatches.append(
+                    f"{name}.mtu: upstream absent but rust typed {mv!r}"
+                )
+        elif mv != um:
+            mismatches.append(
+                f"{name}.mtu: upstream={um!r} rust={mv!r} (state={mtf.get('state')!r})"
+            )
+
+        # macaddr: typed normalized lowercase colon form.
+        um = (u.get("macaddr") or "").lower() or None
+        macf = _typed_field(payload, "mac_address")
+        mc = macf.get("value") if macf.get("state") == "known" else None
+        mc = mc.lower() if isinstance(mc, str) else mc
+        if um != mc:
+            mismatches.append(f"{name}.macaddr: upstream={um!r} rust={mc!r}")
+
+        # master: typed relationship fields vs upstream post-clean
+        # master (parens stripped, lowercased). The typed payload
+        # distinguishes LAG membership (`member_of`), physical parent
+        # (`parent_interface`) and the raw classified relationship
+        # (`master_relationship.target`); the effective observed master
+        # target is whichever is populated.
         um = u.get("master") or ""
         um = um.replace("(", "").replace(")", "").lower() or None
         dm = (
@@ -242,14 +341,16 @@ def compare(upstream_path: Path, rust_path: Path):
             dm = dm.lower() or None
         if um != dm:
             mismatches.append(f"{name}.master/member_of: upstream={um!r} rust={dm!r}")
-        # addresses
+
+        # addresses: typed ObservedField<Vec<String>> values.
         for uf, df in [
             ("ipAddressList", "ip_addresses"),
             ("ip6AddressList", "ipv6_addresses"),
         ]:
             uv = u.get(uf) or []
-            dv = d.get(df) or []
-            if uf == "ip6AddressList" and list(dv) == list(uv) + ["::1/128"]:
+            af = _typed_field(payload, df)
+            dv = af.get("value") if af.get("state") == "known" else None
+            if uf == "ip6AddressList" and dv is not None and list(dv) == list(uv) + ["::1/128"]:
                 # KNOWN DEVIATION (documented): the upstream cleaner
                 # deletes "::1/128" ("Remove loopbacks"); the typed
                 # payload preserves observed addresses verbatim —
@@ -259,15 +360,23 @@ def compare(upstream_path: Path, rust_path: Path):
                     "(upstream removes loopbacks — documented deviation)"
                 )
                 continue
-            if list(uv) != list(dv):
-                mismatches.append(f"{name}.{uf}: upstream={uv!r} rust={dv!r}")
-        # speed: upstream post-clean int/-1/0 vs rust typed field
+            if af.get("state") == "known":
+                if list(uv) != list(dv or []):
+                    mismatches.append(f"{name}.{uf}: upstream={uv!r} rust={dv!r}")
+            elif uv:
+                mismatches.append(
+                    f"{name}.{uf}: upstream has {len(uv)} addr(s) but rust state={af.get('state')!r}"
+                )
+
+        # speed: upstream post-clean int/-1/0 vs typed
+        # SpeedObservation{value,unit}. Value parity is checked; the
+        # declared unit is oracle-uncompared (profiles own unit claims).
         us = u.get("speed")
         try:
             us = int(us)
         except (TypeError, ValueError):
             us = None
-        sp = (payload.get("speed") or {})
+        sp = _typed_field(payload, "speed")
         if us is None:
             mismatches.append(f"{name}.speed: upstream=missing rust_state={sp.get('state')!r}")
         elif us == -1 or us == 0 or us == 4294967295:
@@ -277,15 +386,52 @@ def compare(upstream_path: Path, rust_path: Path):
                     f"{name}.speed: upstream={us} rust_state={sp.get('state')!r}"
                 )
         else:
-            sv = (sp.get("value") or {})
+            sv = sp.get("value") or {}
             if sp.get("state") != "known" or sv.get("value") != us:
                 mismatches.append(
                     f"{name}.speed: upstream={us} rust={sp!r}"
                 )
+        if sp.get("state") == "known" and not (sp.get("value") or {}).get("unit"):
+            uncompared.append(f"{name}.speed.unit (typed unit claim, no upstream axis)")
 
-    print(f"upstream records: {len(up)}, rust interfaces: {len(rints)}")
+    # ── Section 3: raw extraction parity (diagnostics vs upstream) ────
+    # The `interfaces` diagnostics preserve the raw captured strings;
+    # upstream post-cleaner values are compared with the same cosmetic
+    # fixups the typed path documents. Divergence here indicates the
+    # normalizer lost or altered raw evidence before typing.
+    raw_checked = 0
+    for name in sorted(set(up) & iface_set):
+        u, d = up[name], rints_by_name[name]
+        ut = (u.get("type") or "").lower() or None
+        dt = (d.get("type_raw") or "").lower() or None
+        if dt == "ether":
+            dt = "ethernet"
+        if ut != dt:
+            mismatches.append(f"RAW {name}.type: upstream={ut!r} rust_raw={dt!r}")
+        raw_checked += 1
+        um, dm = u.get("mtu"), d.get("mtu_raw")
+        um = int(um) if um not in (None, "") else None
+        dm = int(dm) if dm not in (None, "") else None
+        if um != dm:
+            mismatches.append(f"RAW {name}.mtu: upstream={um!r} rust_raw={dm!r}")
+        raw_checked += 1
+        um, dm = (u.get("macaddr") or "").lower() or None, d.get("mac_raw")
+        if um != dm:
+            mismatches.append(f"RAW {name}.macaddr: upstream={um!r} rust_raw={dm!r}")
+        raw_checked += 1
+
+    # Fields with no upstream comparison axis.
+    uncompared.append("ifindex (no upstream axis)")
+    uncompared.append("vlan_raw (no upstream axis)")
+    uncompared.append("addresses_omitted / report.* (normalizer-internal accounting)")
+
+    print(f"upstream records: {len(up)}, rust interfaces: {len(iface_set)}, "
+          f"typed facts: {len(fact_iface_set)}, status facts: {len(status_facts)}")
+    print(f"raw-parity fields compared: {raw_checked}")
     for dev in deviations:
         print("  DEVIATION " + dev)
+    for u_ in sorted(set(uncompared)):
+        print("  UNCOMPARED " + u_)
     if mismatches:
         print(f"MISMATCHES ({len(mismatches)}):")
         for m in mismatches[:80]:

@@ -32,9 +32,12 @@ namespace-aware `subject.network_namespace`).
 
 ## Differential oracle result
 
-`compare` on the Cumulus fixture pair: **28/28 interfaces, all compared
-fields match** (ifname set, adminState, state, type, mtu, speed,
-macaddr, master/member_of, ipAddressList, ip6AddressList). First run
+`compare` on the Cumulus fixture pair (post-B5 comparator): **28/28
+interfaces, exactly one typed fact per interface, 84 raw-parity
+fields compared, 0 mismatches, 16 documented deviations**. Compared
+axes: ifname population, adminState, state, typed interface_type,
+typed mtu/macaddr/ipAddressList/ip6AddressList, speed, master/
+member_of, subject entity/namespace identity. First run
 exposed and fixed four real divergences:
 
 1. iproute2 `name@link` ifnames — upstream `([^:@ ]+)` strips the
@@ -87,11 +90,13 @@ here is authority-eligible.
 
 ## Verification executed
 
-- `cargo test -p bonsai --lib --profile ci -- interface_normalizer
-  interface_facts typed_facts`: 45+ tests pass (incl. fixture
-  normalize+validate, sentinel/zero speed, sonic internal marking,
-  empty-observation, malformed-line accounting, namespace-bound fact
-  identity, oversized refusal).
+- `cargo test -p bonsai --lib -- interface_normalizer
+  interface_facts typed_facts telemetry_identity`: 67 tests pass on
+  the final candidate (incl. fixture normalize+validate,
+  sentinel/zero speed, sonic internal marking, empty-observation,
+  malformed-line accounting, namespace-bound fact identity, oversized
+  refusal, invalid-context report, completeness/temporal degradation,
+  attestation-mutation negatives, per-state ABI fixtures).
 - Differential oracle: `interface_oracle.py compare` → all fields
   match (see above).
 - Perf: `interface_normalizer::perf::fixture_normalization_throughput`
@@ -162,3 +167,90 @@ Fixture release honesty: `tests/fixtures/bn024/interface-cumulus/`
 remains the only committed upstream-derived content; `PROVENANCE.md`
 records origin/revision/sha256/split boundary and the manifest entry
 above is its machine-checkable counterpart.
+
+## Corrective closeout — bounded review findings B1–B7
+
+Independent review of head `ba2ce9c` confirmed residual findings;
+all are addressed on this branch:
+
+- **B1 ABI/schema drift**: `PayloadState::CaptureFailed` existed in
+  Rust but was missing from `v1.schema.json`. The schema enum now
+  carries `capture_failed`; `v1.states.fixture.json` holds one
+  Rust-emitted sealed fact per `PayloadState` variant and is gated by
+  both `typed_facts::tests::committed_state_fixtures_cover_every_
+  payload_state` (Rust side) and
+  `tests/test_bn024_typed_facts.py::test_every_payload_state_fixture_
+  validates_against_schema` (schema side — requires `jsonschema`,
+  fails rather than skips when absent). This addition is
+  backward-compatible: it widens an enum for a state the writer could
+  already emit; readers on the old schema would reject the new value,
+  which is the correct fail-closed behavior for an ABI they do not
+  understand.
+- **B2 attestation integrity**: `IdentityResolution`'s private
+  `resolver_attested` flag could not cover its public mutable fields,
+  and `AuthorityGrant` bound only identity axes — a cloned grant could
+  be resealed against a mutated fact. Both types now carry a private
+  `attested_digest` (serde-skipped): the resolution digest covers its
+  full serialized evidence, the grant digest covers its bound axes
+  plus the fact's `payload_sha256`/`evidence_sha256`. Post-attestation
+  mutation of either side fails `attestation_covers_state()` /
+  `binds()`; deserialized values remain unattested. Negative
+  regression tests cover mutated device id, observed scope/collector/
+  session/exporter axes, consistent grant+fact reseal, payload/
+  evidence mutation, unrelated source/session, deserialized grants
+  and replayed state. Identity resolution remains distinct from
+  authorization: a grant is eligibility evidence for ONE sealed fact,
+  not capture authenticity, freshness, payload trust or graph
+  projection authority; no authoritative graph write path exists.
+- **B3 input bounds**: `normalize()` now validates the observation
+  context and enforces the 8 MiB input bound BEFORE hashing captures;
+  oversized evidence is reported as `capture_refused_input_bound`
+  without claiming undigested `raw_output` hashes; every early-return
+  path (invalid context, oversized input, status facts) passes
+  canonical validation or is an explicit report with zero facts.
+  Report source entries distinguish parsed/rejected/not-attempted.
+- **B4 completeness/temporal alignment**: `entity_partial` now
+  includes `Invalid` ip/ipv6 address fields; status-fact completeness
+  accounts for `facts_rejected`, `invalid_entities`, omitted
+  conflicts and capture-timing quality; single-source interfaces,
+  capture skew and unparseable timestamps degrade to `Partial` with
+  explicit notes; conflict truncation is counted
+  (`conflicts_omitted`). A real oracle-surfaced defect was fixed:
+  MTU was capped at `u16::MAX`, fabricating `Invalid` for legitimate
+  65536 (`lo`, `evpn-vrf`, `mgmt`) — the typed field and canonical
+  validator now accept the full u32 range.
+- **B5 oracle integrity**: `interface_oracle.py compare` is split
+  into artifact-integrity (exactly one typed fact per interface, no
+  duplicates), population parity, typed semantic parity (typed
+  payload values for type/MTU/MAC/addresses/states/speed/master plus
+  subject entity/namespace axes) and raw extraction parity
+  (diagnostics), with evidence-based deviations and an explicit
+  unmapped-type fail-closed table. `tests/test_bn024_oracle.py`
+  proves the comparator fails on mutated typed MTU, MAC, IP, type,
+  missing/duplicate facts and subject identity. Genuine rerun:
+  28/28 interfaces, 28 typed facts, 84 raw-parity fields, 0
+  mismatches, 16 documented deviations.
+- **B6 provenance**: the upstream Apache-2.0 `LICENSE` is now vendored
+  byte-identical at
+  `tests/fixtures/bn024/interface-cumulus/LICENSE.apache-2.0`
+  (sha256 `c71d239d…0ab4`, verified against the pinned checkout; no
+  upstream NOTICE exists at that revision). `PROVENANCE.md` records
+  the fixture split and both derived-file sha256s plus the
+  modified-file notice; the manifest LICENSE entry is
+  `direct_reuse_permitted`/`approved_reuse`/`none`, the fixture entry
+  references the vendored license and NOTICE; top-level `NOTICE`
+  carries the SuzieQ attribution. `upstream_provenance.py verify`
+  passes for all 115 manifest entries against pinned checkouts.
+- **B7 docs**: this file, `docs/bn024/typed-facts/README.md`,
+  `docs/STATUS.md` and the BN-024 backlog rows are reconciled.
+
+## Scope qualification (unchanged)
+
+Offline normalization only; fixture-qualified (one genuine Cumulus
+capture); Cumulus/SONiC FRR `vtysh`+`ip -d address` observation path
+only. NOT universal release qualification, NOT native SONiC
+STATE_DB/COUNTERS_DB/APPL_DB/CONFIG_DB/NVUE qualification, NOT live
+collector integration, NOT authoritative graph projection. D/I/N/S/P/V/O
+terminology: this slice is design+implementation (D/I) with
+normalization (N) evidence on fixtures only; no scale (S),
+production (P), vendor (V) or operational (O) qualification is claimed.

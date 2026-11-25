@@ -62,9 +62,21 @@ conflicts, LAG-vs-parent relationship classification, admin/oper
 separation, per-family address validation, and pre-return fact
 validation; plus applicability reporting, fixture provenance manifest
 entry, typed-payload oracle comparison, hash-once perf fix, and
-`AuthorityGrant::for_fact` source-axis corroboration. Canonical L0–L3
-gate rerun pending on `ca6d86c`. Evidence:
-`docs/bn024/evidence/2026-11-25-bn024-native-iface/`.
+`AuthorityGrant::for_fact` source-axis corroboration. Independent
+review of `ba2ce9c` then produced bounded findings B1–B7 — fixed on
+the merge candidate: `capture_failed` added to the published ABI
+schema with a Rust-emitted per-state fixture drift gate; attestation
+now cryptographically binds the contents it attests (mutated
+resolutions/grants/facts fail closed); input bounds and status-fact
+validation enforced before hashing; completeness/temporal alignment
+corrected (incl. a real MTU-65536 defect the new oracle caught);
+differential oracle split into typed-payload vs raw-extraction
+parity with mutation tests; upstream Apache-2.0 LICENSE vendored and
+provenance manifest made compliant. Offline normalization only —
+fixture-qualified, no live collector, no graph projection. Canonical
+L0–L3 gate run recorded in
+`docs/bn024/evidence/2026-11-25-bn024-native-iface/README.md`.
+Evidence: `docs/bn024/evidence/2026-11-25-bn024-native-iface/`.
 
 BN-019 packaged upgrade slice — **executed 2026-11-24** on merged
 main `18fa577` (PR #80): real packaged images `bonsai:bn019u2-cdfcac1`
