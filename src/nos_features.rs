@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::frr_interface_json::{FRR_JSON_MAPPING_REVISION, FRR_JSON_PARSER_REVISION};
 use crate::interface_normalizer::{INTERFACE_CLI_MAPPING_REVISION, INTERFACE_CLI_PARSER_REVISION};
 use sha2::{Digest, Sha256};
 
@@ -1400,6 +1401,66 @@ pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
                 ]),
             )]),
             verification: "untested".into(),
+        },
+        // Genuine standalone-FRR structured-interface qualification for
+        // the exact lab-observed FRR release. This is intentionally narrow:
+        // it is not a SONiC or Cumulus claim, not a claim for other FRR
+        // versions, and not authorization to collect from a device.
+        NosFeatureProfile {
+            profile_id: "frr-10.6.1-structured-interfaces".into(),
+            platform_family: "frr".into(),
+            version_match: "=10.6.1_git".into(),
+            release_constraint: Some(ReleaseConstraint {
+                raw: Some("10.6.1_git".into()),
+                train: None,
+                build: None,
+                components: BTreeMap::new(),
+            }),
+            hardware_constraints: vec![],
+            verified_namespaces: vec!["default".into()],
+            device_roles: vec![],
+            resource_budget: ResourceBudget {
+                max_input_bytes: Some(8 * 1024 * 1024),
+                max_entities: Some(4096),
+                max_output_facts: Some(8192),
+            },
+            features: BTreeMap::from([(
+                "interfaces.frr_json".into(),
+                FeatureFlag {
+                    enabled: true,
+                    parsers: vec!["native_rust_json".into()],
+                    scope_notes: vec![
+                        "standalone FRR vtysh structured JSON observation".into(),
+                        "offline normalization only — no live collector, no graph projection"
+                            .into(),
+                    ],
+                    requires: vec![],
+                    conflicts: vec![],
+                    support: SupportState::Supported,
+                    evidence: vec![ApplicabilityEvidence {
+                        kind: "observed_capture".into(),
+                        source:
+                            "clab-bonsai-bn003-vrf-frr2 FRRouting 10.6.1_git show interface json"
+                                .into(),
+                        revision: Some("10.6.1_git".into()),
+                        scope: Some(
+                            "platform=frr namespace=default feature=interfaces.frr_json".into(),
+                        ),
+                        claim: SupportState::Supported,
+                    }],
+                    acquisition: vec![AcquisitionContract {
+                        kind: AcquisitionKind::CliObservation,
+                        contracts: vec!["frr_vtysh_show_interface_json".into()],
+                    }],
+                    normalizer: Some(NormalizerRef {
+                        id: "interface_frr_json_normalizer".into(),
+                        revision: FRR_JSON_PARSER_REVISION.into(),
+                        mapping_revision: Some(FRR_JSON_MAPPING_REVISION.into()),
+                    }),
+                    promotion: PromotionState::Shadow,
+                },
+            )]),
+            verification: "release_qualified".into(),
         },
     ]
 }

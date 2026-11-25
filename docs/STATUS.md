@@ -102,6 +102,45 @@ hot-disable/rollback mechanics, parser-chain/capture-envelope
 integration (BN-024-05+), all structured-source acquisition slices.
 Evidence: `docs/bn024/extension-seam.md`.
 
+**Correction pass (2026-11-25, commit `d897530`):** review of the
+published seam confirmed and fixed applicability/dispatch defects —
+wildcard `version_match` is now discovery/candidate-only evidence and
+can never execute qualified dispatch; qualified dispatch requires an
+exact equality release constraint plus verification evidence and
+validates the actual observation's canonical platform, release,
+namespace and acquisition contract against the selection receipt;
+namespace-scoped applicability replaces device-level applicability at
+dispatch; registry binds exact normalizer+mapping revisions;
+declarative `PromotionState::Active` never relaxes shadow-only output;
+profile resource budgets tighten but never relax implementation
+limits; structured release metadata is the single effective version
+representation with explicit legacy-conflict detection; input-contract
+mismatches are reported before applicability qualification. The
+historical Cumulus CLI fixture path is explicitly experimental and
+machine-labelled unqualified. Lane-validated: 636 lib tests + 22/22
+integration tests pass on the correction tree.
+
+**BN-024-05 structured-source slice (same day, stacked PR):** first
+genuine structured-source native normalizer — exact typed decoding of
+standalone FRR `show interface json` captured read-only from
+authorized lab container `clab-bonsai-bn003-vrf-frr2` (FRRouting
+`10.6.1_git`, immutable image digest recorded in fixture provenance;
+fixture byte-identical to the live container response). Emits the same
+typed `interface.state` facts as the CLI adapter. Exact-release scoped
+qualification only: not a SONiC/Cumulus claim, not other FRR versions,
+not collection authorization. Strict schema policy documented:
+optional-field absence is forward-compatible explicit unknowns;
+additive fields/wrong types/duplicate identity keys are typed
+invalid-input because qualification is exact-release. Relationships
+resolve numeric references only within the same observation;
+contradictory evidence stays unresolved. Registry input-shape binding:
+CLI pair cannot execute the structured normalizer and vice versa.
+SuzieQ @75198b5 has no standalone-FRR structured normalizer — no
+differential parity claimed; expected values independently read from
+the genuine capture. Offline/shadow only; no live producer yet.
+Evidence: `tests/fixtures/bn024/interface-frr-json/PROVENANCE.md`,
+`docs/bn024/extension-seam.md`.
+
 BN-019 packaged upgrade slice — **executed 2026-11-24** on merged
 main `18fa577` (PR #80): real packaged images `bonsai:bn019u2-cdfcac1`
 (old baseline) → `bonsai:bn019u2-18fa577` (corrected). Leg A: disposable

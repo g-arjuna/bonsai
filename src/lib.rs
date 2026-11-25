@@ -19,6 +19,7 @@ pub mod discovery;
 pub mod disk_guard;
 pub mod enrichment;
 pub mod event_bus;
+pub mod frr_interface_json;
 pub mod gnmi_path;
 pub mod gnmi_security;
 pub mod gnmi_set;
