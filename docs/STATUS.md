@@ -51,6 +51,21 @@ Evidence: `docs/bn024/evidence/2026-11-24-bn024-01*/`,
 `docs/bn024/parser-contract.md`, `docs/bn024/typed-facts/`,
 `docs/bn024/extension-seam.md`, `docs/bn024/source-crosswalk/`.
 
+BN-024 first native intelligence slice — **PR #86**
+(`feat/bn024-native-interface-state`): native Rust normalizer for the
+Cumulus/SONiC FRR interface observation pair emitting typed
+`interface.state` facts. Review pass on `1130ef1` (L0 failed at
+rustfmt; L1–L3 not executed) produced confirmed findings A1–A7 —
+fixed on `ca6d86c`: per-source capture outcomes with honest
+completeness, resource-limit accounting, preserved cross-source
+conflicts, LAG-vs-parent relationship classification, admin/oper
+separation, per-family address validation, and pre-return fact
+validation; plus applicability reporting, fixture provenance manifest
+entry, typed-payload oracle comparison, hash-once perf fix, and
+`AuthorityGrant::for_fact` source-axis corroboration. Canonical L0–L3
+gate rerun pending on `ca6d86c`. Evidence:
+`docs/bn024/evidence/2026-11-25-bn024-native-iface/`.
+
 BN-019 packaged upgrade slice — **executed 2026-11-24** on merged
 main `18fa577` (PR #80): real packaged images `bonsai:bn019u2-cdfcac1`
 (old baseline) → `bonsai:bn019u2-18fa577` (corrected). Leg A: disposable
