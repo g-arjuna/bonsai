@@ -1,23 +1,26 @@
 # BN-024-03/03A — bounded extension seam (first slices)
 
-Status: contract-only slices landed on
-`fix/bn024-parser-quality-and-sidecar-contract`. No collection, parsing,
-graph mutation, or authority projection is wired.
+Status: the first executable offline seam landed in PR #87 correction work.
+Collection, authoritative graph mutation and promotion remain unwired. Native
+normalization output is experimental or shadow-only.
 
 ## What exists
 
 - `src/nos_features.rs` — `NosFeatureProfile` / `FeatureFlag` /
   `ProfileRegistry` / `ProfileQuery` / `Selection` /
   `FeatureStatus`, extended for BN-024-03A.
-- Selection precedence (deterministic, first-registration wins on ties):
-  exact platform+version → exact platform+any → family+version →
-  family+any. Unknown platform → `UnsupportedPlatform`; known platform
-  with uncovered version → `UnsupportedVersion`; release/hardware
-  constraint rejection → `OutOfScope`; absent feature →
-  `FeatureStatus::Absent` (never implicitly enabled); disabled →
-  `Disabled`.
+- Selection precedence (deterministic): exact platform+version → exact
+  platform+any → family+version → family+any. Equally applicable
+  overlapping profiles are `Ambiguous`, never first-registration-wins.
+  A failed more-specific release/hardware constraint blocks lower-precedence
+  wildcard fallback conservatively (`OutOfScope`). Unknown platform →
+  `UnsupportedPlatform`; known platform with uncovered version →
+  `UnsupportedVersion`; absent feature → `FeatureStatus::Absent` (never
+  implicitly enabled); disabled → `Disabled`.
 - `verified_namespaces` scopes ASIC/namespace coverage; empty means
-  *unspecified* — multi-namespace devices must not be assumed covered.
+  *unspecified and not universally applicable*. Executable dispatch enforces
+  exact feature/namespace applicability. `None` or an unknown namespace is
+  rejected for qualified dispatch.
 - SONiC dual-ASIC fixture: `tests/fixtures/bn024/sonic-namespaces.fixture.json`
   (synthetic; `host` namespace intentionally unverified).
 - Cumulus Linux metadata fixture:
@@ -46,9 +49,11 @@ graph mutation, or authority projection is wired.
   conflicts — returning all violations.
 - `ProfileQuery` gains `release`/`hardware`; the legacy `version` string
   becomes the release `raw` when `release` is absent.
-- Platform queries are case-normalized; selection still describes feature
-  applicability only — canonical device identity remains
-  `platform_registry`'s responsibility (no second platform authority).
+- Platform queries are normalized through `platform_registry` canonical ids
+  and aliases (trim/case normalization plus canonical alias mapping). Unknown
+  future-NOS platform names remain explicit registration namespaces. Selection
+  still describes feature applicability only — canonical device identity
+  remains `platform_registry`'s responsibility (no second platform authority).
 
 ## SONiC vs Cumulus distinction (contract-level)
 
@@ -85,15 +90,6 @@ graph mutation, or authority projection is wired.
 - Feature `support`/`evidence` currently declarative; wiring to BN-028-13
   retrieved claims needs the document-ingestion slice (advisory only).
 
-## Next bounded implementation (exact)
-
-Wire `ProfileRegistry::select` into the CLI-enricher vendor resolution
-path *behind a flag* (default off): given a `TargetConfig`, select the
-profile and expose `feature_status` in capture diagnostics — still no
-graph write. Requires: config schema for `[[nos_profiles]]`, profile
-load/validate tests, and a decision on precedence vs existing
-`platform_registry::resolve_target_platform`.
-
 ## BN-024-03/03A implementation slice (2026-11-25)
 
 First executable slice of the seam, built on the contract above:
@@ -116,13 +112,23 @@ First executable slice of the seam, built on the contract above:
   Cumulus and standalone-FRR profiles. `version_match: "*"` records
   the upstream `version: all` selector — it is NOT tested-release
   support: unknown releases select only as `Candidate`.
-- `normalizer_registry` is the offline dispatch seam: a `Selected`
-  profile + `Enabled` feature + declared `NormalizerRef` + matching
-  observation NOS invokes the bound normalizer and returns
-  `NormalizerRun { output, shadow_only }`. Candidate/disabled/
-  unqualified/mismatched dispatch fails closed with explicit
-  `DispatchError`. No collection, I/O, parser-chain wiring or graph
-  access — output stays `device_asserted`, `authority: none`.
+- `normalizer_registry` is the offline dispatch seam. Executable dispatch
+  uses an immutable `SelectionReceipt` binding the selected profile,
+  canonical platform, effective release representation, hardware axes and
+  profile fingerprint. Dispatch verifies feature composition, exact
+  normalizer/mapping revisions, acquisition contract shape, namespace
+  applicability, resource budgets and binding between receipt metadata and
+  the actual observation. A release-qualified `Selected` profile cannot
+  execute when the observation release is absent or differs.
+- Built-in wildcard SONiC/Cumulus profiles are recognized implementation
+  profiles, not release-qualified runtime profiles. They cannot execute
+  qualified dispatch merely because a nonempty version string exists. The
+  historical Cumulus fixture remains available only through explicit
+  `dispatch_experimental`; such output is machine-labelled
+  `ExperimentalUnqualified` and shadow-only.
+- No collection, I/O, parser-chain wiring or graph access — output stays
+  `device_asserted`, `authority: none`, `shadow_only: true` even when
+  profile data declares `PromotionState::Active`.
 
 ### Source-informed decisions (D6)
 
@@ -148,6 +154,7 @@ First executable slice of the seam, built on the contract above:
   competing registry was created — selection reuses
   `platform_registry` canonical ids via `canonical_platform_id`.
 
+
 ### Deferred (explicit)
 
 - Parser-chain/capture wiring behind a flag (needs common capture
@@ -155,7 +162,8 @@ First executable slice of the seam, built on the contract above:
 - SONiC STATE_DB/COUNTERS_DB/APPL_DB/CONFIG_DB, Cumulus NVUE and
   kernel structured-state acquisition — declared `disabled`/
   `support: unknown`, never implied.
-- Namespace-scoped dispatch (`feature_status_in_namespace`) is
-  contract-ready but unused until structured sources land.
+- Common capture/envelope and production acquisition wiring (BN-024-05+).
 - Config-file profile loading, hot-disable/rollback, per-plugin
-  sandboxing — profile data is code-registered for now.
+  sandboxing — profile data is code-registered for now. Configuration-file
+  loading is not the next milestone; the next milestone is genuine
+  structured native intelligence.

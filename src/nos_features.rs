@@ -14,6 +14,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::interface_normalizer::{INTERFACE_CLI_MAPPING_REVISION, INTERFACE_CLI_PARSER_REVISION};
+use sha2::{Digest, Sha256};
+
 /// Advisory support claim for a feature — distinct from `enabled`
 /// (profile wiring) and from `verification` (evidence status). `Unknown`
 /// is the default: absence of evidence never becomes support.
@@ -182,6 +185,21 @@ pub struct SoftwareRelease {
     pub components: BTreeMap<String, String>,
 }
 
+impl SoftwareRelease {
+    /// Whether `raw` is an actual reported release string rather than the
+    /// explicit unknown sentinels accepted by legacy callers.
+    pub fn has_known_raw(&self) -> bool {
+        known_release_raw(&self.raw)
+    }
+}
+
+/// True only for a nonempty, non-wildcard release string. Whitespace-only
+/// and "*" are explicit unknowns, never weakly-known versions.
+pub fn known_release_raw(raw: &str) -> bool {
+    let v = raw.trim();
+    !v.is_empty() && v != "*"
+}
+
 /// Equality-only release constraint: every specified field must equal the
 /// device's reported value. No ranges, ordering or semver — a device whose
 /// release is unknown or partially reported fails closed.
@@ -199,6 +217,16 @@ pub struct ReleaseConstraint {
 }
 
 impl ReleaseConstraint {
+    /// Whether no release dimension is constrained. An empty constraint is
+    /// not release qualification evidence — it is merely the absence of an
+    /// additional restriction.
+    pub fn is_empty(&self) -> bool {
+        self.raw.is_none()
+            && self.train.is_none()
+            && self.build.is_none()
+            && self.components.is_empty()
+    }
+
     /// True iff the constraint specifies nothing (matches all) or every
     /// specified dimension equals the release's reported value. A `None`
     /// argument (unknown release) never matches a non-empty constraint.
@@ -466,10 +494,117 @@ pub fn namespace_status(profile: &NosFeatureProfile, namespace: &str) -> Namespa
     }
 }
 
+/// Immutable binding between a selection and the exact canonical query
+/// metadata that justified it. Receipts are constructed only by
+/// [`ProfileRegistry::select_receipt`]; their fields are private so a caller
+/// cannot widen a release, namespace, hardware scope or platform after the
+/// fact and reuse the selection for a different observation.
+#[derive(Clone, Debug)]
+pub struct SelectionReceipt {
+    selection: Selection,
+    canonical_platform: String,
+    effective_release: Option<SoftwareRelease>,
+    hardware: Option<HardwareScope>,
+    /// Digest of the exact selected/candidate profile data at selection
+    /// time. Profiles do not yet carry an explicit revision column; this
+    /// fingerprint is the immutable binding until one exists.
+    profile_fingerprint: Option<String>,
+}
+
+impl SelectionReceipt {
+    pub fn selection(&self) -> &Selection {
+        &self.selection
+    }
+
+    pub fn canonical_platform(&self) -> &str {
+        &self.canonical_platform
+    }
+
+    pub fn effective_release(&self) -> Option<&SoftwareRelease> {
+        self.effective_release.as_ref()
+    }
+
+    pub fn hardware(&self) -> Option<&HardwareScope> {
+        self.hardware.as_ref()
+    }
+
+    pub fn profile_fingerprint(&self) -> Option<&str> {
+        self.profile_fingerprint.as_deref()
+    }
+}
+
 /// Registry of feature profiles. Profiles register declaratively; core
 /// collectors/graph code never change when a new NOS is added.
 pub struct ProfileRegistry {
     profiles: Vec<NosFeatureProfile>,
+}
+
+/// Canonical effective query metadata used internally by selection. The
+/// legacy `version` string never becomes a second source of truth when a
+/// structured release is present; empty/"*" raw values remain unknown.
+struct EffectiveQuery {
+    canonical_platform: String,
+    release: Option<SoftwareRelease>,
+    release_known: bool,
+    metadata_conflict: bool,
+}
+
+impl EffectiveQuery {
+    fn from_query(query: &ProfileQuery) -> Self {
+        let trimmed = query.platform.trim().to_ascii_lowercase();
+        // Resolve registered aliases through the platform registry, while
+        // preserving unknown future-NOS ids for explicitly registered
+        // offline profiles. Unknown must not collapse every unregistered
+        // platform into one generic profile namespace.
+        let canonical = crate::platform_registry::normalize_platform_id(&trimmed);
+        let canonical_platform = if canonical != "unknown" || trimmed == "unknown" {
+            canonical.to_string()
+        } else {
+            trimmed
+        };
+        let legacy_known = known_release_raw(&query.version);
+        let mut metadata_conflict = false;
+        let release = match &query.release {
+            Some(r) => {
+                let structured_known = r.has_known_raw();
+                if legacy_known && structured_known && query.version != r.raw {
+                    metadata_conflict = true;
+                }
+                if legacy_known && !structured_known {
+                    metadata_conflict = true;
+                }
+                Some(r.clone())
+            }
+            None if legacy_known => Some(SoftwareRelease {
+                raw: query.version.clone(),
+                train: None,
+                build: None,
+                components: BTreeMap::new(),
+            }),
+            None => None,
+        };
+        let release_known = release.as_ref().is_some_and(|r| r.has_known_raw());
+        Self {
+            canonical_platform,
+            release,
+            release_known,
+            metadata_conflict,
+        }
+    }
+
+    fn version_for_match(&self) -> &str {
+        match self.release.as_ref() {
+            Some(r) if r.has_known_raw() => r.raw.as_str(),
+            _ => "",
+        }
+    }
+}
+
+fn fingerprint_profile(profile: &NosFeatureProfile) -> Option<String> {
+    let bytes = serde_json::to_vec(profile).ok()?;
+    let mut h = Sha256::new();
+    h.update(bytes);
+    Some(format!("{:x}", h.finalize()))
 }
 
 impl ProfileRegistry {
@@ -483,48 +618,56 @@ impl ProfileRegistry {
         self.profiles.push(profile);
     }
 
-    /// Select the best profile for a query. Precedence:
-    /// 1. exact platform id + exact version match
+    /// Select the best profile for a query. This convenience method
+    /// returns only the selection; executable dispatch must use
+    /// [`Self::select_receipt`] so the selection remains bound to the exact
+    /// canonical query metadata that justified it.
+    ///
+    /// Precedence:
+    /// 1. exact platform id + exact/pinned version match
     /// 2. exact platform id + any-version
-    /// 3. family match + exact version
+    /// 3. family match + exact/pinned version
     /// 4. family match + any-version
-    /// Ties broken by registration order (first wins) — deterministic.
+    /// Equally applicable profiles are `Ambiguous` — never first-match.
     ///
     /// A profile additionally qualifies only when its `release_constraint`
     /// (if any) matches the query release and every `hardware_constraints`
     /// entry is satisfied by the query hardware scope. Unknown release or
     /// unspecified hardware fails closed against constrained profiles.
+    /// Conservative fallback: when a more specific matching profile rejects
+    /// the supplied release/hardware scope, a broader wildcard profile may
+    /// not bypass that explicit incompatibility.
+    ///
     /// This registry describes *feature applicability* only — canonical
     /// device identity remains `platform_registry`'s responsibility.
     pub fn select(&self, query: &ProfileQuery) -> Selection {
-        let platform = query.platform.trim().to_ascii_lowercase();
-        let platform = platform.as_str();
-        let family = platform_family(platform);
-        let version = query.version.as_str();
-        // Effective release: explicit structured release wins; otherwise
-        // the legacy version string becomes the raw component so existing
-        // `release_constraint { raw }` profiles still work.
-        let effective_release;
-        let release = match &query.release {
-            Some(r) => Some(r),
-            None if !version.is_empty() && version != "*" => {
-                effective_release = SoftwareRelease {
-                    raw: version.to_string(),
-                    train: None,
-                    build: None,
-                    components: BTreeMap::new(),
-                };
-                Some(&effective_release)
-            }
-            None => None,
-        };
+        self.select_receipt(query).selection().clone()
+    }
 
-        // Structured release and the legacy version string must not
-        // silently contradict each other when both are supplied.
-        let metadata_conflict = match (&query.release, version) {
-            (Some(r), v) if !v.is_empty() && v != "*" && r.raw != v => true,
-            _ => false,
+    /// Select and return an immutable receipt binding the result to the
+    /// canonical platform alias, one effective release representation and
+    /// the exact hardware scope supplied by the caller.
+    pub fn select_receipt(&self, query: &ProfileQuery) -> SelectionReceipt {
+        let effective = EffectiveQuery::from_query(query);
+        let selection = self.select_effective(query, &effective);
+        let profile_fingerprint = match &selection {
+            Selection::Selected(p) | Selection::Candidate(p) => fingerprint_profile(p),
+            _ => None,
         };
+        SelectionReceipt {
+            selection,
+            canonical_platform: effective.canonical_platform,
+            effective_release: effective.release,
+            hardware: query.hardware.clone(),
+            profile_fingerprint,
+        }
+    }
+
+    fn select_effective(&self, query: &ProfileQuery, effective: &EffectiveQuery) -> Selection {
+        let platform = effective.canonical_platform.as_str();
+        let family = platform_family(platform);
+        let version = effective.version_for_match();
+        let release = effective.release.as_ref();
 
         let platform_exact =
             |p: &NosFeatureProfile| p.platform_family == platform || p.platform_family == family;
@@ -534,7 +677,7 @@ impl ProfileRegistry {
         // known-but-out-of-scope platform reports OutOfScope rather than
         // UnsupportedVersion/Platform.
         let scope_ok = |p: &NosFeatureProfile| -> Result<(), String> {
-            if metadata_conflict {
+            if effective.metadata_conflict {
                 return Err(
                     "conflicting release metadata: structured release and version disagree"
                         .to_string(),
@@ -570,19 +713,8 @@ impl ProfileRegistry {
         let version_pinned = |p: &NosFeatureProfile| {
             p.version_match != "*" && version_matches(&p.version_match, version)
         };
-
-        let mut best_tier = 0u8;
-        let mut best: Vec<&NosFeatureProfile> = Vec::new();
-        let mut scope_failure: Option<String> = None;
-        for p in &self.profiles {
-            if !platform_exact(p) {
-                continue;
-            }
-            if let Err(reason) = scope_ok(p) {
-                scope_failure.get_or_insert(reason);
-                continue;
-            }
-            let tier = if p.platform_family == platform && version_pinned(p) {
+        let prospective_tier = |p: &NosFeatureProfile| -> u8 {
+            if p.platform_family == platform && version_pinned(p) {
                 4
             } else if p.platform_family == platform && p.version_match == "*" {
                 3
@@ -591,8 +723,35 @@ impl ProfileRegistry {
             } else if p.platform_family == family && p.version_match == "*" {
                 1
             } else {
+                0
+            }
+        };
+
+        let mut best_tier = 0u8;
+        let mut best: Vec<&NosFeatureProfile> = Vec::new();
+        let mut failed_tier = 0u8;
+        let mut scope_failure: Option<String> = None;
+        for p in &self.profiles {
+            if !platform_exact(p) {
                 continue;
-            };
+            }
+            let tier = prospective_tier(p);
+            if tier == 0 {
+                continue;
+            }
+            if let Err(reason) = scope_ok(p) {
+                // A more specific profile that recognizes the platform and
+                // version but rejects release/hardware evidence is an
+                // explicit incompatibility. Remember its tier so a broad
+                // lower-precedence wildcard cannot bypass it.
+                if tier >= failed_tier {
+                    if tier > failed_tier || scope_failure.is_none() {
+                        scope_failure = Some(reason);
+                    }
+                    failed_tier = tier;
+                }
+                continue;
+            }
             if tier > best_tier {
                 best_tier = tier;
                 best.clear();
@@ -600,6 +759,18 @@ impl ProfileRegistry {
             if tier == best_tier {
                 best.push(p);
             }
+        }
+        // Conservative fallback: an explicit restriction failure at a more
+        // specific applicable tier blocks less-specific wildcard fallback.
+        // If a same-tier sibling passes, selection may proceed; the failure
+        // remains relevant only when it would otherwise be hidden.
+        if failed_tier > best_tier || (best.is_empty() && failed_tier > 0) {
+            return Selection::OutOfScope {
+                platform: platform.to_string(),
+                reason: scope_failure.unwrap_or_else(|| {
+                    "more specific profile rejected the supplied scope".to_string()
+                }),
+            };
         }
         // Ambiguity is explicit: equally applicable profiles — including
         // duplicate registrations — conflict rather than silently picking
@@ -613,21 +784,15 @@ impl ProfileRegistry {
         if let Some(p) = best.first() {
             // A wildcard match against an UNKNOWN release is a discovery
             // candidate only — never executable applicability.
-            if release.is_none() && p.version_match == "*" {
+            if !effective.release_known && p.version_match == "*" {
                 return Selection::Candidate(Box::new((*p).clone()));
             }
             return Selection::Selected(Box::new((*p).clone()));
         }
         if self.profiles.iter().any(|p| platform_exact(p)) {
-            if let Some(reason) = scope_failure {
-                return Selection::OutOfScope {
-                    platform: platform.to_string(),
-                    reason,
-                };
-            }
             Selection::UnsupportedVersion {
                 platform: platform.to_string(),
-                version: version.to_string(),
+                version: query.version.clone(),
             }
         } else {
             Selection::UnsupportedPlatform {
@@ -636,10 +801,10 @@ impl ProfileRegistry {
         }
     }
 
-    /// Registry self-check: duplicate profile ids and internally
-    /// contradictory release metadata are rejected explicitly. Selection
-    /// skips self-inconsistent profiles, but callers registering profiles
-    /// from untrusted config should run this first.
+    /// Registry self-check: duplicate profile ids plus the internal
+    /// validity of every registered profile. Callers registering profiles
+    /// from config or another untrusted source must run this before use;
+    /// executable dispatch also validates the selected profile.
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         let mut seen = std::collections::BTreeMap::new();
@@ -647,18 +812,172 @@ impl ProfileRegistry {
             if seen.insert(p.profile_id.as_str(), ()).is_some() {
                 errors.push(format!("duplicate profile_id '{}'", p.profile_id));
             }
-            if p.version_match != "*"
-                && let Some(rc) = &p.release_constraint
-                && let Some(raw) = &rc.raw
-                && !version_matches(&p.version_match, raw)
-            {
+            errors.extend(Self::validate_profile(p));
+        }
+        errors
+    }
+
+    /// Validate one profile's internal contract. This is deliberately
+    /// bounded: it checks structural consistency and dependency graph
+    /// integrity, not whether the profile's support claims are true.
+    pub fn validate_profile(p: &NosFeatureProfile) -> Vec<String> {
+        let mut errors = Vec::new();
+        if p.profile_id.trim().is_empty() {
+            errors.push("profile_id must not be empty".to_string());
+        }
+        if p.platform_family.trim().is_empty() {
+            errors.push(format!(
+                "profile '{}' platform_family must not be empty",
+                p.profile_id
+            ));
+        }
+        if p.version_match.trim().is_empty() {
+            errors.push(format!(
+                "profile '{}' version_match must not be empty",
+                p.profile_id
+            ));
+        }
+        if p.version_match != "*"
+            && let Some(rc) = &p.release_constraint
+            && let Some(raw) = &rc.raw
+            && !version_matches(&p.version_match, raw)
+        {
+            errors.push(format!(
+                "profile '{}' release metadata contradicts itself",
+                p.profile_id
+            ));
+        }
+        for (feature, flag) in &p.features {
+            if feature.trim().is_empty() {
                 errors.push(format!(
-                    "profile '{}' release metadata contradicts itself",
+                    "profile '{}' contains an empty feature key",
                     p.profile_id
                 ));
             }
+            for req in &flag.requires {
+                if req.trim().is_empty() || !p.features.contains_key(req) {
+                    errors.push(format!(
+                        "profile '{}' feature '{feature}' requires undeclared feature '{req}'",
+                        p.profile_id
+                    ));
+                }
+            }
+            for conflict in &flag.conflicts {
+                if conflict.trim().is_empty() || !p.features.contains_key(conflict) {
+                    errors.push(format!(
+                        "profile '{}' feature '{feature}' conflicts with undeclared feature '{conflict}'",
+                        p.profile_id
+                    ));
+                }
+            }
+            if let Some(n) = &flag.normalizer {
+                if n.id.trim().is_empty() {
+                    errors.push(format!(
+                        "profile '{}' feature '{feature}' normalizer id is empty",
+                        p.profile_id
+                    ));
+                }
+                if n.revision.trim().is_empty() {
+                    errors.push(format!(
+                        "profile '{}' feature '{feature}' normalizer revision is empty",
+                        p.profile_id
+                    ));
+                }
+                if n.mapping_revision
+                    .as_deref()
+                    .is_some_and(|r| r.trim().is_empty())
+                {
+                    errors.push(format!(
+                        "profile '{}' feature '{feature}' mapping revision is empty",
+                        p.profile_id
+                    ));
+                }
+                if flag.acquisition.is_empty() {
+                    errors.push(format!(
+                        "profile '{}' feature '{feature}' binds a normalizer without an acquisition contract",
+                        p.profile_id
+                    ));
+                }
+            }
+            for acq in &flag.acquisition {
+                if acq.kind == crate::nos_features::AcquisitionKind::Unknown {
+                    errors.push(format!(
+                        "profile '{}' feature '{feature}' declares unknown acquisition kind",
+                        p.profile_id
+                    ));
+                }
+                for contract in &acq.contracts {
+                    if contract.trim().is_empty() {
+                        errors.push(format!(
+                            "profile '{}' feature '{feature}' contains an empty acquisition contract id",
+                            p.profile_id
+                        ));
+                    }
+                }
+            }
         }
+        // Dependency graph must be acyclic independent of any particular
+        // requested feature set.
+        fn visit(
+            node: &str,
+            profile: &NosFeatureProfile,
+            state: &mut std::collections::BTreeMap<String, u8>,
+            errors: &mut Vec<String>,
+        ) {
+            match state.get(node) {
+                Some(1) => {
+                    errors.push(format!(
+                        "profile '{}' has circular feature dependency at '{node}'",
+                        profile.profile_id
+                    ));
+                    return;
+                }
+                Some(2) => return,
+                _ => {}
+            }
+            state.insert(node.to_string(), 1);
+            if let Some(flag) = profile.features.get(node) {
+                for req in &flag.requires {
+                    if profile.features.contains_key(req) {
+                        visit(req, profile, state, errors);
+                    }
+                }
+            }
+            state.insert(node.to_string(), 2);
+        }
+        let mut state = std::collections::BTreeMap::new();
+        for feature in p.features.keys() {
+            visit(feature, p, &mut state, &mut errors);
+        }
+        errors.sort();
+        errors.dedup();
         errors
+    }
+
+    /// Return `feature` plus every transitive prerequisite declared by the
+    /// profile. Used when a single executable dispatch must satisfy the
+    /// same dependency contract as a composed feature set.
+    pub fn dependency_closure(profile: &NosFeatureProfile, feature: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        fn add(
+            name: &str,
+            profile: &NosFeatureProfile,
+            seen: &mut std::collections::BTreeSet<String>,
+            out: &mut Vec<String>,
+        ) {
+            if !seen.insert(name.to_string()) {
+                return;
+            }
+            out.push(name.to_string());
+            if let Some(flag) = profile.features.get(name) {
+                for req in &flag.requires {
+                    add(req, profile, seen, out);
+                }
+            }
+        }
+        add(feature, profile, &mut seen, &mut out);
+        out
     }
 
     /// Feature lookup on a selected profile — disabled, unsupported,
@@ -965,8 +1284,8 @@ pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
         acquisition: cli_observation(),
         normalizer: Some(NormalizerRef {
             id: "interface_normalizer".into(),
-            revision: "bn024-iface-1".into(),
-            mapping_revision: Some("bn024-map-1".into()),
+            revision: INTERFACE_CLI_PARSER_REVISION.into(),
+            mapping_revision: Some(INTERFACE_CLI_MAPPING_REVISION.into()),
         }),
         promotion: PromotionState::Shadow,
     };
@@ -977,8 +1296,20 @@ pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
                 "suzieq cl_interfaces.txt @75198b5 (genuine Cumulus capture, Apache-2.0 fixture)"
                     .into(),
             revision: Some("75198b5585ebef91f0659b6b1ec3c964cc2cd1ad".into()),
-            scope: Some("interfaces.frr_cli only".into()),
+            scope: Some("platform=nvidia.cumulus feature=interfaces.frr_cli".into()),
             claim: SupportState::Supported,
+        }]
+    };
+    let sonic_selector_evidence = || {
+        vec![ApplicabilityEvidence {
+            kind: "upstream_selector".into(),
+            source: "suzieq interfaces.yml @75198b5 declares sonic: copy: cumulus".into(),
+            revision: Some("75198b5585ebef91f0659b6b1ec3c964cc2cd1ad".into()),
+            scope: Some("platform=sonic feature=interfaces.frr_cli".into()),
+            // The selector proves only that upstream routes the command
+            // pair for SONiC. The committed genuine fixture is Cumulus
+            // evidence and must not be laundered into SONiC support.
+            claim: SupportState::Unknown,
         }]
     };
     vec![
@@ -996,10 +1327,14 @@ pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
                 max_output_facts: Some(8192),
             },
             features: BTreeMap::from([
-                (
-                    "interfaces.frr_cli".into(),
-                    interface_flag(fixture_evidence()),
-                ),
+                ("interfaces.frr_cli".into(), {
+                    let mut f = interface_flag(sonic_selector_evidence());
+                    // Implementation exists and the upstream selector
+                    // recognizes the path, but no SONiC fixture or
+                    // release-qualified capture establishes support.
+                    f.support = SupportState::Unknown;
+                    f
+                }),
                 // Structured planes are declared but NOT enabled —
                 // their acquisition slices are future work.
                 (
@@ -1015,7 +1350,7 @@ pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
                     ]),
                 ),
             ]),
-            verification: "fixture_only".into(),
+            verification: "untested".into(),
         },
         NosFeatureProfile {
             profile_id: "cumulus-1".into(),
@@ -1136,7 +1471,7 @@ mod tests {
     fn cumulus_profile() -> NosFeatureProfile {
         NosFeatureProfile {
             profile_id: "cumulus-1".into(),
-            platform_family: "cumulus".into(),
+            platform_family: "nvidia.cumulus".into(),
             version_match: "*".into(),
             release_constraint: Some(ReleaseConstraint {
                 raw: Some("5.13.0".into()),
