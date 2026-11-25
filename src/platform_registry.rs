@@ -194,6 +194,76 @@ pub const PLATFORM_PROFILES: &[PlatformProfile] = &[
         last_verified_lab: None,
     },
     PlatformProfile {
+        // SONiC (SONiC-enabled NOS distribution, Linux Foundation
+        // lineage). FRR/Linux observation path only at this stage —
+        // STATE_DB/COUNTERS_DB/APPL_DB/CONFIG_DB/NVUE-style structured
+        // acquisition are separate BN-024 slices and are NOT claimed
+        // here. `version: all` upstream selectors are not release
+        // qualification.
+        platform_id: "sonic",
+        aliases: &[
+            "sonic",
+            "sonic_linux",
+            "sonic-linux",
+            "sonicos",
+            "sonic_os",
+            "sonic-os",
+            "sonic_network",
+            "sonic-network",
+        ],
+        vendor: "sonic",
+        os: "sonic",
+        version_constraint: None,
+        supported_encodings: &[],
+        supported_models: &[],
+        // FRR inside SONiC can speak standards-based BMP, but that is a
+        // daemon capability, not a platform-profile guarantee.
+        bmp_support: "conditional",
+        bgp_ls_support: "unsupported",
+        pcep_support: "unsupported",
+        adapter_id: None,
+        cli_running_config_cmd: None,
+        // No verified parser-backend mapping: do not present SONiC to a
+        // parser sidecar under a guessed vendor key.
+        parser_backend_id: None,
+        prefers_cli_without_tls: false,
+        fixture_ids: &[],
+        last_verified_lab: None,
+    },
+    PlatformProfile {
+        // NVIDIA Cumulus Linux — a distinct NOS, NOT generic FRR:
+        // NVUE applied/startup planes, FRR daemon versions, kernel
+        // netlink and per-platform ASIC identity are modeled in the
+        // BN-024 feature profiles (nos_features), not collapsed into
+        // the standalone `frr` platform.
+        platform_id: "nvidia.cumulus",
+        aliases: &[
+            "nvidia.cumulus",
+            "nvidia_cumulus",
+            "nvidia-cumulus",
+            "cumulus",
+            "cumulus_linux",
+            "cumulus-linux",
+            "cumuluslinux",
+            "nvidia_cumulus_linux",
+            "nvidia-cumulus-linux",
+        ],
+        vendor: "nvidia",
+        os: "cumulus",
+        version_constraint: None,
+        supported_encodings: &[],
+        supported_models: &[],
+        bmp_support: "conditional",
+        bgp_ls_support: "unsupported",
+        pcep_support: "unsupported",
+        adapter_id: None,
+        cli_running_config_cmd: None,
+        parser_backend_id: None,
+        prefers_cli_without_tls: false,
+        fixture_ids: &[],
+        last_verified_lab: None,
+    },
+    PlatformProfile {
         platform_id: "frr",
         aliases: &["frr", "frrouting", "holo"],
         vendor: "frr",

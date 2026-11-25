@@ -145,7 +145,7 @@ pub enum CaptureOutcome {
 
 impl CaptureOutcome {
     /// Whether the captured bytes may be parsed at all.
-    fn usable(self) -> bool {
+    pub(crate) fn usable(self) -> bool {
         matches!(
             self,
             Self::Complete | Self::Partial | Self::Truncated | Self::Unknown
@@ -238,6 +238,58 @@ pub struct ObservationContext<'a> {
     /// is an upstream selector claim, NOT qualified release coverage —
     /// see `docs/bn024` applicability notes (BN-024-03A).
     pub release_raw: Option<&'a str>,
+    /// Canonical platform identity evidence for the device that produced
+    /// this observation (for example `frr`, `sonic` or `nvidia.cumulus`).
+    /// Required for qualified dispatch; absence remains explicit for
+    /// historical experimental fixtures.
+    pub platform: Option<&'a str>,
+    /// Optional release train/build exactly as reported by the device.
+    /// They are metadata evidence only; absence is explicit and never
+    /// filled from the profile query.
+    #[allow(clippy::type_complexity)]
+    pub release_train: Option<&'a str>,
+    pub release_build: Option<&'a str>,
+    /// Component/daemon versions observed on the device (for example
+    /// `frr` or `nvue`), keyed by component name. Owned because capture
+    /// assembly commonly merges independently acquired metadata.
+    pub release_components: std::collections::BTreeMap<String, String>,
+    /// Hardware identity evidence relevant to profile applicability.
+    /// These axes describe the observed device; they are not a second
+    /// canonical inventory identity authority.
+    pub platform_sku: Option<&'a str>,
+    pub asic: Option<&'a str>,
+    pub hardware_attributes: std::collections::BTreeMap<String, String>,
+}
+
+impl<'a> ObservationContext<'a> {
+    /// Construct minimal observation metadata for tests/legacy offline
+    /// callers. New producers should populate every available axis rather
+    /// than relying on this convenience default.
+    pub fn minimal(
+        device_id: &'a str,
+        collector_id: &'a str,
+        capture_id: &'a str,
+        observed_at: &'a str,
+    ) -> Self {
+        Self {
+            device_id,
+            scope: None,
+            network_namespace: None,
+            collector_id,
+            capture_id,
+            session_epoch: 0,
+            sequence: 0,
+            observed_at,
+            release_raw: None,
+            platform: None,
+            release_train: None,
+            release_build: None,
+            release_components: std::collections::BTreeMap::new(),
+            platform_sku: None,
+            asic: None,
+            hardware_attributes: std::collections::BTreeMap::new(),
+        }
+    }
 }
 
 /// Versioned input: the two genuine command captures plus context.
@@ -260,7 +312,7 @@ pub struct FieldCoverage {
 }
 
 impl FieldCoverage {
-    fn record(&mut self, f: &ObservedField<impl Sized>) {
+    pub(crate) fn record(&mut self, f: &ObservedField<impl Sized>) {
         match f.state {
             FieldAvailability::Known => self.known += 1,
             FieldAvailability::Unknown => self.unknown += 1,
@@ -301,6 +353,10 @@ pub struct NormalizationReport {
     /// Interfaces present after merge (entities omitted at resource
     /// limits are counted separately in `entities_omitted`).
     pub interfaces_observed: usize,
+    /// Known expected interface population for this source/scope when the
+    /// acquisition contract exposes one. `None` means the denominator is
+    /// unknown; consumers must not infer completeness from parsed rows.
+    pub expected_interface_total: Option<usize>,
     /// `interface.state` facts emitted (one per observed interface,
     /// plus at most one status fact for empty/failed observations).
     pub facts_emitted: usize,
@@ -322,6 +378,10 @@ pub struct NormalizationReport {
     pub invalid_entities: usize,
     /// Facts that failed canonical validation and were NOT emitted.
     pub facts_rejected: usize,
+    /// Entity facts omitted because the effective output-fact budget was
+    /// exhausted. Counted separately from parse/entity limits — never
+    /// silent truncation.
+    pub output_facts_omitted: usize,
     /// Cross-source conflict entries dropped at the per-entity bound —
     /// counted, never silent.
     pub conflicts_omitted: usize,
@@ -469,9 +529,36 @@ const SRC_IP: &str = "ip_addr_show";
 
 // ── Parsers (bounded, purpose-built for the qualified formats) ───────────
 
-const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
-const MAX_INTERFACES: usize = 4096;
+/// Actual implementation revisions emitted on every typed fact. The
+/// normalizer registry and profile data must bind to these exact values —
+/// there is one source of truth for what code is executing.
+pub const INTERFACE_CLI_PARSER_REVISION: &str = "cl-iface-vtysh-ipaddr-2026.11";
+pub const INTERFACE_CLI_MAPPING_REVISION: &str = "bn024-iface-map-2";
+
+/// Implementation-wide safety ceilings. Profile budgets may tighten these
+/// values but can never relax them.
+pub const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_INTERFACES: usize = 4096;
+pub const MAX_OUTPUT_FACTS: usize = 8192;
 const MAX_ADDRS_PER_IF: usize = 64;
+
+/// Effective bounded execution limits for one normalization run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NormalizerLimits {
+    pub max_input_bytes: usize,
+    pub max_entities: usize,
+    pub max_output_facts: usize,
+}
+
+impl Default for NormalizerLimits {
+    fn default() -> Self {
+        Self {
+            max_input_bytes: MAX_INPUT_BYTES,
+            max_entities: MAX_INTERFACES,
+            max_output_facts: MAX_OUTPUT_FACTS,
+        }
+    }
+}
 const MAX_UNPARSED_SAMPLES: usize = 16;
 const MAX_CONFLICTS_PER_ENTITY: usize = 8;
 
@@ -485,7 +572,7 @@ struct ParseStats {
     invalid_entities: usize,
 }
 
-fn sha256_hex(data: &[u8]) -> String {
+pub(crate) fn sha256_hex(data: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(data);
     format!("{:x}", h.finalize())
@@ -500,6 +587,7 @@ fn parse_vtysh_show_interfaces(
     unparsed: &mut Vec<String>,
     unparsed_total: &mut usize,
     stats: &mut ParseStats,
+    max_entities: usize,
 ) -> Vec<VtyshRecord> {
     let mut records: Vec<VtyshRecord> = Vec::new();
     let mut cur: Option<VtyshRecord> = None;
@@ -513,7 +601,7 @@ fn parse_vtysh_show_interfaces(
             continue;
         }
         if let Some(rest) = line.strip_prefix("Interface ") {
-            if records.len() >= MAX_INTERFACES {
+            if records.len() >= max_entities {
                 dropping = true;
                 stats.entities_omitted += 1;
                 cur = None;
@@ -658,6 +746,7 @@ fn parse_ip_addr_show(
     unparsed: &mut Vec<String>,
     unparsed_total: &mut usize,
     stats: &mut ParseStats,
+    max_entities: usize,
 ) -> Vec<IpAddrRecord> {
     let mut records: Vec<IpAddrRecord> = Vec::new();
     let mut cur: Option<IpAddrRecord> = None;
@@ -673,7 +762,7 @@ fn parse_ip_addr_show(
                 && let Ok(ifindex) = idx_part.trim().parse::<u64>()
                 && let Some((name, tail)) = rest.split_once(':')
             {
-                if records.len() >= MAX_INTERFACES {
+                if records.len() >= max_entities {
                     dropping = true;
                     stats.entities_omitted += 1;
                     cur = None;
@@ -864,6 +953,7 @@ fn merge_records(
     vtysh: Vec<VtyshRecord>,
     ipaddr: Vec<IpAddrRecord>,
     stats: &mut ParseStats,
+    max_entities: usize,
 ) -> (BTreeMap<String, MergedRecord>, usize, usize) {
     let mut by_name: BTreeMap<String, MergedRecord> = BTreeMap::new();
     let mut duplicates = 0usize;
@@ -907,7 +997,7 @@ fn merge_records(
             stats.invalid_entities += 1;
             continue;
         }
-        if !by_name.contains_key(&r.name) && by_name.len() >= MAX_INTERFACES {
+        if !by_name.contains_key(&r.name) && by_name.len() >= max_entities {
             stats.entities_omitted += 1;
             continue;
         }
@@ -984,7 +1074,7 @@ fn merge_records(
         }
         // Updates to already-known entities are always allowed — the
         // entity limit only gates NEW entities (see vtysh loop above).
-        if !by_name.contains_key(&r.name) && by_name.len() >= MAX_INTERFACES {
+        if !by_name.contains_key(&r.name) && by_name.len() >= max_entities {
             stats.entities_omitted += 1;
             continue;
         }
@@ -1039,11 +1129,14 @@ fn merge_records(
 
 // ── Normalization (upstream cleaner contract, typed output) ──────────────
 
-fn unavailable<T>(state: FieldAvailability, detail: Option<impl AsRef<str>>) -> ObservedField<T> {
+pub(crate) fn unavailable<T>(
+    state: FieldAvailability,
+    detail: Option<impl AsRef<str>>,
+) -> ObservedField<T> {
     ObservedField::unavailable(state, detail.map(|d| sanitize_bounded(d.as_ref(), 200)))
 }
 
-fn admin_state_of(raw: Option<&str>) -> ObservedField<AdminState> {
+pub(crate) fn admin_state_of(raw: Option<&str>) -> ObservedField<AdminState> {
     match raw.map(|s| s.to_ascii_lowercase()).as_deref() {
         Some("up") => ObservedField::known(AdminState::Up),
         Some("down") => ObservedField::known(AdminState::Down),
@@ -1058,7 +1151,7 @@ fn admin_state_of(raw: Option<&str>) -> ObservedField<AdminState> {
 /// iproute2/vtysh operstate token → typed state. `unknown` is a
 /// device-REPORTED state word (distinct from the field being absent);
 /// unrecognized tokens are `Invalid`, never collapsed to down.
-fn oper_token(raw: &str) -> Option<OperState> {
+pub(crate) fn oper_token(raw: &str) -> Option<OperState> {
     match raw.to_ascii_lowercase().as_str() {
         "up" => Some(OperState::Up),
         "down" => Some(OperState::Down),
@@ -1230,7 +1323,7 @@ fn ifindex_of(m: &MergedRecord) -> ObservedField<u64> {
 /// map to `Unknown`, never guessed (upstream would emit the raw string).
 /// `bond_slave`/`bridge_slave` are MEMBERS, not aggregates — they map
 /// to `Physical`, never `PortChannel`.
-fn interface_type_of(raw: Option<&str>, ifname: &str) -> ObservedField<InterfaceType> {
+pub(crate) fn interface_type_of(raw: Option<&str>, ifname: &str) -> ObservedField<InterfaceType> {
     let Some(raw) = raw else {
         return unavailable(
             FieldAvailability::Unknown,
@@ -1257,7 +1350,7 @@ fn interface_type_of(raw: Option<&str>, ifname: &str) -> ObservedField<Interface
     }
 }
 
-fn mtu_of(raw: Option<&str>) -> ObservedField<u32> {
+pub(crate) fn mtu_of(raw: Option<&str>) -> ObservedField<u32> {
     match raw.and_then(|s| s.trim().parse::<u64>().ok()) {
         Some(0) | None => unavailable(FieldAvailability::Unknown, Some("mtu absent or zero")),
         // MTU is 32-bit: loopback `lo` legitimately reports 65536.
@@ -1289,7 +1382,7 @@ fn speed_of(raw: Option<&str>) -> ObservedField<SpeedObservation> {
     }
 }
 
-fn mac_of(raw: Option<&str>) -> ObservedField<String> {
+pub(crate) fn mac_of(raw: Option<&str>) -> ObservedField<String> {
     match raw {
         None => unavailable(FieldAvailability::Unknown, Some("macaddr not observed")),
         Some(v) => match crate::interface_facts::normalize_mac(v) {
@@ -1304,7 +1397,7 @@ fn mac_of(raw: Option<&str>) -> ObservedField<String> {
 
 /// Sanitize to at most `max_bytes` BYTES without splitting UTF-8 —
 /// payload validators enforce byte limits, not char counts.
-fn sanitize_bounded(s: &str, max_bytes: usize) -> String {
+pub(crate) fn sanitize_bounded(s: &str, max_bytes: usize) -> String {
     let mut out = String::new();
     for c in s.chars() {
         if c.is_control() {
@@ -1322,7 +1415,7 @@ fn sanitize_bounded(s: &str, max_bytes: usize) -> String {
 /// in the same observation. A bare master name is never assumed to be
 /// a LAG — bond/bridge/VRF/physical-parent are distinguished, and an
 /// unestablished target stays `Unresolved` with its raw name kept.
-fn classify_master(target: &str, type_by_name: &BTreeMap<String, String>) -> MasterKind {
+pub(crate) fn classify_master(target: &str, type_by_name: &BTreeMap<String, String>) -> MasterKind {
     let Some(t) = type_by_name.get(target) else {
         return MasterKind::Unresolved;
     };
@@ -1339,7 +1432,7 @@ fn classify_master(target: &str, type_by_name: &BTreeMap<String, String>) -> Mas
 /// the whole field as `Invalid` if ANY entry fails address/family
 /// validation (invalid entries never reach a typed fact), and surface
 /// omissions/duplicates as bounded detail.
-fn addr_field(
+pub(crate) fn addr_field(
     addrs: &[String],
     want_v6: bool,
     omitted: usize,
@@ -1399,7 +1492,7 @@ fn bounded_join(addrs: &[String]) -> String {
     out
 }
 
-fn parse_rfc3339(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+pub(crate) fn parse_rfc3339(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
     chrono::DateTime::parse_from_rfc3339(s).ok()
 }
 
@@ -1448,8 +1541,8 @@ fn status_fact(
         valid_until: None,
         payload: FactPayload {
             produced_by: format!("native_{}_frr", obs.nos.label()),
-            parser_revision: "cl-iface-vtysh-ipaddr-2026.11".to_string(),
-            mapping_revision: Some("bn024-iface-map-2".to_string()),
+            parser_revision: INTERFACE_CLI_PARSER_REVISION.to_string(),
+            mapping_revision: Some(INTERFACE_CLI_MAPPING_REVISION.to_string()),
             fields: None,
             state: Some(state),
         },
@@ -1500,6 +1593,16 @@ fn observation_context_error(obs: &InterfaceObservation) -> Option<String> {
 /// processing (evidence hashing, parsing) — an oversized or
 /// context-invalid observation is refused up front.
 pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
+    normalize_with_limits(obs, NormalizerLimits::default())
+}
+
+/// Normalize with explicit effective limits. Callers must pass the
+/// implementation defaults tightened by any applicable profile budget;
+/// this function treats the supplied values as absolute ceilings.
+pub fn normalize_with_limits(
+    obs: &InterfaceObservation,
+    limits: NormalizerLimits,
+) -> NormalizationOutput {
     // Refusal decisions first: context validity and the input bound are
     // cheap checks that gate ALL expensive work below. Size arithmetic
     // is saturating — it can never wrap.
@@ -1509,7 +1612,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         .output
         .len()
         .saturating_add(obs.ip_addr.output.len())
-        > MAX_INPUT_BYTES;
+        > limits.max_input_bytes;
     let refused = context_err.is_some() || oversized;
 
     let vtysh_ok = obs.vtysh.outcome.usable() && !refused;
@@ -1547,6 +1650,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
                 nos: obs.nos.label(),
                 applicability: obs.nos.applicability(),
                 interfaces_observed: 0,
+                expected_interface_total: None,
                 facts_emitted: 0,
                 duplicate_ifnames: 0,
                 merge_conflicts: 0,
@@ -1557,6 +1661,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
                 addresses_omitted: 0,
                 invalid_entities: 0,
                 facts_rejected: 0,
+                output_facts_omitted: 0,
                 conflicts_omitted: 0,
                 context_error: Some(err.clone()),
                 capture_skew_seconds: None,
@@ -1608,6 +1713,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
                 nos: obs.nos.label(),
                 applicability: obs.nos.applicability(),
                 interfaces_observed: 0,
+                expected_interface_total: None,
                 facts_emitted: emitted,
                 duplicate_ifnames: 0,
                 merge_conflicts: 0,
@@ -1618,6 +1724,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
                 addresses_omitted: 0,
                 invalid_entities: 0,
                 facts_rejected,
+                output_facts_omitted: 0,
                 conflicts_omitted: 0,
                 context_error: None,
                 capture_skew_seconds: None,
@@ -1655,6 +1762,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
             &mut unparsed,
             &mut unparsed_total,
             &mut stats,
+            limits.max_entities,
         )
     } else {
         Vec::new()
@@ -1665,11 +1773,13 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
             &mut unparsed,
             &mut unparsed_total,
             &mut stats,
+            limits.max_entities,
         )
     } else {
         Vec::new()
     };
-    let (merged, duplicates, conflicts) = merge_records(vtysh, ipaddr, &mut stats);
+    let (merged, duplicates, conflicts) =
+        merge_records(vtysh, ipaddr, &mut stats, limits.max_entities);
     let entities_omitted = stats.entities_omitted;
     let addresses_omitted: usize = merged.values().map(|m| m.addrs_omitted).sum();
 
@@ -1734,6 +1844,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
     let unparsed_count = unparsed_total;
     let mut invalid_entities = stats.invalid_entities;
     let mut facts_rejected = 0usize;
+    let mut output_facts_omitted = 0usize;
     let mut conflicts_omitted = 0usize;
     let mut rejected_samples: Vec<String> = Vec::new();
 
@@ -1744,8 +1855,9 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         .any(|o| o.degrades());
 
     for (name, m) in &merged {
-        if facts.len() + facts_rejected >= MAX_INTERFACES {
-            break;
+        if facts.len() >= limits.max_output_facts {
+            output_facts_omitted += 1;
+            continue;
         }
         // Identity must satisfy the typed contract before we invest in
         // a payload — invalid names are counted, never emitted.
@@ -2165,8 +2277,8 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
             valid_until: None,
             payload: FactPayload {
                 produced_by: format!("native_{}_frr", obs.nos.label()),
-                parser_revision: "cl-iface-vtysh-ipaddr-2026.11".to_string(),
-                mapping_revision: Some("bn024-iface-map-2".to_string()),
+                parser_revision: INTERFACE_CLI_PARSER_REVISION.to_string(),
+                mapping_revision: Some(INTERFACE_CLI_MAPPING_REVISION.to_string()),
                 fields: Some(fields),
                 state: None,
             },
@@ -2211,6 +2323,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
         || entities_omitted > 0
         || invalid_entities > 0
         || facts_rejected > 0
+        || output_facts_omitted > 0
         || conflicts_omitted > 0
         || temporal_partial
     {
@@ -2257,14 +2370,18 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
                 "all interface facts failed canonical validation; see report.facts_rejected",
             )
         };
-        let f = status_fact(obs, state, status_completeness, note, evidence());
-        if f.validate().is_ok() {
-            facts.push(f);
-        } else {
-            facts_rejected += 1;
-            if rejected_samples.len() < 16 {
-                rejected_samples.push("status fact failed canonical validation".to_string());
+        if facts.len() < limits.max_output_facts {
+            let f = status_fact(obs, state, status_completeness, note, evidence());
+            if f.validate().is_ok() {
+                facts.push(f);
+            } else {
+                facts_rejected += 1;
+                if rejected_samples.len() < 16 {
+                    rejected_samples.push("status fact failed canonical validation".to_string());
+                }
             }
+        } else {
+            output_facts_omitted += 1;
         }
     }
 
@@ -2298,6 +2415,11 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
             "{invalid_entities} entities rejected for invalid identity"
         ));
     }
+    if output_facts_omitted > 0 {
+        notes.push(format!(
+            "{output_facts_omitted} facts omitted at effective output-fact budget"
+        ));
+    }
     if facts_rejected > 0 {
         notes.push(format!(
             "{facts_rejected} facts rejected by canonical validation (not emitted)"
@@ -2313,6 +2435,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
             nos: obs.nos.label(),
             applicability: obs.nos.applicability(),
             interfaces_observed: merged.len(),
+            expected_interface_total: None,
             facts_emitted: facts.len(),
             duplicate_ifnames: duplicates,
             merge_conflicts: conflicts,
@@ -2323,6 +2446,7 @@ pub fn normalize(obs: &InterfaceObservation) -> NormalizationOutput {
             addresses_omitted,
             invalid_entities,
             facts_rejected,
+            output_facts_omitted,
             conflicts_omitted,
             context_error: None,
             capture_skew_seconds: skew_secs,
@@ -2360,6 +2484,13 @@ mod tests {
             sequence: 7,
             observed_at: "2026-11-24T10:00:00Z",
             release_raw: None,
+            platform: None,
+            release_train: None,
+            release_build: None,
+            release_components: std::collections::BTreeMap::new(),
+            platform_sku: None,
+            asic: None,
+            hardware_attributes: std::collections::BTreeMap::new(),
         }
     }
 

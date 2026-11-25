@@ -430,7 +430,7 @@ async fn b17_b18_frr_two_clean_runs_and_multivendor_capability_matrix() {
             "bgpsec_crypto_validation": "unsupported_without_rfc8205_wire_pdu",
         }));
     }
-    assert_eq!(PLATFORM_PROFILES.len(), 8);
+    assert_eq!(PLATFORM_PROFILES.len(), 10);
 
     // Emit machine-readable evidence bundle (manifest.json + results.json)
     let evidence_dir =
