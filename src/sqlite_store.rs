@@ -25,7 +25,7 @@ const DB_FILE: &str = CONFIG_DB_FILE_NAME;
 /// Schema version the management service migrates to. Read-only
 /// consumers (routing service) compare against this and fail closed
 /// when the database is older.
-pub const CURRENT_SCHEMA_VERSION: i64 = 15;
+pub const CURRENT_SCHEMA_VERSION: i64 = 16;
 
 /// True when an `ALTER TABLE ... ADD COLUMN` failed only because the
 /// column already exists (i.e. a previous migration attempt partially
@@ -793,6 +793,23 @@ impl SqliteStore {
                 .context("failed to set schema version")?;
         }
 
+        // Version 16: BN-024-04 declared software artifact/build identity.
+        // This is nullable declared qualification metadata, never attested
+        // device evidence; existing rows correctly remain NULL/unknown.
+        if user_version < 16 {
+            match db.execute_batch("ALTER TABLE devices ADD COLUMN software_build TEXT") {
+                Ok(()) => {}
+                Err(e) if is_duplicate_column_error(&e) => {}
+                Err(e) => {
+                    return Err(e).context("schema v16 software-build migration failed");
+                }
+            }
+            verify_device_columns(&db, &["software_build"])
+                .context("schema v16 verification failed")?;
+            db.execute("PRAGMA user_version=16", [])
+                .context("failed to set schema version")?;
+        }
+
         Ok(())
     }
 
@@ -827,7 +844,7 @@ impl SqliteStore {
                         let extra_ips_json =
                             serde_json::to_string(&target.extra_ips).unwrap_or_default();
                         tx.execute(
-                            "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
+                            "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key, software_build) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
                             params![
                                 address,
                                 target.enabled,
@@ -861,6 +878,7 @@ impl SqliteStore {
                                 target.security.map(|m| m.as_str()),
                                 target.client_cert,
                                 target.client_key,
+                                target.software_build,
                             ],
                         )
                         .with_context(|| {
@@ -960,7 +978,7 @@ impl SqliteStore {
 
     pub fn list_devices(&self) -> Result<Vec<crate::config::TargetConfig>> {
         let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare("SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key, schema_binding_json FROM devices")?;
+        let mut stmt = db.prepare("SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key, schema_binding_json, software_build FROM devices")?;
         let rows = stmt.query_map([], |row| {
             let paths_json: String = row.get(14)?;
             let paths: Vec<String> = serde_json::from_str(&paths_json).unwrap_or_default();
@@ -1006,6 +1024,7 @@ impl SqliteStore {
                 client_cert: row.get(30)?,
                 client_key: row.get(31)?,
                 schema_binding: schema_binding_from_col(row.get(32)?, 32)?,
+                software_build: row.get(33)?,
                 ..Default::default()
             })
         })?;
@@ -1016,7 +1035,7 @@ impl SqliteStore {
     pub fn get_device(&self, address: &str) -> Result<Option<crate::config::TargetConfig>> {
         let db = self.db.lock().unwrap();
         let result = db.query_row(
-            "SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key, schema_binding_json FROM devices WHERE address = ?1",
+            "SELECT address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key, schema_binding_json, software_build FROM devices WHERE address = ?1",
             params![address],
             |row| {
                 let paths_json: String = row.get(14)?;
@@ -1063,6 +1082,7 @@ impl SqliteStore {
                     client_cert: row.get(30)?,
                     client_key: row.get(31)?,
                     schema_binding: schema_binding_from_col(row.get(32)?, 32)?,
+                    software_build: row.get(33)?,
                     ..Default::default()
                 })
             },
@@ -1101,7 +1121,7 @@ impl SqliteStore {
         {
             let db = self.db.lock().unwrap();
             db.execute(
-                "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key, schema_binding_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33) ON CONFLICT(address) DO UPDATE SET enabled=?2, hostname=?3, tls_domain=?4, vendor=?5, credential_alias=?6, username_env=?7, role=?8, site=?9, collector_id=?10, username=?11, password=?12, password_env=?13, ca_cert=?14, paths=?15, optional=?16, updated_at_ns=?18, updated_by=?20, last_operator_action=?21, external_id=?22, inventory_only=?23, selected_paths=?24, extra_ips=?25, inventory_platform=?26, inventory_status=?27, inventory_tenant=?28, acquisition=?29, security=?30, client_cert=?31, client_key=?32, schema_binding_json=?33",
+                "INSERT INTO devices (address, enabled, hostname, tls_domain, vendor, credential_alias, username_env, role, site, collector_id, username, password, password_env, ca_cert, paths, optional, created_at_ns, updated_at_ns, created_by, updated_by, last_operator_action, external_id, inventory_only, selected_paths, extra_ips, inventory_platform, inventory_status, inventory_tenant, acquisition, security, client_cert, client_key, schema_binding_json, software_build) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34) ON CONFLICT(address) DO UPDATE SET enabled=?2, hostname=?3, tls_domain=?4, vendor=?5, credential_alias=?6, username_env=?7, role=?8, site=?9, collector_id=?10, username=?11, password=?12, password_env=?13, ca_cert=?14, paths=?15, optional=?16, updated_at_ns=?18, updated_by=?20, last_operator_action=?21, external_id=?22, inventory_only=?23, selected_paths=?24, extra_ips=?25, inventory_platform=?26, inventory_status=?27, inventory_tenant=?28, acquisition=?29, security=?30, client_cert=?31, client_key=?32, schema_binding_json=?33, software_build=?34",
                 params![
                     device.address,
                     device.enabled,
@@ -1136,6 +1156,7 @@ impl SqliteStore {
                     device.client_cert,
                     device.client_key,
                     schema_binding_json,
+                    device.software_build,
                 ],
             )?;
         }
@@ -4011,6 +4032,7 @@ mod tests {
             "client_cert",
             "client_key",
             "schema_binding_json",
+            "software_build",
         ] {
             assert!(cols.contains(col), "missing column {col}");
         }
@@ -4066,6 +4088,7 @@ mod tests {
         assert_eq!(d.acquisition, crate::config::AcquisitionMode::Automatic);
         assert!(d.client_cert.is_none());
         assert!(d.client_key.is_none());
+        assert_eq!(d.software_build, None);
 
         // selected_paths / extra_ips round-trip through upsert+read.
         let mut updated = d.clone();
@@ -4074,6 +4097,7 @@ mod tests {
             ..Default::default()
         }];
         updated.extra_ips = vec!["10.0.0.9".to_string()];
+        updated.software_build = Some("example.test/frr@sha256:abc".to_string());
         store
             .upsert_device(&updated, "test", "roundtrip")
             .expect("upsert");
@@ -4082,6 +4106,10 @@ mod tests {
         assert_eq!(reread.selected_paths[0].path, "/interfaces");
         assert_eq!(reread.extra_ips, vec!["10.0.0.9".to_string()]);
         assert_eq!(reread.hostname.as_deref(), Some("r1"));
+        assert_eq!(
+            reread.software_build.as_deref(),
+            Some("example.test/frr@sha256:abc")
+        );
     }
 
     #[test]

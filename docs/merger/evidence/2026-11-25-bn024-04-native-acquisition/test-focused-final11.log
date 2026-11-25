@@ -1,0 +1,70 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: env CARGO_BUILD_JOBS=2 sh -c cargo test -p bonsai --test bn02404_native_interface_api --profile ci -- --nocapture && cargo test -p bonsai --lib --profile ci frr_interface -- --nocapture && cargo test -p bonsai --lib --profile ci v5_database_upgrades_to_v8_preserving_rows_and_paths -- --nocapture && cargo test -p bonsai --lib --profile ci software_build_request_is_declared_qualification_metadata -- --nocapture
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-bn024-04)
+    Finished `ci` profile [optimized] target(s) in 5m 23s
+     Running tests/bn02404_native_interface_api.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bn02404_native_interface_api-83ba794a6259b65c)
+
+running 4 tests
+test operator_collects_live_frr_shadow_evidence_through_production_api ... ignored, requires authorized live FRR lab, credential env and pinned SSH host key
+test shadow_observation_and_acquisition_state_survive_store_restart ... ok
+test authorized_device_surface_exposes_bounded_shadow_evidence_and_staleness ... ok
+test scoped_authorization_and_failed_attempt_visibility_are_enforced ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 11.84s
+
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-bn024-04)
+    Finished `ci` profile [optimized] target(s) in 4m 19s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-c021b751fbb196ae)
+
+running 25 tests
+test enrichment::frr_interfaces::tests::live_frr_ssh_capture_dispatches_validated_shadow_facts ... ignored, requires authorized live FRR lab and pinned SSH host key
+test enrichment::frr_interfaces::tests::fixed_commands_match_the_approved_contract ... ok
+test enrichment::frr_interfaces::tests::unqualified_software_build_is_refused_before_network_contact ... ok
+test frr_interface_json::tests::bn02404_repro_all_rejected_population_is_not_empty_table ... ok
+test frr_interface_json::tests::bn02404_repro_malformed_capture_timestamp_is_rejected ... ok
+test frr_interface_json::tests::bn02404_repro_bond_parent_is_lower_layer_not_lag_membership ... ok
+test frr_interface_json::tests::bn02404_repro_contradictory_slave_and_target_type_is_unresolved ... ok
+test frr_interface_json::tests::bn02404_repro_truncated_family_is_not_observed_none ... ok
+test frr_interface_json::tests::bn02404_repro_three_duplicate_indices_never_resolve ... ok
+test frr_interface_json::tests::duplicate_object_keys_and_wrong_known_field_types_are_format_errors ... ok
+test frr_interface_json::tests::contradictory_explicit_and_numeric_references_never_resolve_to_edges ... ok
+test frr_interface_json::tests::invalid_json_unexpected_fields_oversize_and_failed_capture_are_explicit ... ok
+test frr_interface_json::tests::entity_output_and_address_budgets_are_explicitly_enforced ... ok
+test frr_interface_json::tests::operator_presentation_fixture_matches_implementation_contract ... ok
+test frr_interface_json::tests::genuine_frr_1061_fixture_has_independent_expected_values ... ok
+test frr_interface_json::tests::simultaneous_parent_and_master_relationships_remain_distinct ... ok
+test frr_interface_json::tests::missing_optional_fields_are_explicit_unknowns_not_failures ... ok
+test frr_interface_json::tests::invalid_address_and_missing_required_values_do_not_fabricate_success ... ok
+test frr_interface_json::tests::same_observation_master_ifindex_resolution_establishes_lag_membership ... ok
+test frr_interface_json::tests::duplicate_interface_names_in_different_network_namespaces_remain_distinct ... ok
+test frr_interface_json::tests::structured_identity_preserves_namespace_release_and_source_axes ... ok
+test enrichment::frr_interfaces::tests::helper_deadline_terminates_and_reaps_a_hung_child ... ok
+frr_json_scale interfaces=128 input_bytes=35954 facts=128 total_ms=35.281 us_per_iface=275.63
+test enrichment::frr_interfaces::tests::helper_output_limit_is_an_explicit_refusal ... ok
+frr_json_perf iterations=100 total_ms=96.285 avg_us=962.8 observations_per_sec=1038.6
+test frr_interface_json::tests::structured_fixture_performance_smoke_reports_bounded_native_latency ... ok
+frr_json_scale interfaces=1024 input_bytes=289187 facts=1024 total_ms=156.074 us_per_iface=152.42
+test frr_interface_json::tests::synthetic_scale_workloads_report_scaling_and_budget_refusal ... ok
+
+test result: ok. 24 passed; 0 failed; 1 ignored; 0 measured; 646 filtered out; finished in 0.29s
+
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-bn024-04)
+    Finished `ci` profile [optimized] target(s) in 4m 07s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-c021b751fbb196ae)
+
+running 1 test
+test sqlite_store::tests::v5_database_upgrades_to_v8_preserving_rows_and_paths ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 670 filtered out; finished in 1.02s
+
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-bn024-04)
+    Finished `ci` profile [optimized] target(s) in 4m 11s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-c021b751fbb196ae)
+
+running 1 test
+test http_server::managed_devices::bn02404_tests::software_build_request_is_declared_qualification_metadata ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 670 filtered out; finished in 0.00s
+
+WALL=1103.95 RSS_KB=5561248

@@ -10,6 +10,7 @@
 //!   - Are idempotent — re-running is always safe
 
 pub mod factory;
+pub mod frr_interfaces;
 pub mod multi_source;
 pub mod native_bgp;
 pub mod netbox;

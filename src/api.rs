@@ -3320,6 +3320,7 @@ pub fn target_from_managed_device(
         inventory_platform: None,
         inventory_status: None,
         inventory_tenant: None,
+        software_build: None,
         paths: vec![],
         optional: false,
         schema_binding,

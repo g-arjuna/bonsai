@@ -544,6 +544,7 @@ fn device_target(address: &str) -> TargetConfig {
         password_env: None,
         username: None,
         password: None,
+        software_build: None,
         hostname: Some("e2e-dut".to_string()),
         role: None,
         site: Some("dc-e2e".to_string()),

@@ -48,6 +48,7 @@ pub mod auth;
 mod change_capture;
 mod ddos;
 mod device;
+mod frr_interfaces;
 mod governance;
 mod ha;
 mod identity;
@@ -518,6 +519,11 @@ pub(super) struct ManagedDeviceJson {
     inventory_status: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     inventory_tenant: String,
+    /// Immutable software artifact/build identity declared by inventory or
+    /// the operator; empty when unknown. This is declared qualification
+    /// metadata, never device-attested release evidence.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    software_build: String,
     /// Durable schema-bound approval summary (M6C-2/M6D). Present only
     /// while an approved schema-bound acquisition authority exists on
     /// the device — lets the inventory list distinguish approval-managed
@@ -615,6 +621,12 @@ pub(super) struct ManagedDeviceRequest {
     client_cert: String,
     #[serde(default)]
     client_key: String,
+    /// Immutable software artifact/build identity used only for exact
+    /// artifact-qualified native interpretation. Absent inherits on update;
+    /// explicit empty clears; otherwise it is declared metadata, not a
+    /// device-attested fact.
+    #[serde(default)]
+    software_build: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1862,6 +1874,14 @@ fn device_routes() -> Router<AppState> {
         .route(
             "/api/devices/{address}/recommendations",
             get(device_recommendations_handler),
+        )
+        .route(
+            "/api/devices/{address}/native-interfaces/frr",
+            get(frr_interfaces::latest),
+        )
+        .route(
+            "/api/devices/{address}/native-interfaces/frr/collect",
+            post(frr_interfaces::collect),
         )
         .route(
             "/api/devices/{address}/selected-paths",

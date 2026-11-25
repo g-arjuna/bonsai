@@ -1400,9 +1400,13 @@ fn required_role(method: &str, path: &str) -> Role {
     if path.ends_with("/schema-binding/preview") {
         return Role::Viewer;
     }
-    // Read-only routing and general GET endpoints allow Viewer or scoped ApiReadonly
+    // Read-only routing and general GET endpoints allow Viewer or scoped ApiReadonly.
+    // Native interface shadow evidence is explicitly scope-aware; a restricted
+    // read key may use it without being promoted to a broader device viewer.
     if method == "GET" || method == "HEAD" || method == "OPTIONS" {
-        if path.starts_with("/api/routing/") {
+        if path.starts_with("/api/routing/")
+            || (path.starts_with("/api/devices/") && path.contains("/native-interfaces/frr"))
+        {
             return Role::ApiReadonly;
         }
         return Role::Viewer;
@@ -1885,9 +1889,12 @@ pub async fn auth_middleware(
         request.extensions_mut().insert(effective);
 
         // Restrict scoped keys to an explicit allowlist of scope-aware HTTP routes
+        let native_interface_route =
+            path.starts_with("/api/devices/") && path.contains("/native-interfaces/frr");
         let is_scope_aware_route = path.starts_with("/api/routing/")
             || path == "/api/investigations"
             || path.starts_with("/api/investigations/")
+            || native_interface_route
             || path == "/mcp"
             || path.starts_with("/mcp/");
 

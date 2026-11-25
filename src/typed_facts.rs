@@ -121,8 +121,18 @@ pub struct FactPayload {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PayloadState {
-    /// Parser ran successfully but produced no typed fields.
+    /// Parser ran successfully but produced no typed fields, and the
+    /// capture/interpretation contract genuinely establishes that the
+    /// decoded population was empty. Never use this for a nonempty input
+    /// whose records were rejected, omitted or budget-truncated.
     Empty,
+    /// The decoded observation contained records (or emptiness could not
+    /// be established), but no usable validated entity fact was produced.
+    /// Report counters carry the exact invalid/omitted/rejected reason.
+    NoUsableRecords,
+    /// Valid decoded output existed, but the effective output-fact budget
+    /// prevented every entity fact from being emitted.
+    OutputBudgetExhausted,
     /// Input was rejected before parsing (empty/oversized/malformed).
     InvalidInput,
     /// No configured backend could produce output.
@@ -699,7 +709,9 @@ fn is_rfc3339(s: &str) -> bool {
 fn is_degraded_state(state: PayloadState) -> bool {
     matches!(
         state,
-        PayloadState::InvalidInput
+        PayloadState::NoUsableRecords
+            | PayloadState::OutputBudgetExhausted
+            | PayloadState::InvalidInput
             | PayloadState::Unsupported
             | PayloadState::UnstructuredFallback
             | PayloadState::UnknownQuality
@@ -1785,6 +1797,8 @@ mod tests {
             PayloadState::UnstructuredFallback,
             PayloadState::UnknownQuality,
             PayloadState::CaptureFailed,
+            PayloadState::NoUsableRecords,
+            PayloadState::OutputBudgetExhausted,
         ];
         let facts: Vec<Value> = states
             .iter()
@@ -1843,6 +1857,8 @@ mod tests {
             PayloadState::UnstructuredFallback,
             PayloadState::UnknownQuality,
             PayloadState::CaptureFailed,
+            PayloadState::NoUsableRecords,
+            PayloadState::OutputBudgetExhausted,
         ];
         assert_eq!(seen.len(), expected.len());
         for state in expected {

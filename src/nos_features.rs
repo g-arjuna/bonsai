@@ -15,6 +15,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::frr_interface_json::{FRR_JSON_MAPPING_REVISION, FRR_JSON_PARSER_REVISION};
+
+/// Exact immutable FRR artifact for the qualified 10.6.1_git structured-interface lab profile.
+pub const FRR_1061_STRUCTURED_ARTIFACT: &str =
+    "quay.io/frrouting/frr@sha256:813497af103e972600f6161012b3bf2a2a1c5ea10d09cd1eacd74f1dc510a57b";
 use crate::interface_normalizer::{INTERFACE_CLI_MAPPING_REVISION, INTERFACE_CLI_PARSER_REVISION};
 use sha2::{Digest, Sha256};
 
@@ -1413,7 +1417,12 @@ pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
             release_constraint: Some(ReleaseConstraint {
                 raw: Some("10.6.1_git".into()),
                 train: None,
-                build: None,
+                // `_git` is a development-build version string and is not
+                // immutable qualification identity by itself. This profile is
+                // deliberately bound to the exact lab artifact recorded in
+                // the fixture provenance; other builds reporting the same
+                // version string fail closed until independently qualified.
+                build: Some(FRR_1061_STRUCTURED_ARTIFACT.into()),
                 components: BTreeMap::new(),
             }),
             hardware_constraints: vec![],
@@ -1431,7 +1440,7 @@ pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
                     parsers: vec!["native_rust_json".into()],
                     scope_notes: vec![
                         "standalone FRR vtysh structured JSON observation".into(),
-                        "offline normalization only — no live collector, no graph projection"
+                        "bounded authorized shadow acquisition; no authoritative graph projection"
                             .into(),
                     ],
                     requires: vec![],

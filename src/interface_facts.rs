@@ -240,9 +240,16 @@ pub struct InterfaceStatePayload {
     /// a bare master name is never assumed to be a LAG.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_of: Option<String>,
-    /// Observed master/parent relationship, classified by evidence.
+    /// Observed lower-layer parent relationship, classified strictly from
+    /// the source's parent/link field. This is never LAG membership even
+    /// when the parent target happens to be a bond.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_relationship: Option<MasterRelationship>,
+    /// Observed master/enslavement relationship, classified by evidence.
     /// Present whenever a source reported a master; `kind: unresolved`
-    /// means the target was reported but its type was not established.
+    /// means the target or relationship type was not established. Lower-layer
+    /// parentage is represented separately in `parent_relationship` so both
+    /// simultaneous relationships remain available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub master_relationship: Option<MasterRelationship>,
     /// Cross-source disagreements preserved as evidence. Empty means no
@@ -390,9 +397,14 @@ pub fn validate_typed(p: &InterfaceStatePayload) -> Result<(), FactError> {
             return Err(FactError::InvalidField("interface reference"));
         }
     }
-    if let Some(rel) = &p.master_relationship {
-        if !valid_name(&rel.target) {
-            return Err(FactError::InvalidField("master_relationship.target"));
+    for (rel, field) in [
+        (&p.parent_relationship, "parent_relationship.target"),
+        (&p.master_relationship, "master_relationship.target"),
+    ] {
+        if let Some(rel) = rel
+            && !valid_name(&rel.target)
+        {
+            return Err(FactError::InvalidField(field));
         }
     }
     for c in &p.source_conflicts {
@@ -486,6 +498,7 @@ mod tests {
             description: Some("server-facing".into()),
             parent_interface: None,
             member_of: None,
+            parent_relationship: None,
             master_relationship: None,
             source_conflicts: vec![],
             ip_addresses: Some(ObservedField::known(vec!["10.0.0.2/24".into()])),

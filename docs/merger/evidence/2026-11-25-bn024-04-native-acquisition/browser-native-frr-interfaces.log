@@ -1,0 +1,9 @@
+
+Running 4 tests using 1 worker
+
+  ✓  1 native_frr_interfaces.spec.js:183:1 › operator sees truthful native evidence identity, bounded facts, staleness, and safe collection action (3.2s)
+  ✓  2 native_frr_interfaces.spec.js:204:1 › viewer receives an explicit denied affordance rather than a mutation action (698ms)
+  ✓  3 native_frr_interfaces.spec.js:213:1 › failed acquisition remains explicit instead of rendering an empty successful interface table (690ms)
+  ✓  4 native_frr_interfaces.spec.js:223:1 › switching devices fences delayed native evidence so device A cannot overwrite device B (1.2s)
+
+  4 passed (8.3s)

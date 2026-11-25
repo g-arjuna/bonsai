@@ -350,9 +350,31 @@ pub struct NormalizationReport {
     /// profile-registry routing — never an authority or release
     /// qualification claim.
     pub applicability: &'static str,
-    /// Interfaces present after merge (entities omitted at resource
-    /// limits are counted separately in `entities_omitted`).
+    /// Validated interface entities emitted in this run. Use
+    /// `entities_accepted` for the portable typed-fact count; diagnostics
+    /// may additionally contain attempted entities that validation rejected.
     pub interfaces_observed: usize,
+    /// Source records decoded before entity validation/resource omission,
+    /// when the producer can establish the count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub records_decoded: Option<usize>,
+    /// Entity identities encountered before validation/resource omission,
+    /// when the producer can establish the count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entities_encountered: Option<usize>,
+    /// Entities whose typed facts passed canonical validation (status facts
+    /// are excluded), when the producer tracks validation precisely.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entities_accepted: Option<usize>,
+    /// Population/status facts emitted for empty, failed or rejected
+    /// observations, when the producer tracks them precisely.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_facts_emitted: Option<usize>,
+    /// Per-field availability tallies across entity facts that passed
+    /// canonical validation. `field_coverage` remains the attempted-
+    /// interpretation tally and must not be read as validated coverage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validated_field_coverage: Option<BTreeMap<String, FieldCoverage>>,
     /// Known expected interface population for this source/scope when the
     /// acquisition contract exposes one. `None` means the denominator is
     /// unknown; consumers must not infer completeness from parsed rows.
@@ -366,7 +388,9 @@ pub struct NormalizationReport {
     pub merge_conflicts: usize,
     /// Lines that matched no grammar rule (bounded sample kept).
     pub unparsed_lines: usize,
-    /// Per-field availability tallies across emitted payloads.
+    /// Per-field availability tallies across ATTEMPTED interpretation.
+    /// These counts may include entities whose facts were later rejected;
+    /// use `validated_field_coverage` for usable output coverage.
     pub field_coverage: BTreeMap<String, FieldCoverage>,
     /// Per-source capture outcomes — the capture completeness axis.
     pub sources: Vec<SourceCaptureReport>,
@@ -1663,6 +1687,11 @@ pub fn normalize_with_limits(
                 facts_rejected: 0,
                 output_facts_omitted: 0,
                 conflicts_omitted: 0,
+                records_decoded: None,
+                entities_encountered: None,
+                entities_accepted: None,
+                status_facts_emitted: None,
+                validated_field_coverage: None,
                 context_error: Some(err.clone()),
                 capture_skew_seconds: None,
                 notes: vec![format!(
@@ -1726,6 +1755,11 @@ pub fn normalize_with_limits(
                 facts_rejected,
                 output_facts_omitted: 0,
                 conflicts_omitted: 0,
+                records_decoded: None,
+                entities_encountered: None,
+                entities_accepted: Some(0),
+                status_facts_emitted: Some(emitted),
+                validated_field_coverage: Some(BTreeMap::new()),
                 context_error: None,
                 capture_skew_seconds: None,
                 notes: vec!["observation exceeded input byte bound; refused".into()],
@@ -2076,6 +2110,7 @@ pub fn normalize_with_limits(
             description,
             parent_interface,
             member_of,
+            parent_relationship: None,
             master_relationship,
             source_conflicts: entity_conflicts.clone(),
             ip_addresses: Some(ip4),
@@ -2448,6 +2483,11 @@ pub fn normalize_with_limits(
             facts_rejected,
             output_facts_omitted,
             conflicts_omitted,
+            records_decoded: None,
+            entities_encountered: None,
+            entities_accepted: None,
+            status_facts_emitted: None,
+            validated_field_coverage: None,
             context_error: None,
             capture_skew_seconds: skew_secs,
             notes,
