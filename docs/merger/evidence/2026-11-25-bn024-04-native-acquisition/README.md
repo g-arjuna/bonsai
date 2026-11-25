@@ -130,7 +130,7 @@ JSON artifacts were regenerated in the working tree as test side effects.
 They were restored byte-for-byte from `HEAD` before publication and are not
 part of this evidence change.
 
-## Corrective review pass (uncommitted-gate limitation)
+## Corrective review pass and final gate disposition
 
 After independent review of published head `da6c698d5d8f1e8465977dc07e72944f9e264e41`,
 a bounded corrective pass changed canonical persistence identity, atomic
@@ -157,7 +157,31 @@ browser failure/coverage semantics. Focused corrected-candidate evidence:
 
 The broad canonical L0–L3 gate result above applies to prior production SHA
 `d203e0000ee93c3439f925bb7cc99addeba640e2`, **not** to this corrective
-candidate. A fresh canonical L0–L3 run and merge decision remain explicitly
-pending. Live SSH evidence remains genuine for the pre-correction acquisition
-path; it has not been re-executed because the ephemeral lab credential was
-deliberately rotated to an unknown value after the prior run.
+candidate.
+
+A fresh canonical run on corrected production SHA
+`8241f6b8eabc586f0a34f0d5746ea5aa2f0aa34d` completed L0/L1/L2 in 2,383 s
+before failing L3: L0 PASS, L1 PASS, L2 PASS (**1,305 Rust tests passed**, 10
+ignored not counted), L3 FAIL. The failure was isolated to two SDK mock-channel
+tests in `python/tests/test_frr_interface_capture.py`: the new implementation
+correctly requires stream EOF/close in addition to remote exit-status
+availability, while the pre-existing SDK fake channel did not model EOF. This
+was a test fixture defect exposed by the corrected transport semantics, not a
+production regression. Full output: `gates-l0-l3-8241f6b.log`.
+
+The SDK fixture was corrected in test-only commit
+`c6f71c5c370545814f1181d2319b668491014834` (no production Rust/Python helper change). Canonical L3 was then
+executed on that final branch head and passed in 704 s: **71 Rust/browser tests
+passed across all 13 targets**, **64/64 root Python tests passed**, and **318
+SDK Python tests passed** with 1 skipped and 1 deselected (neither counted as
+passed). Full output: `gates-l3-c6f71c5.log`. Because the only delta between
+`8241f6b` and `c6f71c5c370545814f1181d2319b668491014834` is that SDK test fixture, the L0–L2 evidence remains
+applicable to the same production code; a second full compile/test cycle was
+not justified for a test-only correction. This combined disposition is PASS
+for L0, L1, L2 and L3, with the exact commit split stated here rather than
+hidden.
+
+Live SSH evidence remains genuine for the pre-correction acquisition path; it
+has not been re-executed because the ephemeral lab credential was deliberately
+rotated to an unknown value after the prior run. L4 remains **NOT_EXECUTED**;
+the single-NOS FRR lab slice is not the multi-NOS L4 matrix.
