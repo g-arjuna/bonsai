@@ -1363,8 +1363,7 @@ pub fn normalize_frr_interface_json(
             entities_accepted: Some(entities_accepted),
             status_facts_emitted: Some(status_facts_emitted),
             validated_field_coverage: Some(validated_coverage),
-            expected_interface_total: (obs.capture.outcome == CaptureOutcome::Complete)
-                .then_some(records_decoded),
+            expected_interface_total: None,
             facts_emitted,
             duplicate_ifnames: 0,
             merge_conflicts: 0,
@@ -1480,7 +1479,7 @@ mod tests {
         assert_eq!(eth0.master_relationship, None);
         assert_eq!(eth0.member_of, None);
         assert_eq!(eth0.parent_interface, None);
-        assert_eq!(out.report.expected_interface_total, Some(4));
+        assert_eq!(out.report.expected_interface_total, None);
 
         let lo = &by_name["lo"];
         assert_eq!(lo.interface_type.value, Some(InterfaceType::Loopback));
@@ -1659,7 +1658,7 @@ mod tests {
         assert_eq!(out.report.entities_omitted, 2);
         assert_eq!(out.report.output_facts_omitted, 1);
         assert_eq!(out.report.addresses_omitted, 6);
-        assert_eq!(out.report.expected_interface_total, Some(4));
+        assert_eq!(out.report.expected_interface_total, None);
         assert!(out.report.notes.iter().any(|n| n.contains("omitted")));
         assert!(out.facts.iter().all(|f| f.validate().is_ok()));
     }

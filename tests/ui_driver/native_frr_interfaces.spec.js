@@ -59,18 +59,17 @@ function evidenceBody(state) {
     normalizer_revision: 'frr-iface-json-2026.11-r2',
     mapping_revision: 'bn024-iface-map-3',
     profile_id: 'frr-10.6.1-structured-interfaces',
-    normalization_report: { entities_accepted: 4, records_decoded: 4, expected_interface_total: 4 },
+    normalization_report: { entities_accepted: 4, records_decoded: 4, expected_interface_total: null },
     transport: 'verified_ssh_read_only_cli',
     interface_command: "vtysh -c 'show interface json'",
     interface_output_bytes: 2796,
     interface_output_sha256: SHA256,
-    host_key: {
-      algorithm: 'ssh-ed25519',
-      sha256: 'SHA256:w/HyErTm6v1GknV7Mcae7K5xUMVnIVDvlFE5TfSoT1E',
-    },
+    host_key_verified: true,
     facts_emitted: 4,
     facts_validated: 4,
     facts_retained: 4,
+    usable_entity_facts: 4,
+    interpretation_outcome: 'complete_usable',
     fact_retention_truncated: false,
     records_decoded: 4,
     entities_encountered: 4,
@@ -138,16 +137,21 @@ async function installFixtures(page, state) {
     state.ageSeconds = 0;
     return route.fulfill({
       json: {
-        device_address: DEVICE_ADDR,
-        network_namespace: 'default',
-        qualification: 'Qualified',
-        shadow_only: true,
-        authoritative_projection: 'none',
-        facts_emitted: 4,
-        facts_validated: 4,
-        facts_retained: 4,
-        interface_command: "vtysh -c 'show interface json'",
-        interface_output_sha256: SHA256,
+        outcome: 'success',
+        result: {
+          device_address: DEVICE_ADDR,
+          network_namespace: 'default',
+          qualification: 'Qualified',
+          shadow_only: true,
+          authoritative_projection: 'none',
+          facts_emitted: 4,
+          facts_validated: 4,
+          facts_retained: 4,
+          usable_entity_facts: 4,
+          interpretation_outcome: 'complete_usable',
+          interface_command: "vtysh -c 'show interface json'",
+          interface_output_sha256: SHA256,
+        },
       },
     });
   });
@@ -155,8 +159,11 @@ async function installFixtures(page, state) {
     route.fulfill({
       json: state.acquisitionFailed
         ? {
-            state: 'acquisition_failed',
-            evidence: null,
+            state: state.failedWithEvidence ? 'available' : 'acquisition_failed',
+            evidence: state.failedWithEvidence ? evidenceBody(state) : null,
+            freshness: 'stale',
+            age_seconds: state.ageSeconds,
+            stale_after_seconds: 3600,
             acquisition: {
               last_attempt_outcome: 'failed',
               last_failure_class: 'capture_transport_or_interpretation_failed',
@@ -188,15 +195,19 @@ test('operator sees truthful native evidence identity, bounded facts, staleness,
   await expect(panel).toContainText('Standalone FRR · shadow-only · no authoritative projection');
   await expect(panel).toContainText('Evidence is stale; collect a new authorized snapshot');
   await expect(panel).toContainText('frr-iface-json-2026.11-r2 / bn024-iface-map-3');
-  await expect(panel).toContainText('ssh-ed25519');
+  await expect(panel).toContainText('verified against pinned known-hosts policy');
+  await expect(panel).not.toContainText('SHA256:w/HyErTm6v1GknV7Mcae7K5xUMVnIVDvlFE5TfSoT1E');
   await expect(panel.getByRole('row', { name: /eth0/ })).toContainText('172.100.208.12/24');
   await expect(panel.getByRole('row', { name: /eth1/ })).toContainText('up');
   await expect(panel).toContainText('no IPv4 unicast addresses observed');
-  await expect(panel).toContainText('4/4 interfaces');
+  await expect(panel).toContainText('4 interfaces observed');
+  await expect(panel).toContainText('expected population unknown');
+  await expect(panel).toContainText('4 validated entity facts');
+  await expect(panel).not.toContainText('4/4 interfaces');
   await expect(panel).not.toContainText('password');
 
   await panel.getByRole('button', { name: 'Collect snapshot' }).click();
-  await expect(panel).toContainText('Captured 4/4 validated facts');
+  await expect(panel).toContainText('Capture success: 4/4 usable/validated facts');
   expect(state.collects).toBe(1);
   await expect(panel).not.toContainText('Evidence is stale');
 });
@@ -218,6 +229,17 @@ test('failed acquisition remains explicit instead of rendering an empty successf
   await expect(panel).toContainText('capture_transport_or_interpretation_failed');
   await expect(panel).not.toContainText('No interfaces recorded yet.');
   await expect(panel.getByRole('row', { name: /eth0/ })).toHaveCount(0);
+});
+
+
+test('failed acquisition preserves but clearly marks the last usable observation', async ({ page }) => {
+  await installFixtures(page, { role: 'operator', acquisitionFailed: true, failedWithEvidence: true, ageSeconds: 3900 });
+  await openDrawer(page);
+  const panel = page.getByRole('region', { name: 'Native FRR interface evidence' });
+  await expect(panel).toContainText('Latest native acquisition failed');
+  await expect(panel).toContainText('showing the last usable shadow observation, not a refreshed result');
+  await expect(panel.getByRole('row', { name: /eth0/ })).toContainText('172.100.208.12/24');
+  await expect(panel).toContainText('Evidence is stale');
 });
 
 test('switching devices fences delayed native evidence so device A cannot overwrite device B', async ({ page }) => {

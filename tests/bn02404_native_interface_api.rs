@@ -5,11 +5,20 @@ use axum::{
 };
 use bonsai::{
     config::TargetConfig,
-    enrichment::frr_interfaces::{StoredFrrInterfaceShadowObservation, persist_observation},
+    enrichment::frr_interfaces::{
+        StoredFrrInterfaceShadowObservation, canonical_device_id,
+        invalidate_device_native_interface_state, latest_observation, observation_id,
+        persist_degraded_observation, persist_observation,
+    },
+    frr_interface_json::{
+        FRR_JSON_ACQUISITION_CONTRACT, FrrInterfaceJsonObservation, normalize_frr_interface_json,
+    },
     graph::{ConfigItemRecord, GraphStore},
     http_server::{AppState, mint_jwt, router_from_state},
+    interface_normalizer::{CaptureOutcome, CommandCapture, NormalizerLimits, ObservationContext},
 };
 use serde_json::Value;
+use sha2::Digest;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -93,10 +102,61 @@ async fn request(
 }
 
 fn evidence() -> StoredFrrInterfaceShadowObservation {
-    serde_json::from_str(include_str!(
+    let mut observation: StoredFrrInterfaceShadowObservation = serde_json::from_str(include_str!(
         "../docs/merger/evidence/2026-11-25-bn024-04-native-acquisition/live-shadow-observation.json"
     ))
-    .expect("committed live evidence shape")
+    .expect("committed live evidence shape");
+    // The committed artifact is genuine pre-correction evidence. Tests re-key
+    // the same observed facts into the corrected canonical v2 slot and add
+    // metadata that the collector now emits at acquisition time; no fact or
+    // device output is rewritten.
+    observation.collector_id = observation
+        .facts
+        .first()
+        .and_then(|fact| fact.get("source"))
+        .and_then(|source| source.get("collector_id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("bn02404-live-test")
+        .to_string();
+    observation.observation_id =
+        observation_id(&observation.device_id, &observation.network_namespace);
+    observation.interpretation_outcome = "complete_usable".into();
+    observation.usable_entity_facts = observation
+        .facts
+        .iter()
+        .filter(|fact| {
+            fact.get("subject")
+                .and_then(|subject| subject.get("entity"))
+                .is_some()
+        })
+        .count();
+    observation.status_facts = observation
+        .facts
+        .iter()
+        .filter(|fact| {
+            fact.get("subject")
+                .and_then(|subject| subject.get("entity"))
+                .is_none()
+        })
+        .count();
+    observation
+}
+
+fn rewrite_fact_provenance(observation: &mut StoredFrrInterfaceShadowObservation) {
+    // Tests sometimes simulate a later acquisition using the genuine fixture's
+    // interface payloads. Typed facts are content-addressed, so provenance
+    // cannot merely be patched in JSON; reseal the fact after changing the
+    // acquisition axes. This is explicit test adaptation, not live evidence.
+    for value in &mut observation.facts {
+        let mut fact: bonsai::typed_facts::TypedFact =
+            serde_json::from_value(value.clone()).expect("typed fact fixture");
+        fact.source.capture_id = observation.capture_id.clone();
+        fact.source.session_epoch = observation.session_epoch;
+        fact.source.sequence = observation.sequence;
+        fact.observed_at = observation.captured_at.clone();
+        fact.seal();
+        *value = serde_json::to_value(fact).expect("resealed fact json");
+    }
 }
 
 fn fresh_evidence() -> StoredFrrInterfaceShadowObservation {
@@ -108,6 +168,7 @@ fn fresh_evidence() -> StoredFrrInterfaceShadowObservation {
         chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     observation.session_epoch = observation.capture_started_at_ns as u64;
     observation.sequence = 1;
+    rewrite_fact_provenance(&mut observation);
     observation
 }
 
@@ -152,6 +213,14 @@ async fn authorized_device_surface_exposes_bounded_shadow_evidence_and_staleness
         body["evidence"]["interface_output_sha256"],
         "b61b12df7142a9fcfacb4718eb9fc2b3210cd91a68122a87254dd093855c489a"
     );
+    assert!(body["evidence"].get("raw_interface_json").is_none());
+    assert!(body["evidence"].get("interface_diagnostics").is_none());
+    assert!(body["evidence"].get("host_key").is_none());
+    assert_eq!(
+        body["evidence"]["interpretation_outcome"],
+        "complete_usable"
+    );
+    assert_eq!(body["evidence"]["usable_entity_facts"], 4);
     let replay_error = persist_observation(&h.store, &observation)
         .await
         .expect_err("exact replay must not overwrite newer retained evidence");
@@ -172,6 +241,7 @@ async fn authorized_device_surface_exposes_bounded_shadow_evidence_and_staleness
 
     observation.captured_at_ns -= 2 * 3600 * 1_000_000_000;
     observation.session_epoch += 1;
+    rewrite_fact_provenance(&mut observation);
     persist_observation(&h.store, &observation)
         .await
         .expect("persist aged evidence");
@@ -193,9 +263,6 @@ async fn scoped_authorization_and_failed_attempt_visibility_are_enforced() {
     persist_observation(&h.store, &observation)
         .await
         .expect("persist successful observation");
-    bonsai::enrichment::frr_interfaces::record_acquisition_success(&h.store, &observation)
-        .await
-        .expect("record success");
 
     let (_, wrong_write_key) = h
         .store
@@ -336,6 +403,7 @@ async fn scoped_authorization_and_failed_attempt_visibility_are_enforced() {
     let mut older = observation.clone();
     older.session_epoch = observation.session_epoch.saturating_sub(1);
     older.sequence = observation.sequence;
+    rewrite_fact_provenance(&mut older);
     let err = persist_observation(&h.store, &older)
         .await
         .expect_err("older acquisition-start result must be rejected");
@@ -382,21 +450,24 @@ async fn shadow_observation_and_acquisition_state_survive_store_restart() {
         persist_observation(&store, &observation)
             .await
             .expect("persist observation");
-        bonsai::enrichment::frr_interfaces::record_acquisition_success(&store, &observation)
-            .await
-            .expect("record acquisition state");
     }
 
     let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("reopen graph"));
-    let retained = bonsai::enrichment::frr_interfaces::latest_observation(&store, &address)
-        .await
-        .expect("shadow observation must survive restart");
+    let retained = bonsai::enrichment::frr_interfaces::latest_observation(
+        &store,
+        &target(&address, None, None),
+    )
+    .await
+    .expect("shadow observation must survive restart");
     assert_eq!(retained.captured_at_ns, observation.captured_at_ns);
     assert_eq!(retained.facts_validated, observation.facts_validated);
-    let acquisition = bonsai::enrichment::frr_interfaces::acquisition_state(&store, &address)
-        .await
-        .expect("decode acquisition state")
-        .expect("acquisition state must survive restart");
+    let acquisition = bonsai::enrichment::frr_interfaces::acquisition_state(
+        &store,
+        &target(&address, None, None),
+    )
+    .await
+    .expect("decode acquisition state")
+    .expect("acquisition state must survive restart");
     assert_eq!(acquisition.last_attempt_outcome, "success");
     assert_eq!(
         acquisition.last_successful_observation_id.as_deref(),
@@ -406,6 +477,234 @@ async fn shadow_observation_and_acquisition_state_survive_store_restart() {
         .await
         .expect_err("restart must not make replayed evidence current");
     assert!(replay_error.to_string().contains("replayed"));
+}
+
+#[tokio::test]
+async fn canonical_identity_prevents_address_reuse_or_fact_transfer() {
+    let h = harness().await;
+    let observation = fresh_evidence();
+    let address = observation.device_address.clone();
+    let device_a = target(&address, None, None);
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("persist canonical evidence");
+
+    let mut device_b = device_a.clone();
+    device_b.external_id = Some("containerlab:replacement-device".into());
+    assert_ne!(
+        canonical_device_id(&device_a),
+        canonical_device_id(&device_b)
+    );
+    let err = latest_observation(&h.store, &device_b)
+        .await
+        .expect_err("evidence for device A must not decode as device B evidence");
+    assert!(err.to_string().contains("shadow evidence unavailable"));
+
+    let retained = latest_observation(&h.store, &device_a)
+        .await
+        .expect("canonical owner evidence remains readable");
+    assert_eq!(retained.device_id, canonical_device_id(&device_a));
+
+    // A corrupted record whose top-level identity was rewritten to device B
+    // still carries device A typed-fact subjects and must fail admission.
+    let mut corrupted = observation.clone();
+    corrupted.device_id = canonical_device_id(&device_b);
+    corrupted.observation_id = observation_id(&corrupted.device_id, &corrupted.network_namespace);
+    corrupted.session_epoch += 10;
+    let err = persist_observation(&h.store, &corrupted)
+        .await
+        .expect_err("cross-device typed facts must be rejected");
+    assert!(
+        err.to_string()
+            .contains("typed-fact subject/source identity mismatch")
+    );
+}
+
+#[tokio::test]
+async fn concurrent_persistence_admits_newer_epoch_regardless_of_completion_order() {
+    let h = harness().await;
+    let base = fresh_evidence();
+    let mut older = base.clone();
+    older.session_epoch = base.session_epoch.saturating_sub(1);
+    rewrite_fact_provenance(&mut older);
+    let mut newer = base;
+    newer.session_epoch += 1;
+    rewrite_fact_provenance(&mut newer);
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let mut tasks = Vec::new();
+    for observation in [older.clone(), newer.clone()] {
+        let store = Arc::clone(&h.store);
+        let barrier = Arc::clone(&barrier);
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            persist_observation(&store, &observation).await
+        }));
+    }
+    barrier.wait().await;
+    let mut outcomes = Vec::new();
+    for task in tasks {
+        outcomes.push(task.await.expect("persistence task"));
+    }
+    assert!(
+        outcomes[1].is_ok(),
+        "newer epoch must always be admitted: {outcomes:?}"
+    );
+    // Whether the older writer won or lost the lock race, it can never remove
+    // the newer epoch once that epoch has been admitted.
+    let device = target(&newer.device_address, None, None);
+    let retained = latest_observation(&h.store, &device)
+        .await
+        .expect("retained observation");
+    assert_eq!(retained.session_epoch, newer.session_epoch);
+}
+
+#[tokio::test]
+async fn degraded_interpretation_preserves_last_usable_evidence() {
+    let h = harness().await;
+    let observation = fresh_evidence();
+    let device = target(&observation.device_address, None, None);
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("persist usable evidence");
+
+    let raw = "{\"unexpected-schema\":true}";
+    let capture =
+        CommandCapture::new(raw, CaptureOutcome::Complete).captured_at("2026-11-25T15:00:00.000Z");
+    let mut context = ObservationContext::minimal(
+        &observation.device_id,
+        &observation.collector_id,
+        &observation.capture_id,
+        "2026-11-25T15:00:00.000Z",
+    );
+    context.network_namespace = Some(&observation.network_namespace);
+    context.platform = Some("frr");
+    context.session_epoch = observation.session_epoch + 1;
+    context.sequence = observation.sequence;
+    let input = FrrInterfaceJsonObservation {
+        capture,
+        context,
+        acquisition_contract: FRR_JSON_ACQUISITION_CONTRACT,
+    };
+    let normalized = normalize_frr_interface_json(&input, NormalizerLimits::default());
+    assert_eq!(normalized.facts.len(), 1);
+    assert!(normalized.facts[0].subject.entity.is_none());
+    assert!(normalized.facts[0].payload.state.is_some());
+
+    let mut degraded = observation.clone();
+    degraded.session_epoch += 1;
+    degraded.capture_started_at_ns += 1;
+    degraded.captured_at_ns += 1;
+    degraded.raw_interface_json = Some(raw.into());
+    degraded.interface_output_bytes = raw.len();
+    degraded.interface_output_sha256 = format!("{:x}", sha2::Sha256::digest(raw.as_bytes()));
+    degraded.facts = normalized
+        .facts
+        .iter()
+        .map(|fact| serde_json::to_value(fact).expect("status fact json"))
+        .collect();
+    degraded.facts_emitted = degraded.facts.len();
+    degraded.facts_validated = degraded.facts.len();
+    degraded.facts_retained = degraded.facts.len();
+    degraded.usable_entity_facts = 0;
+    degraded.status_facts = degraded.facts.len();
+    degraded.interpretation_outcome = "invalid_input".into();
+    degraded.normalization_report =
+        serde_json::to_value(&normalized.report).expect("normalization report json");
+
+    let err = persist_observation(&h.store, &degraded)
+        .await
+        .expect_err("degraded payload must not enter the usable observation slot");
+    assert!(
+        err.to_string()
+            .contains("cannot be admitted as usable evidence")
+    );
+    persist_degraded_observation(
+        &h.store,
+        &degraded,
+        "invalid_structured_input",
+        "structured input did not match the qualified schema",
+    )
+    .await
+    .expect("persist degraded attempt evidence");
+
+    let retained = latest_observation(&h.store, &device)
+        .await
+        .expect("last usable evidence must survive degraded interpretation");
+    assert_eq!(retained.session_epoch, observation.session_epoch);
+    assert_eq!(retained.usable_entity_facts, 4);
+    let state = bonsai::enrichment::frr_interfaces::acquisition_state(&h.store, &device)
+        .await
+        .expect("decode state")
+        .expect("state");
+    assert_eq!(state.last_attempt_outcome, "degraded");
+    assert_eq!(
+        state.last_interpretation_outcome.as_deref(),
+        Some("invalid_input")
+    );
+    assert_eq!(
+        state.last_successful_observation_id.as_deref(),
+        Some(observation.observation_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn removal_invalidates_evidence_without_permanently_poisoning_identity() {
+    let h = harness().await;
+    let mut observation = fresh_evidence();
+    let device = target(&observation.device_address, None, None);
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("persist evidence");
+    let legacy_id = format!(
+        "native-frr-interface-{}",
+        hex::encode(sha2::Sha256::digest(device.primary_ip().as_bytes()))
+    );
+    h.store
+        .upsert_config_item(ConfigItemRecord {
+            id: legacy_id.clone(),
+            config_class: "native_interface_shadow_observation".into(),
+            vendor: "frr".into(),
+            name: device.primary_ip().to_string(),
+            version: "1".into(),
+            content_json: format!("{{\"legacy\":\"{}\"}}", "x".repeat(160)),
+            enabled: true,
+            created_by: "bn02404-test".into(),
+        })
+        .await
+        .expect("seed legacy address-keyed evidence");
+    invalidate_device_native_interface_state(&h.store, &device)
+        .await
+        .expect("invalidate device native evidence");
+    let legacy = h
+        .store
+        .get_config_item(&legacy_id)
+        .await
+        .expect("legacy point lookup")
+        .expect("legacy tombstone");
+    assert!(
+        !legacy.enabled,
+        "legacy address-keyed evidence is tombstoned"
+    );
+    let err = latest_observation(&h.store, &device)
+        .await
+        .expect_err("invalidated evidence must not be served");
+    assert!(err.to_string().contains("shadow evidence unavailable"));
+
+    // If the same canonical identity is deliberately re-registered later, a
+    // new acquisition can write fresh evidence. The invalidated payload is not
+    // resurrected; it is atomically replaced only by a newer validated result.
+    observation.session_epoch += 1;
+    observation.capture_started_at_ns += 1;
+    observation.captured_at_ns += 1;
+    rewrite_fact_provenance(&mut observation);
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("new validated acquisition after explicit re-registration");
+    let retained = latest_observation(&h.store, &device)
+        .await
+        .expect("fresh evidence readable");
+    assert_eq!(retained.session_epoch, observation.session_epoch);
 }
 
 /// Genuine end-to-end operator acceptance: production router auth and
@@ -453,11 +752,16 @@ async fn operator_collects_live_frr_shadow_evidence_through_production_api() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["qualification"], "Qualified");
     assert_eq!(body["shadow_only"], true);
-    assert_eq!(body["facts_emitted"], 4);
-    assert_eq!(body["facts_validated"], 4);
-    assert_eq!(body["interface_command"], "vtysh -c 'show interface json'");
+    assert_eq!(body["result"]["facts_emitted"], 4);
+    assert_eq!(body["result"]["facts_validated"], 4);
+    assert_eq!(body["result"]["usable_entity_facts"], 4);
+    assert_eq!(body["result"]["interpretation_outcome"], "complete_usable");
     assert_eq!(
-        body["interface_output_sha256"],
+        body["result"]["interface_command"],
+        "vtysh -c 'show interface json'"
+    );
+    assert_eq!(
+        body["result"]["interface_output_sha256"],
         "b61b12df7142a9fcfacb4718eb9fc2b3210cd91a68122a87254dd093855c489a"
     );
 

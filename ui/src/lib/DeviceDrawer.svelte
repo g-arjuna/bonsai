@@ -45,6 +45,7 @@
   let flowsData = $state(null);
   let flowsLoading = $state(false);
   let me = $state(null);
+  let nativeIfaceApplicable = $state(false);
   let nativeIfaceEvidence = $state(null);
   let nativeIfaceAcquisition = $state(null);
   let nativeIfaceLoading = $state(false);
@@ -79,6 +80,7 @@
       cmdbData = null;
       flowsData = null;
       nativeIfaceGeneration += 1;
+      nativeIfaceApplicable = false;
       nativeIfaceEvidence = null;
       nativeIfaceAcquisition = null;
       nativeIfaceError = '';
@@ -102,6 +104,9 @@
         .then(d => {
           if (generation !== deviceGeneration || requestedAddress !== address) return;
           device = d;
+          const vendor = (d?.vendor || '').toLowerCase();
+          const platform = (d?.inventory_platform || d?.platform || '').toLowerCase();
+          nativeIfaceApplicable = vendor.includes('frr') || platform.includes('frr');
           loading = false;
         })
         .catch(e => {
@@ -175,9 +180,7 @@
   });
 
   function isStandaloneFrrDevice() {
-    const vendor = (device?.vendor || '').toLowerCase();
-    const platform = (device?.inventory_platform || device?.platform || '').toLowerCase();
-    return vendor.includes('frr') || platform.includes('frr') || !!nativeIfaceEvidence;
+    return nativeIfaceApplicable || !!nativeIfaceEvidence;
   }
 
   function nativeIfaceFacts() {
@@ -215,7 +218,51 @@
     const observed = report.entities_accepted ?? report.entities_observed ?? 0;
     const expected = report.expected_interface_total;
     const decoded = report.records_decoded ?? 0;
-    return { observed, expected, decoded };
+    const validated = nativeIfaceEvidence?.usable_entity_facts ?? nativeIfaceEvidence?.facts_validated ?? 0;
+    return { observed, expected, decoded, validated };
+  }
+
+  function nativeInterpretation() {
+    const outcome = nativeIfaceEvidence?.interpretation_outcome || 'unknown';
+    return {
+      outcome,
+      label: outcome.replaceAll('_', ' '),
+      degraded: !['complete_usable', 'partial_usable', 'genuine_complete_empty'].includes(outcome),
+      partial: outcome === 'partial_usable'
+    };
+  }
+
+  function nativeErrorText(text, fallback) {
+    try {
+      const parsed = JSON.parse(text || '{}');
+      const code = parsed.reason_code || parsed.error;
+      const description = parsed.description;
+      if (code && description) return `${description} (${code})`;
+      if (description) return description;
+    } catch { /* plain-text compatibility */ }
+    return text || fallback;
+  }
+
+  async function refreshNativeAcquisitionState(requestedAddress, generation) {
+    try {
+      const r = await fetch('/api/devices/' + encodeURIComponent(requestedAddress) + '/native-interfaces/frr');
+      if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+      if (!r.ok) {
+        await r.text();
+        if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+        if (r.status === 401 || r.status === 403) {
+          nativeIfaceEvidence = null;
+          nativeIfaceAcquisition = null;
+        }
+        return;
+      }
+      const d = await r.json();
+      if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+      nativeIfaceAcquisition = d.acquisition || null;
+      if (d.evidence) {
+        nativeIfaceEvidence = { ...(d.evidence || {}), freshness: d.freshness, age_seconds: d.age_seconds, stale_after_seconds: d.stale_after_seconds, interpretation_outcome: d.interpretation_outcome || d.evidence?.interpretation_outcome };
+      }
+    } catch { /* retain the explicit collection failure already displayed */ }
   }
 
   async function loadNativeInterfaces(force = false) {
@@ -234,18 +281,29 @@
         nativeIfaceError = 'No native interface shadow evidence yet. An operator can collect a bounded snapshot.';
       } else if (r.status === 401 || r.status === 403) {
         nativeIfaceEvidence = null;
+        nativeIfaceAcquisition = null;
         nativeIfaceError = 'Native interface evidence is denied for this scope or role.';
       } else if (!r.ok) {
+        const text = await r.text();
+        if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
         nativeIfaceEvidence = null;
-        nativeIfaceError = await r.text();
+        nativeIfaceError = nativeErrorText(text, 'Native interface evidence request failed.');
       } else {
         const d = await r.json();
+        if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
         nativeIfaceAcquisition = d.acquisition || null;
-        if (d.state === 'acquisition_failed' && !d.evidence) {
+        if (!d.evidence) {
           nativeIfaceEvidence = null;
-          nativeIfaceError = `Latest native acquisition failed (${d.acquisition?.last_failure_class || 'unknown'}); no successful shadow evidence is retained.`;
+          if (d.state === 'acquisition_failed' || d.state === 'interpretation_degraded') {
+            nativeIfaceError = `Latest native acquisition failed (${d.acquisition?.last_failure_class || d.latest_attempt?.failure_class || 'unknown'}); no usable shadow evidence is retained.`;
+          } else {
+            nativeIfaceError = 'No native interface shadow evidence yet. An operator can collect a bounded snapshot.';
+          }
         } else {
-          nativeIfaceEvidence = { ...(d.evidence || {}), freshness: d.freshness, age_seconds: d.age_seconds, stale_after_seconds: d.stale_after_seconds };
+          nativeIfaceEvidence = { ...(d.evidence || {}), freshness: d.freshness, age_seconds: d.age_seconds, stale_after_seconds: d.stale_after_seconds, interpretation_outcome: d.interpretation_outcome || d.evidence?.interpretation_outcome };
+          if (d.acquisition?.last_attempt_outcome === 'failed' || d.acquisition?.last_attempt_outcome === 'degraded') {
+            nativeIfaceError = `Latest native acquisition failed (${d.acquisition?.last_failure_class || 'unknown'}); showing the last usable shadow observation, not a refreshed result.`;
+          }
         }
       }
     } catch {
@@ -275,10 +333,18 @@
       const text = await r.text();
       if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
       if (!r.ok) {
-        nativeIfaceError = text || 'Native interface collection failed.';
+        if (r.status === 401 || r.status === 403) {
+          nativeIfaceEvidence = null;
+          nativeIfaceAcquisition = null;
+        }
+        nativeIfaceError = nativeErrorText(text, 'Native interface collection failed.');
+        await refreshNativeAcquisitionState(requestedAddress, generation);
       } else {
         const d = JSON.parse(text);
-        nativeIfaceMessage = `Captured ${d.facts_validated}/${d.facts_emitted} validated facts (${d.qualification}, shadow only).`;
+        if (generation !== nativeIfaceGeneration || requestedAddress !== address) return;
+        const result = d.result || {};
+        const outcome = (d.outcome || 'success').replaceAll('_', ' ');
+        nativeIfaceMessage = `Capture ${outcome}: ${result.usable_entity_facts ?? result.facts_validated}/${result.facts_emitted} usable/validated facts (${result.qualification}, shadow only).`;
         nativeIfaceEvidence = null;
         nativeIfaceRequestedFor = '';
         nativeIfaceBusy = false;
@@ -287,6 +353,7 @@
     } catch {
       if (generation === nativeIfaceGeneration && requestedAddress === address) {
         nativeIfaceError = 'Native interface collection request failed.';
+        await refreshNativeAcquisitionState(requestedAddress, generation);
       }
     } finally {
       if (generation === nativeIfaceGeneration && requestedAddress === address) {
@@ -622,19 +689,24 @@
             {/if}
             {#if nativeIfaceLoading}
               <div class="loading">Loading native interface evidence…</div>
-            {:else if nativeIfaceError}
-              <div class="native-note warn">{nativeIfaceError}</div>
             {:else if nativeIfaceEvidence}
               {@const cov = nativeCoverage()}
+              {@const interpretation = nativeInterpretation()}
+              {#if nativeIfaceError}
+                <div class="native-note warn">{nativeIfaceError}</div>
+              {/if}
               <div class="native-summary">
-                <span class="badge {nativeIfaceEvidence.freshness === 'stale' ? 'warn' : 'healthy'}">{nativeIfaceEvidence.freshness || 'snapshot'}</span>
+                <span class="badge {nativeIfaceEvidence.freshness === 'stale' ? 'warn' : 'info'}">{nativeIfaceEvidence.freshness || 'snapshot'}</span>
+                <span class="badge {interpretation.degraded || interpretation.partial ? 'warn' : 'info'}">interpretation {interpretation.label}</span>
                 <span class="badge info">shadow only</span>
                 <span class="muted">{nativeIfaceEvidence.release_raw}{nativeIfaceEvidence.release_build ? ' · declared build ' + nativeIfaceEvidence.release_build : ''}</span>
-                <span class="muted">{cov.observed}/{cov.expected ?? cov.decoded ?? 'unknown'} interfaces</span>
+                <span class="muted">{cov.observed} interfaces observed</span>
+                <span class="muted">expected population {cov.expected ?? 'unknown'}</span>
+                <span class="muted">{cov.validated} validated entity facts</span>
                 <span class="muted" title={nativeIfaceEvidence.captured_at}>{nativeIfaceEvidence.age_seconds != null ? Math.floor(nativeIfaceEvidence.age_seconds / 60) + 'm old' : nativeIfaceEvidence.captured_at}</span>
               </div>
-              {#if nativeIfaceAcquisition?.last_attempt_outcome === 'failed'}
-                <div class="native-note warn">Latest acquisition failed ({nativeIfaceAcquisition.last_failure_class || 'unknown'}); showing the last successful shadow observation, not a refreshed result.</div>
+              {#if nativeIfaceAcquisition?.last_attempt_outcome === 'failed' || nativeIfaceAcquisition?.last_attempt_outcome === 'degraded'}
+                <div class="native-note warn">Latest acquisition did not produce usable evidence ({nativeIfaceAcquisition.last_failure_class || nativeIfaceAcquisition.last_interpretation_outcome || 'unknown'}); showing the last usable shadow observation, not a refreshed result.</div>
               {/if}
               {#if nativeIfaceEvidence.freshness === 'stale'}
                 <div class="native-note warn">Evidence is stale; collect a new authorized snapshot before relying on it.</div>
@@ -644,7 +716,7 @@
                 <span class="muted">Profile</span><span>{nativeIfaceEvidence.profile_id}</span>
                 <span class="muted">Revisions</span><span><code>{nativeIfaceEvidence.normalizer_revision}</code> / <code>{nativeIfaceEvidence.mapping_revision || '—'}</code></span>
                 <span class="muted">Output digest</span><span><code>{nativeIfaceEvidence.interface_output_sha256?.slice(0, 16)}…</code> ({nativeIfaceEvidence.interface_output_bytes} bytes)</span>
-                <span class="muted">SSH host key</span><span><code>{nativeIfaceEvidence.host_key?.algorithm}</code> <code>{nativeIfaceEvidence.host_key?.sha256}</code></span>
+                <span class="muted">SSH host key</span><span>{nativeIfaceEvidence.host_key_verified ? 'verified against pinned known-hosts policy' : 'verification state unknown'}</span>
               </div>
               {#if nativeIfaceFacts().length === 0}
                 <div class="empty">No typed interface facts retained. This is explicit evidence absence, not an empty interface table.</div>
@@ -671,6 +743,8 @@
                   <div class="native-note warn">Fact display is retention-bounded: {nativeIfaceEvidence.facts_retained}/{nativeIfaceEvidence.facts_emitted} retained.</div>
                 {/if}
               {/if}
+            {:else if nativeIfaceError}
+              <div class="native-note warn">{nativeIfaceError}</div>
             {/if}
           </section>
         {/if}

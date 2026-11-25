@@ -654,15 +654,32 @@ pub(super) async fn remove_managed_device_handler(
     Json(req): Json<RemoveManagedDeviceRequest>,
 ) -> Result<Json<MutationResponse>, (StatusCode, String)> {
     match state.registry.remove_device(&req.address) {
-        Ok(Some(device)) => Ok(Json(MutationResponse {
-            success: true,
-            error: String::new(),
-            device: Some(managed_device_json(
-                device,
-                &HashMap::new(),
-                &state.registry.list_overrides().unwrap_or_default(),
-            )),
-        })),
+        Ok(Some(device)) => {
+            let invalidation =
+                crate::enrichment::frr_interfaces::invalidate_device_native_interface_state(
+                    &state.store,
+                    &device,
+                )
+                .await;
+            if let Err(error) = invalidation {
+                return Ok(Json(MutationResponse {
+                    success: false,
+                    error: format!(
+                        "device removed, but native interface evidence invalidation failed: {error}"
+                    ),
+                    device: None,
+                }));
+            }
+            Ok(Json(MutationResponse {
+                success: true,
+                error: String::new(),
+                device: Some(managed_device_json(
+                    device,
+                    &HashMap::new(),
+                    &state.registry.list_overrides().unwrap_or_default(),
+                )),
+            }))
+        }
         Ok(None) => Ok(Json(MutationResponse {
             success: false,
             error: format!("device '{}' not found", req.address),

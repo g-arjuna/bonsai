@@ -129,3 +129,35 @@ During the canonical browser/workflow tests, several historical benchmark
 JSON artifacts were regenerated in the working tree as test side effects.
 They were restored byte-for-byte from `HEAD` before publication and are not
 part of this evidence change.
+
+## Corrective review pass (uncommitted-gate limitation)
+
+After independent review of published head `da6c698d5d8f1e8465977dc07e72944f9e264e41`,
+a bounded corrective pass changed canonical persistence identity, atomic
+compare/write admission, degraded-versus-usable retention, bounded admission
+lifecycle, subprocess enforcement, blocking normalization, operator DTOs and
+browser failure/coverage semantics. Focused corrected-candidate evidence:
+
+- Rust integration binary `bn02404_native_interface_api`: **7 passed, 0 failed,
+  1 ignored live-gated test** (22.74 s execution). This includes canonical
+  address-reuse/fact-transfer rejection, concurrent stale/newer persistence,
+  degraded evidence preserving last usable state, scoped authorization,
+  invalidation and restart persistence.
+- Rust lib selection `enrichment::frr_interfaces::tests::`: **7 passed, 1
+  ignored live-gated test**, including helper deadline, stdout/stderr overflow,
+  inherited-pipe deadline and sequential admission-key eviction.
+- Rust lib selection `frr_interface_json`: **20 passed**, including independent
+  expected values, budget refusals, unknown-population presentation contract
+  and scaling smoke measurements.
+- Python fixed-capture helper tests: **4 passed**.
+- UI production build and Chromium acceptance were previously green after the
+  operator-semantics fixes: **5 passed**; the final Rust-only test correction
+  did not alter browser code.
+- `cargo fmt --check`: pass.
+
+The broad canonical L0–L3 gate result above applies to prior production SHA
+`d203e0000ee93c3439f925bb7cc99addeba640e2`, **not** to this corrective
+candidate. A fresh canonical L0–L3 run and merge decision remain explicitly
+pending. Live SSH evidence remains genuine for the pre-correction acquisition
+path; it has not been re-executed because the ephemeral lab credential was
+deliberately rotated to an unknown value after the prior run.

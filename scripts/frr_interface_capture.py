@@ -39,11 +39,10 @@ def _append_bounded(retained, chunk, total):
 def run_command(client, command):
     """Run one fixed command while draining stdout and stderr independently.
 
-    Paramiko uses one channel window for both streams. Reading stdout while
-    ignoring stderr can deadlock a chatty or hostile endpoint; retaining both
-    streams without a cap can exhaust memory. Drain both for correctness but
-    retain at most MAX_BYTES+1 bytes per stream, with the absolute command
-    deadline providing the refusal boundary.
+    Both streams share the SSH channel window, so neither may starve the other.
+    Reads are bounded per iteration and the absolute deadline is evaluated even
+    when one stream remains continuously ready. Remote exit-status availability
+    is not treated as proof that all pending output has been consumed.
     """
     _, stdout, _stderr = client.exec_command(command, timeout=15)
     channel = stdout.channel
@@ -52,24 +51,49 @@ def run_command(client, command):
     out_total = 0
     err_total = 0
     deadline = time.monotonic() + 15
+    exit_status_ready = False
     while True:
-        progressed = False
-        while channel.recv_ready():
-            progressed = True
-            out_total = _append_bounded(out, channel.recv(65536), out_total)
-        while channel.recv_stderr_ready():
-            progressed = True
-            err_total = _append_bounded(err, channel.recv_stderr(65536), err_total)
-        if channel.exit_status_ready():
-            break
         if time.monotonic() > deadline:
             channel.close()
             raise ValueError("fixed read-only FRR command deadline exceeded")
+        progressed = False
+
+        # At most one bounded chunk per stream per iteration prevents a
+        # continuously-ready stdout stream from starving stderr or deadline
+        # evaluation (and vice versa).
+        if channel.recv_ready():
+            progressed = True
+            out_total = _append_bounded(out, channel.recv(65536), out_total)
+            if out_total > MAX_BYTES:
+                channel.close()
+                raise ValueError("frr capture exceeds 4 MiB")
+            if time.monotonic() > deadline:
+                channel.close()
+                raise ValueError("fixed read-only FRR command deadline exceeded")
+        if channel.recv_stderr_ready():
+            progressed = True
+            err_total = _append_bounded(err, channel.recv_stderr(65536), err_total)
+            if err_total > MAX_BYTES:
+                channel.close()
+                raise ValueError("frr capture exceeds 4 MiB")
+
+        if channel.exit_status_ready():
+            exit_status_ready = True
+            # EOF/close with no pending bytes is the completion condition.
+            # Merely observing an exit status is insufficient: final command
+            # output can still be buffered in either stream.
+            stream_closed = getattr(channel, "closed", False) or getattr(
+                channel, "eof_received", False
+            )
+            if stream_closed and not channel.recv_ready() and not channel.recv_stderr_ready():
+                break
         if not progressed:
             time.sleep(0.02)
+
+    if not exit_status_ready:
+        channel.close()
+        raise ValueError("fixed read-only FRR command ended before exit status was available")
     status = channel.recv_exit_status()
-    if out_total > MAX_BYTES or err_total > MAX_BYTES:
-        raise ValueError("frr capture exceeds 4 MiB")
     if status != 0:
         raise ValueError("fixed read-only FRR command failed")
     return bytes(out).decode("utf-8", errors="strict")
