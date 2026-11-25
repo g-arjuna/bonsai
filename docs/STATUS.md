@@ -77,6 +77,30 @@ fixture-qualified, no live collector, no graph projection. Canonical
 L0–L3 gate run recorded in
 `docs/bn024/evidence/2026-11-25-bn024-native-iface/README.md`.
 Evidence: `docs/bn024/evidence/2026-11-25-bn024-native-iface/`.
+**Merged to main as `03b6ccd` (2026-11-25).**
+
+BN-024-03/03A extension-seam slice — `feat/bn024-native-profiles`:
+canonical `sonic` and `nvidia.cumulus` entries in `platform_registry`
+(distinct from standalone `frr`; no guessed parser-backend ids);
+`nos_features` profiles extended with typed `AcquisitionContract`/
+`AcquisitionKind` (declarative planes, never runnable commands),
+`NormalizerRef` (id+revision resolved by registry, never a code
+path), `PromotionState` (shadow default), `ResourceBudget` and
+`device_roles`; `builtin_profiles()`/`builtin_registry()` ship
+declarative SONiC/Cumulus/FRR profiles where `version_match: "*"`
+records upstream `version: all` as Candidate-only for unknown
+releases; new `normalizer_registry` is the offline dispatch seam —
+Selected+Enabled+bound feature on a qualified platform invokes the
+PR #86 interface normalizer and returns `shadow_only` output, with
+explicit `DispatchError` fail-closed paths and no collection, I/O,
+parser-chain wiring or graph/authority access. SONiC STATE_DB/
+COUNTERS_DB and Cumulus NVUE planes are declared disabled/unknown —
+no unsupported capability claims. 18 focused lib tests + 11
+integration tests (`tests/bn024_extension_seam.rs`) pass; canonical
+gate pending on the PR head. Deferred: config-file profile loading,
+hot-disable/rollback mechanics, parser-chain/capture-envelope
+integration (BN-024-05+), all structured-source acquisition slices.
+Evidence: `docs/bn024/extension-seam.md`.
 
 BN-019 packaged upgrade slice — **executed 2026-11-24** on merged
 main `18fa577` (PR #80): real packaged images `bonsai:bn019u2-cdfcac1`

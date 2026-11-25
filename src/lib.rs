@@ -36,6 +36,7 @@ pub mod mcp_client;
 pub mod mcp_server;
 pub mod memory_profile;
 pub mod ml_event_bus;
+pub mod normalizer_registry;
 pub mod nos_features;
 pub mod output;
 pub mod parser_chain;

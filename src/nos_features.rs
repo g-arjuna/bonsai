@@ -51,6 +51,78 @@ pub struct ApplicabilityEvidence {
     pub claim: SupportState,
 }
 
+/// How a feature's input is acquired. Declarative provenance only —
+/// variants name the acquisition *plane*, never an executable command,
+/// shell string, eval expression or plugin path. `contracts` holds
+/// logical contract identifiers (e.g. observation-source names or
+/// schema paths), not runnable text.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AcquisitionKind {
+    /// CLI observation output (e.g. vtysh/iproute2 text captures).
+    CliObservation,
+    /// Vendor structured state database (e.g. SONiC STATE_DB).
+    StructuredStateDb,
+    /// Management API (e.g. NVUE REST).
+    ApiRest,
+    /// gNMI subscription/GET.
+    Gnmi,
+    /// Kernel structured state (netlink/sysfs).
+    KernelNetlink,
+    /// Acquisition plane not established — never treated as supported.
+    Unknown,
+}
+
+/// One typed acquisition contract for a feature. `contracts` are
+/// logical identifiers a future collector resolves through its own
+/// authorized acquisition path; they are data, not commands.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcquisitionContract {
+    pub kind: AcquisitionKind,
+    #[serde(default)]
+    pub contracts: Vec<String>,
+}
+
+/// Reference to the normalizer/mapping implementation bound to a
+/// feature. `id` is resolved by the offline normalizer registry —
+/// profiles never name code paths, shared libraries or executables.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NormalizerRef {
+    pub id: String,
+    /// Normalizer implementation revision.
+    pub revision: String,
+    /// Optional mapping/semantics revision (typed-fact `mapping_revision`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapping_revision: Option<String>,
+}
+
+/// Promotion/activation state of a feature binding. `Shadow` is the
+/// default and the only state this contract can express for
+/// fixture-qualified normalizers: output is evidence for comparison,
+/// never an authoritative input. `Active` is reserved for profiles
+/// whose qualification evidence exists; flipping it is a profile-data
+/// change, fully reversible by re-selecting the profile.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionState {
+    #[default]
+    Shadow,
+    Active,
+}
+
+/// Per-profile resource budgets. `None` = unbounded is NOT implied —
+/// consumers must apply their own defaults; these bounds only tighten
+/// what a profile declares safe.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceBudget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entities: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_facts: Option<u64>,
+}
+
 /// A single feature a profile claims support for, with compositional
 /// semantics (BN-024-03A): prerequisites, conflicts and evidence are
 /// first-class so feature sets like "IS-IS + SR-MPLS + Flex-Algo" or
@@ -79,6 +151,16 @@ pub struct FeatureFlag {
     /// Advisory applicability evidence (BN-028-13 seam).
     #[serde(default)]
     pub evidence: Vec<ApplicabilityEvidence>,
+    /// Typed acquisition contracts — the planes this feature may draw
+    /// observations from. Empty = no acquisition path declared.
+    #[serde(default)]
+    pub acquisition: Vec<AcquisitionContract>,
+    /// Bound normalizer/mapping implementation, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalizer: Option<NormalizerRef>,
+    /// Shadow-only by default; see [`PromotionState`].
+    #[serde(default)]
+    pub promotion: PromotionState,
 }
 
 /// Device software release as reported by the NOS: opaque raw string plus
@@ -234,6 +316,14 @@ pub struct NosFeatureProfile {
     /// unverified rather than assuming coverage.
     #[serde(default)]
     pub verified_namespaces: Vec<String>,
+    /// Device roles this profile describes (e.g. "leaf", "spine",
+    /// "border"). Informational scope only — role never selects a
+    /// profile by itself.
+    #[serde(default)]
+    pub device_roles: Vec<String>,
+    /// Per-profile resource budgets for bounded execution.
+    #[serde(default)]
+    pub resource_budget: ResourceBudget,
     #[serde(default)]
     pub features: BTreeMap<String, FeatureFlag>,
     /// Test/verification status — profiles are `untested` until evidence is
@@ -808,6 +898,188 @@ fn version_matches(pattern: &str, version: &str) -> bool {
     version == pattern || version.starts_with(&format!("{pattern}."))
 }
 
+/// Canonical platform id for profile queries — delegates to
+/// `platform_registry` so every registered alias resolves to one
+/// identity. Profile selection never creates a second platform
+/// namespace.
+pub fn canonical_platform_id(raw: &str) -> &'static str {
+    crate::platform_registry::normalize_platform_id(raw)
+}
+
+/// Built-in feature profiles for the platforms Bonsai currently has
+/// *some* qualified native path for. These are declarative data —
+/// registering them changes no collector, parser or graph code.
+///
+/// Qualification honesty:
+/// - `version_match: "*"` records that upstream selectors declare
+///   `version: all`; it is NOT tested-release support. Unknown device
+///   releases select only as `Candidate` (discovery), never `Selected`.
+/// - SONiC ASIC/host namespace separation applies to the structured
+///   STATE_DB/COUNTERS_DB/APPL_DB/CONFIG_DB slices — NOT yet
+///   implemented; `verified_namespaces` stays empty (unspecified) so
+///   namespace-scoped checks fail closed as `Unknown`.
+/// - Cumulus NVUE/kernel/FRR structured acquisition is likewise a
+///   later slice; only the FRR CLI observation pair is bound.
+/// - Standalone FRR is deliberately NOT given the cumulus/sonic
+///   qualified interface normalizer: the observation path is
+///   qualified for those two NOS profiles only.
+/// Feature flag for a declared-but-not-yet-qualified builtin feature:
+/// disabled, unknown support, no acquisition/normalizer binding,
+/// shadow promotion. Used by [`builtin_profiles`]; the test module has
+/// its own `flag` helper.
+fn builtin_disabled_flag(scope_notes: Vec<String>) -> FeatureFlag {
+    FeatureFlag {
+        enabled: false,
+        parsers: vec![],
+        scope_notes,
+        requires: vec![],
+        conflicts: vec![],
+        support: SupportState::Unknown,
+        evidence: vec![],
+        acquisition: vec![],
+        normalizer: None,
+        promotion: PromotionState::Shadow,
+    }
+}
+
+pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
+    let cli_observation = || {
+        vec![AcquisitionContract {
+            kind: AcquisitionKind::CliObservation,
+            // Logical contract identifiers — the observation-source
+            // names the normalizer reports — never runnable commands.
+            contracts: vec!["vtysh_show_int_vrf_all".into(), "ip_addr_show".into()],
+        }]
+    };
+    let interface_flag = |support_evidence: Vec<ApplicabilityEvidence>| FeatureFlag {
+        enabled: true,
+        parsers: vec!["native_rust".into()],
+        scope_notes: vec![
+            "FRR 'show int vrf all' + 'ip -d address show' observation pair".into(),
+            "offline normalization only — no live collector, no graph projection".into(),
+        ],
+        requires: vec![],
+        conflicts: vec![],
+        support: SupportState::Supported,
+        evidence: support_evidence,
+        acquisition: cli_observation(),
+        normalizer: Some(NormalizerRef {
+            id: "interface_normalizer".into(),
+            revision: "bn024-iface-1".into(),
+            mapping_revision: Some("bn024-map-1".into()),
+        }),
+        promotion: PromotionState::Shadow,
+    };
+    let fixture_evidence = || {
+        vec![ApplicabilityEvidence {
+            kind: "observed_capture".into(),
+            source:
+                "suzieq cl_interfaces.txt @75198b5 (genuine Cumulus capture, Apache-2.0 fixture)"
+                    .into(),
+            revision: Some("75198b5585ebef91f0659b6b1ec3c964cc2cd1ad".into()),
+            scope: Some("interfaces.frr_cli only".into()),
+            claim: SupportState::Supported,
+        }]
+    };
+    vec![
+        NosFeatureProfile {
+            profile_id: "sonic-1".into(),
+            platform_family: "sonic".into(),
+            version_match: "*".into(),
+            release_constraint: None,
+            hardware_constraints: vec![],
+            verified_namespaces: vec![],
+            device_roles: vec![],
+            resource_budget: ResourceBudget {
+                max_input_bytes: Some(8 * 1024 * 1024),
+                max_entities: Some(4096),
+                max_output_facts: Some(8192),
+            },
+            features: BTreeMap::from([
+                (
+                    "interfaces.frr_cli".into(),
+                    interface_flag(fixture_evidence()),
+                ),
+                // Structured planes are declared but NOT enabled —
+                // their acquisition slices are future work.
+                (
+                    "state_db".into(),
+                    builtin_disabled_flag(vec![
+                        "SONiC STATE_DB per-ASIC namespaces — acquisition slice pending".into(),
+                    ]),
+                ),
+                (
+                    "counters_db".into(),
+                    builtin_disabled_flag(vec![
+                        "SONiC COUNTERS_DB per-ASIC namespaces — acquisition slice pending".into(),
+                    ]),
+                ),
+            ]),
+            verification: "fixture_only".into(),
+        },
+        NosFeatureProfile {
+            profile_id: "cumulus-1".into(),
+            platform_family: "nvidia.cumulus".into(),
+            version_match: "*".into(),
+            release_constraint: None,
+            hardware_constraints: vec![],
+            verified_namespaces: vec!["default".into()],
+            device_roles: vec![],
+            resource_budget: ResourceBudget {
+                max_input_bytes: Some(8 * 1024 * 1024),
+                max_entities: Some(4096),
+                max_output_facts: Some(8192),
+            },
+            features: BTreeMap::from([
+                (
+                    "interfaces.frr_cli".into(),
+                    interface_flag(fixture_evidence()),
+                ),
+                // NVUE applied/startup planes — declared but NOT
+                // enabled; acquisition slice pending.
+                (
+                    "nvue".into(),
+                    builtin_disabled_flag(vec![
+                        "NVUE applied/startup planes — acquisition slice pending".into(),
+                    ]),
+                ),
+            ]),
+            verification: "fixture_only".into(),
+        },
+        NosFeatureProfile {
+            profile_id: "frr-1".into(),
+            platform_family: "frr".into(),
+            version_match: "*".into(),
+            release_constraint: None,
+            hardware_constraints: vec![],
+            verified_namespaces: vec![],
+            device_roles: vec![],
+            resource_budget: ResourceBudget::default(),
+            features: BTreeMap::from([(
+                "interfaces.frr_cli".into(),
+                // Same observation syntax exists on standalone FRR,
+                // but the normalizer is qualified for the cumulus/sonic
+                // profiles only — disabled here, never silently reused.
+                builtin_disabled_flag(vec![
+                    "standalone FRR interface normalization not yet qualified".into(),
+                ]),
+            )]),
+            verification: "untested".into(),
+        },
+    ]
+}
+
+/// A `ProfileRegistry` pre-loaded with [`builtin_profiles`]. Callers may
+/// register additional profiles; selection precedence and ambiguity
+/// rules are unchanged.
+pub fn builtin_registry() -> ProfileRegistry {
+    let mut r = ProfileRegistry::new();
+    for p in builtin_profiles() {
+        r.register(p);
+    }
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,6 +1093,9 @@ mod tests {
             conflicts: vec![],
             support: SupportState::Supported,
             evidence: vec![],
+            acquisition: vec![],
+            normalizer: None,
+            promotion: PromotionState::Shadow,
         }
     }
 
@@ -832,6 +1107,8 @@ mod tests {
             release_constraint: None,
             hardware_constraints: vec![],
             verified_namespaces: vec!["asic-0".into(), "asic-1".into()],
+            device_roles: vec![],
+            resource_budget: ResourceBudget::default(),
             features: BTreeMap::from([
                 (
                     "interfaces".into(),
@@ -843,6 +1120,9 @@ mod tests {
                         conflicts: vec![],
                         support: SupportState::Supported,
                         evidence: vec![],
+                        acquisition: vec![],
+                        normalizer: None,
+                        promotion: PromotionState::Shadow,
                     },
                 ),
                 ("bgp".into(), flag(false)),
@@ -871,6 +1151,8 @@ mod tests {
                 attributes: BTreeMap::new(),
             }],
             verified_namespaces: vec!["default".into()],
+            device_roles: vec![],
+            resource_budget: ResourceBudget::default(),
             features: BTreeMap::from([
                 (
                     "interfaces".into(),
@@ -891,6 +1173,9 @@ mod tests {
                             scope: None,
                             claim: SupportState::Supported,
                         }],
+                        acquisition: vec![],
+                        normalizer: None,
+                        promotion: PromotionState::Shadow,
                     },
                 ),
                 ("nvue".into(), flag(true)),
@@ -934,6 +1219,8 @@ mod tests {
             release_constraint: None,
             hardware_constraints: vec![],
             verified_namespaces: vec![],
+            device_roles: vec![],
+            resource_budget: ResourceBudget::default(),
             features,
             verification: "untested".into(),
         }
@@ -947,6 +1234,8 @@ mod tests {
             release_constraint: None,
             hardware_constraints: vec![],
             verified_namespaces: vec![],
+            device_roles: vec![],
+            resource_budget: ResourceBudget::default(),
             features: BTreeMap::from([("interfaces".into(), flag(true))]),
             verification: "untested".into(),
         }
@@ -1148,6 +1437,8 @@ mod tests {
             release_constraint: None,
             hardware_constraints: vec![],
             verified_namespaces: vec![],
+            device_roles: vec![],
+            resource_budget: ResourceBudget::default(),
             features: BTreeMap::new(),
             verification: "untested".into(),
         });
@@ -1158,6 +1449,8 @@ mod tests {
             release_constraint: None,
             hardware_constraints: vec![],
             verified_namespaces: vec![],
+            device_roles: vec![],
+            resource_budget: ResourceBudget::default(),
             features: BTreeMap::new(),
             verification: "fixture_only".into(),
         });
@@ -1168,6 +1461,8 @@ mod tests {
             release_constraint: None,
             hardware_constraints: vec![],
             verified_namespaces: vec![],
+            device_roles: vec![],
+            resource_budget: ResourceBudget::default(),
             features: BTreeMap::new(),
             verification: "fixture_only".into(),
         });
@@ -1243,6 +1538,8 @@ mod tests {
                 release_constraint: None,
                 hardware_constraints: vec![],
                 verified_namespaces: vec![],
+                device_roles: vec![],
+                resource_budget: ResourceBudget::default(),
                 features: BTreeMap::new(),
                 verification: "untested".into(),
             });
@@ -1267,6 +1564,8 @@ mod tests {
             release_constraint: None,
             hardware_constraints: vec![],
             verified_namespaces: vec![],
+            device_roles: vec![],
+            resource_budget: ResourceBudget::default(),
             features: BTreeMap::new(),
             verification: "untested".into(),
         };
