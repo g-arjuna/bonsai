@@ -98,5 +98,34 @@ browser acceptance, not independent end-to-end backend qualification. They cover
 truthful stale/shadow presentation, denied viewer affordance, explicit failed
 acquisition state, and device-switch generation fencing.
 
-Canonical L0–L3 gate output is stored separately as `gates-l0-l3.log` when
-executed on the published production SHA. L4 is not claimed by this evidence.
+## Canonical gate result
+
+The first canonical run on published SHA
+`a7a50feef3ab6fbafe56933fa3e89103ec1b0377` failed closed at L2 after 664
+passed / 1 failed because the two new degraded typed-fact payload states were
+present in Rust but absent from the committed JSON schema/state fixture. That
+failure is preserved in `gates-l0-l3-first-failure-a7a50fe.log`; L3 was
+NOT_EXECUTED by fail-fast. The fixture/schema correction was committed as
+`d203e0000ee93c3439f925bb7cc99addeba640e2` without weakening the assertion.
+`typed-facts-python.log` shows the schema drift suite actually executing
+(7/7 passed) after provisioning the pre-existing test venv with `jsonschema`.
+
+Canonical gates were rerun once on exact production SHA
+`d203e0000ee93c3439f925bb7cc99addeba640e2` with the trusted build lane,
+prebuilt Ladybug, sccache/mold, `CARGO_BUILD_JOBS=2` and system Chromium.
+Result: **L0 PASS, L1 PASS, L2 PASS, L3 PASS** in 2,064.23 s wall time;
+peak RSS recorded by `/usr/bin/time` was 6,804,388 KiB. L2 executed 1,298
+passed Rust tests across the bonsai library, RustyBMP crates and all 35
+required integration targets (10 ignored remain ignored, not counted as
+passes). L3 executed 71 passed Rust/browser-acceptance tests across all 13
+targets, plus 60/60 root Python tests and 318 passed SDK Python tests with
+1 skipped and 1 deselected (neither counted as passed). The Python skip was
+verified with `-rs` as the deliberate no-torch compatibility path being
+skipped because torch is installed (`python-gate-suites-rs.log`). Full output:
+`gates-l0-l3-d203e00.log`. L4 is **NOT_EXECUTED**; this single-NOS bounded
+live lab evidence is not the multi-NOS L4 matrix.
+
+During the canonical browser/workflow tests, several historical benchmark
+JSON artifacts were regenerated in the working tree as test side effects.
+They were restored byte-for-byte from `HEAD` before publication and are not
+part of this evidence change.

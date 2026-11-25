@@ -1,5 +1,27 @@
 # Bonsai current state
 
+BN-024-04 first authorized native acquisition vertical slice — **PR #89 candidate**
+(`feat/bn024-04-native-acquisition`; merge/review pending). This is the first end-to-end native
+intelligence path, bounded to standalone FRR interface state: canonical inventory identity plus
+independently enforced read/collection scopes → operator-authenticated production API →
+pinned-host-key verified SSH → fixed read-only `vtysh -c 'show version json'` / `vtysh -c 'show
+interface json'` → exact immutable artifact qualification
+`quay.io/frrouting/frr@sha256:813497af103e972600f6161012b3bf2a2a1c5ea10d09cd1eacd74f1dc510a57b` →
+`frr-iface-json-2026.11-r2` normalization with mapping `bn024-iface-map-3` → validated typed
+`interface.state` facts → durable bounded shadow observation/acquisition state → authorized API and
+DeviceDrawer evidence panel. Genuine authorized lab evidence on `clab-bonsai-bn003-vrf-frr2` (FRR
+`10.6.1_git`) validated and retained 4/4 interface facts; negative SSH evidence covers
+unknown/changed host key and authentication failure. The result remains `shadow_only`; authoritative
+projection is explicitly `none`. Scope qualification: design+implementation (D/I) with normalization
+(N) evidence for one exact software artifact in one default-namespace lab; no scale (S), production
+(P), vendor-hardware (V), operational fleet (O), SONiC/Cumulus, multi-namespace, topology, or
+authoritative projection qualification is claimed. Canonical L0–L3 gates passed once on exact
+production SHA `d203e0000ee93c3439f925bb7cc99addeba640e2` (2,064.23 s; L2 1,298 Rust passes, L3 71
+Rust/browser passes plus 60 root and 318 SDK Python passes; skips/ignores not counted); evidence is
+in `docs/merger/evidence/2026-11-25-bn024-04-native-acquisition/`. L4 remains NOT_EXECUTED.
+BN-024-04 is therefore a partial capture slice, not completion of the broader capture epic;
+BN-024-08 SONiC and BN-024-08A Cumulus structured intelligence remain outstanding.
+
 BN-024 native network intelligence — **G0 landed 2026-11-24** on main
 `e578595`/`09c2d60` (PRs #82/#83): BN-024-00 pinned SuzieQ OSS provenance
 manifest + offline validator; BN-024-01 parser-chain contract repair.
