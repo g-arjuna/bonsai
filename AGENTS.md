@@ -14,7 +14,7 @@
 - No live device writes, broad lab teardown, data deletion or force-push.
 - Use only the task's dedicated containerlab resources.
 - Do not weaken assertions, hide failures, change goldens blindly or count skips as passes.
-- Run focused checks, then the task's required gate. Report unexecuted checks honestly.
+- Run focused checks during implementation, obtain independent review, then run the task's required canonical gates before merge, as described below. Report unexecuted checks honestly.
 - No broad dependency updates, cosmetic rewrites or new infrastructure without task need.
 - **Operator-facing feature co-delivery (BN-030):** read [Operator Experience Strategy](docs/architecture/BONSAI_OPERATOR_EXPERIENCE_STRATEGY_2026-11-24.md). For every changed operator-facing capability, specify the existing/new primary and contextual UI surface, typed authorized API, scope/time/evidence/coverage, error/empty/partial/stale/unsupported/denied states, safe next action and relevant browser acceptance. Do not claim a backend-only implementation is operator-ready. Pure offline ABI/normalization/research slices may explicitly defer UI with owning backlog item and dependency; do not interrupt an in-flight trusted build/gate or require a full UI rewrite for each parser. Keep feature metadata and identity in the existing authority, not a browser-side inference registry. Use existing design tokens, accessible shared patterns and measured performance; avoid new pages per backend module. No network device writes.
 - Finish with changed files, executed commands/results, evidence path and next step.
@@ -43,6 +43,15 @@ prior parallel build OOM-killed the desktop session. Rules:
   policies, swap, or privileged settings without owner authorization.
 
 **Required for Devin and other agents:** [Bonsai Build Acceleration Playbook](docs/BUILD_ACCELERATION_PLAYBOOK_2026-11-11.md) documents the source-measured bottlenecks, safe iteration lanes, cache/worktree ownership, performance experiments and BN-019 acceptance. It complements (does not relax) the correctness/test gates below.
+
+### Review-first canonical validation (2026-11-26)
+
+- Retain the manual feedback loop: Devin implements, the owner relays the checkpoint to ChatGPT for independent research/review, and Devin implements the consolidated review findings. No automated agent-to-agent loop or additional orchestration is required.
+- **Implementation / REVIEW_READY:** use existing fast checks, scoped behavioral tests and risk-linked regressions appropriate to the change. Publish a reviewable committed candidate (draft PR or existing task branch), with baseline and candidate SHA, scope, focused results, evidence paths, known gaps and required remaining gates. Explicitly mark deferred gates NOT_EXECUTED; review readiness is not merge readiness.
+- **Default gate timing:** defer the expensive full canonical L0–L3 cycle until independent semantic review and substantive corrections are complete. Do not repeat the full cycle for each intermediate commit or merely to produce a review checkpoint. Cheap formatting/policy checks, targeted compilation and regression testing remain part of the inner loop. Run broader checks earlier when the task's acceptance criteria, security/correctness risk, cross-component changes or reviewer explicitly require them; do not interrupt an already-running trusted gate.
+- **GATE_READY:** after reviewer clearance for final validation, freeze the candidate SHA and its intended integration base. Run every gate and acceptance test required by the existing task and repository policy against that candidate. Required L4/live/lab acceptance is not deferred past its acceptance boundary. Do not weaken test coverage, scripts, CI, trust settings or acceptance criteria to save time.
+- **MERGE_READY:** provide exact tested SHA/base, commands, gate results (including failures, skips and NOT_EXECUTED), and evidence for the owner's final review. Do not merge merely because a draft was reviewed or focused tests passed. Any code, fixture, configuration or relevant base change after validation must be assessed for invalidated evidence and revalidated under existing policy; reuse of earlier gate results requires explicit reviewer acceptance and documented impact, never an assumed pass on a different SHA.
+- Consolidate reviewer-requested fixes where practical rather than launching a full canonical cycle after each fix. Keep the existing one-task-at-a-time rule and single heavyweight build owner. If blocked, report the specific blocker and next decision rather than repeatedly rebuilding or polling.
 
 ### Fast feedback without false-green verification
 
