@@ -32,20 +32,42 @@ relations are not implemented in this slice.
 
 ## Verification executed
 
-`cargo check -p bonsai --lib --offline` through the trusted prebuilt build lane:
-PASS before registry/test finalization.
+### Independent owner-review reproduction (pre-correction)
 
-`cargo test -p bonsai --lib xrd_openconfig --profile ci --offline` through the
-trusted prebuilt build lane: PASS, 5 tests:
+The focused regression suite was first run against the pre-correction adapter
+and failed as expected: **20 failed / 5 passed** in 245 s through the trusted
+prebuilt ci lane. The failures independently reproduced the review findings:
+wrong model origin acceptance, namespace injection/collision first-wins,
+false-empty success for invalid identities, omitted address entries disappearing
+from accounting, unobserved Ethernet state misclassified as unsupported,
+missing/invalid gNMI timestamp handling, terminal-sync and delete lifecycle
+gaps, insufficient update bounds, and prerequisite conflicts not invalidating
+dependent fields.
 
-- genuine XRd capture expected values;
-- missing sync marks completeness unknown;
-- malformed envelope is invalid input, not empty success;
-- wrong acquisition contract rejected;
-- registry experimental dispatch is shadow-only and qualified dispatch fails
-  closed without exact device-reported release qualification.
+### Corrected adapter
 
-An earlier implementation iteration failed the genuine fixture test before the
-recursive namespace-canonical merge correction; that failure was fixed and the
-final source passes. Canonical L0-L3 and L4 were **not** executed for this
-branch in this bounded session. No browser/API operator claim is made.
+`cargo check -p bonsai --lib --profile ci --offline` through the trusted
+prebuilt build lane: **PASS** in 56 s.
+
+`cargo test -p bonsai --lib --profile ci --offline xrd_openconfig_interfaces::tests`
+through the trusted prebuilt build lane: **PASS**, 31/31 tests in 264 s wall
+(compilation dominated; test execution 0.18 s). The broader risk-linked filter
+`cargo test -p bonsai --lib --profile ci --offline xrd_openconfig` also passed
+**32/32**, adding the registry experimental-dispatch/fail-closed qualification
+regression. Coverage includes the genuine
+XRd expected values plus negative regressions for wrong/conflicting origins,
+unbound path targets, atomic/delete lifecycle, terminal sync ordering,
+malformed/missing timestamps, duplicate JSON object identity keys,
+module-qualified namespace collisions, foreign identityref namespaces, invalid
+interface identities, path/payload identity mismatches, actual update-count
+bounds, YANG uint16/uint32 bounds, exact enum case, non-boolean prerequisites,
+subinterface key/state mismatches, address-entry omission accounting, conflict
+prerequisites, and missing Ethernet state (`Unknown`, not `Unsupported`).
+
+The parser/mapping/requirement revisions for the corrected semantics are
+`xrd-oc-iface-2026.11-r2`, `bn025-iface-map-2`, and
+`bn025-iface-requirements-r2`.
+
+Canonical L0-L3 and L4 were **not** executed for this corrected branch in this
+bounded session. No browser/API operator-ready claim is made; this remains an
+offline/shadow normalization slice.
