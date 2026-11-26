@@ -89,6 +89,38 @@ Evidence: `docs/bn024/evidence/2026-11-24-bn024-01*/`,
 `docs/bn024/parser-contract.md`, `docs/bn024/typed-facts/`,
 `docs/bn024/extension-seam.md`, `docs/bn024/source-crosswalk/`.
 
+
+BN-024 SuzieQ capability ledger — **unpublished review candidate** (2026-11-26):
+`docs/bn024/source-crosswalk/` now contains a source-derived inventory of the
+pinned upstream revision and a machine/human capability delivery ledger. Counts:
+27 upstream object families (19 polled service families + 8 derived/virtual
+objects), 66 ledger capabilities (64 implemented upstream, 2 enterprise/Bonsai
+improvements absent upstream). Conservative Bonsai dispositions: 1 narrow native
+port, 1 existing equivalent, 1 intentional improvement, 20 partial and 43
+missing after the first narrow LAG-consistency assertion slice moved
+`interfaces.assert` to partial.
+This is a delivery map, not a claim of feature parity or production readiness.
+Canonical gates: NOT_EXECUTED for the ledger publication; focused
+implementation regressions are reported separately. The cross-NOS interface
+qualification matrix now also records the roadmap-only status of Nokia SR OS,
+MikroTik RouterOS and IP Infusion OcNOS without implying implementation.
+
+BN-024 structured interface identity and first relationship-assessment slice —
+**unpublished review candidate** (2026-11-26): additive optional v1
+`subject.interface_identity` identity refinement implemented in
+`src/typed_facts.rs` with JSON-schema/Python compatibility regressions. Legacy
+facts omitting the refinement retain their serialized shape and fact identity;
+when present, structured parent/subinterface/vendor-native axes participate in
+`fact_id` and `AuthorityGrant` binding. Producers still emit no refinement
+unless positive structured evidence exists; current genuine FRR/XRd evidence
+does not contain non-zero subinterfaces, so non-zero cases are synthetic
+structural regressions only. First capability-led implementation:
+`src/interface_relationships.rs` assesses LAG aggregate/member consistency and
+reports bridge/parent/VRF/unresolved relationships from typed interface facts,
+verified against the genuine Cumulus fixture. It is offline analysis only —
+no graph writer, live acquisition, API/UI exposure or cross-NOS qualification.
+Focused verification through the trusted ci lane: typed-facts 42 passed/2 ignored, interface relationships 2 passed, Cumulus/SONiC CLI normalizer 21 passed, FRR structured JSON 20 passed, XRd OpenConfig 34 passed (119 passed total, 0 failed); typed-fact pytest schema compatibility 9 passed. Canonical L0–L3 gates: NOT_EXECUTED under the approved review-first policy.
+
 BN-024 first native intelligence slice — **PR #86**
 (`feat/bn024-native-interface-state`): native Rust normalizer for the
 Cumulus/SONiC FRR interface observation pair emitting typed

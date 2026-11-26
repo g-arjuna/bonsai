@@ -93,13 +93,41 @@
     {
       "family": "nvidia.cumulus",
       "source_availability": "historical genuine Cumulus SuzieQ CLI capture; no modern NVUE/kernel/FRR combined evidence",
-      "implementation": "legacy offline FRR-style CLI normalizer only",
+      "implementation": "legacy offline CLI normalizer plus first offline LAG/bridge/parent/VRF relationship assessment in this review candidate (src/interface_relationships.rs); not modern Cumulus native state",
       "release_qualification": "fixture-only historical capture",
       "acquisition_status": "no modern live acquisition",
       "semantic_coverage": [
-        "partial offline CLI semantics"
+        "partial offline CLI semantics",
+        "narrow offline LAG aggregate/member consistency over genuine fixture"
       ],
-      "blocker": "modern authorized image/evidence for NVUE, kernel and FRR relationships"
+      "blocker": "modern authorized image/evidence for NVUE, kernel and FRR relationships; production/API/operator exposure"
+    },
+    {
+      "family": "nokia.sros",
+      "source_availability": "roadmap research target only; no genuine interface evidence located in this session",
+      "implementation": "not implemented",
+      "release_qualification": "none",
+      "acquisition_status": "none",
+      "semantic_coverage": [],
+      "blocker": "approved evidence/lab and source contract; do not infer from Nokia SR Linux"
+    },
+    {
+      "family": "mikrotik.routeros",
+      "source_availability": "roadmap research target only; no genuine interface evidence located in this session",
+      "implementation": "not implemented",
+      "release_qualification": "none",
+      "acquisition_status": "none",
+      "semantic_coverage": [],
+      "blocker": "approved evidence/lab/API contract; do not assume OpenConfig/gNMI"
+    },
+    {
+      "family": "ipinfusion.ocnos",
+      "source_availability": "roadmap research target only; no genuine interface evidence located in this session",
+      "implementation": "not implemented",
+      "release_qualification": "none",
+      "acquisition_status": "none",
+      "semantic_coverage": [],
+      "blocker": "approved evidence/lab/source contract"
     }
   ],
   "pr90_closeout": {

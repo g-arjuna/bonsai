@@ -14,7 +14,10 @@ scale, production, vendor-release and operational qualification.
 | Cisco IOS XE | No current genuine versioned live evidence located in this session; generic CLI parser references are not interface-feature qualification | No native interface normalizer implemented | None | None | None | Authorized image/lab or genuine versioned capture |
 | Juniper Junos | Text CLI fixture exists; no current genuine versioned live evidence located in this session | No native interface normalizer implemented | None | None | None | Authorized device/image or genuine structured XML/JSON evidence |
 | SONiC | Upstream SuzieQ selector evidence and architectural requirements; no qualified modern STATE_DB/COUNTERS_DB/gNMI interface evidence in this slice | No native interface normalizer implemented; must not inherit FRR qualification | None | None | None | Genuine namespace-aware SONiC evidence and lab; ASIC/host namespace model |
-| NVIDIA Cumulus | Historical genuine Cumulus SuzieQ CLI capture used by the original offline normalizer; no modern NVUE/kernel/FRR combined qualification | Legacy FRR-style CLI offline normalizer only, not modern Cumulus native state | Fixture-only upstream capture; not current Cumulus release qualification | No live modern Cumulus acquisition | Partial offline CLI semantics only | Modern authorized image/evidence for NVUE/kernel/FRR relationship |
+| NVIDIA Cumulus | Historical genuine Cumulus SuzieQ CLI capture used by the original offline normalizer; no modern NVUE/kernel/FRR combined qualification | Legacy FRR-style CLI offline normalizer plus first offline LAG/bridge/parent/VRF relationship assessment in this review candidate (`src/interface_relationships.rs`); not modern Cumulus native state | Fixture-only upstream capture; not current Cumulus release qualification | No live modern Cumulus acquisition | Partial offline CLI semantics plus narrow offline LAG aggregate/member consistency over genuine fixture; bridge/parent/VRF structural reporting | Modern authorized image/evidence for NVUE/kernel/FRR relationship; production/API/operator exposure |
+| Nokia SR OS | Roadmap target added through BN-024-08D research; no genuine interface evidence located in this session | No native interface normalizer implemented | None | None | None | Approved evidence/lab and source contract; do not infer from Nokia SR Linux |
+| MikroTik RouterOS | Roadmap target added through BN-024-08B research; no genuine interface evidence located in this session | No native interface normalizer implemented | None | None | None | Approved evidence/lab/API contract; do not assume OpenConfig/gNMI |
+| IP Infusion OcNOS | Roadmap target added through BN-024-08C research; no genuine interface evidence located in this session | No native interface normalizer implemented | None | None | None | Approved evidence/lab/source contract |
 
 ## Capability-level outcome after the first non-FRR adapter
 
@@ -22,7 +25,7 @@ scale, production, vendor-release and operational qualification.
 |---|---|---|---|
 | Canonical device identity | Qualified shadow slice: canonical inventory identity, not management address | Typed input requires canonical device context; no production persistence yet | Shared model is sound, but production identity lifecycle must be common acquisition infrastructure rather than per-NOS copies |
 | Base interface identity | Implemented | Implemented from OpenConfig list key | Compatible |
-| Subinterface identity | FRR dotted/relationship evidence remains limited | Non-zero subinterfaces explicitly unsupported; index 0 addressing folded only as base-interface addressing | Common fact subject lacks structured subinterface axes; this is a real required contract improvement |
+| Subinterface identity | FRR dotted/relationship evidence remains limited | Non-zero subinterfaces explicitly unsupported; index 0 addressing folded only as base-interface addressing | Additive typed-fact contract exists in this review candidate, but current genuine FRR/XRd evidence does not contain non-zero subinterfaces and producers intentionally emit no refinement; producer integration remains open |
 | Admin/oper state vocabulary | Implemented | Implemented | OpenConfig token names differ but map cleanly without collapsing unknown |
 | Interface type | Implemented | Implemented for observed ethernetCsmacd/other scope | Classification depends on both IANA type and `logical`; vendor-neutral mapping needs more scenarios |
 | MTU | Implemented | Implemented as interface-level value | Units are bytes in both qualified sources, but XRd exposes distinct subinterface IPv4 MTU; layering must remain explicit |
@@ -31,7 +34,7 @@ scale, production, vendor-release and operational qualification.
 | IPv4/IPv6 | Implemented | IPv4 implemented for subinterface index 0; IPv6 extraction implemented but unknown in genuine capture | Address ownership depends on subinterface modeling; cannot mature without structured subinterface identity |
 | Namespace | FRR default namespace slice | Context supports namespace but genuine lab evidence is default only | SONiC/Cumulus will stress this axis; not yet cross-NOS qualified |
 | VRF/network instance | FRR subject binding where source reports it | Not extracted; OpenConfig interfaces root does not establish network-instance attachment | Requires separate network-instance source and explicit conflict retention |
-| LAG relationships | Partial FRR only | Not implemented | No cross-NOS qualification |
+| LAG relationships | Partial FRR only | Not implemented | First narrow offline Cumulus fixture assessment implemented in this candidate; no XRd/FRR/cross-NOS qualification |
 | Capture completeness | CLI command response plus degraded outcomes | gNMI initial sync plus non-atomic subtree merge; population denominator unknown | Completeness semantics are source-specific and must not be forced into one command-response envelope |
 
 ## PR #90 canonical closeout

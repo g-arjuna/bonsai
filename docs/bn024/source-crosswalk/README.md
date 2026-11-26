@@ -1,14 +1,25 @@
-# BN-024-00A — SuzieQ upstream engineering crosswalk (first increment)
+# BN-024-00A — SuzieQ upstream engineering crosswalk and capability ledger
 
 Pinned source: SuzieQ OSS @ `75198b5585ebef91f0659b6b1ec3c964cc2cd1ad`
 (Apache-2.0; provenance manifest `docs/bn024/provenance/upstream-sources.json`,
 114/114 entries verified 2026-11-24). Machine-readable per-module map:
 `suzieq-modules.v1.json` in this directory.
 
-This is the *first bounded increment* of the crosswalk — it covers the
-pipeline skeleton and the services named in the backlog. Per-feature
-traces deepen it before each native port; it is not a claim of complete
-coverage.
+The original bounded pipeline increment is now extended by a comprehensive
+source-derived capability delivery ledger:
+
+- `suzieq-upstream-inventory.v1.json` — structural inventory of all 19
+  polled service YAML families, schemas, service cleaners, sqobject methods,
+  pandas engine methods, virtual objects and test/fixture tree scale.
+- `suzieq-capability-delivery.v1.json` — machine-readable Bonsai delivery
+  disposition for 66 functional capabilities, including per-service × NOS
+  selector/cleaner/version depth and required acceptance semantics.
+- `suzieq-capability-assessment.md` — concise human-readable domain counts,
+  high-value gaps and recommended implementation waves.
+
+This is broad capability coverage, not proof that every upstream cleaner has
+already been deeply traced line-by-line. Per-feature traces still deepen the
+ledger before each native port; it is not a claim of implementation parity.
 
 ## Architecture in one paragraph
 
