@@ -20,6 +20,7 @@ pub mod disk_guard;
 pub mod enrichment;
 pub mod event_bus;
 pub mod forwarding_domain_derivation;
+pub mod forwarding_domain_queries;
 pub mod frr_interface_json;
 pub mod gnmi_path;
 pub mod gnmi_security;

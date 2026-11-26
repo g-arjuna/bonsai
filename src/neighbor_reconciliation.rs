@@ -690,7 +690,7 @@ fn nonempty(value: Option<&str>) -> bool {
     value.is_some_and(|value| !value.is_empty())
 }
 
-fn domain_batch_established(evidence: &ForwardingDomainEvidence) -> bool {
+pub(crate) fn domain_batch_established(evidence: &ForwardingDomainEvidence) -> bool {
     nonempty(evidence.collector_id.as_deref())
         && nonempty(evidence.source_kind.as_deref())
         && nonempty(evidence.capture_id.as_deref())
@@ -699,7 +699,7 @@ fn domain_batch_established(evidence: &ForwardingDomainEvidence) -> bool {
         && !evidence.evidence_refs.is_empty()
 }
 
-fn domain_evidence_current(
+pub(crate) fn domain_evidence_current(
     evidence: &ForwardingDomainEvidence,
     as_of: crate::semantic_evidence::Time,
     policy: FreshnessPolicy,
