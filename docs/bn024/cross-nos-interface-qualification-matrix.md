@@ -1,6 +1,6 @@
 # Cross-NOS interface intelligence qualification matrix
 
-Date: 2026-11-25/26 UTC. This matrix records actual evidence and implementation
+Date: 2026-11-25/26 UTC; PR #90 closeout corrected 2026-11-26 UTC. This matrix records actual evidence and implementation
 state; empty cells are not aspirational claims. Qualification terminology uses
 the repository D/I/N/S/P/V/O convention: design, implementation, normalization,
 scale, production, vendor-release and operational qualification.
@@ -8,7 +8,7 @@ scale, production, vendor-release and operational qualification.
 | NOS family | Genuine source evidence currently available | Native interface implementation state | Exact release qualification | Acquisition status | Semantic coverage established | Remaining blocker |
 |---|---|---|---|---|---|---|
 | FRR (standalone) | Genuine authorized FRR 10.6.1 `show interface json` fixture and pre-correction live SSH evidence from PR #89 | Production shadow acquisition, bounded persistence, typed facts and first operator panel merged in PR #89 | Exact lab artifact profile for FRR `10.6.1_git` structured JSON | Core-managed authorized SSH slice; post-correction live re-execution not performed because credentials were rotated; L4 remains not executed | Base interface identity, admin/oper state, ifindex, type, MTU, speed Mbps, MAC, IPv4/IPv6, partial parent/master relationships; degraded outcome semantics | Live corrected-candidate browser/API journey and L4 matrix |
-| Cisco IOS XR / XRd | Genuine XRd 24.4.2 gNMI capabilities and subscribe-once evidence; immutable image `ios-xr/xrd-control-plane:24.4.2` id `sha256:b3bd8e…a487f` | **This branch:** offline Rust OpenConfig normalizer plus registry/profile wiring; experimental shadow only | Fixture/image provenance exact, but no device-reported release/build identity in capture; qualified registry dispatch intentionally fails closed | Read-only live evidence acquisition only; no production Core-managed acquisition/persistence | Base interface identity, admin/oper, ifindex, type, interface MTU, forced/negotiated speed semantics, MAC, subinterface-0 IPv4; unknown population; non-zero subinterfaces explicitly unsupported | Production acquisition integration, structured subinterface identity, network-instance/VRF/LAG extraction, UI exposure |
+| Cisco IOS XR / XRd | Genuine XRd 24.4.2 gNMI capabilities and subscribe-once evidence; immutable image `ios-xr/xrd-control-plane:24.4.2` id `sha256:b3bd8e…a487f` | **Merged PR #90:** offline Rust OpenConfig normalizer plus registry/profile wiring; experimental shadow only (production head `be277f9`, merge commit `4c100ba`) | Fixture/image provenance exact, but no device-reported release/build identity in capture; qualified registry dispatch intentionally fails closed | Read-only live evidence acquisition only; canonical L0–L3 PASS on `be277f9`, L4 NOT_EXECUTED; no production Core-managed acquisition/persistence | Base interface identity, admin/oper, ifindex, type, interface MTU, forced/negotiated speed semantics, MAC, subinterface-0 IPv4; unknown population; non-zero subinterfaces explicitly unsupported | Production acquisition integration, structured subinterface identity, network-instance/VRF/LAG extraction, UI exposure |
 | Nokia SR Linux | Historical genuine gNMI/YANG evidence (`2026-11-21-m6f-srlinux`, `2026-11-23-m6fc-srlinux-r8`); simple CLI fixture exists but is weak | No native interface normalizer implemented | No exact interface-feature release qualification | Existing lab state was broken in this session (`clab-m6f-srlinux-srlinux` exited; netns present but services refused connections) | None in common typed interface model | Repair/deploy authorized lab, choose native versus OpenConfig schema scope, implement Rust adapter |
 | Arista EOS | cEOS 4.37.0F explicit-mode live counter/withdrawal evidence; CLI fixture exists but is not sufficient live qualification | No native interface normalizer implemented | No exact interface-feature release qualification | Explicit acquisition evidence only; cEOS lacks YANG Library in documented evidence, so not schema-bound authority | None in common typed interface model | Decide structured EOS JSON/OpenConfig source, establish authority semantics, implement adapter |
 | Cisco IOS XE | No current genuine versioned live evidence located in this session; generic CLI parser references are not interface-feature qualification | No native interface normalizer implemented | None | None | None | Authorized image/lab or genuine versioned capture |
@@ -33,3 +33,13 @@ scale, production, vendor-release and operational qualification.
 | VRF/network instance | FRR subject binding where source reports it | Not extracted; OpenConfig interfaces root does not establish network-instance attachment | Requires separate network-instance source and explicit conflict retention |
 | LAG relationships | Partial FRR only | Not implemented | No cross-NOS qualification |
 | Capture completeness | CLI command response plus degraded outcomes | gNMI initial sync plus non-atomic subtree merge; population denominator unknown | Completeness semantics are source-specific and must not be forced into one command-response envelope |
+
+## PR #90 canonical closeout
+
+PR #90 merged as `4c100ba56a06dfe57a5aed65c3920eb5c894757e`; final production
+head `be277f97be8500d43fa724e0352d207ea26746ff`. Canonical L0–L3 passed on that
+exact head; L4 remains NOT_EXECUTED. Durable evidence:
+`docs/merger/evidence/2026-11-25-bn025-xrd-native-interfaces/canonical-l0-l3-be277f9.log`.
+This does not change the qualification boundary: the XRd implementation is an
+experimental offline/shadow normalizer, not production acquisition or an
+operator-ready Cisco interface capability.

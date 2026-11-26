@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-25T19:00:00Z",
+  "generated_at": "2026-11-26T00:00:00Z",
   "classification_note": "D/I/N/S/P/V/O repository qualification vocabulary; no production, scale, vendor-wide or operational qualification is implied unless explicitly stated.",
   "nos": [
     {
@@ -8,17 +8,41 @@
       "implementation": "production shadow acquisition and typed facts merged in PR #89",
       "release_qualification": "exact FRR 10.6.1_git lab artifact profile",
       "acquisition_status": "Core-managed SSH slice merged; post-correction live re-execution not performed; L4 not executed",
-      "semantic_coverage": ["base interface identity", "admin/oper state", "ifindex", "type", "mtu", "speed", "mac", "ipv4", "ipv6", "partial relationships"],
+      "semantic_coverage": [
+        "base interface identity",
+        "admin/oper state",
+        "ifindex",
+        "type",
+        "mtu",
+        "speed",
+        "mac",
+        "ipv4",
+        "ipv6",
+        "partial relationships"
+      ],
       "blocker": "corrected live browser/API journey and L4 matrix"
     },
     {
       "family": "cisco.iosxr",
       "source_availability": "genuine XRd 24.4.2 gNMI subscribe-once evidence, immutable image sha256:b3bd8e8ea4892d4dd9b0a32c223990965f6f874b6b7ebf732b27dd5ab3ca487f",
-      "implementation": "offline Rust OpenConfig normalizer and experimental registry/profile dispatch on feat/bn025-xrd-native-interfaces",
+      "implementation": "offline Rust OpenConfig normalizer and experimental registry/profile dispatch merged in PR #90 (merge commit 4c100ba; production head be277f9)",
       "release_qualification": "fixture/image provenance only; device-reported release/build absent, qualified dispatch fails closed",
-      "acquisition_status": "read-only live evidence captured; no production Core-managed acquisition or persistence",
-      "semantic_coverage": ["base interface identity", "admin/oper state", "ifindex", "type", "interface mtu", "speed", "mac", "subinterface-0 ipv4"],
-      "explicitly_unsupported": ["non-zero subinterface typed identity", "network-instance/VRF attachment", "LAG relationships"],
+      "acquisition_status": "read-only live evidence captured; canonical L0-L3 PASS on be277f9; L4 NOT_EXECUTED; no production Core-managed acquisition or persistence",
+      "semantic_coverage": [
+        "base interface identity",
+        "admin/oper state",
+        "ifindex",
+        "type",
+        "interface mtu",
+        "speed",
+        "mac",
+        "subinterface-0 ipv4"
+      ],
+      "explicitly_unsupported": [
+        "non-zero subinterface typed identity",
+        "network-instance/VRF attachment",
+        "LAG relationships"
+      ],
       "blocker": "production acquisition integration, structured subinterface identity, shared operator exposure"
     },
     {
@@ -72,8 +96,35 @@
       "implementation": "legacy offline FRR-style CLI normalizer only",
       "release_qualification": "fixture-only historical capture",
       "acquisition_status": "no modern live acquisition",
-      "semantic_coverage": ["partial offline CLI semantics"],
+      "semantic_coverage": [
+        "partial offline CLI semantics"
+      ],
       "blocker": "modern authorized image/evidence for NVUE, kernel and FRR relationships"
     }
-  ]
+  ],
+  "pr90_closeout": {
+    "merged_pr": 90,
+    "merge_commit": "4c100ba56a06dfe57a5aed65c3920eb5c894757e",
+    "production_head": "be277f97be8500d43fa724e0352d207ea26746ff",
+    "implementation_merge_base": "54d4cb65140ffbf202190f67b5c3b736345a5572",
+    "canonical_gates": {
+      "l0": "PASS",
+      "l1": "PASS",
+      "l2": "PASS",
+      "l3": "PASS",
+      "l4": "NOT_EXECUTED"
+    },
+    "gate_log": "docs/merger/evidence/2026-11-25-bn025-xrd-native-interfaces/canonical-l0-l3-be277f9.log",
+    "gate_log_sha256": "8b69493d713187693e4e9d47732dda26f1b5cf73503c0e440802a6c0cc42ff06",
+    "test_execution_counts": {
+      "rust_passed": 1409,
+      "rust_failed": 0,
+      "rust_ignored": 10,
+      "python_passed": 382,
+      "python_skipped": 1,
+      "python_deselected": 1,
+      "note": "aggregate target executions in retained gate log, not unique-test count"
+    },
+    "qualification": "experimental offline/shadow normalization only"
+  }
 }

@@ -1,7 +1,7 @@
 # Bonsai current state
 
-BN-024-04 first authorized native acquisition vertical slice — **PR #89 candidate**
-(`feat/bn024-04-native-acquisition`; merge/review pending). This is the first end-to-end native
+BN-024-04 first authorized native acquisition vertical slice — **MERGED PR #89**
+(merge commit `54d4cb65140ffbf202190f67b5c3b736345a5572`). This is the first end-to-end native
 intelligence path, bounded to standalone FRR interface state: canonical inventory identity plus
 independently enforced read/collection scopes → operator-authenticated production API →
 pinned-host-key verified SSH → fixed read-only `vtysh -c 'show version json'` / `vtysh -c 'show
@@ -22,10 +22,25 @@ in `docs/merger/evidence/2026-11-25-bn024-04-native-acquisition/`. L4 remains NO
 BN-024-04 is therefore a partial capture slice, not completion of the broader capture epic;
 BN-024-08 SONiC and BN-024-08A Cumulus structured intelligence remain outstanding.
 
+BN-024 XRd model-driven interface normalization — **MERGED PR #90** (merge commit
+`4c100ba56a06dfe57a5aed65c3920eb5c894757e`; final production head
+`be277f97be8500d43fa724e0352d207ea26746ff`). Genuine XRd 24.4.2 read-only gNMI
+subscribe-once evidence now feeds an offline Rust OpenConfig interface normalizer with exact
+revisioned registry/profile wiring. Canonical L0–L3 passed on `be277f9` after correction;
+durable evidence is `docs/merger/evidence/2026-11-25-bn025-xrd-native-interfaces/canonical-l0-l3-be277f9.log`.
+The retained log contains 1,409 Rust test executions passed / 0 failed / 10 ignored and 382 Python
+tests passed / 1 skipped / 1 deselected when summing target executions across canonical tiers
+(not unique-test counts); focused `xrd_openconfig` coverage was 32/32. L4 remains NOT_EXECUTED.
+The capability is experimental offline/shadow only: production acquisition, durable shadow
+lifecycle integration, structured non-zero subinterface identity, network-instance/VRF attachment,
+LAG relationships, broader cross-NOS relationship coverage and operator/API integration remain
+outstanding. Residual model-driven findings are explicitly assigned to the next shared increment in
+`docs/bn024/xrd-residual-model-driven-findings.md`; they do not reopen PR #90.
+
 BN-024 native network intelligence — **G0 landed 2026-11-24** on main
 `e578595`/`09c2d60` (PRs #82/#83): BN-024-00 pinned SuzieQ OSS provenance
 manifest + offline validator; BN-024-01 parser-chain contract repair.
-**Corrective pass (this branch, pending merge):** independent review of
+**Corrective pass (merged through PR #83 and later descendants):** independent review of
 the merged BN-024-01 found residual defects — fixed: structured-first
 ordering no longer lets `bonsai_native` shadow Genie/TextFSM, canonical
 platform ids (`cisco.iosxr`) are translated to backend vendor ids
@@ -66,8 +81,9 @@ fixture and IS-IS/SR composition tests; BN-024-00A first crosswalk
 increment at `docs/bn024/source-crosswalk/`; parser-contract known
 limitations documented (unbounded Python worker post-timeout, sidecar
 `/learn` iosxe default, AutoAddPolicy posture, structured-empty
-ambiguity). Focused tests: 30 lib + 31 pytest pass. Canonical L0–L3 gate
-rerun pending on the reconciled SHA; L4 not applicable. No
+ambiguity). Focused tests: 30 lib + 31 pytest pass. Canonical L0–L3 subsequently
+passed on descendant production validation heads; no separate gate was run on the
+historical reconciled SHA itself. L4 not applicable. No
 authoritative graph projection; BN-021/BN-008 gates still precede it.
 Evidence: `docs/bn024/evidence/2026-11-24-bn024-01*/`,
 `docs/bn024/parser-contract.md`, `docs/bn024/typed-facts/`,

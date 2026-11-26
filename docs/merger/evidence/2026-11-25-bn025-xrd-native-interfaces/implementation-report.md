@@ -1,6 +1,9 @@
 # XRd OpenConfig interface normalization implementation report
 
-Date: 2026-11-25 UTC. Branch: `feat/bn025-xrd-native-interfaces`.
+Date: 2026-11-25 UTC; closeout corrected 2026-11-26 UTC.
+Branch: `feat/bn025-xrd-native-interfaces` — **merged as PR #90** in merge commit
+`4c100ba56a06dfe57a5aed65c3920eb5c894757e`. Final production head:
+`be277f97be8500d43fa724e0352d207ea26746ff`.
 
 ## Live evidence acquisition
 
@@ -68,6 +71,41 @@ The parser/mapping/requirement revisions for the corrected semantics are
 `xrd-oc-iface-2026.11-r2`, `bn025-iface-map-2`, and
 `bn025-iface-requirements-r2`.
 
-Canonical L0-L3 and L4 were **not** executed for this corrected branch in this
-bounded session. No browser/API operator-ready claim is made; this remains an
-offline/shadow normalization slice.
+## Canonical validation closeout (2026-11-26)
+
+Canonical L0–L3 were subsequently executed through the trusted shared build lane
+against the exact corrected production head
+`be277f97be8500d43fa724e0352d207ea26746ff`:
+
+```text
+env CARGO_BUILD_JOBS=2 \
+  PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome \
+  GATE_BASE=origin/main scripts/ci/gates.sh l0 l1 l2 l3
+```
+
+Results: **L0 PASS, L1 PASS, L2 PASS, L3 PASS**. The branch's implementation
+merge-base was `54d4cb65140ffbf202190f67b5c3b736345a5572`; PR #90 was then
+merged onto main after the documentation-only roadmap/policy commits
+`237b707d535e2d067f51f636f1ec5fd7bf4cdd75` and
+`2e569cbab294ce6ed21dce107ad3baaba19aa7ee`, producing merge commit
+`4c100ba56a06dfe57a5aed65c3920eb5c894757e`. L4 was **NOT_EXECUTED** and remains
+unexecuted.
+
+Retained durable evidence: `canonical-l0-l3-be277f9.log` in this directory
+(sha256 `8b69493d713187693e4e9d47732dda26f1b5cf73503c0e440802a6c0cc42ff06`).
+The log was copied byte-identically from `/tmp/bn025-gates-l0-l3.log` after a
+secret-pattern scan found only test names/constants, not credential material.
+Counting each executed test target in that log, including targets repeated by
+separate canonical tiers, there were **1,409 Rust test executions passed,
+0 failed and 10 ignored**, plus **382 Python tests passed** (64 + 318),
+**1 skipped** and **1 deselected**; these are execution counts, not unique-test
+counts. The focused corrected XRd suite remained **32/32** under the broader
+`xrd_openconfig` filter.
+
+No browser/API operator-ready claim is made. This remains an experimental
+offline/shadow normalization slice. Production acquisition, durable shadow
+lifecycle integration, structured non-zero subinterface identity,
+network-instance/VRF attachment, LAG relationships, cross-NOS relationship
+coverage and shared operator/API integration remain outstanding. Residual
+model-driven validation findings are recorded for the next shared increment in
+`docs/bn024/xrd-residual-model-driven-findings.md`.
