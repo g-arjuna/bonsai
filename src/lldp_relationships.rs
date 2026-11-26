@@ -15,7 +15,10 @@ use crate::interface_normalizer::parse_rfc3339;
 use crate::lldp_facts::{
     ChassisIdSubtype, LldpCaptureOutcome, LldpNeighborPayload, PopulationCoverage, PortIdSubtype,
 };
-use crate::semantic_evidence::{ExpectedFactContract, FreshnessPolicy, validate_fact_envelope};
+use crate::semantic_evidence::{
+    CoverageStreamEvidence, ExpectedFactContract, FreshnessPolicy, observation_freshness,
+    select_usable_coverage, semantic_time_key, validate_fact_envelope,
+};
 use crate::typed_facts::{EvidenceRef, InterfaceSubjectIdentity, Lifecycle, TrustClass, TypedFact};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,6 +69,67 @@ pub struct CaptureCoverageEvidence {
     pub valid_until: Option<String>,
     pub covered_interfaces: BTreeSet<String>,
     pub evidence_refs: Vec<EvidenceRef>,
+}
+
+impl CoverageStreamEvidence for CaptureCoverageEvidence {
+    fn stream_key(&self) -> (String, String, String) {
+        (
+            self.collector_id.clone().unwrap_or_default(),
+            self.source_kind.clone().unwrap_or_default(),
+            self.acquisition_scope.clone().unwrap_or_default(),
+        )
+    }
+
+    fn capture_id(&self) -> Option<&str> {
+        self.capture_id.as_deref()
+    }
+
+    fn source_generation(&self) -> Option<u64> {
+        self.source_generation
+    }
+
+    fn observation_time(&self) -> Option<&str> {
+        self.observation_time.as_deref()
+    }
+
+    fn usable_for_absence(
+        &self,
+        as_of: crate::semantic_evidence::Time,
+        policy: FreshnessPolicy,
+    ) -> bool {
+        let Some(observed) = self.observation_time.as_deref() else {
+            return false;
+        };
+        self.capture_outcome == LldpCaptureOutcome::Complete
+            && self.population_coverage == PopulationCoverage::Complete
+            && observation_freshness(
+                Lifecycle::Active,
+                observed,
+                None,
+                self.valid_until.as_deref(),
+                as_of,
+                policy,
+            )
+            .is_current()
+    }
+
+    fn replay_signature(&self) -> String {
+        serde_json::json!({
+            "device_id": self.device_id,
+            "scope": self.scope,
+            "network_namespace": self.network_namespace,
+            "stream": self.stream_key(),
+            "capture_outcome": self.capture_outcome,
+            "population_coverage": self.population_coverage,
+            "capture_id": self.capture_id,
+            "source_generation": self.source_generation,
+            "observation_time": semantic_time_key(self.observation_time.as_deref()),
+            "valid_until": semantic_time_key(self.valid_until.as_deref()),
+            "covered_interfaces": self.covered_interfaces,
+            "evidence_refs": self.evidence_refs,
+        })
+        .to_string()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -905,88 +969,25 @@ fn coverage_absence_evidence<'a>(
         .get(&key)
         .into_iter()
         .flat_map(|v| v.iter())
-        .map(|i| &coverage[*i]);
-
-    // First select the newest evidence inside each independent collector /
-    // source / acquisition stream. Only after that selection do we test
-    // completeness and freshness. This ordering prevents an older complete
-    // capture from masking a newer incomplete capture in the same stream, and
-    // never compares source generations across unrelated collectors.
-    let mut by_source: BTreeMap<(String, String, String), Vec<&CaptureCoverageEvidence>> =
-        BTreeMap::new();
-    for cov in candidates.filter(|c| {
-        network_namespaces.contains(&c.network_namespace)
-            && !c.covered_interfaces.is_empty()
-            && c.covered_interfaces
-                .intersection(interface_names)
-                .next()
-                .is_some()
-    }) {
-        by_source
-            .entry((
-                cov.collector_id.clone().unwrap_or_default(),
-                cov.source_kind.clone().unwrap_or_default(),
-                cov.acquisition_scope.clone().unwrap_or_default(),
-            ))
-            .or_default()
-            .push(cov);
-    }
-
-    let mut usable = Vec::new();
-    for (source, mut group) in by_source {
-        group.sort_by(|a, b| {
-            (
-                a.source_generation.unwrap_or(0),
-                &a.observation_time,
-                &a.capture_id,
-            )
-                .cmp(&(
-                    b.source_generation.unwrap_or(0),
-                    &b.observation_time,
-                    &b.capture_id,
-                ))
+        .map(|i| &coverage[*i])
+        .filter(|c| {
+            network_namespaces.contains(&c.network_namespace)
+                && !c.covered_interfaces.is_empty()
+                && c.covered_interfaces
+                    .intersection(interface_names)
+                    .next()
+                    .is_some()
         });
-        let Some(newest) = group.last().copied() else {
-            continue;
-        };
-        // Equal generation/time with distinct capture identities is ambiguous
-        // evidence within one source stream, not a deterministic newest capture.
-        let ambiguous_newest = group.iter().any(|c| {
-            c.capture_id != newest.capture_id
-                && c.source_generation == newest.source_generation
-                && c.observation_time == newest.observation_time
-        });
-        if ambiguous_newest {
-            continue;
-        }
-        let Some(observed) = newest.observation_time.as_deref().and_then(parse_rfc3339) else {
-            continue;
-        };
-        let temporally_current = match newest.valid_until.as_deref() {
-            Some(raw_until) => {
-                parse_rfc3339(raw_until).is_some_and(|until| observed <= as_of && until > as_of)
-            }
-            None => coverage_freshness
-                .max_observation_age_seconds
-                .is_some_and(|max_age| {
-                    let age = as_of.signed_duration_since(observed).num_seconds();
-                    observed <= as_of && age >= 0 && age <= max_age as i64
-                }),
-        };
-        if newest.capture_outcome == LldpCaptureOutcome::Complete
-            && newest.population_coverage == PopulationCoverage::Complete
-            && temporally_current
-        {
-            usable.push((source, newest));
-        }
+
+    // Shared stream selection owns exact-replay consolidation, contradictory
+    // same-capture detection, parsed timestamp ordering, future exclusion and
+    // newest-before-completeness selection. LLDP-specific applicability remains
+    // the device/scope/namespace/interface filter above.
+    if let Some(selected) = select_usable_coverage(candidates, as_of, coverage_freshness) {
+        (true, selected.evidence_refs.clone())
+    } else {
+        (false, vec![])
     }
-    if usable.is_empty() {
-        return (false, vec![]);
-    }
-    usable.sort_by(|(a_source, a), (b_source, b)| {
-        (a_source, &a.capture_id).cmp(&(b_source, &b.capture_id))
-    });
-    (true, usable[0].1.evidence_refs.clone())
 }
 
 fn reverse_status(

@@ -24,7 +24,9 @@ use crate::neighbor_facts::{
     MacEntryContext, MacEntryType, MacForwardingPayload, NeighborResolutionState,
     arpnd_attachment_entity_key, mac_forwarding_entity_key,
 };
-use crate::semantic_evidence::{ScopedCaptureCoverage, ScopedPopulationCoverage};
+use crate::semantic_evidence::{
+    AcquisitionScopeContract, ScopedCaptureCoverage, ScopedPopulationCoverage,
+};
 use crate::typed_facts::{
     Completeness, EvidenceRef, FactPayload, FactSource, FactSubject, InterfaceIdentityKind,
     Lifecycle, Quality, TrustClass, TypedFact,
@@ -1253,6 +1255,22 @@ fn positive_empty_population(report: &NeighborNormalizationReport) -> bool {
     saw_empty
 }
 
+fn declared_scope_contract(profile: &str) -> AcquisitionScopeContract {
+    match profile {
+        // These qualified commands/subscriptions are whole-table observations
+        // within the explicitly supplied device/scope/network namespace. This
+        // is a property of the qualified acquisition contract, not of whether
+        // any rows happened to decode.
+        "eos/show-arp-vrf-all-json"
+        | "nxos/show-ip-arp-detail-vrf-all-json-native"
+        | "cumulus/ip-neigh-show"
+        | "eos/show-mac-address-table-unicast-json"
+        | "nxos/show-mac-address-table-json-native"
+        | "cumulus/bridge-fdb-show" => AcquisitionScopeContract::CompleteScopedTable,
+        _ => AcquisitionScopeContract::Unknown,
+    }
+}
+
 fn scoped_coverage(
     ctx: &ObservationContext<'_>,
     capture: &CommandCapture<'_>,
@@ -1263,12 +1281,12 @@ fn scoped_coverage(
     facts: &[TypedFact],
     raw_sha256: Option<&str>,
 ) -> ScopedCaptureCoverage {
-    let mut covered_interfaces = BTreeSet::new();
-    let mut covered_forwarding_domains = BTreeSet::new();
-    let mut covered_vlan_ids = BTreeSet::new();
+    let mut observed_interfaces = BTreeSet::new();
+    let mut observed_forwarding_domains = BTreeSet::new();
+    let mut observed_vlan_ids = BTreeSet::new();
     for fact in facts {
         if let Some(entity) = &fact.subject.entity {
-            covered_interfaces.insert(entity.clone());
+            observed_interfaces.insert(entity.clone());
         }
         let Some(fields) = &fact.payload.fields else {
             continue;
@@ -1280,12 +1298,12 @@ fn scoped_coverage(
                     if payload.interface_vlan_id.state == FieldAvailability::Known
                         && let Some(vlan) = payload.interface_vlan_id.value
                     {
-                        covered_vlan_ids.insert(vlan);
+                        observed_vlan_ids.insert(vlan);
                     }
                     if payload.forwarding_domain.state == FieldAvailability::Known
                         && let Some(domain) = payload.forwarding_domain.value
                     {
-                        covered_forwarding_domains.insert(domain);
+                        observed_forwarding_domains.insert(domain);
                     }
                 }
             }
@@ -1295,12 +1313,12 @@ fn scoped_coverage(
                     if payload.vlan_id.state == FieldAvailability::Known
                         && let Some(vlan) = payload.vlan_id.value
                     {
-                        covered_vlan_ids.insert(vlan);
+                        observed_vlan_ids.insert(vlan);
                     }
                     if payload.bridge_domain.state == FieldAvailability::Known
                         && let Some(domain) = payload.bridge_domain.value
                     {
-                        covered_forwarding_domains.insert(domain);
+                        observed_forwarding_domains.insert(domain);
                     }
                 }
             }
@@ -1317,14 +1335,15 @@ fn scoped_coverage(
         source_generation: Some(ctx.session_epoch),
         acquisition_scope: profile.to_string(),
         covered_fact_kind: covered_fact_kind.to_string(),
+        declared_scope: declared_scope_contract(profile),
         capture_outcome: capture.outcome,
         population_coverage: coverage_population(capture, report),
-        covers_declared_scope: true,
+        positive_empty_population: report.empty_records,
         observation_time: Some(ctx.observed_at.to_string()),
         valid_until: None,
-        covered_interfaces,
-        covered_forwarding_domains,
-        covered_vlan_ids,
+        observed_interfaces,
+        observed_forwarding_domains,
+        observed_vlan_ids,
         records_decoded: report.records_decoded,
         malformed_records: report.malformed_records,
         omitted_records: report.input_records_omitted + report.output_facts_omitted,
@@ -2067,6 +2086,27 @@ mod tests {
     }
 
     #[test]
+    fn positive_empty_scoped_table_is_distinct_from_missing_scope() {
+        let out = normalize_arpnd(&ArpndObservation {
+            profile: ArpndSourceProfile::CumulusIpNeighShow,
+            capture: complete(""),
+            context: ctx(),
+            interface_identities: None,
+        });
+        assert!(out.facts.is_empty());
+        assert!(out.report.empty_records);
+        assert!(out.coverage.positive_empty_population);
+        assert_eq!(
+            out.coverage.declared_scope,
+            AcquisitionScopeContract::CompleteScopedTable
+        );
+        assert_eq!(
+            out.coverage.population_coverage,
+            ScopedPopulationCoverage::Complete
+        );
+    }
+
+    #[test]
     fn eos_empty_vrf_root_is_unknown_scope_not_positive_empty_table() {
         let out = normalize_arpnd(&ArpndObservation {
             profile: ArpndSourceProfile::EosShowArpVrfAllJson,
@@ -2157,8 +2197,8 @@ mod tests {
                 .contains(&MacEntryContext::ExternallyLearned)
         );
         assert!(p.entry_contexts.contains(&MacEntryContext::Offloaded));
-        assert!(out.coverage.covered_forwarding_domains.contains("bridge"));
-        assert!(out.coverage.covered_vlan_ids.contains(&100));
+        assert!(out.coverage.observed_forwarding_domains.contains("bridge"));
+        assert!(out.coverage.observed_vlan_ids.contains(&100));
     }
 
     #[test]

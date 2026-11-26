@@ -10,15 +10,18 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::interface_facts::FieldAvailability;
+use crate::interface_relationships::InterfaceEntityKey;
 use crate::neighbor_facts::{
     ArpndNeighborPayload, FACT_KIND_ARPND_NEIGHBOR, FACT_KIND_MAC_FORWARDING, MacForwardingPayload,
+    NeighborResolutionState,
 };
 use crate::semantic_evidence::{
-    CaptureTimeCompatibility, EvidenceFreshness, ExpectedFactContract, FreshnessPolicy,
-    ScopedCaptureCoverage, capture_time_compatibility, fact_freshness, select_usable_coverage,
+    AcquisitionScopeContract, CaptureTimeCompatibility, EvidenceFreshness, ExpectedFactContract,
+    FreshnessPolicy, ScopedCaptureCoverage, capture_time_compatibility,
+    evidence_time_compatibility, fact_freshness, observation_freshness, select_usable_coverage,
     validate_fact_envelope,
 };
-use crate::typed_facts::{EvidenceRef, TrustClass, TypedFact};
+use crate::typed_facts::{EvidenceRef, InterfaceIdentityKind, Lifecycle, TrustClass, TypedFact};
 
 pub const MAX_RECONCILIATION_INPUT_FACTS: usize = 100_000;
 pub const MAX_RECONCILIATION_RESULTS: usize = 50_000;
@@ -29,10 +32,14 @@ pub const MAX_CANDIDATE_EVALUATIONS: usize = 64;
 #[serde(rename_all = "snake_case")]
 pub enum CrossTableOutcome {
     /// Exactly one applicable MAC observation exists in the same established
-    /// forwarding domain and no independently comparable interface evidence
-    /// contradicts it. Logical SVI ↔ physical-port differences are not
-    /// misreported as contradictions.
+    /// forwarding domain and independently comparable forwarding-interface
+    /// evidence agrees. This is evidence consistency, not forwarding-plane proof.
     Consistent,
+    /// Exactly one applicable MAC observation exists in the same established
+    /// forwarding domain, but the logical neighbor attachment and physical MAC
+    /// attachment are not independently comparable. This positive scoped
+    /// correlation is deliberately distinct from verified interface agreement.
+    ScopedCorrelationInterfaceNotComparable,
     /// Exactly one applicable MAC observation exists and independently
     /// comparable forwarding-interface evidence disagrees.
     ConflictingInterface,
@@ -44,6 +51,9 @@ pub enum CrossTableOutcome {
     IndeterminateMissingVlan,
     /// Neighbor evidence does not establish a valid MAC.
     IndeterminateMissingMac,
+    /// The neighbor cache entry is failed/incomplete or otherwise unresolved;
+    /// residual MAC evidence cannot be promoted to a resolved adjacency.
+    IndeterminateNeighborUnresolved,
     /// No evidence establishes which bridge/L2 forwarding domain the neighbor
     /// belongs to. VLAN number or SVI naming alone is not treated as proof.
     IndeterminateMissingForwardingDomain,
@@ -82,6 +92,10 @@ pub struct CrossTableResult {
     pub mac_address: Option<String>,
     pub outcome: CrossTableOutcome,
     pub mac_fact_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domain_evidence_refs: Vec<EvidenceRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage_evidence_refs: Vec<EvidenceRef>,
     pub reason: String,
 }
 
@@ -99,14 +113,36 @@ pub struct ForwardingDomainEvidence {
     pub vlan_id: Option<u32>,
     /// Network instance explicitly associated with this domain, when known.
     pub vrf: Option<String>,
-    /// Logical/routed interfaces (for example an SVI) attached to the domain.
+    /// Logical/routed interface aliases/native names attached to the domain.
+    /// These strings are qualified lookup evidence only; a canonical parent
+    /// name does not automatically match its subinterfaces.
     pub routed_interfaces: BTreeSet<String>,
-    /// Physical/bridged forwarding interfaces attached to the domain.
+    /// Physical/bridged forwarding interface aliases/native names attached to
+    /// the domain, with the same qualified-alias caveat.
     pub forwarding_interfaces: BTreeSet<String>,
-    /// Positively established interface-equivalence evidence inside this
-    /// forwarding domain (for example LAG aggregate ↔ member or tunnel
-    /// endpoint aliases). This is never inferred from spelling or case.
+    /// Structured canonical interface keys independently established by the
+    /// interface evidence model. When present these are identity evidence;
+    /// strings above remain aliases/native lookup evidence only.
+    pub routed_interface_keys: BTreeSet<InterfaceEntityKey>,
+    pub forwarding_interface_keys: BTreeSet<InterfaceEntityKey>,
+    /// Positively established interface relationship evidence inside this
+    /// forwarding domain (for example LAG aggregate ↔ member). It is used only
+    /// for relationship-aware comparison, never as unrestricted identity
+    /// equivalence or as a parent/subinterface implication.
     pub interface_equivalents: BTreeMap<String, BTreeSet<String>>,
+    pub interface_equivalent_keys: BTreeMap<InterfaceEntityKey, BTreeSet<InterfaceEntityKey>>,
+    /// Analysis-batch source identity for the observations establishing this
+    /// binding. Missing source identity cannot establish a current binding.
+    pub collector_id: Option<String>,
+    pub source_kind: Option<String>,
+    pub capture_id: Option<String>,
+    pub source_generation: Option<u64>,
+    /// Temporal applicability metadata evaluated through the shared
+    /// semantic-evidence freshness contract.
+    pub observation_time: Option<String>,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+    pub lifecycle: Lifecycle,
     pub evidence_refs: Vec<EvidenceRef>,
 }
 
@@ -139,6 +175,7 @@ pub struct CrossTableReport {
     pub excluded_arpnd_facts: usize,
     pub excluded_mac_facts: usize,
     pub invalid_domain_evidence: usize,
+    pub temporally_ineligible_domain_evidence: usize,
     pub domain_indeterminate_arpnd_facts: usize,
     pub domain_indeterminate_mac_facts: usize,
     pub temporal_exclusions: BTreeMap<String, usize>,
@@ -184,69 +221,207 @@ fn same_scope(fact: &TypedFact, evidence: &ForwardingDomainEvidence) -> bool {
         && fact.subject.network_namespace == evidence.network_namespace
 }
 
-fn exact_arp_interface_names(fact: &TypedFact, payload: &ArpndNeighborPayload) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    if let Some(entity) = &fact.subject.entity {
-        names.insert(entity.clone());
-    }
-    names.insert(payload.outgoing_interface.clone());
-    if let Some(native) = fact
-        .subject
-        .interface_identity
-        .as_ref()
-        .and_then(|i| i.vendor_native_name.clone())
-    {
-        names.insert(native);
-    }
-    names
+#[derive(Clone, Debug)]
+struct InterfaceOccurrence {
+    /// Complete typed interface entity key. For a numbered subinterface the
+    /// canonical parent alone is not equality evidence: kind and numeric
+    /// subinterface axis participate in the key.
+    key: Option<InterfaceEntityKey>,
+    /// Qualified exact occurrence/native aliases supplied by the source. The
+    /// canonical parent entity is deliberately removed for subinterfaces so a
+    /// parent-only attachment cannot match every child.
+    aliases: BTreeSet<String>,
 }
 
-fn exact_mac_interface_names(fact: &TypedFact, payload: &MacForwardingPayload) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    if let Some(entity) = &fact.subject.entity {
-        names.insert(entity.clone());
+fn occurrence_with_key(fact: &TypedFact, mut aliases: BTreeSet<String>) -> InterfaceOccurrence {
+    let key = InterfaceEntityKey::from_fact(fact);
+    if let Some(key) = &key {
+        if key.identity_kind != Some(InterfaceIdentityKind::Subinterface) {
+            aliases.insert(key.canonical_interface.clone());
+        } else {
+            aliases.retain(|alias| alias != &key.canonical_interface);
+        }
     }
-    names.insert(payload.outgoing_interface.clone());
-    names.insert(mac_interface(payload));
+    InterfaceOccurrence { key, aliases }
+}
+
+fn arp_interface_occurrence(
+    fact: &TypedFact,
+    payload: &ArpndNeighborPayload,
+) -> InterfaceOccurrence {
+    let mut aliases = BTreeSet::new();
+    aliases.insert(payload.outgoing_interface.clone());
     if let Some(native) = fact
         .subject
         .interface_identity
         .as_ref()
         .and_then(|i| i.vendor_native_name.clone())
     {
-        names.insert(native);
+        aliases.insert(native);
     }
-    names
+    occurrence_with_key(fact, aliases)
+}
+
+fn mac_interface_occurrence(
+    fact: &TypedFact,
+    payload: &MacForwardingPayload,
+) -> InterfaceOccurrence {
+    let mut aliases = BTreeSet::new();
+    aliases.insert(payload.outgoing_interface.clone());
+    aliases.insert(mac_interface(payload));
+    if let Some(native) = fact
+        .subject
+        .interface_identity
+        .as_ref()
+        .and_then(|i| i.vendor_native_name.clone())
+    {
+        aliases.insert(native);
+    }
+    occurrence_with_key(fact, aliases)
+}
+
+fn alias_only_occurrence(name: &str) -> InterfaceOccurrence {
+    InterfaceOccurrence {
+        key: None,
+        aliases: BTreeSet::from([name.to_string()]),
+    }
+}
+
+fn occurrence_matches_name(occurrence: &InterfaceOccurrence, name: &str) -> bool {
+    occurrence.aliases.contains(name)
+}
+
+fn occurrence_matches_key(occurrence: &InterfaceOccurrence, key: &InterfaceEntityKey) -> bool {
+    occurrence.key.as_ref() == Some(key)
+}
+
+fn occurrences_same_interface(left: &InterfaceOccurrence, right: &InterfaceOccurrence) -> bool {
+    if let (Some(left_key), Some(right_key)) = (&left.key, &right.key)
+        && left_key == right_key
+    {
+        return true;
+    }
+    !left.aliases.is_disjoint(&right.aliases)
+}
+
+fn routed_interface_match(
+    occurrence: &InterfaceOccurrence,
+    evidence: &ForwardingDomainEvidence,
+) -> bool {
+    evidence
+        .routed_interface_keys
+        .iter()
+        .any(|key| occurrence_matches_key(occurrence, key))
+        || evidence
+            .routed_interfaces
+            .iter()
+            .any(|name| occurrence_matches_name(occurrence, name))
+}
+
+fn forwarding_interface_match(
+    occurrence: &InterfaceOccurrence,
+    evidence: &ForwardingDomainEvidence,
+) -> bool {
+    evidence
+        .forwarding_interface_keys
+        .iter()
+        .any(|key| occurrence_matches_key(occurrence, key))
+        || evidence
+            .forwarding_interfaces
+            .iter()
+            .any(|name| occurrence_matches_name(occurrence, name))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DomainAssignment {
-    Established { domain: String, vlan: Option<u32> },
+    Established {
+        domain: String,
+        vlan: Option<u32>,
+        evidence_refs: Vec<EvidenceRef>,
+    },
     Indeterminate,
     Conflicting,
 }
 
+#[derive(Default)]
+struct AssignmentPiece {
+    vlan: Option<u32>,
+    contradictory_vlan: bool,
+    evidence_refs: Vec<EvidenceRef>,
+}
+
+fn merge_refs(target: &mut Vec<EvidenceRef>, refs: &[EvidenceRef]) {
+    for evidence in refs {
+        if !target.contains(evidence) {
+            target.push(evidence.clone());
+        }
+    }
+}
+
+fn merge_assignment(
+    assignments: &mut BTreeMap<String, AssignmentPiece>,
+    domain: String,
+    vlan: Option<u32>,
+    refs: &[EvidenceRef],
+) {
+    let piece = assignments.entry(domain).or_default();
+    match (piece.vlan, vlan) {
+        (Some(existing), Some(new)) if existing != new => piece.contradictory_vlan = true,
+        (None, Some(new)) => piece.vlan = Some(new),
+        _ => {}
+    }
+    merge_refs(&mut piece.evidence_refs, refs);
+}
+
+fn merge_assignment_with_fallback(
+    assignments: &mut BTreeMap<String, AssignmentPiece>,
+    domain: String,
+    evidence_vlan: Option<u32>,
+    payload_vlan: Option<u32>,
+    refs: &[EvidenceRef],
+) {
+    if let (Some(evidence), Some(payload)) = (evidence_vlan, payload_vlan)
+        && evidence != payload
+    {
+        assignments
+            .entry(domain.clone())
+            .or_default()
+            .contradictory_vlan = true;
+    }
+    merge_assignment(assignments, domain, evidence_vlan.or(payload_vlan), refs);
+}
+
+type DirectAssignment = (String, Option<u32>, Vec<EvidenceRef>);
+
 fn unique_assignment(
-    direct: Option<(String, Option<u32>)>,
+    direct: Option<DirectAssignment>,
     matches: Vec<&ForwardingDomainEvidence>,
     fallback_vlan: Option<u32>,
 ) -> DomainAssignment {
-    let mut domains = BTreeMap::<String, Option<u32>>::new();
-    if let Some((domain, vlan)) = direct {
-        domains.insert(domain, vlan.or(fallback_vlan));
+    let mut domains = BTreeMap::<String, AssignmentPiece>::new();
+    if let Some((domain, vlan, refs)) = direct {
+        merge_assignment(&mut domains, domain, vlan.or(fallback_vlan), &refs);
     }
     for evidence in matches {
-        domains
-            .entry(evidence.domain_id.clone())
-            .or_insert(evidence.vlan_id.or(fallback_vlan));
+        merge_assignment_with_fallback(
+            &mut domains,
+            evidence.domain_id.clone(),
+            evidence.vlan_id,
+            fallback_vlan,
+            &evidence.evidence_refs,
+        );
     }
-    match domains.len() {
-        0 => DomainAssignment::Indeterminate,
-        1 => {
-            let (domain, vlan) = domains.into_iter().next().expect("one domain");
-            DomainAssignment::Established { domain, vlan }
-        }
-        _ => DomainAssignment::Conflicting,
+    if domains.is_empty() {
+        return DomainAssignment::Indeterminate;
+    }
+    if domains.values().any(|piece| piece.contradictory_vlan) || domains.len() != 1 {
+        return DomainAssignment::Conflicting;
+    }
+    let (domain, piece) = domains.into_iter().next().expect("one domain");
+    DomainAssignment::Established {
+        domain,
+        vlan: piece.vlan,
+        evidence_refs: piece.evidence_refs,
     }
 }
 
@@ -256,29 +431,45 @@ fn assign_arp_domain(
     evidence: &[ForwardingDomainEvidence],
 ) -> DomainAssignment {
     let vlan = known_vlan(payload);
-    let names = exact_arp_interface_names(fact, payload);
+    let occurrence = arp_interface_occurrence(fact, payload);
     let direct = (payload.forwarding_domain.state == FieldAvailability::Known)
         .then_some(payload.forwarding_domain.value.clone())
         .flatten()
-        .map(|domain| (domain, vlan));
+        .map(|domain| (domain, vlan, fact.evidence.clone()));
+    let physical_occurrence = payload
+        .physical_interface
+        .as_deref()
+        .map(alias_only_occurrence);
     let matches = evidence
         .iter()
         .filter(|ev| same_scope(fact, ev))
         .filter(|ev| {
-            if let (Some(ev_vlan), Some(arp_vlan)) = (ev.vlan_id, vlan)
-                && ev_vlan != arp_vlan
-            {
-                return false;
-            }
             if ev.vrf.is_some() && fact.subject.vrf.is_some() && ev.vrf != fact.subject.vrf {
                 return false;
             }
             // A VRF-to-L2 association corroborates routed-interface evidence,
             // but it is not sufficient by itself: ordinary routed interfaces
             // can coexist in the same network instance without belonging to
-            // the bridge domain. Require the observed logical/L3 attachment to
-            // be independently present in the domain evidence.
-            !ev.routed_interfaces.is_disjoint(&names)
+            // the bridge domain. Logical/L3 attachment is primary evidence.
+            if routed_interface_match(&occurrence, ev) {
+                return true;
+            }
+            // Compound neighbor evidence can independently expose the physical
+            // forwarding attachment (EOS "Vlan10, Port-Channel3" or NXOS
+            // phy-intf). That attachment can select the domain, but a trunk
+            // may carry many VLANs: nonmatching VLAN memberships are other
+            // domains, not contradictions of this neighbor's VLAN.
+            if let Some(physical) = &physical_occurrence
+                && forwarding_interface_match(physical, ev)
+            {
+                if let (Some(ev_vlan), Some(neighbor_vlan)) = (ev.vlan_id, vlan)
+                    && ev_vlan != neighbor_vlan
+                {
+                    return false;
+                }
+                return true;
+            }
+            false
         })
         .collect();
     unique_assignment(direct, matches, vlan)
@@ -290,27 +481,35 @@ fn assign_mac_domain(
     evidence: &[ForwardingDomainEvidence],
 ) -> DomainAssignment {
     let vlan = mac_vlan(payload);
-    let names = exact_mac_interface_names(fact, payload);
-    let direct = known_bridge_domain(payload).map(|domain| (domain, vlan));
+    let occurrence = mac_interface_occurrence(fact, payload);
+    let direct = known_bridge_domain(payload).map(|domain| (domain, vlan, fact.evidence.clone()));
     let matches = evidence
         .iter()
         .filter(|ev| same_scope(fact, ev))
         .filter(|ev| {
-            if let (Some(ev_vlan), Some(mac_vlan)) = (ev.vlan_id, vlan)
+            let direct_domain_match = ev.domain_id == direct_domain(&direct);
+            // Forwarding/trunk interfaces can legitimately carry multiple VLANs.
+            // Once the MAC entry independently establishes its VLAN, nonmatching
+            // interface memberships are not applicable to this row. Evidence for
+            // the row's direct bridge-domain identity remains applicable, however:
+            // a contradictory VLAN for that same domain must not be silently
+            // filtered away and allowed to lose to the direct payload claim.
+            if !direct_domain_match
+                && let (Some(ev_vlan), Some(mac_vlan)) = (ev.vlan_id, vlan)
                 && ev_vlan != mac_vlan
             {
                 return false;
             }
-            !ev.forwarding_interfaces.is_disjoint(&names) || ev.domain_id == direct_domain(&direct)
+            forwarding_interface_match(&occurrence, ev) || direct_domain_match
         })
         .collect();
     unique_assignment(direct, matches, vlan)
 }
 
-fn direct_domain(direct: &Option<(String, Option<u32>)>) -> String {
+fn direct_domain(direct: &Option<DirectAssignment>) -> String {
     direct
         .as_ref()
-        .map(|(domain, _)| domain.clone())
+        .map(|(domain, _, _)| domain.clone())
         .unwrap_or_default()
 }
 
@@ -329,6 +528,7 @@ struct MacEntry<'a> {
 type Scope = Option<String>;
 type Namespace = Option<String>;
 type MacIndexKey = (String, Scope, Namespace, String, Option<u32>, String);
+type DomainContextKey = (String, Scope, Namespace, String);
 
 fn decode_payload<T: serde::de::DeserializeOwned>(fact: &TypedFact) -> Option<T> {
     serde_json::from_value(fact.payload.fields.clone()?).ok()
@@ -353,35 +553,52 @@ fn bump(map: &mut BTreeMap<String, usize>, key: EvidenceFreshness) {
 
 fn coverage_applies(
     coverage: &ScopedCaptureCoverage,
-    device: &str,
-    scope: &Scope,
-    namespace: &Namespace,
-    domain: &str,
-    vlan: Option<u32>,
+    arp_fact: &TypedFact,
+    max_capture_skew_seconds: u64,
 ) -> bool {
-    if coverage.device_id != device
-        || &coverage.scope != scope
-        || &coverage.network_namespace != namespace
-        || coverage.covered_fact_kind != FACT_KIND_MAC_FORWARDING
-        || !coverage.covers_declared_scope
-    {
-        return false;
-    }
-    // Explicit domain/VLAN membership is narrowing evidence when present. An
-    // empty set is valid for an all-empty complete capture and does not void
-    // the declared whole-table scope.
-    if !coverage.covered_forwarding_domains.is_empty()
-        && !coverage.covered_forwarding_domains.contains(domain)
-    {
-        return false;
-    }
-    if let Some(vlan) = vlan
-        && !coverage.covered_vlan_ids.is_empty()
-        && !coverage.covered_vlan_ids.contains(&vlan)
-    {
-        return false;
-    }
-    true
+    coverage.device_id == arp_fact.subject.device_id
+        && coverage.scope == arp_fact.subject.scope
+        && coverage.network_namespace == arp_fact.subject.network_namespace
+        && coverage.covered_fact_kind == FACT_KIND_MAC_FORWARDING
+        && coverage.declared_scope == AcquisitionScopeContract::CompleteScopedTable
+        && evidence_time_compatibility(
+            arp_fact,
+            coverage.observation_time.as_deref(),
+            max_capture_skew_seconds,
+        ) == CaptureTimeCompatibility::Compatible
+}
+
+fn unresolved_relevant_mac_rows(
+    coverage: &ScopedCaptureCoverage,
+    macs: &[MacEntry<'_>],
+    vlan: Option<u32>,
+) -> usize {
+    macs.iter()
+        .filter(|entry| {
+            entry.fact.subject.device_id == coverage.device_id
+                && entry.fact.subject.scope == coverage.scope
+                && entry.fact.subject.network_namespace == coverage.network_namespace
+                && entry.fact.source.collector_id == coverage.collector_id
+                && entry.fact.source.source_kind == coverage.source_kind
+                && entry.fact.source.capture_id == coverage.capture_id
+                && coverage
+                    .source_generation
+                    .is_none_or(|generation| generation == entry.fact.source.session_epoch)
+        })
+        .filter(|entry| !matches!(entry.assignment, DomainAssignment::Established { .. }))
+        .filter(|entry| {
+            let row_vlan = mac_vlan(&entry.payload);
+            row_vlan.is_none() || vlan.is_none() || row_vlan == vlan
+        })
+        .count()
+}
+
+#[derive(Default)]
+struct DomainInterfaceContext {
+    forwarding_interfaces: BTreeSet<String>,
+    forwarding_interface_keys: BTreeSet<InterfaceEntityKey>,
+    interface_equivalents: BTreeMap<String, BTreeSet<String>>,
+    interface_equivalent_keys: BTreeMap<InterfaceEntityKey, BTreeSet<InterfaceEntityKey>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -393,20 +610,31 @@ enum InterfaceComparison {
 
 fn interfaces_related(
     equivalents: &BTreeMap<String, BTreeSet<String>>,
-    left: &str,
-    right: &str,
+    equivalent_keys: &BTreeMap<InterfaceEntityKey, BTreeSet<InterfaceEntityKey>>,
+    left: &InterfaceOccurrence,
+    right: &InterfaceOccurrence,
 ) -> bool {
-    equivalents.get(left).is_some_and(|set| set.contains(right))
-        || equivalents.get(right).is_some_and(|set| set.contains(left))
-}
-
-fn any_related_interface(
-    equivalents: &BTreeMap<String, BTreeSet<String>>,
-    left: &BTreeSet<String>,
-    right: &BTreeSet<String>,
-) -> bool {
-    left.iter()
-        .any(|l| right.iter().any(|r| interfaces_related(equivalents, l, r)))
+    if let (Some(left_key), Some(right_key)) = (&left.key, &right.key) {
+        if equivalent_keys
+            .get(left_key)
+            .is_some_and(|set| set.contains(right_key))
+            || equivalent_keys
+                .get(right_key)
+                .is_some_and(|set| set.contains(left_key))
+        {
+            return true;
+        }
+    }
+    left.aliases.iter().any(|left_name| {
+        right.aliases.iter().any(|right_name| {
+            equivalents
+                .get(left_name)
+                .is_some_and(|set| set.contains(right_name))
+                || equivalents
+                    .get(right_name)
+                    .is_some_and(|set| set.contains(left_name))
+        })
+    })
 }
 
 fn comparable_forwarding_evidence(
@@ -414,21 +642,29 @@ fn comparable_forwarding_evidence(
     arp: &ArpndNeighborPayload,
     mac_fact: &TypedFact,
     mac: &MacForwardingPayload,
-    forwarding_interfaces: &BTreeSet<String>,
-    interface_equivalents: &BTreeMap<String, BTreeSet<String>>,
+    context: &DomainInterfaceContext,
 ) -> InterfaceComparison {
-    let mac_names = exact_mac_interface_names(mac_fact, mac);
-    let arp_names = exact_arp_interface_names(arp_fact, arp);
-    if !arp_names.is_disjoint(&mac_names)
-        || any_related_interface(interface_equivalents, &arp_names, &mac_names)
+    let mac_occurrence = mac_interface_occurrence(mac_fact, mac);
+    let arp_occurrence = arp_interface_occurrence(arp_fact, arp);
+    if occurrences_same_interface(&arp_occurrence, &mac_occurrence)
+        || interfaces_related(
+            &context.interface_equivalents,
+            &context.interface_equivalent_keys,
+            &arp_occurrence,
+            &mac_occurrence,
+        )
     {
         return InterfaceComparison::Agree;
     }
     if let Some(physical) = &arp.physical_interface {
-        if mac_names.contains(physical)
-            || mac_names
-                .iter()
-                .any(|mac_name| interfaces_related(interface_equivalents, physical, mac_name))
+        let physical_occurrence = alias_only_occurrence(physical);
+        if occurrences_same_interface(&physical_occurrence, &mac_occurrence)
+            || interfaces_related(
+                &context.interface_equivalents,
+                &context.interface_equivalent_keys,
+                &physical_occurrence,
+                &mac_occurrence,
+            )
         {
             return InterfaceComparison::Agree;
         }
@@ -436,10 +672,58 @@ fn comparable_forwarding_evidence(
         // that is comparable evidence even when the logical SVI differs.
         return InterfaceComparison::Conflict;
     }
-    if arp_names.iter().any(|n| forwarding_interfaces.contains(n)) {
+    let arp_is_forwarding_attached = arp_occurrence
+        .key
+        .as_ref()
+        .is_some_and(|key| context.forwarding_interface_keys.contains(key))
+        || arp_occurrence
+            .aliases
+            .iter()
+            .any(|name| context.forwarding_interfaces.contains(name));
+    if arp_is_forwarding_attached {
         return InterfaceComparison::Conflict;
     }
     InterfaceComparison::NotComparable
+}
+
+fn nonempty(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
+}
+
+fn domain_batch_established(evidence: &ForwardingDomainEvidence) -> bool {
+    nonempty(evidence.collector_id.as_deref())
+        && nonempty(evidence.source_kind.as_deref())
+        && nonempty(evidence.capture_id.as_deref())
+        && evidence.source_generation.is_some()
+        && nonempty(evidence.observation_time.as_deref())
+        && !evidence.evidence_refs.is_empty()
+}
+
+fn domain_evidence_current(
+    evidence: &ForwardingDomainEvidence,
+    as_of: crate::semantic_evidence::Time,
+    policy: FreshnessPolicy,
+) -> bool {
+    if !domain_batch_established(evidence) {
+        return false;
+    }
+    observation_freshness(
+        evidence.lifecycle,
+        evidence.observation_time.as_deref().unwrap_or_default(),
+        evidence.valid_from.as_deref(),
+        evidence.valid_until.as_deref(),
+        as_of,
+        policy,
+    )
+    .is_current()
+}
+
+fn unresolved_neighbor(payload: &ArpndNeighborPayload) -> bool {
+    payload.resolution_state.state == FieldAvailability::Known
+        && matches!(
+            payload.resolution_state.value,
+            Some(NeighborResolutionState::Incomplete | NeighborResolutionState::Failed)
+        )
 }
 
 /// Reconcile validated current typed neighbor and MAC facts at an explicit
@@ -509,16 +793,21 @@ pub fn reconcile_neighbor_tables(
         }
     }
 
-    let valid_domains: Vec<ForwardingDomainEvidence> = forwarding_domains
-        .iter()
-        .filter(|ev| {
-            !ev.device_id.is_empty()
-                && !ev.domain_id.is_empty()
-                && ev.vlan_id.is_none_or(|v| v <= 4095)
-        })
-        .cloned()
-        .collect();
-    let invalid_domain_evidence = forwarding_domains.len() - valid_domains.len();
+    let mut valid_domains = Vec::new();
+    let mut invalid_domain_evidence = 0usize;
+    let mut temporally_ineligible_domain_evidence = 0usize;
+    for evidence in forwarding_domains {
+        let shape_valid = !evidence.device_id.is_empty()
+            && !evidence.domain_id.is_empty()
+            && evidence.vlan_id.is_none_or(|v| v <= 4095);
+        if !shape_valid {
+            invalid_domain_evidence += 1;
+        } else if !domain_evidence_current(evidence, as_of, policy.freshness) {
+            temporally_ineligible_domain_evidence += 1;
+        } else {
+            valid_domains.push(evidence.clone());
+        }
+    }
 
     let mut arps = Vec::new();
     let mut macs = Vec::new();
@@ -557,7 +846,7 @@ pub fn reconcile_neighbor_tables(
 
     let mut mac_index: BTreeMap<MacIndexKey, Vec<usize>> = BTreeMap::new();
     for (index, entry) in macs.iter().enumerate() {
-        let DomainAssignment::Established { domain, vlan } = &entry.assignment else {
+        let DomainAssignment::Established { domain, vlan, .. } = &entry.assignment else {
             continue;
         };
         let key = (
@@ -570,6 +859,48 @@ pub fn reconcile_neighbor_tables(
         );
         mac_index.entry(key).or_default().push(index);
     }
+    // Canonicalize each index bucket once. Lookups below borrow these slices;
+    // concentrated keys must not clone/sort a full candidate vector per ARP row.
+    for bucket in mac_index.values_mut() {
+        bucket.sort_by(|a, b| macs[*a].fact.fact_id.cmp(&macs[*b].fact.fact_id));
+        bucket.dedup();
+    }
+
+    // Pre-index forwarding-domain interface and relationship evidence once by
+    // scoped domain identity instead of rebuilding those sets per result.
+    let mut domain_contexts: BTreeMap<DomainContextKey, DomainInterfaceContext> = BTreeMap::new();
+    for evidence in &valid_domains {
+        let key = (
+            evidence.device_id.clone(),
+            evidence.scope.clone(),
+            evidence.network_namespace.clone(),
+            evidence.domain_id.clone(),
+        );
+        let context = domain_contexts.entry(key).or_default();
+        context
+            .forwarding_interfaces
+            .extend(evidence.forwarding_interfaces.iter().cloned());
+        context
+            .forwarding_interface_keys
+            .extend(evidence.forwarding_interface_keys.iter().cloned());
+        for (interface, related) in &evidence.interface_equivalents {
+            context
+                .interface_equivalents
+                .entry(interface.clone())
+                .or_default()
+                .extend(related.iter().cloned());
+        }
+        for (interface, related) in &evidence.interface_equivalent_keys {
+            context
+                .interface_equivalent_keys
+                .entry(interface.clone())
+                .or_default()
+                .extend(related.iter().cloned());
+        }
+    }
+    let candidate_limit = policy
+        .max_candidate_evaluations
+        .min(MAX_CANDIDATE_EVALUATIONS);
 
     let mut results = Vec::new();
     let mut candidate_evaluations_omitted = 0usize;
@@ -582,18 +913,30 @@ pub fn reconcile_neighbor_tables(
         let vlan = known_vlan(arp);
         let mac = known_mac(arp);
         let result_mac = mac.clone();
-        let (assignment_domain, assignment_vlan) = match &entry.assignment {
+        let (assignment_domain, assignment_vlan, domain_evidence_refs) = match &entry.assignment {
             DomainAssignment::Established {
                 domain,
                 vlan: domain_vlan,
-            } => (Some(domain.clone()), (*domain_vlan).or(vlan)),
-            _ => (None, vlan),
+                evidence_refs,
+            } => (
+                Some(domain.clone()),
+                (*domain_vlan).or(vlan),
+                evidence_refs.clone(),
+            ),
+            _ => (None, vlan, vec![]),
         };
+        let mut coverage_evidence_refs = Vec::new();
         let (outcome, mut ids, mut reason) = if mac.is_none() {
             (
                 CrossTableOutcome::IndeterminateMissingMac,
                 vec![],
                 "neighbor evidence does not establish a valid peer MAC".to_string(),
+            )
+        } else if unresolved_neighbor(arp) {
+            (
+                CrossTableOutcome::IndeterminateNeighborUnresolved,
+                vec![],
+                "neighbor resolution state is failed/incomplete; residual MAC evidence is not a resolved forwarding adjacency".to_string(),
             )
         } else if entry.assignment == DomainAssignment::Conflicting {
             (
@@ -627,19 +970,16 @@ pub fn reconcile_neighbor_tables(
                     vlan_key,
                     mac.clone().expect("checked mac"),
                 );
-                let mut candidates = mac_index.get(&key).cloned().unwrap_or_default();
-                candidates.sort_by(|a, b| macs[*a].fact.fact_id.cmp(&macs[*b].fact.fact_id));
-                candidates.dedup();
-                let total_candidates = candidates.len();
-                if candidates.len() > policy.max_candidate_evaluations {
-                    candidate_evaluations_omitted +=
-                        candidates.len() - policy.max_candidate_evaluations;
-                    candidates.truncate(policy.max_candidate_evaluations);
+                let all_candidates = mac_index.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+                let total_candidates = all_candidates.len();
+                if total_candidates > candidate_limit {
+                    candidate_evaluations_omitted += total_candidates - candidate_limit;
                 }
+                let candidates = &all_candidates[..total_candidates.min(candidate_limit)];
                 let mut compatible = Vec::new();
                 let mut incompatible = 0usize;
                 for idx in candidates {
-                    let mac_entry = &macs[idx];
+                    let mac_entry = &macs[*idx];
                     match capture_time_compatibility(
                         entry.fact,
                         mac_entry.fact,
@@ -650,7 +990,7 @@ pub fn reconcile_neighbor_tables(
                         | CaptureTimeCompatibility::UnknownTime => incompatible += 1,
                     }
                 }
-                let truncated = total_candidates > policy.max_candidate_evaluations;
+                let truncated = total_candidates > candidate_limit;
                 if compatible.is_empty() {
                     if truncated {
                         (
@@ -658,7 +998,7 @@ pub fn reconcile_neighbor_tables(
                             vec![],
                             format!(
                                 "candidate evaluation bounded at {} of {total_candidates} scoped rows; absence and temporal compatibility remain indeterminate",
-                                policy.max_candidate_evaluations
+                                candidate_limit
                             ),
                         )
                     } else if total_candidates > 0 {
@@ -671,16 +1011,13 @@ pub fn reconcile_neighbor_tables(
                         )
                     } else {
                         let applicable = coverage.iter().filter(|cov| {
-                            coverage_applies(
-                                cov,
-                                &entry.fact.subject.device_id,
-                                &entry.fact.subject.scope,
-                                &entry.fact.subject.network_namespace,
-                                &domain,
-                                vlan_key,
-                            )
+                            coverage_applies(cov, entry.fact, policy.max_capture_skew_seconds)
+                                && unresolved_relevant_mac_rows(cov, &macs, vlan_key) == 0
                         });
-                        if select_usable_coverage(applicable, as_of, policy.freshness).is_some() {
+                        if let Some(selected) =
+                            select_usable_coverage(applicable, as_of, policy.freshness)
+                        {
+                            coverage_evidence_refs = selected.evidence_refs.clone();
                             (
                                 CrossTableOutcome::AbsentInDeclaredCoverage,
                                 vec![],
@@ -721,7 +1058,7 @@ pub fn reconcile_neighbor_tables(
                             ids,
                             format!(
                                 "candidate evaluation bounded at {} of {total_candidates} scoped rows; uniqueness remains indeterminate",
-                                policy.max_candidate_evaluations
+                                candidate_limit
                             ),
                         )
                     } else if attachments.len() == 1 {
@@ -731,38 +1068,20 @@ pub fn reconcile_neighbor_tables(
                             .and_then(|entries| entries.first())
                             .copied()
                             .expect("one nonempty attachment group");
-                        let domain_forwarding_interfaces: BTreeSet<String> = valid_domains
-                            .iter()
-                            .filter(|ev| {
-                                ev.device_id == entry.fact.subject.device_id
-                                    && ev.scope == entry.fact.subject.scope
-                                    && ev.network_namespace == entry.fact.subject.network_namespace
-                                    && ev.domain_id == domain
-                            })
-                            .flat_map(|ev| ev.forwarding_interfaces.iter().cloned())
-                            .collect();
-                        let mut interface_equivalents: BTreeMap<String, BTreeSet<String>> =
-                            BTreeMap::new();
-                        for ev in valid_domains.iter().filter(|ev| {
-                            ev.device_id == entry.fact.subject.device_id
-                                && ev.scope == entry.fact.subject.scope
-                                && ev.network_namespace == entry.fact.subject.network_namespace
-                                && ev.domain_id == domain
-                        }) {
-                            for (interface, related) in &ev.interface_equivalents {
-                                interface_equivalents
-                                    .entry(interface.clone())
-                                    .or_default()
-                                    .extend(related.iter().cloned());
-                            }
-                        }
+                        let empty_context = DomainInterfaceContext::default();
+                        let context_key = (
+                            entry.fact.subject.device_id.clone(),
+                            entry.fact.subject.scope.clone(),
+                            entry.fact.subject.network_namespace.clone(),
+                            domain.clone(),
+                        );
+                        let context = domain_contexts.get(&context_key).unwrap_or(&empty_context);
                         let comparison = comparable_forwarding_evidence(
                             entry.fact,
                             arp,
                             representative.fact,
                             &representative.payload,
-                            &domain_forwarding_interfaces,
-                            &interface_equivalents,
+                            context,
                         );
                         match comparison {
                             InterfaceComparison::Agree => (
@@ -776,9 +1095,9 @@ pub fn reconcile_neighbor_tables(
                                 "single scoped forwarding-domain candidate has contradictory comparable forwarding-interface evidence".to_string(),
                             ),
                             InterfaceComparison::NotComparable => (
-                                CrossTableOutcome::Consistent,
+                                CrossTableOutcome::ScopedCorrelationInterfaceNotComparable,
                                 ids,
-                                "exactly one scoped forwarding-domain candidate exists; logical and physical attachment evidence is not independently comparable, so no interface contradiction is claimed".to_string(),
+                                "exactly one scoped forwarding-domain candidate exists; logical and physical attachment evidence is not independently comparable, so interface agreement is not claimed".to_string(),
                             ),
                         }
                     } else {
@@ -808,6 +1127,8 @@ pub fn reconcile_neighbor_tables(
             mac_address: result_mac,
             outcome,
             mac_fact_ids: ids,
+            domain_evidence_refs,
+            coverage_evidence_refs,
             reason,
         });
     }
@@ -842,6 +1163,7 @@ pub fn reconcile_neighbor_tables(
         excluded_arpnd_facts: excluded_arpnd,
         excluded_mac_facts: excluded_mac,
         invalid_domain_evidence,
+        temporally_ineligible_domain_evidence,
         domain_indeterminate_arpnd_facts: domain_indeterminate_arpnd,
         domain_indeterminate_mac_facts: domain_indeterminate_mac,
         temporal_exclusions,
@@ -1104,8 +1426,23 @@ mod tests {
             vrf: vrf.map(str::to_string),
             routed_interfaces: routed.iter().map(|s| s.to_string()).collect(),
             forwarding_interfaces: forwarding.iter().map(|s| s.to_string()).collect(),
+            routed_interface_keys: BTreeSet::new(),
+            forwarding_interface_keys: BTreeSet::new(),
             interface_equivalents: BTreeMap::new(),
-            evidence_refs: vec![],
+            interface_equivalent_keys: BTreeMap::new(),
+            collector_id: Some("collector-test".into()),
+            source_kind: Some("test/domain-binding".into()),
+            capture_id: Some(format!("domain-capture-{domain}")),
+            source_generation: Some(1),
+            observation_time: Some(OBSERVED.into()),
+            valid_from: Some(OBSERVED.into()),
+            valid_until: Some(VALID_UNTIL.into()),
+            lifecycle: Lifecycle::Active,
+            evidence_refs: vec![EvidenceRef {
+                kind: "test_domain_binding".into(),
+                sha256: "b".repeat(64),
+                locator: Some(domain.into()),
+            }],
         }
     }
 
@@ -1135,19 +1472,24 @@ mod tests {
             source_generation: Some(generation),
             acquisition_scope: "test/bridge-fdb".into(),
             covered_fact_kind: FACT_KIND_MAC_FORWARDING.into(),
+            declared_scope: crate::semantic_evidence::AcquisitionScopeContract::CompleteScopedTable,
             capture_outcome,
             population_coverage: population,
-            covers_declared_scope: true,
+            positive_empty_population: false,
             observation_time: Some(OBSERVED.into()),
             valid_until: Some(VALID_UNTIL.into()),
-            covered_interfaces: BTreeSet::new(),
-            covered_forwarding_domains: BTreeSet::from(["bridge-a".to_string()]),
-            covered_vlan_ids: BTreeSet::from([100]),
+            observed_interfaces: BTreeSet::new(),
+            observed_forwarding_domains: BTreeSet::from(["bridge-a".to_string()]),
+            observed_vlan_ids: BTreeSet::from([100]),
             records_decoded: 0,
             malformed_records: 0,
             omitted_records: 0,
             rejected_records: 0,
-            evidence_refs: vec![],
+            evidence_refs: vec![EvidenceRef {
+                kind: "test_mac_coverage".into(),
+                sha256: "c".repeat(64),
+                locator: Some("mac-capture".into()),
+            }],
         }
     }
 
@@ -1523,9 +1865,13 @@ mod tests {
         let facts = vec![first.clone(), second.clone(), mac];
         let report = reconcile_neighbor_tables(&facts, &[], &domains, &policy(), AS_OF).unwrap();
         assert_eq!(report.results.len(), 2);
-        assert!(report.results.iter().any(
-            |r| r.arpnd_fact_id == first.fact_id && r.outcome == CrossTableOutcome::Consistent
-        ));
+        assert!(
+            report
+                .results
+                .iter()
+                .any(|r| r.arpnd_fact_id == first.fact_id
+                    && r.outcome == CrossTableOutcome::ScopedCorrelationInterfaceNotComparable)
+        );
         assert!(
             report
                 .results
@@ -1620,9 +1966,13 @@ mod tests {
         let facts = vec![sub100.clone(), sub200.clone(), mac];
         let report = reconcile_neighbor_tables(&facts, &[], &domains, &policy(), AS_OF).unwrap();
         assert_eq!(report.results.len(), 2);
-        assert!(report.results.iter().any(
-            |r| r.arpnd_fact_id == sub100.fact_id && r.outcome == CrossTableOutcome::Consistent
-        ));
+        assert!(
+            report
+                .results
+                .iter()
+                .any(|r| r.arpnd_fact_id == sub100.fact_id
+                    && r.outcome == CrossTableOutcome::ScopedCorrelationInterfaceNotComparable)
+        );
         assert!(
             report
                 .results
@@ -1669,8 +2019,12 @@ mod tests {
         let report =
             reconcile_neighbor_tables(&[arp, mac], &[], &[domain], &policy(), AS_OF).unwrap();
         let result = one_result(&report);
-        assert_eq!(result.outcome, CrossTableOutcome::Consistent);
+        assert_eq!(
+            result.outcome,
+            CrossTableOutcome::ScopedCorrelationInterfaceNotComparable
+        );
         assert!(result.reason.contains("not independently comparable"));
+        assert_ne!(result.outcome, CrossTableOutcome::Consistent);
     }
 
     #[test]
@@ -2048,7 +2402,7 @@ mod tests {
         });
         assert_eq!(arps.report.malformed_records, 0);
         assert_eq!(macs.report.malformed_records, 0);
-        let domains = vec![
+        let mut domains = vec![
             domain_evidence(
                 "device-leaf02",
                 None,
@@ -2080,6 +2434,11 @@ mod tests {
                 &["Port-Channel1"],
             ),
         ];
+        for binding in &mut domains {
+            binding.observation_time = Some("2021-06-07T00:00:10+00:00".into());
+            binding.valid_from = Some("2021-06-07T00:00:10+00:00".into());
+            binding.valid_until = Some("2021-06-07T00:10:00+00:00".into());
+        }
         let facts: Vec<_> = arps
             .facts
             .iter()
@@ -2126,6 +2485,600 @@ mod tests {
                 "{ip}: routed physical/management interfaces must not be absorbed into an L2 domain merely by VRF"
             );
         }
+    }
+
+    #[test]
+    fn contradictory_same_domain_vlan_assignments_are_order_independent() {
+        let arp = arp_fact(
+            "leaf1",
+            None,
+            None,
+            None,
+            "Vlan100",
+            None,
+            "192.0.2.10",
+            100,
+            1,
+            OBSERVED,
+        );
+        let mut first = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            None,
+            &["Vlan100"],
+            &[],
+        );
+        first.vlan_id = Some(100);
+        let mut second = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            None,
+            &["Vlan100"],
+            &[],
+        );
+        second.vlan_id = Some(200);
+        for domains in [vec![first.clone(), second.clone()], vec![second, first]] {
+            let report =
+                reconcile_neighbor_tables(&[arp.clone()], &[], &domains, &policy(), AS_OF).unwrap();
+            assert_eq!(
+                one_result(&report).outcome,
+                CrossTableOutcome::IndeterminateConflictingForwardingDomain,
+                "same-domain contradictory VLAN evidence must never select by input order"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_domain_vlan_is_refined_by_known_evidence_in_either_order() {
+        let arp = arp_fact(
+            "leaf1",
+            None,
+            None,
+            None,
+            "Vlan100",
+            None,
+            "192.0.2.10",
+            100,
+            1,
+            OBSERVED,
+        );
+        let mut unknown_vlan = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            None,
+            &["Vlan100"],
+            &[],
+        );
+        unknown_vlan.vlan_id = None;
+        let known_vlan = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            None,
+            &["Vlan100"],
+            &[],
+        );
+        for domains in [
+            vec![unknown_vlan.clone(), known_vlan.clone()],
+            vec![known_vlan, unknown_vlan],
+        ] {
+            let report =
+                reconcile_neighbor_tables(&[arp.clone()], &[], &domains, &policy(), AS_OF).unwrap();
+            let result = one_result(&report);
+            assert_eq!(result.forwarding_domain.as_deref(), Some("bridge-a"));
+            assert_eq!(result.vlan_id, Some(100));
+            assert_eq!(
+                result.outcome,
+                CrossTableOutcome::UnknownOutsideCoverage,
+                "compatible unknown→known refinement must be order independent"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_payload_assignment_contradicting_domain_evidence_is_indeterminate() {
+        let mut arp = arp_fact(
+            "leaf1",
+            None,
+            None,
+            None,
+            "Vlan100",
+            None,
+            "192.0.2.10",
+            100,
+            1,
+            OBSERVED,
+        );
+        let mut payload: ArpndNeighborPayload =
+            serde_json::from_value(arp.payload.fields.clone().unwrap()).unwrap();
+        payload.forwarding_domain = known("bridge-a".to_string());
+        arp.payload.fields = Some(serde_json::to_value(payload).unwrap());
+        arp.seal();
+        assert!(arp.validate().is_ok());
+        let mut contradictory = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            None,
+            &["Vlan100"],
+            &[],
+        );
+        contradictory.vlan_id = Some(200);
+        let report =
+            reconcile_neighbor_tables(&[arp], &[], &[contradictory], &policy(), AS_OF).unwrap();
+        assert_eq!(
+            one_result(&report).outcome,
+            CrossTableOutcome::IndeterminateConflictingForwardingDomain
+        );
+    }
+
+    #[test]
+    fn stale_forwarding_domain_binding_cannot_establish_current_consistency() {
+        let (facts, domains) = valid_match_fixture();
+        let mut stale = domains[0].clone();
+        stale.valid_until = Some("2026-01-01T00:00:30Z".into());
+        let report = reconcile_neighbor_tables(&facts, &[], &[stale], &policy(), AS_OF).unwrap();
+        assert_eq!(report.temporally_ineligible_domain_evidence, 1);
+        assert_eq!(
+            one_result(&report).outcome,
+            CrossTableOutcome::IndeterminateMissingForwardingDomain
+        );
+    }
+
+    #[test]
+    fn parent_only_domain_attachment_does_not_apply_to_numbered_subinterface() {
+        let identity = InterfaceSubjectIdentity {
+            kind: InterfaceIdentityKind::Subinterface,
+            parent_entity: Some("Ethernet1".into()),
+            subinterface_index: Some(100),
+            vendor_native_name: Some("Ethernet1.100".into()),
+        };
+        let arp = arp_fact_with_identity(
+            "leaf1",
+            None,
+            None,
+            None,
+            "Ethernet1",
+            "Ethernet1.100",
+            None,
+            "192.0.2.10",
+            100,
+            Some(identity),
+            1,
+            OBSERVED,
+        );
+        let domain = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            None,
+            &["Ethernet1"],
+            &["Ethernet1"],
+        );
+        let report = reconcile_neighbor_tables(&[arp], &[], &[domain], &policy(), AS_OF).unwrap();
+        assert_eq!(
+            one_result(&report).outcome,
+            CrossTableOutcome::IndeterminateMissingForwardingDomain,
+            "the canonical parent string is not child-interface identity evidence"
+        );
+    }
+
+    #[test]
+    fn base_interface_and_subinterface_zero_remain_distinct_in_comparison() {
+        let base_identity = InterfaceSubjectIdentity {
+            kind: InterfaceIdentityKind::Physical,
+            parent_entity: None,
+            subinterface_index: None,
+            vendor_native_name: Some("Ethernet1".into()),
+        };
+        let subzero_identity = InterfaceSubjectIdentity {
+            kind: InterfaceIdentityKind::Subinterface,
+            parent_entity: Some("Ethernet1".into()),
+            subinterface_index: Some(0),
+            vendor_native_name: Some("Ethernet1.0".into()),
+        };
+        let arp = arp_fact_with_identity(
+            "leaf1",
+            None,
+            None,
+            None,
+            "Ethernet1",
+            "Ethernet1",
+            None,
+            "192.0.2.10",
+            100,
+            Some(base_identity),
+            1,
+            OBSERVED,
+        );
+        let mut macfact = mac_fact(
+            "leaf1",
+            None,
+            None,
+            "Ethernet1.0",
+            100,
+            "bridge-a",
+            2,
+            OBSERVED,
+        );
+        macfact.subject.entity = Some("Ethernet1".into());
+        macfact.subject.interface_identity = Some(subzero_identity);
+        macfact.seal();
+        assert!(macfact.validate().is_ok());
+        let domain = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            None,
+            &["Ethernet1"],
+            &["Ethernet1.0"],
+        );
+        let report =
+            reconcile_neighbor_tables(&[arp, macfact], &[], &[domain], &policy(), AS_OF).unwrap();
+        assert_eq!(
+            one_result(&report).outcome,
+            CrossTableOutcome::ScopedCorrelationInterfaceNotComparable,
+            "base and subinterface zero may correlate in-domain but must not prove interface agreement"
+        );
+    }
+
+    #[test]
+    fn lag_membership_does_not_make_sibling_members_identical() {
+        let arp = arp_fact(
+            "leaf1",
+            None,
+            None,
+            Some("red"),
+            "Vlan100",
+            Some("Ethernet1"),
+            "192.0.2.10",
+            100,
+            1,
+            OBSERVED,
+        );
+        let mac = mac_fact(
+            "leaf1",
+            None,
+            None,
+            "Ethernet2",
+            100,
+            "bridge-a",
+            2,
+            OBSERVED,
+        );
+        let mut domain = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            Some("red"),
+            &["Vlan100"],
+            &["port-channel1", "Ethernet1", "Ethernet2"],
+        );
+        domain.interface_equivalents.insert(
+            "port-channel1".into(),
+            BTreeSet::from(["Ethernet1".to_string(), "Ethernet2".to_string()]),
+        );
+        let report =
+            reconcile_neighbor_tables(&[arp, mac], &[], &[domain], &policy(), AS_OF).unwrap();
+        assert_eq!(
+            one_result(&report).outcome,
+            CrossTableOutcome::ConflictingInterface,
+            "two members of one aggregate are related to the aggregate, not identical to each other"
+        );
+    }
+
+    #[test]
+    fn failed_neighbor_with_residual_mac_is_not_resolved_adjacency() {
+        let mut arp = arp_fact(
+            "leaf1",
+            None,
+            None,
+            Some("red"),
+            "Vlan100",
+            Some("port-channel10"),
+            "192.0.2.10",
+            100,
+            1,
+            OBSERVED,
+        );
+        let mut payload: ArpndNeighborPayload =
+            serde_json::from_value(arp.payload.fields.clone().unwrap()).unwrap();
+        payload.resolution_state = known(NeighborResolutionState::Failed);
+        arp.payload.fields = Some(serde_json::to_value(payload).unwrap());
+        arp.seal();
+        assert!(arp.validate().is_ok());
+        let mac = mac_fact(
+            "leaf1",
+            None,
+            None,
+            "port-channel10",
+            100,
+            "bridge-a",
+            2,
+            OBSERVED,
+        );
+        let domain = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            Some("red"),
+            &["Vlan100"],
+            &["port-channel10"],
+        );
+        let report =
+            reconcile_neighbor_tables(&[arp, mac], &[], &[domain], &policy(), AS_OF).unwrap();
+        assert_eq!(
+            one_result(&report).outcome,
+            CrossTableOutcome::IndeterminateNeighborUnresolved
+        );
+    }
+
+    #[test]
+    fn absence_result_carries_actual_coverage_evidence_reference() {
+        let arp = arp_fact(
+            "leaf1",
+            None,
+            None,
+            Some("red"),
+            "Vlan100",
+            Some("port-channel10"),
+            "192.0.2.10",
+            100,
+            1,
+            OBSERVED,
+        );
+        let domain = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            Some("red"),
+            &["Vlan100"],
+            &["port-channel10"],
+        );
+        let cov = coverage(
+            "leaf1",
+            None,
+            None,
+            1,
+            ScopedPopulationCoverage::Complete,
+            CaptureOutcome::Complete,
+        );
+        let report =
+            reconcile_neighbor_tables(&[arp], &[cov], &[domain], &policy(), AS_OF).unwrap();
+        let result = one_result(&report);
+        assert_eq!(result.outcome, CrossTableOutcome::AbsentInDeclaredCoverage);
+        assert_eq!(result.coverage_evidence_refs.len(), 1);
+        assert_eq!(result.coverage_evidence_refs[0].kind, "test_mac_coverage");
+        assert!(!result.domain_evidence_refs.is_empty());
+    }
+
+    #[test]
+    fn exact_duplicate_domain_assignment_is_replay_not_conflict() {
+        let arp = arp_fact(
+            "leaf1",
+            None,
+            None,
+            None,
+            "Vlan100",
+            None,
+            "192.0.2.10",
+            100,
+            1,
+            OBSERVED,
+        );
+        let first = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            None,
+            &["Vlan100"],
+            &[],
+        );
+        let duplicate = first.clone();
+        for domains in [
+            vec![first.clone(), duplicate.clone()],
+            vec![duplicate, first],
+        ] {
+            let report =
+                reconcile_neighbor_tables(&[arp.clone()], &[], &domains, &policy(), AS_OF).unwrap();
+            let result = one_result(&report);
+            assert_eq!(result.forwarding_domain.as_deref(), Some("bridge-a"));
+            assert_eq!(result.vlan_id, Some(100));
+            assert_eq!(result.outcome, CrossTableOutcome::UnknownOutsideCoverage);
+        }
+    }
+
+    #[test]
+    fn direct_mac_bridge_assignment_contradicting_domain_vlan_is_indeterminate() {
+        let arp = arp_fact(
+            "leaf1",
+            None,
+            None,
+            Some("red"),
+            "Vlan100",
+            Some("port-channel10"),
+            "192.0.2.10",
+            100,
+            1,
+            OBSERVED,
+        );
+        let macfact = mac_fact(
+            "leaf1",
+            None,
+            None,
+            "port-channel10",
+            100,
+            "bridge-a",
+            2,
+            OBSERVED,
+        );
+        let mut contradictory = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            Some("red"),
+            &["Vlan100"],
+            &["port-channel10"],
+        );
+        contradictory.vlan_id = Some(200);
+        let payload: MacForwardingPayload =
+            serde_json::from_value(macfact.payload.fields.clone().unwrap()).unwrap();
+        assert_eq!(
+            assign_mac_domain(&macfact, &payload, std::slice::from_ref(&contradictory)),
+            DomainAssignment::Conflicting,
+            "same-domain VLAN contradiction must not be filtered as inapplicable trunk membership"
+        );
+        let report =
+            reconcile_neighbor_tables(&[arp, macfact], &[], &[contradictory], &policy(), AS_OF)
+                .unwrap();
+        assert_eq!(
+            one_result(&report).outcome,
+            CrossTableOutcome::IndeterminateConflictingForwardingDomain
+        );
+    }
+
+    #[test]
+    fn distinct_numbered_subinterfaces_do_not_agree_through_shared_parent() {
+        let identity_100 = InterfaceSubjectIdentity {
+            kind: InterfaceIdentityKind::Subinterface,
+            parent_entity: Some("Ethernet1".into()),
+            subinterface_index: Some(100),
+            vendor_native_name: Some("Ethernet1.100".into()),
+        };
+        let identity_200 = InterfaceSubjectIdentity {
+            kind: InterfaceIdentityKind::Subinterface,
+            parent_entity: Some("Ethernet1".into()),
+            subinterface_index: Some(200),
+            vendor_native_name: Some("Ethernet1.200".into()),
+        };
+        let arp = arp_fact_with_identity(
+            "leaf1",
+            None,
+            None,
+            None,
+            "Ethernet1",
+            "Ethernet1.100",
+            None,
+            "192.0.2.10",
+            100,
+            Some(identity_100),
+            1,
+            OBSERVED,
+        );
+        let mut macfact = mac_fact(
+            "leaf1",
+            None,
+            None,
+            "Ethernet1.200",
+            100,
+            "bridge-a",
+            2,
+            OBSERVED,
+        );
+        macfact.subject.entity = Some("Ethernet1".into());
+        macfact.subject.interface_identity = Some(identity_200);
+        macfact.seal();
+        assert!(macfact.validate().is_ok());
+        let domain = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            None,
+            &["Ethernet1.100"],
+            &["Ethernet1.100", "Ethernet1.200"],
+        );
+        let report =
+            reconcile_neighbor_tables(&[arp, macfact], &[], &[domain], &policy(), AS_OF).unwrap();
+        assert_eq!(
+            one_result(&report).outcome,
+            CrossTableOutcome::ConflictingInterface,
+            "two distinct children of Ethernet1 share a canonical parent string but are not the same interface"
+        );
+    }
+
+    #[test]
+    fn repeated_arp_rows_do_not_reprocess_full_concentrated_candidate_bucket() {
+        let mut facts = Vec::new();
+        for i in 0..128u64 {
+            facts.push(arp_fact(
+                "leaf1",
+                None,
+                None,
+                Some("red"),
+                "Vlan100",
+                Some("port-channel10"),
+                &format!("192.0.2.{i}"),
+                100,
+                1 + i,
+                OBSERVED,
+            ));
+        }
+        for i in 0..256u64 {
+            facts.push(mac_fact(
+                "leaf1",
+                None,
+                None,
+                "port-channel10",
+                100,
+                "bridge-a",
+                1_000 + i,
+                OBSERVED,
+            ));
+        }
+        let domain = domain_evidence(
+            "leaf1",
+            None,
+            None,
+            "bridge-a",
+            100,
+            Some("red"),
+            &["Vlan100"],
+            &["port-channel10"],
+        );
+        let started = std::time::Instant::now();
+        let report = reconcile_neighbor_tables(&facts, &[], &[domain], &policy(), AS_OF).unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(report.results.len(), 128);
+        assert!(
+            report
+                .results
+                .iter()
+                .all(|r| r.outcome == CrossTableOutcome::IndeterminateCandidateEvaluationTruncated)
+        );
+        assert_eq!(report.candidate_evaluations_omitted, 128 * 192);
+        println!(
+            "neighbor_reconciliation_repeated_concentrated_bucket_perf arps=128 candidates_per_key=256 elapsed_ms={:.3}",
+            elapsed.as_secs_f64() * 1000.0
+        );
     }
 
     #[test]
