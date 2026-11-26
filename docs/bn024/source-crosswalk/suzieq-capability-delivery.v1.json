@@ -17,7 +17,8 @@
     "individual_capability_denominator": "66 curated capabilities generated from actual upstream acquisition, query, summarize, assert, specialized object and cross-cutting lifecycle behaviors; not one per schema field or command",
     "upstream_capability_count": 64,
     "enterprise_or_bonsai_improvement_entries_without_upstream_implementation": 2,
-    "warning": "Do not compute a single overall SuzieQ parity percentage across unlike domains. Use per-domain/per-family numerators and denominators."
+    "warning": "Do not compute a single overall SuzieQ parity percentage across unlike domains. Use per-domain/per-family numerators and denominators.",
+    "implementation_completion_definition": "Completed equivalent credit is limited to EXISTING_EQUIVALENT plus completed NATIVE_PORT_IMPLEMENTED slices. IMPROVE_UPON_UPSTREAM entries that are not implemented are planned improvements, not completed equivalence. EXISTING_PARTIAL and PORT_REQUIRED are never completion credit."
   },
   "summary_counts": {
     "by_disposition": {
@@ -32,6 +33,10 @@
         "upstream_capabilities": 4,
         "ledger_capabilities": 4,
         "bonsai_equivalent": 0,
+        "existing_equivalent": 0,
+        "native_port_implemented": 0,
+        "completed_improvement": 0,
+        "planned_improvement": 0,
         "partial": 0,
         "missing": 4,
         "unassessed": 0,
@@ -41,6 +46,10 @@
         "upstream_capabilities": 10,
         "ledger_capabilities": 10,
         "bonsai_equivalent": 1,
+        "existing_equivalent": 1,
+        "native_port_implemented": 0,
+        "completed_improvement": 0,
+        "planned_improvement": 0,
         "partial": 3,
         "missing": 6,
         "unassessed": 0,
@@ -49,7 +58,11 @@
       "Assertions": {
         "upstream_capabilities": 4,
         "ledger_capabilities": 5,
-        "bonsai_equivalent": 1,
+        "bonsai_equivalent": 0,
+        "existing_equivalent": 0,
+        "native_port_implemented": 0,
+        "completed_improvement": 0,
+        "planned_improvement": 1,
         "partial": 1,
         "missing": 3,
         "unassessed": 0,
@@ -59,6 +72,10 @@
         "upstream_capabilities": 3,
         "ledger_capabilities": 4,
         "bonsai_equivalent": 0,
+        "existing_equivalent": 0,
+        "native_port_implemented": 0,
+        "completed_improvement": 0,
+        "planned_improvement": 0,
         "partial": 3,
         "missing": 1,
         "unassessed": 0,
@@ -68,6 +85,10 @@
         "upstream_capabilities": 10,
         "ledger_capabilities": 10,
         "bonsai_equivalent": 0,
+        "existing_equivalent": 0,
+        "native_port_implemented": 0,
+        "completed_improvement": 0,
+        "planned_improvement": 0,
         "partial": 2,
         "missing": 8,
         "unassessed": 0,
@@ -77,6 +98,10 @@
         "upstream_capabilities": 3,
         "ledger_capabilities": 3,
         "bonsai_equivalent": 0,
+        "existing_equivalent": 0,
+        "native_port_implemented": 0,
+        "completed_improvement": 0,
+        "planned_improvement": 0,
         "partial": 0,
         "missing": 3,
         "unassessed": 0,
@@ -86,6 +111,10 @@
         "upstream_capabilities": 4,
         "ledger_capabilities": 4,
         "bonsai_equivalent": 1,
+        "existing_equivalent": 0,
+        "native_port_implemented": 1,
+        "completed_improvement": 0,
+        "planned_improvement": 0,
         "partial": 2,
         "missing": 1,
         "unassessed": 0,
@@ -95,6 +124,10 @@
         "upstream_capabilities": 11,
         "ledger_capabilities": 11,
         "bonsai_equivalent": 0,
+        "existing_equivalent": 0,
+        "native_port_implemented": 0,
+        "completed_improvement": 0,
+        "planned_improvement": 0,
         "partial": 0,
         "missing": 11,
         "unassessed": 0,
@@ -104,6 +137,10 @@
         "upstream_capabilities": 4,
         "ledger_capabilities": 4,
         "bonsai_equivalent": 0,
+        "existing_equivalent": 0,
+        "native_port_implemented": 0,
+        "completed_improvement": 0,
+        "planned_improvement": 0,
         "partial": 2,
         "missing": 2,
         "unassessed": 0,
@@ -113,6 +150,10 @@
         "upstream_capabilities": 3,
         "ledger_capabilities": 3,
         "bonsai_equivalent": 0,
+        "existing_equivalent": 0,
+        "native_port_implemented": 0,
+        "completed_improvement": 0,
+        "planned_improvement": 0,
         "partial": 1,
         "missing": 2,
         "unassessed": 0,
@@ -122,6 +163,10 @@
         "upstream_capabilities": 4,
         "ledger_capabilities": 4,
         "bonsai_equivalent": 0,
+        "existing_equivalent": 0,
+        "native_port_implemented": 0,
+        "completed_improvement": 0,
+        "planned_improvement": 0,
         "partial": 4,
         "missing": 0,
         "unassessed": 0,
@@ -131,11 +176,25 @@
         "upstream_capabilities": 4,
         "ledger_capabilities": 4,
         "bonsai_equivalent": 0,
+        "existing_equivalent": 0,
+        "native_port_implemented": 0,
+        "completed_improvement": 0,
+        "planned_improvement": 0,
         "partial": 2,
         "missing": 2,
         "unassessed": 0,
         "deliberately_excluded": 0
       }
+    },
+    "implementation_completion_counts": {
+      "completed_existing_equivalent": 1,
+      "completed_native_port_implemented": 1,
+      "completed_improvement": 0,
+      "completed_equivalent_total": 2,
+      "planned_improvement_not_completed": 1,
+      "partially_implemented": 20,
+      "not_implemented_port_required": 43,
+      "unassessed": 0
     }
   },
   "nos_service_depth": {
@@ -4775,7 +4834,10 @@
           "VRF-aware ownership",
           "failed/incomplete state handling"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -4833,7 +4895,10 @@
           "coverage/error/unknown states",
           "multi-NOS unified behavior"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -4891,7 +4956,10 @@
           "unknown/missing separated",
           "cross-NOS coverage"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -4955,7 +5023,10 @@
         ],
         "beyond_upstream": [
           "BMP view divergence and incident evidence tooling complement polled device state"
-        ]
+        ],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5020,7 +5091,10 @@
         ],
         "beyond_upstream": [
           "BMP view divergence and incident evidence tooling complement polled device state"
-        ]
+        ],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5080,7 +5154,10 @@
         ],
         "beyond_upstream": [
           "BMP view divergence and incident evidence tooling complement polled device state"
-        ]
+        ],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5139,7 +5216,10 @@
         ],
         "beyond_upstream": [
           "BMP view divergence and incident evidence tooling complement polled device state"
-        ]
+        ],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5203,7 +5283,10 @@
         ],
         "beyond_upstream": [
           "encrypted snapshot storage and authorization-aware change capture"
-        ]
+        ],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5267,7 +5350,10 @@
         ],
         "beyond_upstream": [
           "encrypted snapshot storage and authorization-aware change capture"
-        ]
+        ],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5328,7 +5414,10 @@
           "release/train/build semantics",
           "hardware/platform binding"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5389,7 +5478,10 @@
           "release/train/build semantics",
           "hardware/platform binding"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5447,7 +5539,10 @@
           "unknown/missing separated",
           "cross-NOS coverage"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5506,7 +5601,10 @@
           "tenant/VNI/VTEP identity",
           "underlay correlation"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5564,7 +5662,10 @@
           "coverage/error/unknown states",
           "multi-NOS unified behavior"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5622,7 +5723,10 @@
           "unknown/missing separated",
           "cross-NOS coverage"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5679,7 +5783,10 @@
           "evidence references",
           "missing evidence not converted to fail/healthy"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5736,7 +5843,10 @@
           "capacity units",
           "history/alerting"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5793,7 +5903,10 @@
           "coverage/error/unknown states",
           "multi-NOS unified behavior"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5854,7 +5967,10 @@
           "cross-NOS coverage matrix",
           "unit/direction/lane identity"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -5928,7 +6044,10 @@
           "typed FieldAvailability",
           "explicit source conflicts",
           "fail-closed unknown release handling"
-        ]
+        ],
+        "implementation_state": "completed_native_port_implemented",
+        "counts_as_completed_equivalent": true,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6002,7 +6121,10 @@
           "typed FieldAvailability",
           "explicit source conflicts",
           "fail-closed unknown release handling"
-        ]
+        ],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6064,7 +6186,10 @@
           "typed FieldAvailability",
           "explicit source conflicts",
           "fail-closed unknown release handling"
-        ]
+        ],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6137,7 +6262,10 @@
           "typed FieldAvailability",
           "explicit source conflicts",
           "fail-closed unknown release handling"
-        ]
+        ],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6197,7 +6325,10 @@
           "module-interface binding",
           "serial/part lifecycle"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6255,7 +6386,10 @@
           "coverage/error/unknown states",
           "multi-NOS unified behavior"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6279,31 +6413,36 @@
         "revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
         "service_or_object": "lldp",
         "source_paths_functions": [
-          "suzieq/config/lldp.yml",
-          "suzieq/poller/worker/services/lldp.py",
-          "suzieq/sqobjects/lldp.py",
-          "suzieq/engines/pandas/lldp.py"
+          "suzieq/config/lldp.yml (per-NOS commands, version selectors, normalize/TextFSM extraction)",
+          "suzieq/config/schema/lldp.avsc (namespace, hostname, ifname key; subtype/peerMacaddr/peerIfindex semantics)",
+          "suzieq/poller/worker/services/lldp.py::_common_data_cleaner/_common_cleaner",
+          "suzieq/poller/worker/services/lldp.py::_clean_nxos_data/_clean_iosxe_data (LLDP/CDP duplicate merge and interface expansion)",
+          "suzieq/poller/worker/services/lldp.py::_clean_eos_data/_clean_cumulus_data/_clean_linux_data/_clean_junos_data/_clean_iosxr_data",
+          "suzieq/sqobjects/lldp.py::LldpObj",
+          "suzieq/engines/pandas/lldp.py::get/_resolve_to_bond/_fix_fqdn_in_peerhost/summarize"
         ],
         "schema": "suzieq/config/schema/lldp.avsc",
         "nos_depth_key": "lldp",
-        "observed_behavior": "Collect and normalize vendor evidence into typed records",
+        "observed_behavior": "Normalize per-local-interface neighbor records; canonicalize subtype values interface name/mac address/locally assigned; drop unusable rows; expand selected vendor interface abbreviations; resolve MAC/ifindex peer identifiers only through separate address/interface evidence; merge duplicate LLDP/CDP rows for NXOS/IOS while retaining protocol provenance; optionally map physical bond members to aggregate interfaces without treating that as physical evidence.",
         "inventory_reference": "suzieq-upstream-inventory.v1.json"
       },
-      "required_acquisition_sources": "vendor structured JSON/XML/CLI/TextFSM commands recorded in upstream YAML where applicable; Bonsai should prefer native structured/model-driven sources and never use arbitrary writes",
-      "required_typed_semantics": "schema-shaped acquisition, cleaner extraction, malformed/missing handling and qualification",
+      "required_acquisition_sources": "Initial implementation wave: genuine FRR/Cumulus lldpd structured evidence and one independently validated XRd/IOS XR source if available; preserve collector, capture, source epoch, namespace, device and local-interface identity. Required normalized fields are local ifname, peerHostname, peerIfname/peerIfindex/peerMacaddr according to subtype, subtype, description, mgmtIP, protocol/provenance, observation time and lifecycle. Do not execute arbitrary upstream shell command strings; use Bonsai authorized read-only acquisition or provenance-labeled offline fixtures.",
+      "required_typed_semantics": "Subtype-aware typed adjacency facts. interface-name subtype carries peerIfname; mac-address subtype carries peerMacaddr and leaves peerIfname unresolved unless same-namespace/same-batch address evidence resolves it; locally assigned numeric subtype carries peerIfindex and resolves only through explicit interface evidence; unresolved identifiers stay unknown rather than fabricated. Physical member adjacency and logical bond/aggregate adjacency are separate relationship layers; parallel links remain distinct.",
       "required_identity_dimensions": [
         "canonical_device",
         "namespace/tenant/scope",
-        "service-specific key fields",
-        "network_namespace_or_asic where applicable",
-        "vrf/network-instance where applicable",
-        "parent/subinterface axes where applicable",
-        "source/session_epoch",
-        "evidence_digest"
+        "canonical local interface identity",
+        "structured subinterface identity where applicable",
+        "peer system name as observed (not authoritative device identity)",
+        "peer port subtype and value",
+        "protocol/provenance (lldp versus cdp)",
+        "collector/capture/session epoch",
+        "observation timestamp and lifecycle",
+        "evidence digest"
       ],
       "required_query_assertion_behavior": "schema-shaped acquisition, cleaner extraction, malformed/missing handling and qualification",
       "historical_lifecycle_requirements": "explicit active/withdrawn/stale/gap lifecycle; observation time distinct from validity",
-      "known_upstream_defaults_and_limitations": "Exact commands, version selectors, cleaner functions and schema defaults are inventoried in nos_service_depth and suzieq-upstream-inventory.v1.json; upstream commonly uses all-version selectors and normalize-time defaults.",
+      "known_upstream_defaults_and_limitations": "Pinned upstream often selects all-version commands, executes shell/TextFSM fallbacks, drops rows missing ifname or peerHostname, mutates peerIfname during query-time resolution, uses locally assigned numeric values as ifindexes without carrying resolver evidence, strips FQDNs heuristically, can merge CDP and LLDP into one table, and resolves bonds by replacement. Bonsai must not copy those silent defaults: unresolved subtype, resolver miss, protocol mixing, poll gaps and aggregate-versus-member layering must remain explicit.",
       "bonsai": {
         "disposition": "PORT_REQUIRED",
         "implementation_source_locations": [
@@ -6311,11 +6450,16 @@
         ],
         "actual_qualification_evidence": [],
         "missing_functionality": [
-          "native LLDP acquisition",
-          "one-sided adjacency detection",
-          "parallel-interface identity"
+          "typed LLDP adjacency fact schema and genuine FRR/Cumulus normalizer",
+          "subtype-aware unresolved peer identity handling",
+          "same-batch cross-resolution to address/interface facts without fabrication",
+          "physical-versus-bond adjacency layering and parallel-link identity",
+          "one-sided/missing/stale adjacency evidence model"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6324,9 +6468,14 @@
       ],
       "existing_backlog_owner": "BN-024-06",
       "acceptance_scenarios": [
-        "genuine vendor fixture or typed synthetic regression labeled correctly",
-        "missing/malformed evidence remains explicit unknown or partial",
-        "identity collision regression passes"
+        "genuine Cumulus fixture: interface-name adjacency emits exact local interface, peerHostname, peerIfname, subtype, description/mgmtIP and evidence digest",
+        "mac-address subtype remains unresolved when no matching address fact exists; a matching same-namespace/same-batch address fact resolves it with explicit resolver provenance",
+        "locally assigned numeric peerIfindex resolves only through matching interface evidence and otherwise remains unknown",
+        "FQDN peerHostname is canonicalized only when the short hostname exists in the same namespace; otherwise the observed FQDN is preserved and resolution is unknown",
+        "two parallel links between the same devices remain separate facts keyed by local interface plus peer port identity",
+        "one-sided or missing reverse evidence produces explicit one-sided/unknown coverage, never a bidirectional success verdict",
+        "withdrawn/stale/mixed-generation adjacency evidence is excluded from current adjacency and reported as lifecycle/input evidence",
+        "bond resolution produces a separate logical aggregate edge while retaining member physical facts rather than overwriting them"
       ],
       "reuse_license_disposition": "Apache-2.0 upstream study/reimplementation permitted by BN-024-00; no SuzieQ runtime dependency; verbatim fixture/template reuse requires separate approved_reuse review."
     },
@@ -6339,18 +6488,21 @@
         "revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
         "service_or_object": "lldp",
         "source_paths_functions": [
-          "suzieq/config/lldp.yml",
-          "suzieq/poller/worker/services/lldp.py",
-          "suzieq/sqobjects/lldp.py",
-          "suzieq/engines/pandas/lldp.py"
+          "suzieq/config/lldp.yml (per-NOS commands, version selectors, normalize/TextFSM extraction)",
+          "suzieq/config/schema/lldp.avsc (namespace, hostname, ifname key; subtype/peerMacaddr/peerIfindex semantics)",
+          "suzieq/poller/worker/services/lldp.py::_common_data_cleaner/_common_cleaner",
+          "suzieq/poller/worker/services/lldp.py::_clean_nxos_data/_clean_iosxe_data (LLDP/CDP duplicate merge and interface expansion)",
+          "suzieq/poller/worker/services/lldp.py::_clean_eos_data/_clean_cumulus_data/_clean_linux_data/_clean_junos_data/_clean_iosxr_data",
+          "suzieq/sqobjects/lldp.py::LldpObj",
+          "suzieq/engines/pandas/lldp.py::get/_resolve_to_bond/_fix_fqdn_in_peerhost/summarize"
         ],
         "schema": "suzieq/config/schema/lldp.avsc",
         "nos_depth_key": "lldp",
-        "observed_behavior": "Filter and retrieve current/historical records operationally",
+        "observed_behavior": "Normalize per-local-interface neighbor records; canonicalize subtype values interface name/mac address/locally assigned; drop unusable rows; expand selected vendor interface abbreviations; resolve MAC/ifindex peer identifiers only through separate address/interface evidence; merge duplicate LLDP/CDP rows for NXOS/IOS while retaining protocol provenance; optionally map physical bond members to aggregate interfaces without treating that as physical evidence.",
         "inventory_reference": "suzieq-upstream-inventory.v1.json"
       },
       "required_acquisition_sources": "vendor structured JSON/XML/CLI/TextFSM commands recorded in upstream YAML where applicable; Bonsai should prefer native structured/model-driven sources and never use arbitrary writes",
-      "required_typed_semantics": "typed filters, scoped identity, bounded output, explicit empty/unknown/error",
+      "required_typed_semantics": "Typed filters over namespace/device/local interface/peer/subtype/protocol/lifecycle with exact time-scope semantics; query returns observed and resolved identities separately, plus unknown/unsupported/coverage states.",
       "required_identity_dimensions": [
         "canonical_device",
         "namespace/tenant/scope",
@@ -6363,7 +6515,7 @@
       ],
       "required_query_assertion_behavior": "typed filters, scoped identity, bounded output, explicit empty/unknown/error",
       "historical_lifecycle_requirements": "as-of/latest/all time semantics without silently mixing snapshots",
-      "known_upstream_defaults_and_limitations": "Pandas-style flexible filtering exists upstream but is not an authorization or canonical-identity boundary.",
+      "known_upstream_defaults_and_limitations": "Pinned upstream often selects all-version commands, executes shell/TextFSM fallbacks, drops rows missing ifname or peerHostname, mutates peerIfname during query-time resolution, uses locally assigned numeric values as ifindexes without carrying resolver evidence, strips FQDNs heuristically, can merge CDP and LLDP into one table, and resolves bonds by replacement. Bonsai must not copy those silent defaults: unresolved subtype, resolver miss, protocol mixing, poll gaps and aggregate-versus-member layering must remain explicit.",
       "bonsai": {
         "disposition": "PORT_REQUIRED",
         "implementation_source_locations": [],
@@ -6373,7 +6525,10 @@
           "coverage/error/unknown states",
           "multi-NOS unified behavior"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6382,9 +6537,10 @@
       ],
       "existing_backlog_owner": "BN-024-06",
       "acceptance_scenarios": [
-        "invalid filter rejected",
-        "scoped authorization enforced",
-        "stale/partial/unsupported explicit"
+        "filtering by canonical local interface does not merge parallel links or subinterfaces with parent physical interfaces",
+        "query exposes whether peerIfname was directly observed or derived through MAC/ifindex resolution, including resolver evidence",
+        "mixed-generation or stale rows are not silently coalesced into latest output",
+        "bond/aggregate view is explicitly labeled and can be traced back to member observations"
       ],
       "reuse_license_disposition": "Apache-2.0 upstream study/reimplementation permitted by BN-024-00; no SuzieQ runtime dependency; verbatim fixture/template reuse requires separate approved_reuse review."
     },
@@ -6397,18 +6553,21 @@
         "revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
         "service_or_object": "lldp",
         "source_paths_functions": [
-          "suzieq/config/lldp.yml",
-          "suzieq/poller/worker/services/lldp.py",
-          "suzieq/sqobjects/lldp.py",
-          "suzieq/engines/pandas/lldp.py"
+          "suzieq/config/lldp.yml (per-NOS commands, version selectors, normalize/TextFSM extraction)",
+          "suzieq/config/schema/lldp.avsc (namespace, hostname, ifname key; subtype/peerMacaddr/peerIfindex semantics)",
+          "suzieq/poller/worker/services/lldp.py::_common_data_cleaner/_common_cleaner",
+          "suzieq/poller/worker/services/lldp.py::_clean_nxos_data/_clean_iosxe_data (LLDP/CDP duplicate merge and interface expansion)",
+          "suzieq/poller/worker/services/lldp.py::_clean_eos_data/_clean_cumulus_data/_clean_linux_data/_clean_junos_data/_clean_iosxr_data",
+          "suzieq/sqobjects/lldp.py::LldpObj",
+          "suzieq/engines/pandas/lldp.py::get/_resolve_to_bond/_fix_fqdn_in_peerhost/summarize"
         ],
         "schema": "suzieq/config/schema/lldp.avsc",
         "nos_depth_key": "lldp",
-        "observed_behavior": "Produce scoped fleet or table summaries",
+        "observed_behavior": "Normalize per-local-interface neighbor records; canonicalize subtype values interface name/mac address/locally assigned; drop unusable rows; expand selected vendor interface abbreviations; resolve MAC/ifindex peer identifiers only through separate address/interface evidence; merge duplicate LLDP/CDP rows for NXOS/IOS while retaining protocol provenance; optionally map physical bond members to aggregate interfaces without treating that as physical evidence.",
         "inventory_reference": "suzieq-upstream-inventory.v1.json"
       },
       "required_acquisition_sources": "vendor structured JSON/XML/CLI/TextFSM commands recorded in upstream YAML where applicable; Bonsai should prefer native structured/model-driven sources and never use arbitrary writes",
-      "required_typed_semantics": "defined numerator/denominator, unknown/missing separated, bounded output",
+      "required_typed_semantics": "Scoped adjacency summary with explicit denominator: expected collection targets, observed interfaces, one-sided/unresolved/unsupported/withdrawn counts separated; never count present rows as fleet coverage.",
       "required_identity_dimensions": [
         "canonical_device",
         "namespace/tenant/scope",
@@ -6421,7 +6580,7 @@
       ],
       "required_query_assertion_behavior": "defined numerator/denominator, unknown/missing separated, bounded output",
       "historical_lifecycle_requirements": "coverage and time scope explicit",
-      "known_upstream_defaults_and_limitations": "Table-centric pandas summaries generally count rows present in the dataframe rather than a full collection denominator.",
+      "known_upstream_defaults_and_limitations": "Pinned upstream often selects all-version commands, executes shell/TextFSM fallbacks, drops rows missing ifname or peerHostname, mutates peerIfname during query-time resolution, uses locally assigned numeric values as ifindexes without carrying resolver evidence, strips FQDNs heuristically, can merge CDP and LLDP into one table, and resolves bonds by replacement. Bonsai must not copy those silent defaults: unresolved subtype, resolver miss, protocol mixing, poll gaps and aggregate-versus-member layering must remain explicit.",
       "bonsai": {
         "disposition": "PORT_REQUIRED",
         "implementation_source_locations": [],
@@ -6431,7 +6590,10 @@
           "unknown/missing separated",
           "cross-NOS coverage"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6440,8 +6602,9 @@
       ],
       "existing_backlog_owner": "BN-024-06",
       "acceptance_scenarios": [
-        "summary counts match scoped denominator",
-        "unknown not counted as healthy"
+        "summary numerator/denominator reflects scoped collection coverage rather than only rows present in the table",
+        "unresolved peer identity and missing reverse evidence are counted separately from healthy adjacency",
+        "stale/withdrawn rows never inflate current neighbor counts"
       ],
       "reuse_license_disposition": "Apache-2.0 upstream study/reimplementation permitted by BN-024-00; no SuzieQ runtime dependency; verbatim fixture/template reuse requires separate approved_reuse review."
     },
@@ -6488,7 +6651,10 @@
           "movement analysis",
           "EVPN/local/remote separation"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6546,7 +6712,10 @@
           "coverage/error/unknown states",
           "multi-NOS unified behavior"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6604,7 +6773,10 @@
           "unknown/missing separated",
           "cross-NOS coverage"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6661,7 +6833,10 @@
           "member consistency",
           "orphan/peer-link impact"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6719,7 +6894,10 @@
           "unknown/missing separated",
           "cross-NOS coverage"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6776,7 +6954,10 @@
           "instance/area/VRF identity",
           "BFD correlation"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6834,7 +7015,10 @@
           "adjacency state machine",
           "duplicate router-ID conflict handling"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6902,7 +7086,10 @@
         ],
         "beyond_upstream": [
           "streaming BMP views, session epochs, durable journal/replay and explicit transport gaps"
-        ]
+        ],
+        "implementation_state": "completed_existing_equivalent",
+        "counts_as_completed_equivalent": true,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -6970,7 +7157,10 @@
         ],
         "beyond_upstream": [
           "streaming BMP views, session epochs, durable journal/replay and explicit transport gaps"
-        ]
+        ],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7030,7 +7220,10 @@
         ],
         "beyond_upstream": [
           "streaming BMP views, session epochs, durable journal/replay and explicit transport gaps"
-        ]
+        ],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7085,7 +7278,10 @@
           "clock source/state semantics",
           "clock-skew handling"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7143,7 +7339,10 @@
           "CPU interval semantics",
           "multi-core meaning"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7201,7 +7400,10 @@
           "process identity",
           "OOM-risk queries"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7259,7 +7461,10 @@
           "bridge-domain identity",
           "interface membership reconciliation"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7317,7 +7522,10 @@
           "coverage/error/unknown states",
           "multi-NOS unified behavior"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7375,7 +7583,10 @@
           "unknown/missing separated",
           "cross-NOS coverage"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7427,7 +7638,10 @@
           "correct snapshot/VRF identity",
           "recursive resolution boundary"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7482,7 +7696,10 @@
           "stable process-independent comparison",
           "secret-aware diff"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7537,7 +7754,10 @@
           "identity-safe OSPF join",
           "coverage/freshness explicit"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7592,7 +7812,10 @@
           "OSPF assertion framework",
           "UNKNOWN/NOT_APPLICABLE semantics"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7648,7 +7871,10 @@
           "duplicate/conflict handling",
           "VRF/tenant scope"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7704,7 +7930,10 @@
           "identity-safe provenance",
           "authorization filtering"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7760,7 +7989,10 @@
           "coverage denominator",
           "result bounds"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7819,7 +8051,10 @@
           "evidence-backed verdicts",
           "MTU/overlay handling"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7875,7 +8110,10 @@
           "control/forwarding separation",
           "incomplete evidence verdict"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7931,7 +8169,10 @@
           "assertion integration",
           "evidence-scoped summary"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -7991,7 +8232,10 @@
           "one-sided/missing evidence",
           "parallel-interface identity"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -8050,7 +8294,10 @@
           "coverage/evidence in response",
           "scoped canonical IDs"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -8109,7 +8356,10 @@
           "service-level denominator",
           "withdrawal semantics"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -8164,7 +8414,10 @@
           "coverage-aware catalog API",
           "schema/version/feature availability truth"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -8219,7 +8472,10 @@
           "tenant/scope metadata model",
           "authorization-aware catalog"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -8280,7 +8536,10 @@
         ],
         "beyond_upstream": [
           "fail-closed unknown-release handling in Bonsai"
-        ]
+        ],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -8341,7 +8600,10 @@
         ],
         "beyond_upstream": [
           "explicit conflict retention"
-        ]
+        ],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -8407,7 +8669,10 @@
         ],
         "beyond_upstream": [
           "strict fixture provenance and no offline-as-live exposure"
-        ]
+        ],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -8466,7 +8731,10 @@
           "validity versus acquisition distinction",
           "checkpoint-scoped reads"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -8525,7 +8793,10 @@
           "coverage-preserving deletion",
           "corruption handling"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "partially_implemented",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -8582,7 +8853,10 @@
         ],
         "beyond_upstream": [
           "typed facts/completeness provide a stronger base"
-        ]
+        ],
+        "implementation_state": "planned_improvement_not_completed",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": true
       },
       "dependencies": [
         "BN-021 trusted identity",
@@ -8635,7 +8909,10 @@
           "effective IR resolver",
           "reference/precedence semantics"
         ],
-        "beyond_upstream": []
+        "beyond_upstream": [],
+        "implementation_state": "not_implemented_port_required",
+        "counts_as_completed_equivalent": false,
+        "counts_as_planned_improvement": false
       },
       "dependencies": [
         "BN-021 trusted identity",

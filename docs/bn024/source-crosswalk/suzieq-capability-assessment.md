@@ -11,22 +11,22 @@ Pinned upstream: `netenglabs/suzieq` `75198b5585ebef91f0659b6b1ec3c964cc2cd1ad` 
 
 ## Domain summary
 
-| Functional domain | Upstream capabilities | Bonsai equivalent | Partial | Missing | Unassessed |
-|---|---:|---:|---:|---:|---:|
-| Neighbor intelligence | 4 | 0 | 0 | 4 | 0 |
-| Routing | 10 | 1 | 3 | 6 | 0 |
-| Assertions | 4 | 1 | 1 | 3 | 0 |
-| Configuration | 3 | 0 | 3 | 1 | 0 |
-| Device intelligence | 10 | 0 | 2 | 8 | 0 |
-| Overlay | 3 | 0 | 0 | 3 | 0 |
-| Interface intelligence | 4 | 1 | 2 | 1 | 0 |
-| Layer 2 | 11 | 0 | 0 | 11 | 0 |
-| Network reasoning | 4 | 0 | 2 | 2 | 0 |
-| Path reasoning | 3 | 0 | 1 | 2 | 0 |
-| Collection assurance | 4 | 0 | 4 | 0 | 0 |
-| Historical analysis | 4 | 0 | 2 | 2 | 0 |
+| Functional domain | Upstream capabilities | Ledger-required capabilities | Existing equivalent | Native port implemented | Completed improvement | Planned improvement | Partial | Missing | Unassessed |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Neighbor intelligence | 4 | 4 | 0 | 0 | 0 | 0 | 0 | 4 | 0 |
+| Routing | 10 | 10 | 1 | 0 | 0 | 0 | 3 | 6 | 0 |
+| Assertions | 4 | 5 | 0 | 0 | 0 | 1 | 1 | 3 | 0 |
+| Configuration | 3 | 4 | 0 | 0 | 0 | 0 | 3 | 1 | 0 |
+| Device intelligence | 10 | 10 | 0 | 0 | 0 | 0 | 2 | 8 | 0 |
+| Overlay | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 3 | 0 |
+| Interface intelligence | 4 | 4 | 0 | 1 | 0 | 0 | 2 | 1 | 0 |
+| Layer 2 | 11 | 11 | 0 | 0 | 0 | 0 | 0 | 11 | 0 |
+| Network reasoning | 4 | 4 | 0 | 0 | 0 | 0 | 2 | 2 | 0 |
+| Path reasoning | 3 | 3 | 0 | 0 | 0 | 0 | 1 | 2 | 0 |
+| Collection assurance | 4 | 4 | 0 | 0 | 0 | 0 | 4 | 0 | 0 |
+| Historical analysis | 4 | 4 | 0 | 0 | 0 | 0 | 2 | 2 | 0 |
 
-“Bonsai equivalent” includes `EXISTING_EQUIVALENT`, narrow `NATIVE_PORT_IMPLEMENTED` slices and intentional improvements. It does not imply production parity across all NOS releases. `DELIBERATELY_EXCLUDED` count is zero in this ledger.
+Completed-equivalence credit is deliberately narrow: only `EXISTING_EQUIVALENT` and completed `NATIVE_PORT_IMPLEMENTED` slices count. There are currently **0 completed improvements**. The single `IMPROVE_UPON_UPSTREAM` ledger entry is a **planned, not completed** improvement and receives no completion credit. `EXISTING_PARTIAL` is never counted as complete. These counts do not imply production parity across all NOS releases. `DELIBERATELY_EXCLUDED` count is zero in this ledger.
 
 ## Disposition counts
 
@@ -58,9 +58,12 @@ explicit; they are not overall parity percentages:
 
 - Interface semantic acquisition requirements represented by this ledger:
   **1 of 4** interface-intelligence capabilities at narrow implemented/equivalent
-  level, **2 of 4** partial and **1 of 4** missing.
-- Interface assertion requirements: **0 of 1** complete; the initial offline
+  level (the completed native acquisition slice), **2 of 4** partial and **1 of 4** missing.
+- Interface assertion requirements: **0 of 1** complete; the corrected offline
   LAG-consistency slice is partial and not operator-exposed.
+- Assertion algebra requirements: **0 of 1** completed improvement; the
+  deterministic verdict model remains a planned improvement even though typed
+  facts now provide stronger completeness inputs.
 - Qualified interface acquisition sources in the cross-NOS matrix: **2 of 8**
   originally assessed mature NOS families have any genuine interface
   implementation evidence (FRR and offline XRd); this is evidence presence,
@@ -72,9 +75,11 @@ explicit; they are not overall parity percentages:
 
 `interfaces.assert` moved from `PORT_REQUIRED` to `EXISTING_PARTIAL` in this
 same review candidate: `src/interface_relationships.rs` implements a narrow
-offline LAG aggregate/member consistency slice using genuine Cumulus evidence.
-This does not satisfy the broader interface assertion family and has no
-operator/API exposure yet.
+offline LAG aggregate/member consistency slice using genuine Cumulus evidence
+plus typed synthetic regressions. The corrective review pass repaired entity
+identity, lifecycle filtering, duplicate accounting, batch-boundary handling
+and unknown-versus-NOT_APPLICABLE semantics. This still does not satisfy the
+broader interface assertion family and has no operator/API exposure yet.
 
 ## Interpretation
 
@@ -86,6 +91,16 @@ operator/API exposure yet.
 ## Recommended implementation waves
 
 **Wave 1 — interface and adjacency truth:** structured subinterface identity, parent/LAG membership, VRF/network-instance attachment, LLDP, VLAN/bridge relationships and address ownership.
+
+LLDP is no longer a generic “port the service” item. Its first implementation
+slice is defined in `lldp.acquisition` from pinned `config/lldp.yml`,
+`schema/lldp.avsc`, `services/lldp.py` cleaner functions and
+`engines/pandas/lldp.py`: subtype-aware peer identity, unresolved
+MAC/ifindex handling, protocol provenance, batch-scoped cross-resolution,
+physical member versus logical bond layering, parallel-link preservation and
+explicit one-sided/stale evidence. Query-time replacement of peer/interface
+identity and silent CDP/LLDP merging are upstream limitations, not Bonsai
+requirements.
 **Wave 2 — neighbor and routing evidence:** ARP/ND, MAC, route-aware LPM, recursive next-hop resolution, BGP operational state complementing BMP and explicit collection coverage.
 **Wave 3 — assertions and operator scenarios:** interface/MTU/LAG/VLAN/LLDP/address assertions with deterministic verdicts and BN-030 evidence surfaces.
 **Wave 4 — overlay and advanced routing:** EVPN/VNI/VTEP, underlay recursion, OSPF/IS-IS/LSDB topology using BN-026 contracts.
@@ -100,16 +115,22 @@ domain/disposition summary counts recompute exactly from the capability
 entries; the capability ledger contains 66 entries with exactly the
 disposition counts shown above (43 `PORT_REQUIRED`, 20 `EXISTING_PARTIAL`, 1
 `NATIVE_PORT_IMPLEMENTED`, 1 `EXISTING_EQUIVALENT`, 1
-`IMPROVE_UPON_UPSTREAM`), every capability has the required mapping fields and
-non-empty acceptance scenarios. This is structural consistency validation,
-not proof of semantic correctness or production qualification.
+`IMPROVE_UPON_UPSTREAM`); implementation completion counts recompute exactly
+as 1 completed existing equivalent, 1 completed narrow native port, 0
+completed improvements, 1 planned-but-incomplete improvement, 20 partial and
+43 not-implemented port-required capabilities; every capability has the
+required mapping fields and non-empty acceptance scenarios. This is
+structural consistency validation, not proof of semantic correctness or
+production qualification.
 
 ## Verification for this artifact
 
 Focused artifact validation: JSON parse passes for the inventory and delivery
 ledger; 66 entries present; disposition counts recompute exactly as 43
 `PORT_REQUIRED`, 20 `EXISTING_PARTIAL`, 1 `NATIVE_PORT_IMPLEMENTED`, 1
-`EXISTING_EQUIVALENT` and 1 `IMPROVE_UPON_UPSTREAM`; per-domain summary counts
-recompute exactly from the entries; every capability has required mapping
-fields and non-empty acceptance scenarios; the top-missing list contains
-exactly 10 entries. This validates structural consistency only.
+`EXISTING_EQUIVALENT` and 1 `IMPROVE_UPON_UPSTREAM`; implementation
+completion counts recompute exactly and do not count the planned assertion
+algebra improvement as complete; per-domain summary counts recompute exactly
+from the entries; every capability has required mapping fields and non-empty
+acceptance scenarios; the top-missing list contains exactly 10 entries. This
+validates structural consistency only.

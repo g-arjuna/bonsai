@@ -108,7 +108,7 @@ pub struct FactSubject {
 /// a numbered subinterface, and `Subinterface` a numbered child of a base
 /// interface. Absence of `interface_identity` means the refinement is
 /// unknown/not supplied, not that the interface is physical.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum InterfaceIdentityKind {
     Physical,
@@ -130,6 +130,15 @@ pub enum InterfaceIdentityKind {
 /// independently in `vendor_native_name` and is never parsed to invent these
 /// axes. Network-instance attachment remains the separate evidence-based
 /// `subject.vrf` axis; ASIC/host placement remains `network_namespace`.
+///
+/// Canonical entity identity and observation/fact identity are deliberately
+/// distinct: the canonical interface entity key is the scoped subject axes
+/// plus this structured refinement, while `fact_id` additionally binds the
+/// observation, interpretation, payload and evidence. `vendor_native_name`
+/// is an alias/display evidence axis and interface kind is classification
+/// evidence supplied by the producer; changing either changes the complete
+/// fact interpretation identity, but consumers must not use the native alias
+/// as a second canonical entity authority.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InterfaceSubjectIdentity {
     pub kind: InterfaceIdentityKind,
@@ -869,6 +878,96 @@ fn validate_interface_subject_identity(fact: &TypedFact) -> Result<(), FactError
     Ok(())
 }
 
+/// Cross-check the interface subject against the typed interface payload.
+///
+/// Field relationship contract:
+/// - `payload.interface_name` is the exact source-native occurrence name;
+/// - `payload.normalized_name`, when present, is the canonical occurrence
+///   name selected by the producer;
+/// - `subject.entity` is the canonical base/entity key (for a numbered
+///   subinterface it is intentionally the parent/base interface);
+/// - `interface_identity.vendor_native_name` corroborates
+///   `payload.interface_name` and is never parsed as an identity authority.
+///
+/// Legacy facts without `interface_identity` remain readable even when a
+/// historical producer used a native/display name that differs from the
+/// canonical entity. New structured facts must not carry arbitrary identity
+/// contradictions: their native-name evidence and parent/subinterface axes
+/// must agree with the payload relationships when those payload axes are
+/// present.
+fn validate_interface_subject_payload_consistency(fact: &TypedFact) -> Result<(), FactError> {
+    if fact.fact_kind != crate::interface_facts::FACT_KIND_INTERFACE_STATE {
+        return Ok(());
+    }
+    let Some(fields) = &fact.payload.fields else {
+        return Ok(());
+    };
+    let payload: crate::interface_facts::InterfaceStatePayload =
+        serde_json::from_value(fields.clone())
+            .map_err(|_| FactError::InvalidField("payload.fields.interface.state"))?;
+    let Some(identity) = &fact.subject.interface_identity else {
+        return Ok(());
+    };
+    let entity = fact.subject.entity.as_deref().unwrap_or("");
+    if let Some(native) = &identity.vendor_native_name
+        && *native != payload.interface_name
+    {
+        return Err(FactError::InvalidField(
+            "interface_identity.vendor_native_name/payload.interface_name mismatch",
+        ));
+    }
+    match identity.kind {
+        InterfaceIdentityKind::Physical | InterfaceIdentityKind::Logical => {
+            // For non-subinterfaces the canonical occurrence and entity key
+            // are the same interface. A native spelling difference is valid
+            // only when `normalized_name` explicitly carries the canonical
+            // form; otherwise the payload could be about an unrelated
+            // interface.
+            if let Some(normalized) = &payload.normalized_name {
+                if normalized != entity {
+                    return Err(FactError::InvalidField(
+                        "payload.normalized_name/subject.entity mismatch",
+                    ));
+                }
+            } else if payload.interface_name != entity {
+                return Err(FactError::InvalidField(
+                    "payload.interface_name/subject.entity mismatch",
+                ));
+            }
+        }
+        InterfaceIdentityKind::Subinterface => {
+            // `subject.entity` is the canonical parent for numbered
+            // subinterfaces, so the occurrence name may legitimately differ.
+            // If lower-layer parentage is also present in the payload it must
+            // corroborate the structured parent rather than contradict it.
+            let parent = identity.parent_entity.as_deref().unwrap_or("");
+            if let Some(parent_interface) = &payload.parent_interface
+                && parent_interface != parent
+            {
+                return Err(FactError::InvalidField(
+                    "payload.parent_interface/interface_identity.parent mismatch",
+                ));
+            }
+            if let Some(parent_rel) = &payload.parent_relationship
+                && parent_rel.kind == crate::interface_facts::MasterKind::Parent
+                && parent_rel.target != parent
+            {
+                return Err(FactError::InvalidField(
+                    "payload.parent_relationship/interface_identity.parent mismatch",
+                ));
+            }
+        }
+    }
+    if identity.kind == InterfaceIdentityKind::Logical
+        && identity.parent_entity.as_deref() == Some(entity)
+    {
+        return Err(FactError::InvalidField(
+            "logical interface cannot be its own parent",
+        ));
+    }
+    Ok(())
+}
+
 /// Fact kinds with a registered typed payload validator. Unregistered
 /// kinds still require an object-shaped `fields` payload — the generic
 /// envelope never implies arbitrary JSON is semantically valid.
@@ -986,6 +1085,7 @@ impl TypedFact {
         if let Some(fields) = &self.payload.fields {
             validate_kind_payload(&self.fact_kind, fields)?;
         }
+        validate_interface_subject_payload_consistency(self)?;
         // A degraded/failed payload can never claim complete coverage.
         if let Some(state) = self.payload.state
             && is_degraded_state(state)

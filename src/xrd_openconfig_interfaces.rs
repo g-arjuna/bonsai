@@ -1857,6 +1857,7 @@ pub fn normalize_xrd_openconfig_interfaces(
             description,
             parent_interface: None,
             member_of: None,
+            lag_members: None,
             parent_relationship: None,
             master_relationship: None,
             source_conflicts,

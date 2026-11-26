@@ -6,16 +6,19 @@ the approved review-first validation policy.
 
 ## Selected enterprise use case
 
-The first capability-led increment is **LAG aggregate/member operational
-consistency, with bridge, parent/master and evidence-based network-instance
-relationship reporting**. The immediate operational questions are:
+The first capability-led increment is **evidence-consistency assessment for
+LAG aggregate/member relationships, with bridge, parent/master and
+evidence-based network-instance relationship reporting**. The immediate
+questions are deliberately evidence questions, not forwarding-health claims:
 
-- Is an observed LAG member operationally down?
-- Does the aggregate have reduced capacity because only part of its observed
-  membership is up?
-- Does the aggregate have no active members?
 - Is an aggregate present and independently typed as a LAG in the same
-  observation?
+  coherent observation batch?
+- Do aggregate-reported (`lag_members`) and member-reported (`member_of`)
+  membership axes agree, disagree, or remain incomplete?
+- Are the operational states of resolved member interfaces known, up, down,
+  lower-layer-down, dormant, testing or unknown?
+- Are interface entity identities distinct across physical interfaces,
+  subinterface zero, numbered subinterfaces and network namespaces?
 - Which interfaces have evidence-based bridge, parent/master or VRF/network
   instance relationships, and which relationships remain unresolved?
 
@@ -43,9 +46,16 @@ a serializable report. It is intentionally pure analysis:
 - no claim of SuzieQ `interfaces.assert` parity;
 - no cross-NOS qualification claim.
 
-Facts are grouped only by explicit typed subject axes: `device_id`, `scope`
-and `network_namespace`. Interface names are not treated as global truth, and
-a missing relationship target is reported rather than silently assumed.
+Facts are first grouped by explicit typed subject axes: `device_id`, `scope`
+and `network_namespace`. Within each scope they are additionally bounded by
+the coherent observation batch axes collector, source kind, exporter, capture
+id and session epoch. Multiple unreconciled batches for the same scope are
+preserved separately and can never merge into a passing verdict. Withdrawn,
+superseded, non-operational-plane and expired-before-observation facts are
+excluded from current evidence and reported as input issues. Interface names
+are not treated as global truth; entity keys include the structured interface
+identity refinement when present, and a missing/ambiguous/conflicting
+relationship target is reported rather than silently assumed.
 
 
 ## Important evidence-boundary clarification
@@ -60,21 +70,31 @@ fixture for fail-closed evidence handling, not a claim that the device lacks
 
 ## Deterministic verdicts
 
-Per-scope verdicts use the feature-family contract required for operational
-assertions:
+Per-scope verdicts use the corrected deterministic contract:
 
-- `pass` — at least one LAG assessment exists and no fail/unknown condition
-  is present;
-- `fail` — one or more LAG members are down, including explicit findings for
-  `lag_member_down`, `lag_reduced_capacity` or `lag_no_active_members`;
-- `unknown` — required evidence is missing or unresolved, for example the
-  aggregate is absent/not independently typed as a LAG or member state is
-  unavailable;
-- `not_applicable` — no LAG membership evidence exists in the scope.
+- `pass` — a narrow bounded consistency verdict: required aggregate,
+  membership and member-state evidence is complete enough, internally
+  consistent, and free of unresolved/coverage/input-contract defects. It does
+  **not** mean LACP selection, collecting/distributing state, forwarding
+  participation, intended member count, active membership or usable capacity.
+- `fail` — a proven evidence inconsistency, such as an incompatible LAG
+  target type, a numbered subinterface selected as the aggregate, or
+  contradictory forward/reverse membership evidence. An operationally down
+  member is observed state (`observed_member_oper_down`); it is not by itself
+  a consistency failure, and administrative down is not treated as a fault.
+- `unknown` — required evidence is missing, ambiguous, stale/lifecycle
+  excluded, incomplete, conflicting or otherwise unresolved. Unknown aggregate
+  state, unknown membership, mixed observation batches, degraded completeness
+  and unresolved relationship evidence all remain `unknown`.
+- `not_applicable` — only a coherent scope with no LAG/aggregate evidence and
+  no unresolved evidence suggesting applicability. Unresolved evidence never
+  becomes `not_applicable`.
 
-The implementation deliberately does not treat missing evidence as health.
-The current initial consistency rules are conservative and narrow; they are
-not yet a complete SuzieQ-style interface assertion family.
+The implementation deliberately does not treat missing evidence as health or
+success. Positive results are evidence-consistency results only; the analyzer
+does not claim reduced capacity, no active members or active LAG forwarding
+state. The current rules are conservative and narrow; they are not yet a
+complete SuzieQ-style interface assertion family.
 
 ## Genuine versus synthetic evidence
 
@@ -97,9 +117,13 @@ without fabricating missing evidence.
 
 Synthetic evidence:
 
-- one focused regression mutates the already-normalized genuine `swp49` fact
-  to `operational_state: down` to test reduced-capacity behavior. This is
-  a synthetic negative control and is not represented as device evidence.
+- typed synthetic regressions cover physical/subinterface-zero/numbered
+  subinterface coexistence, namespace separation, duplicate replay,
+  permutation determinism, mixed capture/session epochs, lifecycle exclusion,
+  unknown aggregate/member evidence, forward/reverse membership agreement,
+  conflicting same-generation observations, unresolved evidence and
+  administrative/operational down terminology. These are labeled structural
+  controls and are not represented as device evidence.
 - structured non-zero subinterface identity regressions in
   `src/typed_facts.rs` are synthetic structural ABI tests because neither
   the current genuine FRR fixture nor the genuine XRd fixture contains a
@@ -146,32 +170,27 @@ parser alone would not satisfy the enterprise use case.
 
 ## Focused verification evidence
 
-Executed through the trusted shared ci build lane with prebuilt lbug, one
-heavyweight Cargo owner:
+Corrective-review execution through the trusted shared ci build lane with
+prebuilt lbug, one heavyweight Cargo owner:
 
 ```text
-cargo test -p bonsai --lib --profile ci --offline typed_facts
 cargo test -p bonsai --lib --profile ci --offline interface_relationships
-cargo test -p bonsai --lib --profile ci --offline interface_normalizer::tests
-cargo test -p bonsai --lib --profile ci --offline frr_interface_json::tests
-cargo test -p bonsai --lib --profile ci --offline xrd_openconfig_interfaces::tests
 ```
 
-Results: typed-facts 42 passed / 2 ignored artifact generators;
-interface-relationships 2 passed; interface-normalizer 21 passed;
-FRR structured JSON 20 passed; XRd OpenConfig 34 passed. Total focused
-execution: **119 passed, 0 failed, 2 ignored** in 1086 s wall. Compilation
-dominated wall time because Cargo unexpectedly rebuilt the same test unit for
-each filter invocation in this lane; this is logged in
-`docs/build-times/runs.csv` as an efficiency anomaly, not hidden.
+Result after the semantic rewrite: **17 passed, 0 failed** in 0.01 s test
+execution following a 3m49s compile
+(`docs/bn024/evidence/2026-11-26-pr91-corrective/interface-relationships-final-focused.log`).
+A repeated identical invocation then reused the Cargo fingerprint and completed
+in 7.13 s total wall time with no recompilation
+(`interface-relationships-cache-probe.log`), confirming the measured build.rs
+worktree fingerprint correction. Earlier focused evidence from the superseded
+review candidate is historical and does not validate the corrected analyzer.
 
-Additional schema compatibility checks:
+Capability-ledger structural validation passes with 66 entries; implementation
+completion is separated into 1 completed existing equivalent, 1 completed
+narrow native port, 0 completed improvements, 1 planned-but-incomplete
+improvement, 20 partial and 43 not-implemented port-required capabilities
+(`capability-ledger-validation.log`).
 
-```text
-/home/arjuna/Desktop/bonsai/.venv/bin/python -m pytest -q tests/test_bn024_typed_facts.py
-```
-
-Result: **9 passed** in 2.88 s final recheck. JSON artifacts parse; the
-capability ledger's disposition and domain summary counts recompute exactly
-from its entries; `git diff --check` passes. Canonical L0–L3 remain
-NOT_EXECUTED under the review-first policy.
+Canonical L0–L3 gates remain **NOT_EXECUTED** until the corrected candidate is
+committed/frozen under the review-first validation policy.

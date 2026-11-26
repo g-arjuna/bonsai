@@ -2111,6 +2111,7 @@ pub fn normalize_with_limits(
             description,
             parent_interface,
             member_of,
+            lag_members: None,
             parent_relationship: None,
             master_relationship,
             source_conflicts: entity_conflicts.clone(),
