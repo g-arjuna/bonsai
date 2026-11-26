@@ -1061,6 +1061,15 @@ impl TypedFact {
         if self.fact_id != expected_id {
             return Err(FactError::InvalidField("fact_id"));
         }
+        // A serialized grant is evidence only, but it must still bind to
+        // THIS fact's current axes — a grant minted for another device,
+        // scope, collector or capture is invalid here regardless of
+        // attestation.
+        if let Some(grant) = &self.authority
+            && !grant.binds(self)
+        {
+            return Err(FactError::InvalidField("authority"));
+        }
         // Unknown/absent/invalid must stay explicit: a payload with no
         // fields must carry a PayloadState explaining why, and vice versa.
         if self.payload.fields.is_none() && self.payload.state.is_none() {
@@ -1148,15 +1157,6 @@ impl TypedFact {
             return Err(FactError::TrustViolation(
                 "authoritative trust requires structured payload",
             ));
-        }
-        // A serialized grant is evidence only, but it must still bind to
-        // THIS fact's current axes — a grant minted for another device,
-        // scope, collector or capture is invalid here regardless of
-        // attestation.
-        if let Some(grant) = &self.authority
-            && !grant.binds(self)
-        {
-            return Err(FactError::InvalidField("authority"));
         }
         Ok(())
     }
