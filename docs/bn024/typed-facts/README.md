@@ -94,6 +94,49 @@ reject further transitions. Withdrawal annotates the same `fact_id`
 - `evidence[]` carries SHA-256 digests + optional locators for raw
   captures, sidecar responses, fixtures.
 
+
+## Structured interface identity refinement (additive v1 extension)
+
+`subject.interface_identity` is the minimum compatible representation for
+interface hierarchy identity. It is optional and additive: existing v1 facts
+that omit it keep the same serialized shape and `fact_id`; no historical
+evidence is resealed or migrated as a side effect. When present, every
+present axis is part of fact identity and `AuthorityGrant` binding.
+
+The refinement is deliberately small and does **not** create a second device
+or interface identity authority:
+
+- `subject.entity` remains the canonical entity key. For a numbered
+  subinterface it is the canonical parent/base-interface key and must equal
+  `interface_identity.parent_entity`.
+- `kind` distinguishes `physical`, `logical` and `subinterface`. Absence of
+  the object means unknown/not supplied, not physical.
+- `subinterface_index` is required for `subinterface`, including zero;
+  base/physical and subinterface-zero facts are therefore distinguishable.
+- `parent_entity` is required for subinterfaces and optional for logical
+  interfaces where positive evidence establishes it.
+- `vendor_native_name` preserves exact source-native display evidence such
+  as `Ethernet1.100`; it is evidence only and is never parsed to infer axes.
+- `network_namespace` remains the independent ASIC/host namespace axis, so
+  identical interface identity in `asic-0` and `asic-1` cannot collide.
+- `vrf` remains the separate evidence-based network-instance attachment
+  axis. A naming convention never infers VRF membership.
+
+Producers must only emit the refinement when structured source evidence
+establishes it. Dotted-name string splitting is explicitly forbidden as an
+identity inference mechanism.
+Current FRR/Cumulus/XRd interface producers intentionally leave the object
+absent even for pseudo/VLAN-style entities because the qualified source
+formats do not expose a complete structured parent/subinterface contract
+sufficient for this ABI. That is fail-closed behavior: source absence must
+not be converted into guessed `physical` or `logical` identity. The same
+caution applies to Linux `name@link` and vendor dotted names; those are
+vendor-native evidence candidates, not authority.
+Current genuine FRR/XRd interface fixtures do
+not contain non-zero subinterfaces; the present regressions for non-zero
+subinterfaces are synthetic structural tests and are labeled as such in the
+Rust test module.
+
 ## Temporal semantics
 
 `observed_at` (RFC-3339) is capture/observation time; `ingested_at`
@@ -112,7 +155,8 @@ payload-state exclusivity, lifecycle terminality, trust boundary,
 schema-version gating, roundtrip, committed-fixture validity, digest
 recomputation/mutation detection, grant derivation/attestation loss,
 subject-binding and cross-subject transfer rejection, identity-dimension
-independence (observation vs interpretation vs digest), forged-claim
+independence (observation vs interpretation vs digest), structured
+interface identity consistency/collision/authority binding, forged-claim
 rejection, and schema/producer-bound fact identity.
 `tests/test_bn024_typed_facts.py` gates JSON-schema ↔
 Rust-serialization drift (fixture validation, enum/required-field
