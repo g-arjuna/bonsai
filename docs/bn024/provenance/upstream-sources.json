@@ -1727,6 +1727,36 @@
       "local_destination": null,
       "modification_status": "not_vendored",
       "review_status": "pending_review"
+    },
+    {
+      "upstream_repository": "https://github.com/netenglabs/suzieq",
+      "immutable_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+      "content_kind": "file",
+      "license_identifier": "Apache-2.0",
+      "license_evidence": "LICENSE file at pinned revision 75198b5585ebef91f0659b6b1ec3c964cc2cd1ad (Apache License 2.0, sha256:c71d239df91726fc\u2026); license text redistributed byte-identical beside extracted fixture slices.",
+      "required_notice": "Apache-2.0 section 4: retain upstream copyright/license notice; fixtures are offline regression evidence only and extraction provenance must remain attached.",
+      "usage_classification": "test_fixture_redistribution",
+      "modification_status": "modified",
+      "review_status": "approved_reuse",
+      "source_id": "suzieq-oss:tests/integration/sqcmds/cumulus-input/ospf-single/lldp.output:leaf02-net-show-lldp-json",
+      "upstream_path": "tests/integration/sqcmds/cumulus-input/ospf-single/lldp.output",
+      "content_sha256": "52155e19834d7f198789136f2043483249c3b9ad8e5d1a4ac065f6e5134ee12c",
+      "local_destination": "tests/fixtures/bn024/lldp/cumulus-leaf02-net-show-lldp-json.txt"
+    },
+    {
+      "upstream_repository": "https://github.com/netenglabs/suzieq",
+      "immutable_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+      "content_kind": "file",
+      "license_identifier": "Apache-2.0",
+      "license_evidence": "LICENSE file at pinned revision 75198b5585ebef91f0659b6b1ec3c964cc2cd1ad (Apache License 2.0, sha256:c71d239df91726fc\u2026); license text redistributed byte-identical beside extracted fixture slices.",
+      "required_notice": "Apache-2.0 section 4: retain upstream copyright/license notice; fixtures are offline regression evidence only and extraction provenance must remain attached.",
+      "usage_classification": "test_fixture_redistribution",
+      "modification_status": "modified",
+      "review_status": "approved_reuse",
+      "source_id": "suzieq-oss:tests/integration/sqcmds/eos-input/lldp.output:leaf02-show-lldp-neighbors-detail",
+      "upstream_path": "tests/integration/sqcmds/eos-input/lldp.output",
+      "content_sha256": "dc8d43de9c592fe2d729bfb80d866993b212db39592311871e0a0584ec8a85ba",
+      "local_destination": "tests/fixtures/bn024/lldp/eos-leaf02-show-lldp-neighbors-detail.json"
     }
   ]
 }

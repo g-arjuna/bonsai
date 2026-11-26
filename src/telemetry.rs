@@ -921,31 +921,88 @@ fn walk_xrd_bgp_blob(value: &JsonValue) -> Option<TelemetryEvent> {
     })
 }
 
-/// Normalize an XRd `lldp/nodes/.../detail` blob into a flat `{"chassis-id", "system-name", "port-id"}`.
-/// XR native: value.lldp-neighbor[0] has chassis-id, port-id-detail, and detail.system-name.
+/// Normalize an XRd `lldp/nodes/.../detail` blob.
+///
+/// XR native represents `lldp-neighbor` either as one object or as an array.
+/// The previous extraction silently selected index zero. Preserve every entry
+/// in `neighbors` while retaining the first entry's flat keys at top level for
+/// compatibility with the legacy graph writer. Missing fields stay absent in
+/// the per-neighbor entries rather than being manufactured as empty strings;
+/// the legacy writer remains responsible for its own compatibility coercion.
 fn walk_xr_lldp_blob(value: &JsonValue) -> Option<JsonValue> {
     let nbr = value.get("lldp-neighbor")?;
-    let entry = nbr.get(0).or(Some(nbr))?;
-    let chassis_id = json_find(entry, "chassis-id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let port_id = json_find(entry, "port-id-detail")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let system_name = entry
-        .get("detail")
-        .and_then(|d| json_find(d, "system-name"))
-        .and_then(|v| v.as_str())
-        .or_else(|| json_find(entry, "system-name").and_then(|v| v.as_str()))
-        .unwrap_or("")
-        .to_string();
-    Some(serde_json::json!({
-        "chassis-id":  chassis_id,
-        "system-name": system_name,
-        "port-id":     port_id,
-    }))
+    let entries: Vec<&JsonValue> = if let Some(items) = nbr.as_array() {
+        items.iter().collect()
+    } else {
+        vec![nbr]
+    };
+    if entries.is_empty() {
+        return None;
+    }
+    let mut normalized = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let mut out = serde_json::Map::new();
+        if let Some(v) = json_find(entry, "chassis-id").and_then(|v| v.as_str()) {
+            out.insert("chassis-id".into(), v.into());
+        }
+        if let Some(v) = json_find(entry, "port-id-detail").and_then(|v| v.as_str()) {
+            out.insert("port-id".into(), v.into());
+        }
+        if let Some(v) = entry
+            .get("detail")
+            .and_then(|d| json_find(d, "system-name"))
+            .and_then(|v| v.as_str())
+            .or_else(|| json_find(entry, "system-name").and_then(|v| v.as_str()))
+        {
+            out.insert("system-name".into(), v.into());
+        }
+        normalized.push(JsonValue::Object(out));
+    }
+    let mut top = normalized[0].as_object()?.clone();
+    top.insert("neighbors".into(), JsonValue::Array(normalized));
+    Some(JsonValue::Object(top))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::walk_xr_lldp_blob;
+
+    #[test]
+    fn xr_lldp_multi_neighbor_blob_preserves_every_entry() {
+        let value = serde_json::json!({
+            "lldp-neighbor": [
+                {"chassis-id": "aa:aa:aa:aa:aa:01", "port-id-detail": "GigabitEthernet0/0/0/1", "detail": {"system-name": "leaf1"}},
+                {"chassis-id": "aa:aa:aa:aa:aa:02", "port-id-detail": "GigabitEthernet0/0/0/2", "detail": {"system-name": "leaf2"}}
+            ]
+        });
+        let out = walk_xr_lldp_blob(&value).expect("multi-neighbor blob");
+        let neighbors = out
+            .get("neighbors")
+            .and_then(|v| v.as_array())
+            .expect("neighbor array");
+        assert_eq!(neighbors.len(), 2);
+        assert_eq!(
+            neighbors[0].get("chassis-id").and_then(|v| v.as_str()),
+            Some("aa:aa:aa:aa:aa:01")
+        );
+        assert_eq!(
+            neighbors[1].get("chassis-id").and_then(|v| v.as_str()),
+            Some("aa:aa:aa:aa:aa:02")
+        );
+        assert_eq!(
+            out.get("chassis-id").and_then(|v| v.as_str()),
+            Some("aa:aa:aa:aa:aa:01")
+        );
+    }
+
+    #[test]
+    fn xr_lldp_missing_identity_fields_remain_absent_not_empty_strings() {
+        let value = serde_json::json!({"lldp-neighbor": {"chassis-id": "aa:aa:aa:aa:aa:01"}});
+        let out = walk_xr_lldp_blob(&value).expect("single-neighbor blob");
+        let first = out.get("neighbors").and_then(|v| v.as_array()).unwrap();
+        assert!(first[0].get("system-name").is_none());
+        assert!(first[0].get("port-id").is_none());
+    }
 }
 
 pub(crate) fn extract_bracketed(path: &str, prefix: &str) -> Option<String> {
