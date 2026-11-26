@@ -72,6 +72,7 @@ pub mod telemetry_identity;
 pub mod tls_util;
 pub mod typed_facts;
 pub mod write_coordinator;
+pub mod xrd_openconfig_interfaces;
 pub mod yang;
 pub mod yang_applicability;
 pub mod yang_discovery;

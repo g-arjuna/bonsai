@@ -20,6 +20,7 @@ use crate::frr_interface_json::{FRR_JSON_MAPPING_REVISION, FRR_JSON_PARSER_REVIS
 pub const FRR_1061_STRUCTURED_ARTIFACT: &str =
     "quay.io/frrouting/frr@sha256:813497af103e972600f6161012b3bf2a2a1c5ea10d09cd1eacd74f1dc510a57b";
 use crate::interface_normalizer::{INTERFACE_CLI_MAPPING_REVISION, INTERFACE_CLI_PARSER_REVISION};
+use crate::xrd_openconfig_interfaces::{XRD_OC_MAPPING_REVISION, XRD_OC_PARSER_REVISION};
 use sha2::{Digest, Sha256};
 
 /// Advisory support claim for a feature — distinct from `enabled`
@@ -1470,6 +1471,64 @@ pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
                 },
             )]),
             verification: "release_qualified".into(),
+        },
+        NosFeatureProfile {
+            profile_id: "cisco-iosxr-xrd-24.4.2-openconfig-interfaces".into(),
+            platform_family: "cisco.iosxr".into(),
+            version_match: "=24.4.2".into(),
+            // The genuine evidence is pinned to the immutable XRd container
+            // artifact in fixture provenance, but the current capture does not
+            // carry device-reported release/build identity. This profile is
+            // therefore deliberately fixture-only: experimental shadow
+            // dispatch is allowed, qualified dispatch fails closed.
+            release_constraint: None,
+            hardware_constraints: vec![],
+            verified_namespaces: vec!["default".into()],
+            device_roles: vec![],
+            resource_budget: ResourceBudget {
+                max_input_bytes: Some(8 * 1024 * 1024),
+                max_entities: Some(4096),
+                max_output_facts: Some(8192),
+            },
+            features: BTreeMap::from([(
+                "interfaces.openconfig_gnmi".into(),
+                FeatureFlag {
+                    enabled: true,
+                    parsers: vec!["native_rust_openconfig_jsonietf".into()],
+                    scope_notes: vec![
+                        "Cisco XRd OpenConfig interfaces/interface[name=*] gNMI subscribe-once".into(),
+                        "offline shadow normalization only; no production acquisition or graph projection".into(),
+                        "non-zero subinterfaces require structured identity extension before emission".into(),
+                    ],
+                    requires: vec![],
+                    conflicts: vec![],
+                    support: SupportState::Supported,
+                    evidence: vec![ApplicabilityEvidence {
+                        kind: "observed_capture".into(),
+                        source:
+                            "clab-bn025-xrd-xrd ios-xr/xrd-control-plane:24.4.2 sha256:b3bd8e8ea4892d4dd9b0a32c223990965f6f874b6b7ebf732b27dd5ab3ca487f openconfig interface subscribe-once"
+                                .into(),
+                        revision: Some("24.4.2".into()),
+                        scope: Some(
+                            "platform=cisco.iosxr namespace=default feature=interfaces.openconfig_gnmi".into(),
+                        ),
+                        claim: SupportState::Supported,
+                    }],
+                    acquisition: vec![AcquisitionContract {
+                        kind: AcquisitionKind::Gnmi,
+                        contracts: vec![
+                            "xrd_openconfig_gnmi_subscribe_once_interfaces".into(),
+                        ],
+                    }],
+                    normalizer: Some(NormalizerRef {
+                        id: "interface_xrd_openconfig_normalizer".into(),
+                        revision: XRD_OC_PARSER_REVISION.into(),
+                        mapping_revision: Some(XRD_OC_MAPPING_REVISION.into()),
+                    }),
+                    promotion: PromotionState::Shadow,
+                },
+            )]),
+            verification: "fixture_only".into(),
         },
     ]
 }
