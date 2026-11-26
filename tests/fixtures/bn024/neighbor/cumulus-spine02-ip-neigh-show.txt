@@ -1,0 +1,13 @@
+169.254.0.1 dev swp3 lladdr 52:54:00:c6:7c:c6 PERMANENT proto zebra 
+169.254.0.1 dev swp4 lladdr 52:54:00:33:c7:3d PERMANENT proto zebra 
+169.254.0.1 dev swp2 lladdr 52:54:00:8c:5b:4d PERMANENT proto zebra 
+169.254.0.1 dev swp5 lladdr 52:54:00:8d:05:90 PERMANENT proto zebra 
+169.254.0.1 dev swp6 lladdr 52:54:00:d6:12:38 PERMANENT proto zebra 
+169.254.0.1 dev swp1 lladdr 52:54:00:6b:79:41 PERMANENT proto zebra 
+192.168.121.1 dev eth0 lladdr 52:54:00:62:c2:57 REACHABLE
+fe80::5054:ff:fed6:1238 dev swp6 lladdr 52:54:00:d6:12:38 router REACHABLE
+fe80::5054:ff:fe33:c73d dev swp4 lladdr 52:54:00:33:c7:3d router REACHABLE
+fe80::5054:ff:fe8c:5b4d dev swp2 lladdr 52:54:00:8c:5b:4d router REACHABLE
+fe80::5054:ff:fec6:7cc6 dev swp3 lladdr 52:54:00:c6:7c:c6 router REACHABLE
+fe80::5054:ff:fe8d:590 dev swp5 lladdr 52:54:00:8d:05:90 router REACHABLE
+fe80::5054:ff:fe6b:7941 dev swp1 lladdr 52:54:00:6b:79:41 router REACHABLE

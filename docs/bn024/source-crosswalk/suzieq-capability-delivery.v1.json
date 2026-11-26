@@ -23,10 +23,10 @@
   "summary_counts": {
     "by_disposition": {
       "EXISTING_EQUIVALENT": 1,
-      "EXISTING_PARTIAL": 21,
+      "EXISTING_PARTIAL": 23,
       "IMPROVE_UPON_UPSTREAM": 1,
       "NATIVE_PORT_IMPLEMENTED": 1,
-      "PORT_REQUIRED": 42
+      "PORT_REQUIRED": 40
     },
     "by_domain": {
       "Neighbor intelligence": {
@@ -37,8 +37,8 @@
         "native_port_implemented": 0,
         "completed_improvement": 0,
         "planned_improvement": 0,
-        "partial": 0,
-        "missing": 4,
+        "partial": 1,
+        "missing": 3,
         "unassessed": 0,
         "deliberately_excluded": 0
       },
@@ -128,8 +128,8 @@
         "native_port_implemented": 0,
         "completed_improvement": 0,
         "planned_improvement": 0,
-        "partial": 1,
-        "missing": 10,
+        "partial": 2,
+        "missing": 9,
         "unassessed": 0,
         "deliberately_excluded": 0
       },
@@ -190,11 +190,9 @@
       "completed_existing_equivalent": 1,
       "completed_native_port_implemented": 1,
       "completed_improvement": 0,
-      "completed_equivalent_total": 2,
+      "partially_implemented": 23,
       "planned_improvement_not_completed": 1,
-      "partially_implemented": 21,
-      "not_implemented_port_required": 42,
-      "unassessed": 0
+      "not_implemented_port_required": 40
     }
   },
   "nos_service_depth": {
@@ -4826,16 +4824,27 @@
       "historical_lifecycle_requirements": "explicit active/withdrawn/stale/gap lifecycle; observation time distinct from validity",
       "known_upstream_defaults_and_limitations": "Exact commands, version selectors, cleaner functions and schema defaults are inventoried in nos_service_depth and suzieq-upstream-inventory.v1.json; upstream commonly uses all-version selectors and normalize-time defaults.",
       "bonsai": {
-        "disposition": "PORT_REQUIRED",
-        "implementation_source_locations": [],
-        "actual_qualification_evidence": [],
+        "disposition": "EXISTING_PARTIAL",
+        "implementation_source_locations": [
+          "src/neighbor_facts.rs (arpnd.neighbor typed payload contract)",
+          "src/neighbor_normalizer.rs (offline EOS/NXOS structured JSON and Cumulus/Linux ip-neigh normalization)",
+          "src/neighbor_reconciliation.rs (deterministic ARP/ND to MAC cross-table consistency reconciliation)",
+          "tests/fixtures/bn024/neighbor (six genuine pinned upstream ARP/MAC capture slices)"
+        ],
+        "actual_qualification_evidence": [
+          "genuine pinned upstream EOS leaf02 show arp vrf all slice sha256:fdc21a4ac43c2e84e5ffd744b4ea4e04e5223495efa5ae14bdbd121d95d6a4e7: seven IPv4 neighbors with VRF, compound Vlan/Vxlan interface evidence and age preserved",
+          "genuine pinned upstream NXOS leaf03 show ip arp detail vrf all | json-native slice sha256:3d05db6aebb4d63dcf5432f9a6997c90a69677f7e3d482c29beb05cb0a834dde: six adjacencies with physical-interface evidence and ISO-8601 age normalization",
+          "genuine pinned upstream Cumulus spine02 ip neigh show slice sha256:7ec5a58b267fd6f4544ac4965e4cdaee1becb14900e4b2764a65c7961f273077: thirteen IPv4/IPv6 neighbor records preserving router/proto/permanent/stale state distinctions",
+          "failed/incomplete Linux neighbor states do not fabricate zero MAC addresses or reachable states; malformed input and duplicate JSON keys are explicit refusals"
+        ],
         "missing_functionality": [
-          "ARP/ND normalizer",
-          "VRF-aware ownership",
-          "failed/incomplete state handling"
+          "production/live acquisition qualification and authorized read path",
+          "operator/API query exposure and denominator-aware operational summary",
+          "complete IPv6 ND source-specific qualification beyond the pinned Linux neighbor fixture evidence",
+          "durable lifecycle persistence/replay integration and broader multi-release qualification"
         ],
         "beyond_upstream": [],
-        "implementation_state": "not_implemented_port_required",
+        "implementation_state": "partially_implemented",
         "counts_as_completed_equivalent": false,
         "counts_as_planned_improvement": false
       },
@@ -6668,16 +6677,28 @@
       "historical_lifecycle_requirements": "explicit active/withdrawn/stale/gap lifecycle; observation time distinct from validity",
       "known_upstream_defaults_and_limitations": "Exact commands, version selectors, cleaner functions and schema defaults are inventoried in nos_service_depth and suzieq-upstream-inventory.v1.json; upstream commonly uses all-version selectors and normalize-time defaults.",
       "bonsai": {
-        "disposition": "PORT_REQUIRED",
-        "implementation_source_locations": [],
-        "actual_qualification_evidence": [],
+        "disposition": "EXISTING_PARTIAL",
+        "implementation_source_locations": [
+          "src/neighbor_facts.rs (mac.forwarding typed payload contract)",
+          "src/neighbor_normalizer.rs (offline EOS/NXOS structured JSON and Linux bridge-fdb normalization)",
+          "src/neighbor_reconciliation.rs (deterministic VLAN+MAC candidate indexing and cross-table consistency reconciliation)",
+          "tests/fixtures/bn024/neighbor (six genuine pinned upstream ARP/MAC capture slices)"
+        ],
+        "actual_qualification_evidence": [
+          "genuine pinned upstream EOS leaf02 show mac-address-table unicast slice sha256:d764e964fa1f435e6861062a717c5485c0493e2ce06dac7e281f2d9ac34f8a46: eleven unicast entries with VLAN, type, interface and move/last-move evidence normalized",
+          "genuine pinned upstream NXOS leaf03 show mac address-table | json-native slice sha256:3c277fe8d571dc77c6b6633a3678c914a0ef6f6810eefe9ec7e7cfc74f2a9046: fifteen entries preserving vPC peer-link and NVE remote-VTEP compound interface evidence without overinterpretation",
+          "genuine pinned upstream Cumulus leaf01 bridge fdb show slice sha256:b22ee1afffa93cab5c42092b360d9a2410540eda2f704e6986d3a6e3f77036e5: nine entries preserving static/permanent flags, unknown VLAN applicability and VXLAN/backend evidence",
+          "deterministic reconciliation evaluates all VLAN+MAC candidates, distinguishes consistency/interface conflict/multiple candidates, and does not infer absence without explicit complete coverage"
+        ],
         "missing_functionality": [
-          "MAC table normalizer",
-          "movement analysis",
-          "EVPN/local/remote separation"
+          "production/live acquisition qualification and authorized read path",
+          "operator/API query exposure and denominator-aware operational summary",
+          "temporal movement analysis across snapshots",
+          "complete EVPN local/remote control-plane separation and broader multi-release qualification",
+          "durable lifecycle persistence/replay integration"
         ],
         "beyond_upstream": [],
-        "implementation_state": "not_implemented_port_required",
+        "implementation_state": "partially_implemented",
         "counts_as_completed_equivalent": false,
         "counts_as_planned_improvement": false
       },

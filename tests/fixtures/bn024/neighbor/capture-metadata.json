@@ -1,0 +1,72 @@
+{
+ "schema": "bn024-neighbor-fixture-metadata.v1",
+ "upstream_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+ "fixtures": [
+  {
+   "file": "eos-leaf02-show-arp-vrf-all.json",
+   "upstream_path": "tests/integration/sqcmds/eos-input/arpnd.output",
+   "hostname": "leaf02",
+   "devtype": "eos",
+   "command": "show arp vrf all",
+   "cmd_timestamp": 1623025177307,
+   "upstream_file_sha256": "fdc21a4ac43c2e84e5ffd744b4ea4e04e5223495efa5ae14bdbd121d95d6a4e7",
+   "extracted_sha256": "b11bfd397473cfc19ff133ddb947dbf49a2f498d944031bdfbcbdce92de9f1c2",
+   "bytes": 870
+  },
+  {
+   "file": "eos-leaf02-show-mac-address-table-unicast.json",
+   "upstream_path": "tests/integration/sqcmds/eos-input/macs.output",
+   "hostname": "leaf02",
+   "devtype": "eos",
+   "command": "show mac-address-table unicast",
+   "cmd_timestamp": 1623025175378,
+   "upstream_file_sha256": "d764e964fa1f435e6861062a717c5485c0493e2ce06dac7e281f2d9ac34f8a46",
+   "extracted_sha256": "bcacd44a6ed2969f864b3d5b9c52e1e2b2db1e739fbb76765c7b443e7f1ac1ef",
+   "bytes": 1386
+  },
+  {
+   "file": "nxos-leaf03-show-ip-arp-detail-vrf-all.json",
+   "upstream_path": "tests/integration/sqcmds/nxos-input/arpnd.output",
+   "hostname": "leaf03",
+   "devtype": "nxos",
+   "command": "show ip arp detail vrf all | json native",
+   "cmd_timestamp": 1619275263495,
+   "upstream_file_sha256": "3d05db6aebb4d63dcf5432f9a6997c90a69677f7e3d482c29beb05cb0a834dde",
+   "extracted_sha256": "b67f8019d2f2b45c4eab3d15a43bb3423e741281d9824bf1d17b2ca4d43d92a0",
+   "bytes": 873
+  },
+  {
+   "file": "nxos-leaf03-show-mac-address-table.json",
+   "upstream_path": "tests/integration/sqcmds/nxos-input/macs.output",
+   "hostname": "leaf03",
+   "devtype": "nxos",
+   "command": "show mac address-table | json native",
+   "cmd_timestamp": 1619275257018,
+   "upstream_file_sha256": "3c277fe8d571dc77c6b6633a3678c914a0ef6f6810eefe9ec7e7cfc74f2a9046",
+   "extracted_sha256": "dee438f6392641c4b964041268f5f1f50209cc16f7ede75350464ab6f2ce3931",
+   "bytes": 2376
+  },
+  {
+   "file": "cumulus-spine02-ip-neigh-show.txt",
+   "upstream_path": "tests/integration/sqcmds/cumulus-input/dual-bgp/arpnd.output",
+   "hostname": "spine02",
+   "devtype": "cumulus",
+   "command": "ip neigh show",
+   "cmd_timestamp": 1616638468510,
+   "upstream_file_sha256": "7ec5a58b267fd6f4544ac4965e4cdaee1becb14900e4b2764a65c7961f273077",
+   "extracted_sha256": "75e373f07b50aa08bff691f2645d47b53466b34bd92ec8268746ef667f4d053c",
+   "bytes": 921
+  },
+  {
+   "file": "cumulus-leaf01-bridge-fdb-show.txt",
+   "upstream_path": "tests/integration/sqcmds/cumulus-input/dual-bgp/macs.output",
+   "hostname": "leaf01",
+   "devtype": "cumulus",
+   "command": "/sbin/bridge fdb show",
+   "cmd_timestamp": 1616638470427,
+   "upstream_file_sha256": "b22ee1afffa93cab5c42092b360d9a2410540eda2f704e6986d3a6e3f77036e5",
+   "extracted_sha256": "a3063aefb5662e63c17a56eb7934d18e3f2e1ede313ff41d09917c727441b415",
+   "bytes": 521
+  }
+ ]
+}

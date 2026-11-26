@@ -1017,6 +1017,73 @@ fn validate_lldp_subject_payload_consistency(fact: &TypedFact) -> Result<(), Fac
     Ok(())
 }
 
+/// Cross-check ARP/ND and MAC facts against their local-interface subject.
+/// Remote IP/MAC identity remains payload evidence; the subject is the local
+/// interface occurrence on which the table evidence was observed.
+fn validate_neighbor_subject_payload_consistency(fact: &TypedFact) -> Result<(), FactError> {
+    if fact.fact_kind != crate::neighbor_facts::FACT_KIND_ARPND_NEIGHBOR
+        && fact.fact_kind != crate::neighbor_facts::FACT_KIND_MAC_FORWARDING
+    {
+        return Ok(());
+    }
+    let entity = fact.subject.entity.as_deref().unwrap_or("");
+    if entity.is_empty() {
+        return Err(FactError::InvalidField(
+            "subject.entity required for neighbor/MAC fact",
+        ));
+    }
+    match fact.fact_kind.as_str() {
+        crate::neighbor_facts::FACT_KIND_ARPND_NEIGHBOR => {
+            let Some(fields) = &fact.payload.fields else {
+                return Ok(());
+            };
+            let payload: crate::neighbor_facts::ArpndNeighborPayload =
+                serde_json::from_value(fields.clone())
+                    .map_err(|_| FactError::InvalidField("payload.fields.arpnd.neighbor"))?;
+            if payload.outgoing_interface != entity {
+                return Err(FactError::InvalidField(
+                    "arpnd outgoing_interface/subject.entity mismatch",
+                ));
+            }
+            if let Some(identity) = &fact.subject.interface_identity
+                && let Some(native) = &identity.vendor_native_name
+                && *native != payload.outgoing_interface
+            {
+                return Err(FactError::InvalidField(
+                    "arpnd interface native name/payload interface mismatch",
+                ));
+            }
+        }
+        crate::neighbor_facts::FACT_KIND_MAC_FORWARDING => {
+            let Some(fields) = &fact.payload.fields else {
+                return Ok(());
+            };
+            let payload: crate::neighbor_facts::MacForwardingPayload =
+                serde_json::from_value(fields.clone())
+                    .map_err(|_| FactError::InvalidField("payload.fields.mac.forwarding"))?;
+            let canonical = payload
+                .normalized_outgoing_interface
+                .as_deref()
+                .unwrap_or(&payload.outgoing_interface);
+            if canonical != entity {
+                return Err(FactError::InvalidField(
+                    "mac forwarding interface/subject.entity mismatch",
+                ));
+            }
+            if let Some(identity) = &fact.subject.interface_identity
+                && let Some(native) = &identity.vendor_native_name
+                && *native != payload.outgoing_interface
+            {
+                return Err(FactError::InvalidField(
+                    "mac interface native name/payload interface mismatch",
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Fact kinds with a registered typed payload validator. Unregistered
 /// kinds still require an object-shaped `fields` payload — the generic
 /// envelope never implies arbitrary JSON is semantically valid.
@@ -1026,6 +1093,12 @@ fn validate_kind_payload(fact_kind: &str, fields: &Value) -> Result<(), FactErro
             crate::interface_facts::validate_payload(fields)
         }
         crate::lldp_facts::FACT_KIND_LLDP_NEIGHBOR => crate::lldp_facts::validate_payload(fields),
+        crate::neighbor_facts::FACT_KIND_ARPND_NEIGHBOR => {
+            crate::neighbor_facts::validate_arpnd_payload(fields)
+        }
+        crate::neighbor_facts::FACT_KIND_MAC_FORWARDING => {
+            crate::neighbor_facts::validate_mac_payload(fields)
+        }
         _ => Ok(()),
     }
 }
@@ -1146,6 +1219,7 @@ impl TypedFact {
         }
         validate_interface_subject_payload_consistency(self)?;
         validate_lldp_subject_payload_consistency(self)?;
+        validate_neighbor_subject_payload_consistency(self)?;
         // A degraded/failed payload can never claim complete coverage.
         if let Some(state) = self.payload.state
             && is_degraded_state(state)
