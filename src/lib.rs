@@ -31,6 +31,7 @@ pub mod ingest;
 pub mod integrations;
 pub mod interface_facts;
 pub mod interface_normalizer;
+pub mod interface_relationships;
 pub mod investigation_runtime;
 pub mod investigation_trigger;
 pub mod mcp_client;
