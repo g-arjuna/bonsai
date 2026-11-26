@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::interface_facts::{FieldAvailability, ObservedField, normalize_mac, valid_name};
-use crate::typed_facts::FactError;
+use crate::typed_facts::{EvidenceRef, FactError};
 
 /// Dotted fact kind for one observed LLDP neighbor record.
 pub const FACT_KIND_LLDP_NEIGHBOR: &str = "lldp.neighbor";
@@ -133,6 +133,35 @@ pub struct CapabilityObservation {
     pub enabled: Option<bool>,
 }
 
+/// Source temporal evidence semantics for LLDP validity. An advertised TTL
+/// is a lifetime input, not automatically a fresh lifetime starting at the
+/// replay/normalization time.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LldpValidityBasis {
+    /// The source contract does not establish enough information to compute
+    /// exact expiry. Consumers must use explicit unknown freshness.
+    Unknown,
+    /// The source contract establishes expiry as last-contact time plus the
+    /// advertised TTL seconds (Arista EOS structured JSON in the qualified
+    /// fixture). This does not merge last-contact, last-change, discovery or
+    /// capture time; those remain separate evidence fields.
+    LastContactPlusAdvertisedTtl,
+}
+
+/// Temporal evidence for one LLDP observation. Every timestamp is RFC-3339
+/// after exact source-unit conversion. These fields are intentionally
+/// separate: discovery age, last contact, last change, capture time and
+/// observation time are not interchangeable.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LldpTemporalEvidence {
+    pub capture_at: ObservedField<String>,
+    pub last_contact_at: ObservedField<String>,
+    pub last_change_at: ObservedField<String>,
+    pub neighbor_discovery_at: ObservedField<String>,
+    pub validity_basis: LldpValidityBasis,
+}
+
 /// Capture/population coverage carried structurally in every neighbor
 /// payload. This is the analysis input contract — consumers must not infer
 /// coverage by searching free-form quality notes.
@@ -170,10 +199,37 @@ pub enum PopulationCoverage {
 pub struct LldpCoverage {
     pub capture_outcome: LldpCaptureOutcome,
     pub population_coverage: PopulationCoverage,
-    /// Interfaces in the same decoded capture whose neighbor list was
-    /// present and empty. This is positive empty-neighbor evidence for
-    /// those interfaces only; it is bounded at serialization time.
+    /// Number of interfaces in the same decoded capture whose neighbor list
+    /// was present and empty. Retained for compact compatibility; the names
+    /// are carried separately because a count alone cannot establish which
+    /// interface a reverse lookup covers.
     pub empty_local_interfaces: u32,
+    /// Positively empty interface identities, bounded. Empty means either no
+    /// positive-empty evidence or that the producer could not establish it;
+    /// use `covered_interfaces` plus `population_coverage` for interpretation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub empty_local_interface_names: Vec<String>,
+    /// Capture identity copied from the producing fact source so batch
+    /// coverage remains interpretable when payload evidence is exported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_generation: Option<u64>,
+    /// Observation time of the acquisition batch (RFC-3339), distinct from
+    /// neighbor last-contact/change times.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_time: Option<String>,
+    /// Exact acquisition scope selector established by the producer. This is
+    /// evidence, not a tenant-authority expansion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquisition_scope: Option<String>,
+    /// Interface identities whose neighbor collections were actually decoded
+    /// in this acquisition batch, including positively empty interfaces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covered_interfaces: Vec<String>,
+    /// Supporting evidence references for the coverage statement itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_references: Vec<EvidenceRef>,
 }
 
 /// Neighbor-discovery protocol. CDP must never be silently represented as
@@ -194,10 +250,16 @@ pub struct LldpNeighborPayload {
     /// Canonical/normalized local occurrence name when it differs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub normalized_local_interface_name: Option<String>,
-    /// Source-specific neighbor occurrence key (path key, row id or capture
-    /// index). Evidence for occurrence identity, never canonical device identity.
+    /// Independently established source occurrence identifier (for example a
+    /// protocol/path key the source contract assigns to this neighbor). This
+    /// is evidence for occurrence identity, never canonical device identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_neighbor_id: Option<String>,
+    /// Capture-local record locator such as an array index. It identifies a
+    /// position in this capture for diagnostics only and is not independent
+    /// neighbor identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_record_locator: Option<String>,
     pub protocol: NeighborProtocol,
     /// Remote chassis identifier. MAC identifiers are normalized to
     /// lowercase colon form; `remote_chassis_id_raw` preserves the exact
@@ -227,6 +289,10 @@ pub struct LldpNeighborPayload {
     pub ttl_seconds: ObservedField<u32>,
     /// Age seconds when directly observed and unambiguously reported.
     pub age_seconds: ObservedField<u64>,
+    /// Exact temporal evidence and validity semantics when the source
+    /// contract establishes them. Absence means unknown, not a fresh TTL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporal: Option<LldpTemporalEvidence>,
     pub coverage: LldpCoverage,
 }
 
@@ -348,6 +414,23 @@ pub fn validate_typed(p: &LldpNeighborPayload) -> Result<(), FactError> {
     })?;
     check_subtype(&p.remote_chassis_id_subtype, "remote_chassis_id_subtype")?;
     check_subtype(&p.remote_port_id_subtype, "remote_port_id_subtype")?;
+    // LLDP chassis-ID and port-ID are protocol-mandatory neighbor identity.
+    // Malformed/absent identity belongs in a degraded batch status or diagnostic,
+    // never in a validated neighbor entity fact.
+    if p.remote_chassis_id.state != FieldAvailability::Known || p.remote_chassis_id.value.is_none()
+    {
+        return Err(FactError::InvalidField("remote_chassis_id mandatory"));
+    }
+    if p.remote_port_id.state != FieldAvailability::Known || p.remote_port_id.value.is_none() {
+        return Err(FactError::InvalidField("remote_port_id mandatory"));
+    }
+    if p.remote_chassis_id_subtype.state != FieldAvailability::Known
+        || p.remote_chassis_id_subtype.value.is_none()
+        || p.remote_port_id_subtype.state != FieldAvailability::Known
+        || p.remote_port_id_subtype.value.is_none()
+    {
+        return Err(FactError::InvalidField("identity subtype mandatory"));
+    }
 
     for raw in [&p.remote_chassis_id_raw, &p.remote_port_id_raw]
         .into_iter()
@@ -405,11 +488,79 @@ pub fn validate_typed(p: &LldpNeighborPayload) -> Result<(), FactError> {
             caps.iter().all(|c| seen.insert(c.name.as_str()))
         }
     })?;
-    check_field(&p.ttl_seconds, "ttl_seconds", |v| *v > 0)?;
+    check_field(&p.ttl_seconds, "ttl_seconds", |_| true)?;
     check_field(&p.age_seconds, "age_seconds", |_| true)?;
+    if let Some(locator) = &p.capture_record_locator
+        && !valid_identifier(locator)
+    {
+        return Err(FactError::InvalidField("capture_record_locator"));
+    }
+    if let Some(temporal) = &p.temporal {
+        if temporal.validity_basis == LldpValidityBasis::LastContactPlusAdvertisedTtl
+            && (temporal.last_contact_at.state != FieldAvailability::Known
+                || temporal.last_contact_at.value.is_none()
+                || p.ttl_seconds.state != FieldAvailability::Known
+                || p.ttl_seconds.value.is_none())
+        {
+            return Err(FactError::InvalidField("temporal.validity_basis evidence"));
+        }
+        for (field, name) in [
+            (&temporal.capture_at, "temporal.capture_at"),
+            (&temporal.last_contact_at, "temporal.last_contact_at"),
+            (&temporal.last_change_at, "temporal.last_change_at"),
+            (
+                &temporal.neighbor_discovery_at,
+                "temporal.neighbor_discovery_at",
+            ),
+        ] {
+            check_field(field, name, |v| {
+                chrono::DateTime::parse_from_rfc3339(v).is_ok()
+            })?;
+        }
+    }
 
     if p.coverage.empty_local_interfaces > 4096 {
         return Err(FactError::InvalidField("coverage.empty_local_interfaces"));
+    }
+    if p.coverage.empty_local_interface_names.len() > 4096
+        || !p
+            .coverage
+            .empty_local_interface_names
+            .iter()
+            .all(|n| valid_name(n))
+    {
+        return Err(FactError::InvalidField(
+            "coverage.empty_local_interface_names",
+        ));
+    }
+    if p.coverage.covered_interfaces.len() > 4096
+        || !p.coverage.covered_interfaces.iter().all(|n| valid_name(n))
+    {
+        return Err(FactError::InvalidField("coverage.covered_interfaces"));
+    }
+    if let Some(ts) = &p.coverage.observation_time
+        && chrono::DateTime::parse_from_rfc3339(ts).is_err()
+    {
+        return Err(FactError::InvalidField("coverage.observation_time"));
+    }
+    for (value, name) in [
+        (&p.coverage.capture_id, "coverage.capture_id"),
+        (&p.coverage.acquisition_scope, "coverage.acquisition_scope"),
+    ] {
+        if let Some(value) = value
+            && (value.is_empty() || value.len() > 255 || value.chars().any(|c| c.is_control()))
+        {
+            return Err(FactError::InvalidField(name));
+        }
+    }
+    if p.coverage.evidence_references.len() > 32
+        || p.coverage.evidence_references.iter().any(|e| {
+            e.kind.is_empty()
+                || e.sha256.len() != 64
+                || !e.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+    {
+        return Err(FactError::InvalidField("coverage.evidence_references"));
     }
     if matches!(
         p.coverage.capture_outcome,
@@ -438,6 +589,7 @@ mod tests {
             local_interface_name: "swp1".into(),
             normalized_local_interface_name: None,
             source_neighbor_id: Some("0".into()),
+            capture_record_locator: None,
             protocol: NeighborProtocol::Lldp,
             remote_chassis_id: known("52:54:00:a0:1a:f4".into()),
             remote_chassis_id_raw: None,
@@ -461,10 +613,18 @@ mod tests {
             }]),
             ttl_seconds: known(120),
             age_seconds: known(384),
+            temporal: None,
             coverage: LldpCoverage {
                 capture_outcome: LldpCaptureOutcome::Complete,
                 population_coverage: PopulationCoverage::Complete,
                 empty_local_interfaces: 0,
+                empty_local_interface_names: vec![],
+                capture_id: None,
+                source_generation: None,
+                observation_time: None,
+                acquisition_scope: None,
+                covered_interfaces: vec![],
+                evidence_references: vec![],
             },
         }
     }
@@ -507,5 +667,30 @@ mod tests {
             Some(0)
         );
         validate_typed(&p).expect("known empty list valid");
+    }
+
+    #[test]
+    fn missing_protocol_mandatory_identity_is_invalid() {
+        let mut p = payload();
+        p.remote_port_id = ObservedField::unavailable(FieldAvailability::Unknown, None);
+        assert!(validate_typed(&p).is_err());
+        let mut p = payload();
+        p.remote_chassis_id_subtype =
+            SubtypeObservation::unavailable(FieldAvailability::Unknown, None, None);
+        assert!(validate_typed(&p).is_err());
+    }
+
+    #[test]
+    fn last_contact_ttl_validity_basis_requires_exact_evidence() {
+        let mut p = payload();
+        p.temporal = Some(LldpTemporalEvidence {
+            capture_at: ObservedField::unavailable(FieldAvailability::Unknown, None),
+            last_contact_at: ObservedField::known("2026-01-01T00:00:00Z".into()),
+            last_change_at: ObservedField::unavailable(FieldAvailability::Unknown, None),
+            neighbor_discovery_at: ObservedField::unavailable(FieldAvailability::Unknown, None),
+            validity_basis: LldpValidityBasis::LastContactPlusAdvertisedTtl,
+        });
+        p.ttl_seconds = ObservedField::unavailable(FieldAvailability::Unknown, None);
+        assert!(validate_typed(&p).is_err());
     }
 }

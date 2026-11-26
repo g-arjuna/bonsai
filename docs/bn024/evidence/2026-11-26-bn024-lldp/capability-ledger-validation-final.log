@@ -1,0 +1,4 @@
+PASS capability ledger structural validation
+entries 66 dispositions {'PORT_REQUIRED': 42, 'EXISTING_PARTIAL': 21, 'NATIVE_PORT_IMPLEMENTED': 1, 'EXISTING_EQUIVALENT': 1, 'IMPROVE_UPON_UPSTREAM': 1} implementation {'not_implemented_port_required': 42, 'partially_implemented': 21, 'completed_native_port_implemented': 1, 'completed_existing_equivalent': 1, 'planned_improvement_not_completed': 1}
+lldp {'lldp.acquisition': 'EXISTING_PARTIAL', 'lldp.query': 'PORT_REQUIRED', 'lldp.summarize': 'PORT_REQUIRED'}
+arpnd {'arpnd.acquisition': 'PORT_REQUIRED', 'arpnd.query': 'PORT_REQUIRED', 'arpnd.summarize': 'PORT_REQUIRED'}

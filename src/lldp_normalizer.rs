@@ -43,8 +43,8 @@ use crate::interface_normalizer::{
 };
 use crate::lldp_facts::{
     CapabilityObservation, ChassisIdSubtype, FACT_KIND_LLDP_NEIGHBOR, LldpCaptureOutcome,
-    LldpCoverage, LldpNeighborPayload, ManagementAddress, ManagementAddressType, NeighborProtocol,
-    PopulationCoverage, PortIdSubtype, SubtypeObservation,
+    LldpCoverage, LldpNeighborPayload, LldpTemporalEvidence, LldpValidityBasis, ManagementAddress,
+    ManagementAddressType, NeighborProtocol, PopulationCoverage, PortIdSubtype, SubtypeObservation,
 };
 use crate::typed_facts::{
     Completeness, EvidenceRef, FactPayload, FactSource, FactSubject, Lifecycle, PayloadState,
@@ -55,6 +55,8 @@ pub const LLDP_PARSER_REVISION: &str = "lldp-structured-json-2026.11.26";
 pub const LLDP_MAPPING_REVISION: &str = "bn024-lldp-map-1";
 const MAX_NEIGHBORS_PER_INTERFACE: usize = 64;
 const MAX_INVALID_SAMPLES: usize = 16;
+const MAX_MGMT_ADDRS: usize = 16;
+const MAX_CAPABILITIES: usize = 32;
 
 /// Structured source profile. The enum names the input contract precisely;
 /// it is not a generic NOS qualification claim.
@@ -115,7 +117,11 @@ pub struct LldpObservation<'a> {
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct LldpNeighborDiagnostic {
     pub local_interface: String,
-    pub source_neighbor_id: String,
+    /// Independently established occurrence identity when the source contract
+    /// supplies one; absent for generated array indices.
+    pub source_neighbor_id: Option<String>,
+    /// Capture-local record locator retained for diagnostics only.
+    pub capture_record_locator: String,
     pub remote_chassis_id: Option<String>,
     pub remote_chassis_id_subtype_raw: Option<String>,
     pub remote_port_id: Option<String>,
@@ -137,6 +143,14 @@ pub struct LldpNormalizationReport {
     pub duplicate_records: usize,
     pub invalid_records: usize,
     pub empty_local_interfaces: usize,
+    pub empty_local_interface_names: Vec<String>,
+    pub covered_interfaces: Vec<String>,
+    pub malformed_management_address_entries: usize,
+    pub omitted_management_address_entries: usize,
+    pub malformed_capability_entries: usize,
+    pub omitted_capability_entries: usize,
+    pub repeated_neighbor_records: usize,
+    pub conflicting_neighbor_records: usize,
     pub facts_emitted: usize,
     pub facts_rejected: usize,
     pub output_facts_omitted: usize,
@@ -155,10 +169,14 @@ pub struct LldpNormalizationOutput {
     pub report: LldpNormalizationReport,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 struct RawNeighbor {
     local_interface: String,
-    source_neighbor_id: String,
+    /// Independently established source occurrence identifier. Neither
+    /// qualified source currently provides one; generated locators are not
+    /// promoted into this field.
+    source_neighbor_id: Option<String>,
+    capture_record_locator: String,
     chassis_id: Option<String>,
     chassis_id_raw: Option<String>,
     chassis_subtype: SubtypeObservation<ChassisIdSubtype>,
@@ -171,6 +189,7 @@ struct RawNeighbor {
     capabilities: Option<Vec<CapabilityObservation>>,
     ttl_seconds: Option<u32>,
     age_seconds: Option<u64>,
+    temporal: Option<LldpTemporalEvidence>,
 }
 
 impl RawNeighbor {
@@ -178,6 +197,7 @@ impl RawNeighbor {
         LldpNeighborDiagnostic {
             local_interface: self.local_interface.clone(),
             source_neighbor_id: self.source_neighbor_id.clone(),
+            capture_record_locator: self.capture_record_locator.clone(),
             remote_chassis_id: self.chassis_id.clone(),
             remote_chassis_id_subtype_raw: self.chassis_subtype.raw.clone(),
             remote_port_id: self.port_id.clone(),
@@ -194,14 +214,66 @@ impl RawNeighbor {
         }
     }
 
-    fn semantic_key(&self) -> String {
+    fn exact_duplicate_key(&self) -> String {
+        // Exact duplicate detection uses the complete decoded observation
+        // apart from capture-local locators. A generated array index is only a
+        // position and cannot make two otherwise identical records distinct;
+        // an independently established source occurrence identifier, when one
+        // exists, remains part of source-record identity.
+        let mut clone = self.clone();
+        clone.capture_record_locator.clear();
+        serde_json::to_string(&clone).expect("raw neighbor serializes")
+    }
+
+    fn neighbor_identity_key(&self) -> String {
         serde_json::json!([
             self.local_interface,
+            self.chassis_subtype.value,
             self.chassis_id,
+            self.port_subtype.value,
             self.port_id,
-            self.system_name,
         ])
         .to_string()
+    }
+
+    fn non_temporal_evidence_key(&self) -> String {
+        // Age/TTL and packet timing can legitimately change across repeated
+        // observations. System identity, port evidence, management addresses,
+        // capabilities and descriptions must not contradict within one batch.
+        serde_json::json!([
+            self.local_interface,
+            self.chassis_subtype.value,
+            self.chassis_id,
+            self.port_subtype.value,
+            self.port_id,
+            self.system_name,
+            self.port_description,
+            self.management_addresses,
+            self.capabilities,
+        ])
+        .to_string()
+    }
+}
+
+#[derive(Default)]
+struct ParseOutcome {
+    neighbors: Vec<RawNeighbor>,
+    invalid_records: usize,
+    empty_interfaces: BTreeSet<String>,
+    covered_interfaces: BTreeSet<String>,
+    invalid_samples: Vec<String>,
+    malformed_management_address_entries: usize,
+    omitted_management_address_entries: usize,
+    malformed_capability_entries: usize,
+    omitted_capability_entries: usize,
+}
+
+impl ParseOutcome {
+    fn note_invalid(&mut self, msg: String) {
+        self.invalid_records += 1;
+        if self.invalid_samples.len() < MAX_INVALID_SAMPLES {
+            self.invalid_samples.push(msg);
+        }
     }
 }
 
@@ -236,10 +308,6 @@ fn observation_context_error(obs: &LldpObservation) -> Option<String> {
 
 fn get_array<'a>(obj: &'a Value, key: &str) -> Option<&'a Vec<Value>> {
     obj.get(key).and_then(Value::as_array)
-}
-
-fn first_array_object<'a>(obj: &'a Value, key: &str) -> Option<&'a Value> {
-    get_array(obj, key)?.first().filter(|v| v.is_object())
 }
 
 fn wrapped_values(obj: Option<&Value>, key: &str) -> Vec<String> {
@@ -391,14 +459,16 @@ fn parse_age_seconds(raw: Option<String>) -> Option<u64> {
     if parts.next().is_some() || hours > 23 || minutes > 59 || seconds > 59 {
         return None;
     }
-    Some(
-        days.saturating_mul(86_400)
-            .saturating_add(hours * 3600 + minutes * 60 + seconds),
-    )
+    days.checked_mul(86_400)?
+        .checked_add(hours.checked_mul(3_600)?)?
+        .checked_add(minutes.checked_mul(60)?)?
+        .checked_add(seconds)
 }
 
 fn parse_u32_value(raw: Option<String>) -> Option<u32> {
-    raw.and_then(|v| v.parse::<u32>().ok()).filter(|v| *v > 0)
+    // TTL zero is a real LLDP value (immediate expiry/withdrawal semantics in
+    // the LLDP TLV contract). It must not be erased into an absent field.
+    raw.and_then(|v| v.parse::<u32>().ok())
 }
 
 fn strip_eos_quoted_interface_id(raw: &str) -> String {
@@ -415,38 +485,140 @@ fn strip_eos_quoted_interface_id(raw: &str) -> String {
     }
 }
 
-fn parse_cumulus(
-    root: &Value,
-    limits: NormalizerLimits,
-) -> (Vec<RawNeighbor>, usize, usize, Vec<String>) {
-    let mut out = Vec::new();
-    let mut invalid = 0usize;
-    let mut empty_interfaces = 0usize;
-    let mut samples = Vec::new();
-    let mut record_index = 0usize;
-    let note_invalid = |samples: &mut Vec<String>, msg: String, invalid: &mut usize| {
-        *invalid += 1;
-        if samples.len() < MAX_INVALID_SAMPLES {
-            samples.push(msg);
-        }
+fn single_array_object<'a>(obj: &'a Value, key: &str) -> Result<Option<&'a Value>, &'static str> {
+    let Some(value) = obj.get(key) else {
+        return Ok(None);
     };
+    let Some(items) = value.as_array() else {
+        return Err("container is not an array");
+    };
+    match items.len() {
+        0 => Err("container array is empty"),
+        1 => items[0]
+            .as_object()
+            .map(|_| Some(&items[0]))
+            .ok_or("container entry is not an object"),
+        _ => Err("container cardinality is greater than one"),
+    }
+}
+
+fn unknown_time(detail: &str) -> ObservedField<String> {
+    ObservedField::unavailable(FieldAvailability::Unknown, Some(detail.to_string()))
+}
+
+fn time_field(value: Option<String>, missing_detail: &str) -> ObservedField<String> {
+    match value {
+        Some(v) => ObservedField::known(v),
+        None => unknown_time(missing_detail),
+    }
+}
+
+fn epoch_seconds_to_rfc3339(value: f64) -> Option<String> {
+    if !value.is_finite() || value < 0.0 || value > 4_102_444_800.0 {
+        return None;
+    }
+    let secs = value.trunc() as i64;
+    let nanos64 = ((value - value.trunc()) * 1_000_000_000.0).round() as i64;
+    let (secs, nanos) = if nanos64 >= 1_000_000_000 {
+        (secs.checked_add(1)?, 0u32)
+    } else {
+        (secs, nanos64 as u32)
+    };
+    chrono::DateTime::from_timestamp(secs, nanos)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+}
+
+fn eos_epoch_field(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_f64)
+        .and_then(epoch_seconds_to_rfc3339)
+}
+
+fn parse_cumulus_mgmt(
+    chassis: &Value,
+    local: &str,
+    outcome: &mut ParseOutcome,
+) -> Option<Vec<ManagementAddress>> {
+    let value = chassis.get("mgmt-ip")?;
+    let Some(items) = value.as_array() else {
+        outcome.malformed_management_address_entries += 1;
+        outcome.note_invalid(format!("{local}: mgmt-ip collection is not an array"));
+        return None;
+    };
+    let mut outv = Vec::new();
+    for item in items.iter().take(MAX_MGMT_ADDRS) {
+        let address = item.get("value").and_then(Value::as_str);
+        let Some(address) = address.and_then(sanitize_scalar) else {
+            outcome.malformed_management_address_entries += 1;
+            continue;
+        };
+        let address_type = if address.parse::<std::net::Ipv4Addr>().is_ok() {
+            ManagementAddressType::Ipv4
+        } else if address.parse::<std::net::Ipv6Addr>().is_ok() {
+            ManagementAddressType::Ipv6
+        } else {
+            outcome.malformed_management_address_entries += 1;
+            continue;
+        };
+        outv.push(ManagementAddress {
+            address,
+            address_type,
+            interface_num_type: None,
+            interface_num: None,
+        });
+    }
+    if items.len() > MAX_MGMT_ADDRS {
+        outcome.omitted_management_address_entries += items.len() - MAX_MGMT_ADDRS;
+    }
+    Some(outv)
+}
+
+fn parse_cumulus_capabilities(
+    chassis: &Value,
+    local: &str,
+    outcome: &mut ParseOutcome,
+) -> Option<Vec<CapabilityObservation>> {
+    let value = chassis.get("capability")?;
+    let Some(items) = value.as_array() else {
+        outcome.malformed_capability_entries += 1;
+        outcome.note_invalid(format!("{local}: capability collection is not an array"));
+        return None;
+    };
+    let mut outv = Vec::new();
+    for item in items.iter().take(MAX_CAPABILITIES) {
+        let name = item
+            .get("type")
+            .and_then(Value::as_str)
+            .and_then(sanitize_scalar);
+        let enabled = item.get("enabled").and_then(Value::as_bool);
+        let (Some(name), Some(enabled)) = (name, enabled) else {
+            outcome.malformed_capability_entries += 1;
+            continue;
+        };
+        outv.push(CapabilityObservation {
+            name,
+            advertised: None,
+            enabled: Some(enabled),
+        });
+    }
+    if items.len() > MAX_CAPABILITIES {
+        outcome.omitted_capability_entries += items.len() - MAX_CAPABILITIES;
+    }
+    Some(outv)
+}
+
+fn parse_cumulus(root: &Value, limits: NormalizerLimits) -> ParseOutcome {
+    let mut outcome = ParseOutcome::default();
+    let mut record_index = 0usize;
 
     let Some(lldp) = get_array(root, "lldp") else {
-        note_invalid(
-            &mut samples,
-            "root lldp array absent or wrong type".into(),
-            &mut invalid,
-        );
-        return (out, invalid, empty_interfaces, samples);
+        outcome.note_invalid("root lldp array absent or wrong type".into());
+        return outcome;
     };
     for container in lldp {
         let Some(interfaces) = get_array(container, "interface") else {
             if container.as_object().is_some_and(|o| !o.is_empty()) {
-                note_invalid(
-                    &mut samples,
-                    "lldp container lacks interface array".into(),
-                    &mut invalid,
-                );
+                outcome.note_invalid("lldp container lacks interface array".into());
             }
             continue;
         };
@@ -457,112 +629,101 @@ fn parse_cumulus(
                 .and_then(sanitize_scalar)
                 .filter(|v| valid_name(v))
             else {
-                note_invalid(
-                    &mut samples,
-                    "interface record missing valid name".into(),
-                    &mut invalid,
-                );
+                outcome.note_invalid("interface record missing valid name".into());
                 continue;
             };
-            let chassis = first_array_object(interface, "chassis");
-            let port = first_array_object(interface, "port");
-            if chassis.is_none() && port.is_none() {
-                empty_interfaces += 1;
+            match interface.get("via").and_then(Value::as_str) {
+                Some("LLDP") => {}
+                other => {
+                    outcome.note_invalid(format!(
+                        "{local}: unsupported or absent discovery protocol evidence {other:?}"
+                    ));
+                    continue;
+                }
+            }
+            let chassis_result = single_array_object(interface, "chassis");
+            let port_result = single_array_object(interface, "port");
+            let chassis_absent = matches!(chassis_result, Ok(None));
+            let port_absent = matches!(port_result, Ok(None));
+            if chassis_absent && port_absent {
+                // In lldpd JSON a genuinely empty interface has no neighbor
+                // containers. This positive empty evidence is valid only after
+                // the interface's LLDP protocol provenance has been established;
+                // present-but-malformed containers below are not rewritten into
+                // positive empty evidence.
+                outcome.empty_interfaces.insert(local.clone());
+                outcome.covered_interfaces.insert(local.clone());
                 continue;
             }
-            let (Some(chassis), Some(port)) = (chassis, port) else {
-                note_invalid(
-                    &mut samples,
-                    format!("{local}: neighbor record missing chassis or port container"),
-                    &mut invalid,
-                );
+            let (Ok(chassis_opt), Ok(port_opt)) = (chassis_result, port_result) else {
+                outcome.note_invalid(format!(
+                    "{local}: malformed chassis/port container cardinality or type"
+                ));
                 continue;
             };
-            if out.len() >= limits.max_entities {
-                note_invalid(
-                    &mut samples,
-                    format!("neighbor on {local} omitted at entity bound"),
-                    &mut invalid,
-                );
+            let (Some(chassis), Some(port)) = (chassis_opt, port_opt) else {
+                outcome.note_invalid(format!(
+                    "{local}: neighbor record missing chassis or port container"
+                ));
+                continue;
+            };
+            if outcome.neighbors.len() >= limits.max_entities {
+                outcome.note_invalid(format!("neighbor on {local} omitted at entity bound"));
                 continue;
             }
             record_index += 1;
-            let rid = interface
+            let locator = interface
                 .get("rid")
                 .and_then(Value::as_str)
                 .and_then(sanitize_scalar)
                 .unwrap_or_else(|| format!("record-{record_index}"));
-            let chassis_id_obj = first_array_object(chassis, "id");
+            let chassis_id_obj = match single_array_object(chassis, "id") {
+                Ok(Some(v)) => v,
+                _ => {
+                    outcome.note_invalid(format!("{local}: chassis id container malformed"));
+                    continue;
+                }
+            };
+            let port_id_obj = match single_array_object(port, "id") {
+                Ok(Some(v)) => v,
+                _ => {
+                    outcome.note_invalid(format!("{local}: port id container malformed"));
+                    continue;
+                }
+            };
             let chassis_subtype_raw = chassis_id_obj
-                .and_then(|v| v.get("type"))
+                .get("type")
                 .and_then(Value::as_str)
                 .map(str::to_string);
             let chassis_subtype = map_cumulus_chassis_subtype(chassis_subtype_raw);
             let chassis_raw = chassis_id_obj
-                .and_then(|v| v.get("value"))
+                .get("value")
                 .and_then(Value::as_str)
                 .map(str::to_string);
             let (chassis_id, chassis_id_raw, _) = normalize_identifier_by_subtype(
                 chassis_raw,
                 chassis_subtype.value == Some(ChassisIdSubtype::MacAddress),
             );
-            let port_id_obj = first_array_object(port, "id");
             let port_subtype_raw = port_id_obj
-                .and_then(|v| v.get("type"))
+                .get("type")
                 .and_then(Value::as_str)
                 .map(str::to_string);
             let port_subtype = map_cumulus_port_subtype(port_subtype_raw);
             let port_raw = port_id_obj
-                .and_then(|v| v.get("value"))
+                .get("value")
                 .and_then(Value::as_str)
                 .map(str::to_string);
             let (port_id, port_id_raw, _) = normalize_identifier_by_subtype(
                 port_raw,
                 port_subtype.value == Some(PortIdSubtype::MacAddress),
             );
-            let mgmt_values = wrapped_values(Some(chassis), "mgmt-ip");
-            let mgmt = if get_array(chassis, "mgmt-ip").is_some() {
-                Some(
-                    mgmt_values
-                        .iter()
-                        .filter_map(|address| {
-                            let address_type = if address.parse::<std::net::Ipv4Addr>().is_ok() {
-                                ManagementAddressType::Ipv4
-                            } else if address.parse::<std::net::Ipv6Addr>().is_ok() {
-                                ManagementAddressType::Ipv6
-                            } else {
-                                ManagementAddressType::Unknown
-                            };
-                            sanitize_scalar(address).map(|address| ManagementAddress {
-                                address,
-                                address_type,
-                                interface_num_type: None,
-                                interface_num: None,
-                            })
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            } else {
-                None
-            };
-            let capabilities = get_array(chassis, "capability").map(|caps| {
-                caps.iter()
-                    .filter_map(|cap| {
-                        let name = cap
-                            .get("type")
-                            .and_then(Value::as_str)
-                            .and_then(sanitize_scalar)?;
-                        Some(CapabilityObservation {
-                            name,
-                            advertised: None,
-                            enabled: cap.get("enabled").and_then(Value::as_bool),
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            });
-            out.push(RawNeighbor {
-                local_interface: local,
-                source_neighbor_id: rid,
+            outcome.covered_interfaces.insert(local.clone());
+            let management_addresses = parse_cumulus_mgmt(chassis, &local, &mut outcome);
+            let capabilities = parse_cumulus_capabilities(chassis, &local, &mut outcome);
+            outcome.neighbors.push(RawNeighbor {
+                local_interface: local.clone(),
+                source_neighbor_id: None,
+                capture_record_locator: locator,
                 chassis_id,
                 chassis_id_raw,
                 chassis_subtype,
@@ -573,7 +734,7 @@ fn parse_cumulus(
                     .and_then(|v| sanitize_scalar(&v)),
                 port_description: first_wrapped_value(Some(port), "descr")
                     .and_then(|v| sanitize_scalar(&v)),
-                management_addresses: mgmt,
+                management_addresses,
                 capabilities,
                 ttl_seconds: parse_u32_value(first_wrapped_value(Some(port), "ttl")),
                 age_seconds: parse_age_seconds(
@@ -582,53 +743,165 @@ fn parse_cumulus(
                         .and_then(Value::as_str)
                         .map(str::to_string),
                 ),
+                temporal: Some(LldpTemporalEvidence {
+                    capture_at: unknown_time("capture completion time not supplied"),
+                    last_contact_at: unknown_time(
+                        "Cumulus lldpd JSON does not expose exact last-contact time",
+                    ),
+                    last_change_at: unknown_time(
+                        "Cumulus lldpd JSON does not expose exact last-change time",
+                    ),
+                    neighbor_discovery_at: unknown_time(
+                        "Cumulus lldpd JSON exposes relationship age, not discovery timestamp",
+                    ),
+                    validity_basis: LldpValidityBasis::Unknown,
+                }),
             });
         }
     }
-    (out, invalid, empty_interfaces, samples)
+    outcome
 }
 
-fn parse_eos(
-    root: &Value,
-    limits: NormalizerLimits,
-) -> (Vec<RawNeighbor>, usize, usize, Vec<String>) {
-    let mut out = Vec::new();
-    let mut invalid = 0usize;
-    let mut empty_interfaces = 0usize;
-    let mut samples = Vec::new();
+fn parse_eos_mgmt(
+    nbr: &Value,
+    local: &str,
+    outcome: &mut ParseOutcome,
+) -> Option<Vec<ManagementAddress>> {
+    let value = nbr.get("managementAddresses")?;
+    let Some(items) = value.as_array() else {
+        outcome.malformed_management_address_entries += 1;
+        outcome.note_invalid(format!("{local}: managementAddresses is not an array"));
+        return None;
+    };
+    let mut outv = Vec::new();
+    for item in items.iter().take(MAX_MGMT_ADDRS) {
+        let Some(obj) = item.as_object() else {
+            outcome.malformed_management_address_entries += 1;
+            continue;
+        };
+        let address = obj
+            .get("address")
+            .and_then(Value::as_str)
+            .and_then(sanitize_scalar);
+        let Some(address) = address else {
+            outcome.malformed_management_address_entries += 1;
+            continue;
+        };
+        let type_token = obj.get("addressType").and_then(Value::as_str);
+        let address_type = match type_token {
+            Some("ipv4") if address.parse::<std::net::Ipv4Addr>().is_ok() => {
+                ManagementAddressType::Ipv4
+            }
+            Some("ipv6") if address.parse::<std::net::Ipv6Addr>().is_ok() => {
+                ManagementAddressType::Ipv6
+            }
+            Some("ipv4") | Some("ipv6") => {
+                outcome.malformed_management_address_entries += 1;
+                continue;
+            }
+            _ => ManagementAddressType::Unknown,
+        };
+        let interface_num = match obj.get("interfaceNum") {
+            None => None,
+            Some(v) => v.as_u64(),
+        };
+        if obj.get("interfaceNum").is_some() && interface_num.is_none() {
+            outcome.malformed_management_address_entries += 1;
+            continue;
+        }
+        outv.push(ManagementAddress {
+            address,
+            address_type,
+            interface_num_type: obj
+                .get("interfaceNumType")
+                .and_then(Value::as_str)
+                .and_then(sanitize_scalar),
+            interface_num,
+        });
+    }
+    if items.len() > MAX_MGMT_ADDRS {
+        outcome.omitted_management_address_entries += items.len() - MAX_MGMT_ADDRS;
+    }
+    Some(outv)
+}
+
+fn parse_eos_capabilities(
+    nbr: &Value,
+    local: &str,
+    outcome: &mut ParseOutcome,
+) -> Option<Vec<CapabilityObservation>> {
+    let value = nbr.get("systemCapabilities")?;
+    let Some(items) = value.as_object() else {
+        outcome.malformed_capability_entries += 1;
+        outcome.note_invalid(format!("{local}: systemCapabilities is not an object"));
+        return None;
+    };
+    let mut outv = Vec::new();
+    for (name, enabled) in items.iter().take(MAX_CAPABILITIES) {
+        let (Ok(name), Some(enabled)) = (sanitize_scalar(name).ok_or(()), enabled.as_bool()) else {
+            outcome.malformed_capability_entries += 1;
+            continue;
+        };
+        outv.push(CapabilityObservation {
+            name,
+            advertised: None,
+            enabled: Some(enabled),
+        });
+    }
+    if items.len() > MAX_CAPABILITIES {
+        outcome.omitted_capability_entries += items.len() - MAX_CAPABILITIES;
+    }
+    Some(outv)
+}
+
+fn eos_temporal(nbr: &Value, ttl: Option<u32>) -> LldpTemporalEvidence {
+    let last_contact = eos_epoch_field(nbr.get("lastContactTime"));
+    let last_change = eos_epoch_field(nbr.get("lastChangeTime"));
+    let discovery = eos_epoch_field(nbr.get("neighborDiscoveryTime"));
+    let validity_basis = if last_contact.is_some() && ttl.is_some() {
+        LldpValidityBasis::LastContactPlusAdvertisedTtl
+    } else {
+        LldpValidityBasis::Unknown
+    };
+    LldpTemporalEvidence {
+        capture_at: unknown_time("capture completion time not supplied"),
+        last_contact_at: time_field(last_contact, "EOS lastContactTime absent or malformed"),
+        last_change_at: time_field(last_change, "EOS lastChangeTime absent or malformed"),
+        neighbor_discovery_at: time_field(
+            discovery,
+            "EOS neighborDiscoveryTime absent or malformed",
+        ),
+        validity_basis,
+    }
+}
+
+fn parse_eos(root: &Value, limits: NormalizerLimits) -> ParseOutcome {
+    let mut outcome = ParseOutcome::default();
     let Some(neighbors_obj) = root.get("lldpNeighbors").and_then(Value::as_object) else {
-        return (
-            out,
-            1,
-            empty_interfaces,
-            vec!["root lldpNeighbors object absent or wrong type".into()],
-        );
+        outcome.note_invalid("root lldpNeighbors object absent or wrong type".into());
+        return outcome;
     };
     for (local_raw, entry) in neighbors_obj {
         let Some(local) = sanitize_scalar(local_raw).filter(|v| valid_name(v)) else {
-            invalid += 1;
-            if samples.len() < MAX_INVALID_SAMPLES {
-                samples.push("lldpNeighbors key is not a valid interface name".into());
-            }
+            outcome.note_invalid("lldpNeighbors key is not a valid interface name".into());
             continue;
         };
         let Some(info) = entry.get("lldpNeighborInfo").and_then(Value::as_array) else {
-            invalid += 1;
-            if samples.len() < MAX_INVALID_SAMPLES {
-                samples.push(format!("{local}: lldpNeighborInfo absent or wrong type"));
-            }
+            outcome.note_invalid(format!("{local}: lldpNeighborInfo absent or wrong type"));
             continue;
         };
+        outcome.covered_interfaces.insert(local.clone());
         if info.is_empty() {
-            empty_interfaces += 1;
+            outcome.empty_interfaces.insert(local.clone());
             continue;
         }
         for (idx, nbr) in info.iter().enumerate().take(MAX_NEIGHBORS_PER_INTERFACE) {
-            if out.len() >= limits.max_entities {
-                invalid += 1;
-                if samples.len() < MAX_INVALID_SAMPLES {
-                    samples.push(format!("{local}: neighbor omitted at entity bound"));
-                }
+            if outcome.neighbors.len() >= limits.max_entities {
+                outcome.note_invalid(format!("{local}: neighbor omitted at entity bound"));
+                continue;
+            }
+            if !nbr.is_object() {
+                outcome.note_invalid(format!("{local}: neighbor entry {idx} is not an object"));
                 continue;
             }
             let ifinfo = nbr.get("neighborInterfaceInfo").unwrap_or(&Value::Null);
@@ -658,50 +931,16 @@ fn parse_eos(
                 port_raw,
                 port_subtype.value == Some(PortIdSubtype::MacAddress),
             );
-            let mgmt = nbr
-                .get("managementAddresses")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| {
-                            let address = item
-                                .get("address")
-                                .and_then(Value::as_str)
-                                .and_then(sanitize_scalar)?;
-                            let address_type = match item.get("addressType").and_then(Value::as_str)
-                            {
-                                Some("ipv4") => ManagementAddressType::Ipv4,
-                                Some("ipv6") => ManagementAddressType::Ipv6,
-                                _ => ManagementAddressType::Unknown,
-                            };
-                            Some(ManagementAddress {
-                                address,
-                                address_type,
-                                interface_num_type: item
-                                    .get("interfaceNumType")
-                                    .and_then(Value::as_str)
-                                    .and_then(sanitize_scalar),
-                                interface_num: item.get("interfaceNum").and_then(Value::as_u64),
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                });
-            let capabilities = nbr
-                .get("systemCapabilities")
-                .and_then(Value::as_object)
-                .map(|caps| {
-                    caps.iter()
-                        .map(|(name, enabled)| CapabilityObservation {
-                            name: name.clone(),
-                            advertised: None,
-                            enabled: enabled.as_bool(),
-                        })
-                        .collect::<Vec<_>>()
-                });
-            out.push(RawNeighbor {
+            let ttl = nbr
+                .get("ttl")
+                .and_then(Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok());
+            let management_addresses = parse_eos_mgmt(nbr, &local, &mut outcome);
+            let capabilities = parse_eos_capabilities(nbr, &local, &mut outcome);
+            outcome.neighbors.push(RawNeighbor {
                 local_interface: local.clone(),
-                source_neighbor_id: format!("{local}#{idx}"),
+                source_neighbor_id: None,
+                capture_record_locator: format!("{local}#{idx}"),
                 chassis_id,
                 chassis_id_raw,
                 chassis_subtype,
@@ -716,27 +955,24 @@ fn parse_eos(
                     .get("interfaceDescription")
                     .and_then(Value::as_str)
                     .and_then(sanitize_scalar),
-                management_addresses: mgmt,
+                management_addresses,
                 capabilities,
-                ttl_seconds: nbr
-                    .get("ttl")
-                    .and_then(Value::as_u64)
-                    .and_then(|v| u32::try_from(v).ok())
-                    .filter(|v| *v > 0),
+                ttl_seconds: ttl,
                 age_seconds: None,
+                temporal: Some(eos_temporal(nbr, ttl)),
             });
         }
         if info.len() > MAX_NEIGHBORS_PER_INTERFACE {
-            invalid += info.len() - MAX_NEIGHBORS_PER_INTERFACE;
-            if samples.len() < MAX_INVALID_SAMPLES {
-                samples.push(format!(
+            outcome.invalid_records += info.len() - MAX_NEIGHBORS_PER_INTERFACE;
+            if outcome.invalid_samples.len() < MAX_INVALID_SAMPLES {
+                outcome.invalid_samples.push(format!(
                     "{local}: {} neighbors omitted at per-interface bound",
                     info.len() - MAX_NEIGHBORS_PER_INTERFACE
                 ));
             }
         }
     }
-    (out, invalid, empty_interfaces, samples)
+    outcome
 }
 
 fn observed<T>(value: Option<T>) -> ObservedField<T> {
@@ -815,18 +1051,37 @@ fn status_fact(
     fact
 }
 
-fn ttl_valid_until(observed_at: &str, ttl: Option<u32>) -> Option<String> {
-    let observed = parse_rfc3339(observed_at)?;
-    let ttl = ttl?;
-    let until = observed + chrono::Duration::seconds(i64::from(ttl));
-    Some(until.to_rfc3339())
+fn source_validity_window(raw: &RawNeighbor) -> (Option<String>, Option<String>) {
+    let Some(temporal) = &raw.temporal else {
+        return (None, None);
+    };
+    if temporal.validity_basis != LldpValidityBasis::LastContactPlusAdvertisedTtl {
+        return (None, None);
+    }
+    let Some(last_contact) = temporal
+        .last_contact_at
+        .value
+        .as_deref()
+        .and_then(parse_rfc3339)
+    else {
+        return (None, None);
+    };
+    let Some(ttl) = raw.ttl_seconds else {
+        return (None, None);
+    };
+    let until = last_contact.checked_add_signed(chrono::Duration::seconds(i64::from(ttl)));
+    (
+        Some(last_contact.to_rfc3339()),
+        until.map(|u| u.to_rfc3339()),
+    )
 }
 
 fn fact_for_neighbor(
     obs: &LldpObservation,
     raw: &RawNeighbor,
     population: PopulationCoverage,
-    empty_local_interfaces: usize,
+    empty_interface_names: &BTreeSet<String>,
+    covered_interface_names: &BTreeSet<String>,
     evidence: Vec<EvidenceRef>,
     degraded: bool,
 ) -> TypedFact {
@@ -861,7 +1116,10 @@ fn fact_for_neighbor(
     let payload = LldpNeighborPayload {
         local_interface_name: raw.local_interface.clone(),
         normalized_local_interface_name: None,
-        source_neighbor_id: Some(raw.source_neighbor_id.clone()),
+        source_neighbor_id: raw.source_neighbor_id.clone(),
+        // Generated array positions remain diagnostics only. Embedding them in
+        // typed fields would make fact identity depend on source ordering.
+        capture_record_locator: None,
         protocol: NeighborProtocol::Lldp,
         remote_chassis_id: chassis,
         remote_chassis_id_raw: raw.chassis_id_raw.clone(),
@@ -875,14 +1133,36 @@ fn fact_for_neighbor(
         capabilities: caps,
         ttl_seconds: ttl.clone(),
         age_seconds: age,
+        temporal: raw.temporal.clone().map(|mut temporal| {
+            temporal.capture_at = match obs.capture.captured_at.and_then(parse_rfc3339) {
+                Some(_) => {
+                    ObservedField::known(obs.capture.captured_at.unwrap_or_default().to_string())
+                }
+                None => unknown_time("capture completion time absent or not RFC-3339"),
+            };
+            temporal
+        }),
         coverage: LldpCoverage {
             capture_outcome: capture_coverage(obs.capture.outcome),
             population_coverage: population,
-            empty_local_interfaces: empty_local_interfaces as u32,
+            empty_local_interfaces: empty_interface_names.len() as u32,
+            empty_local_interface_names: empty_interface_names.iter().cloned().collect(),
+            capture_id: Some(obs.context.capture_id.to_string()),
+            source_generation: Some(obs.context.session_epoch),
+            observation_time: Some(obs.context.observed_at.to_string()),
+            acquisition_scope: Some(format!(
+                "device={} scope={} network_namespace={} source={}",
+                obs.context.device_id,
+                obs.context.scope.unwrap_or("<default>"),
+                obs.context.network_namespace.unwrap_or("<unspecified>"),
+                obs.source.label()
+            )),
+            covered_interfaces: covered_interface_names.iter().cloned().collect(),
+            evidence_references: evidence.clone(),
         },
     };
     let fields = serde_json::to_value(&payload).expect("typed LLDP payload serializes");
-    let valid_until = ttl_valid_until(obs.context.observed_at, ttl.value);
+    let (valid_from, valid_until) = source_validity_window(raw);
     let mut fact = TypedFact {
         schema_version: crate::typed_facts::SCHEMA_VERSION,
         fact_id: String::new(),
@@ -908,7 +1188,7 @@ fn fact_for_neighbor(
         },
         observed_at: obs.context.observed_at.to_string(),
         ingested_at: None,
-        valid_from: Some(obs.context.observed_at.to_string()),
+        valid_from,
         valid_until,
         payload: FactPayload {
             produced_by: obs.source.produced_by().to_string(),
@@ -970,6 +1250,14 @@ pub fn normalize_lldp_neighbors_with_limits(
         duplicate_records: 0,
         invalid_records: 0,
         empty_local_interfaces: 0,
+        empty_local_interface_names: vec![],
+        covered_interfaces: vec![],
+        malformed_management_address_entries: 0,
+        omitted_management_address_entries: 0,
+        malformed_capability_entries: 0,
+        omitted_capability_entries: 0,
+        repeated_neighbor_records: 0,
+        conflicting_neighbor_records: 0,
         facts_emitted,
         facts_rejected: 0,
         output_facts_omitted: 0,
@@ -991,11 +1279,6 @@ pub fn normalize_lldp_neighbors_with_limits(
             ),
         };
     }
-    let evidence = vec![EvidenceRef {
-        kind: "raw_output".to_string(),
-        sha256: sha256_hex(obs.capture.output.as_bytes()),
-        locator: Some(obs.source.command().to_string()),
-    }];
     if oversized {
         let mut facts = vec![];
         let status = status_fact(
@@ -1003,7 +1286,7 @@ pub fn normalize_lldp_neighbors_with_limits(
             PayloadState::InvalidInput,
             Completeness::Unknown,
             "LLDP observation exceeded input byte bound; refused",
-            evidence,
+            vec![],
         );
         if status.validate().is_ok() {
             facts.push(status);
@@ -1019,6 +1302,11 @@ pub fn normalize_lldp_neighbors_with_limits(
             ),
         };
     }
+    let evidence = vec![EvidenceRef {
+        kind: "raw_output".to_string(),
+        sha256: sha256_hex(obs.capture.output.as_bytes()),
+        locator: Some(obs.source.command().to_string()),
+    }];
     if !parsed {
         let state = if obs.capture.outcome == CaptureOutcome::Unsupported {
             PayloadState::Unsupported
@@ -1044,6 +1332,34 @@ pub fn normalize_lldp_neighbors_with_limits(
                 emitted,
                 None,
                 vec!["LLDP capture was not usable; no observation parsed".into()],
+            ),
+        };
+    }
+
+    if let Err(e) =
+        crate::xrd_openconfig_interfaces::reject_duplicate_json_keys(obs.capture.output.as_bytes())
+    {
+        let mut facts = vec![];
+        let status = status_fact(
+            obs,
+            PayloadState::InvalidInput,
+            Completeness::Unknown,
+            "LLDP structured input contained duplicate JSON object keys",
+            evidence.clone(),
+        );
+        if status.validate().is_ok() {
+            facts.push(status);
+        }
+        let emitted = facts.len();
+        return LldpNormalizationOutput {
+            facts,
+            neighbors: vec![],
+            report: base_report(
+                emitted,
+                None,
+                vec![format!(
+                    "ambiguous JSON object identity: {e}; no neighbor parsed"
+                )],
             ),
         };
     }
@@ -1074,17 +1390,26 @@ pub fn normalize_lldp_neighbors_with_limits(
         };
     };
 
-    let (raw_neighbors, mut invalid_records, empty_interfaces, mut invalid_samples) =
-        match obs.source {
-            LldpStructuredSource::CumulusLldpdJson => parse_cumulus(&root, limits),
-            LldpStructuredSource::AristaEosJson => parse_eos(&root, limits),
-        };
+    let parse_outcome = match obs.source {
+        LldpStructuredSource::CumulusLldpdJson => parse_cumulus(&root, limits),
+        LldpStructuredSource::AristaEosJson => parse_eos(&root, limits),
+    };
+    let mut invalid_records = parse_outcome.invalid_records;
+    let mut invalid_samples = parse_outcome.invalid_samples.clone();
+    let ancillary_errors = parse_outcome.malformed_management_address_entries
+        + parse_outcome.omitted_management_address_entries
+        + parse_outcome.malformed_capability_entries
+        + parse_outcome.omitted_capability_entries;
 
     // Protocol-mandatory identity: LLDP without chassis-ID or port-ID is not a
     // usable neighbor record. It remains counted evidence in the report.
     let mut usable = Vec::new();
-    for raw in raw_neighbors {
-        if raw.chassis_id.is_none() || raw.port_id.is_none() {
+    for raw in parse_outcome.neighbors {
+        if raw.chassis_id.is_none()
+            || raw.port_id.is_none()
+            || raw.chassis_subtype.value.is_none()
+            || raw.port_subtype.value.is_none()
+        {
             invalid_records += 1;
             if invalid_samples.len() < MAX_INVALID_SAMPLES {
                 invalid_samples.push(format!(
@@ -1099,47 +1424,56 @@ pub fn normalize_lldp_neighbors_with_limits(
         }
     }
 
-    // Exact duplicate observations are redundant. Conflicting observations
-    // whose identifiers differ are deliberately retained for reconciliation.
-    let mut seen = BTreeSet::new();
+    // Exact duplicate observations are redundant. Generated array positions
+    // are deliberately excluded from that comparison. Repeated or conflicting
+    // observations of the same semantic neighbor remain separate evidence for
+    // reconciliation, while distinct chassis/port identities remain distinct
+    // neighbors even when they share one local interface.
+    let mut seen_exact = BTreeSet::new();
+    let mut identity_evidence: std::collections::BTreeMap<String, BTreeSet<String>> =
+        std::collections::BTreeMap::new();
     let mut deduped = Vec::new();
     let mut duplicates = 0usize;
+    let mut repeated_neighbor_records = 0usize;
+    let mut conflicting_neighbor_records = 0usize;
     for raw in usable {
-        if seen.insert(raw.semantic_key()) {
-            deduped.push(raw);
-        } else {
+        if !seen_exact.insert(raw.exact_duplicate_key()) {
             duplicates += 1;
-        }
-    }
-
-    let population = if obs.capture.outcome == CaptureOutcome::Unknown {
-        PopulationCoverage::Unknown
-    } else if invalid_records > 0 || obs.capture.outcome.degrades() {
-        PopulationCoverage::Partial
-    } else {
-        PopulationCoverage::Complete
-    };
-    let degraded = invalid_records > 0 || duplicates > 0;
-    let mut facts = Vec::new();
-    let mut facts_rejected = 0usize;
-    let mut output_facts_omitted = 0usize;
-    let mut diagnostics = Vec::new();
-    for raw in &deduped {
-        diagnostics.push(raw.diagnostic());
-        if facts.len() >= limits.max_output_facts {
-            output_facts_omitted += 1;
             continue;
         }
-        let fact = fact_for_neighbor(
+        let identity = raw.neighbor_identity_key();
+        let evidence_key = raw.non_temporal_evidence_key();
+        let observations = identity_evidence.entry(identity).or_default();
+        if observations.contains(&evidence_key) {
+            repeated_neighbor_records += 1;
+        } else if !observations.is_empty() {
+            conflicting_neighbor_records += 1;
+        }
+        observations.insert(evidence_key);
+        deduped.push(raw);
+    }
+
+    // Validate before finalizing coverage: validation failures and output
+    // omissions are part of population coverage, not an afterthought that can
+    // leave a falsely complete coverage claim embedded in emitted facts.
+    let provisional_degraded = invalid_records > 0
+        || ancillary_errors > 0
+        || duplicates > 0
+        || conflicting_neighbor_records > 0;
+    let mut validated_raw = Vec::new();
+    let mut facts_rejected = 0usize;
+    for raw in &deduped {
+        let provisional = fact_for_neighbor(
             obs,
             raw,
-            population,
-            empty_interfaces,
+            PopulationCoverage::Unknown,
+            &parse_outcome.empty_interfaces,
+            &parse_outcome.covered_interfaces,
             evidence.clone(),
-            degraded,
+            provisional_degraded,
         );
-        match fact.validate() {
-            Ok(()) => facts.push(fact),
+        match provisional.validate() {
+            Ok(()) => validated_raw.push(raw),
             Err(e) => {
                 facts_rejected += 1;
                 if invalid_samples.len() < MAX_INVALID_SAMPLES {
@@ -1151,9 +1485,62 @@ pub fn normalize_lldp_neighbors_with_limits(
             }
         }
     }
+    let output_facts_omitted = validated_raw.len().saturating_sub(limits.max_output_facts);
+    let population = if obs.capture.outcome == CaptureOutcome::Unknown {
+        PopulationCoverage::Unknown
+    } else if invalid_records > 0
+        || ancillary_errors > 0
+        || facts_rejected > 0
+        || output_facts_omitted > 0
+        || conflicting_neighbor_records > 0
+        || obs.capture.outcome.degrades()
+    {
+        PopulationCoverage::Partial
+    } else {
+        PopulationCoverage::Complete
+    };
+    let degraded = invalid_records > 0
+        || ancillary_errors > 0
+        || duplicates > 0
+        || facts_rejected > 0
+        || output_facts_omitted > 0
+        || conflicting_neighbor_records > 0;
+    let mut facts = Vec::new();
+    let mut diagnostics = Vec::new();
+    for raw in &deduped {
+        diagnostics.push(raw.diagnostic());
+    }
+    for raw in validated_raw.into_iter().take(limits.max_output_facts) {
+        let fact = fact_for_neighbor(
+            obs,
+            raw,
+            population,
+            &parse_outcome.empty_interfaces,
+            &parse_outcome.covered_interfaces,
+            evidence.clone(),
+            degraded,
+        );
+        match fact.validate() {
+            Ok(()) => facts.push(fact),
+            Err(e) => {
+                facts_rejected += 1;
+                if invalid_samples.len() < MAX_INVALID_SAMPLES {
+                    invalid_samples.push(format!(
+                        "{}: final fact validation rejected: {e}",
+                        raw.local_interface
+                    ));
+                }
+            }
+        }
+    }
 
-    if facts.is_empty() && output_facts_omitted == 0 {
-        let (state, note) = if deduped.is_empty() && invalid_records == 0 {
+    if facts.is_empty() {
+        let (state, note) = if output_facts_omitted > 0 {
+            (
+                PayloadState::OutputBudgetExhausted,
+                "effective output-fact budget prevented every validated neighbor fact",
+            )
+        } else if deduped.is_empty() && invalid_records == 0 {
             (
                 PayloadState::Empty,
                 "capture decoded successfully but contained no LLDP neighbor records",
@@ -1177,8 +1564,6 @@ pub fn normalize_lldp_neighbors_with_limits(
         } else {
             facts_rejected += 1;
         }
-    } else if facts.is_empty() && output_facts_omitted > 0 {
-        output_facts_omitted = output_facts_omitted.saturating_sub(1);
     }
 
     let mut notes = vec![
@@ -1237,7 +1622,16 @@ pub fn normalize_lldp_neighbors_with_limits(
             neighbors_decoded: diagnostics_len,
             duplicate_records: duplicates,
             invalid_records,
-            empty_local_interfaces: empty_interfaces,
+            empty_local_interfaces: parse_outcome.empty_interfaces.len(),
+            empty_local_interface_names: parse_outcome.empty_interfaces.iter().cloned().collect(),
+            covered_interfaces: parse_outcome.covered_interfaces.iter().cloned().collect(),
+            malformed_management_address_entries: parse_outcome
+                .malformed_management_address_entries,
+            omitted_management_address_entries: parse_outcome.omitted_management_address_entries,
+            malformed_capability_entries: parse_outcome.malformed_capability_entries,
+            omitted_capability_entries: parse_outcome.omitted_capability_entries,
+            repeated_neighbor_records,
+            conflicting_neighbor_records,
             facts_emitted: facts_len,
             facts_rejected,
             output_facts_omitted,
@@ -1277,7 +1671,8 @@ pub fn payload_from_flat_model_driven(
     Some(LldpNeighborPayload {
         local_interface_name: local,
         normalized_local_interface_name: None,
-        source_neighbor_id: sanitize_scalar(neighbor_id),
+        source_neighbor_id: None,
+        capture_record_locator: sanitize_scalar(neighbor_id),
         protocol: NeighborProtocol::Lldp,
         remote_chassis_id: observed(chassis),
         remote_chassis_id_raw: None,
@@ -1299,6 +1694,7 @@ pub fn payload_from_flat_model_driven(
         capabilities: observed(None),
         ttl_seconds: observed(None),
         age_seconds: observed(None),
+        temporal: None,
         coverage,
     })
 }
@@ -1375,10 +1771,11 @@ mod tests {
         assert_eq!(mgmt.len(), 2);
         assert_eq!(mgmt[0].address, "10.0.0.21");
         assert_eq!(mgmt[1].address, "fe80::5054:ff:fea0:1af4");
-        assert_eq!(
-            out.facts[0].valid_until.as_deref(),
-            Some("2021-03-21T18:28:43+00:00")
-        );
+        // Cumulus exposes age/TTL but does not establish exact last-contact
+        // semantics in this contract; expiry is therefore explicitly unknown
+        // rather than a fresh full TTL assigned to replayed output.
+        assert_eq!(out.facts[0].valid_until, None);
+        assert_eq!(out.facts[0].valid_from, None);
         let locals: BTreeSet<_> = out
             .facts
             .iter()
@@ -1432,6 +1829,26 @@ mod tests {
         assert_eq!(
             parsed[0].remote_chassis_id_raw.as_deref(),
             Some("4438.39ba.d234")
+        );
+        assert_eq!(
+            parsed[0].temporal.as_ref().map(|t| t.validity_basis),
+            Some(LldpValidityBasis::LastContactPlusAdvertisedTtl)
+        );
+        assert!(out.facts[0].valid_from.is_some());
+        assert!(out.facts[0].valid_until.is_some());
+        assert!(
+            out.facts[0].valid_until.as_deref().unwrap()
+                > out.facts[0].valid_from.as_deref().unwrap()
+        );
+        assert_eq!(
+            out.report.empty_local_interface_names,
+            vec!["Ethernet3", "Ethernet4", "Management1"]
+        );
+        assert!(
+            out.report
+                .covered_interfaces
+                .iter()
+                .any(|i| i == "Management1")
         );
     }
 
@@ -1493,5 +1910,276 @@ mod tests {
                 .iter()
                 .any(|s| s.contains("mandatory chassis"))
         );
+    }
+
+    #[test]
+    fn eos_distinct_neighbor_on_same_interface_is_not_duplicate() {
+        let mut root: Value = serde_json::from_str(EOS).unwrap();
+        let info = root
+            .pointer_mut("/lldpNeighbors/Ethernet1/lldpNeighborInfo")
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        let mut second = info[0].clone();
+        second["neighborInterfaceInfo"]["interfaceId"] = Value::String("Ethernet9".into());
+        info.push(second);
+        let text = serde_json::to_string(&root).unwrap();
+        let out = normalize_lldp_neighbors(&obs(
+            LldpStructuredSource::AristaEosJson,
+            &text,
+            "leaf02",
+            "2021-06-06T22:59:36Z",
+        ));
+        assert_eq!(out.report.duplicate_records, 0);
+        assert_eq!(out.report.repeated_neighbor_records, 0);
+        assert_eq!(out.report.conflicting_neighbor_records, 0);
+        assert_eq!(out.facts.len(), 5);
+    }
+
+    #[test]
+    fn eos_conflicting_attributes_are_retained_and_classified() {
+        let mut root: Value = serde_json::from_str(EOS).unwrap();
+        let info = root
+            .pointer_mut("/lldpNeighbors/Ethernet1/lldpNeighborInfo")
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        let mut second = info[0].clone();
+        second["systemName"] = Value::String("conflicting-name".into());
+        info.push(second);
+        let text = serde_json::to_string(&root).unwrap();
+        let out = normalize_lldp_neighbors(&obs(
+            LldpStructuredSource::AristaEosJson,
+            &text,
+            "leaf02",
+            "2021-06-06T22:59:36Z",
+        ));
+        assert_eq!(out.report.duplicate_records, 0);
+        assert_eq!(out.report.conflicting_neighbor_records, 1);
+        assert_eq!(out.facts.len(), 5);
+    }
+
+    #[test]
+    fn eos_repeated_observation_with_changed_age_is_not_exact_duplicate() {
+        let mut root: Value = serde_json::from_str(EOS).unwrap();
+        let info = root
+            .pointer_mut("/lldpNeighbors/Ethernet1/lldpNeighborInfo")
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        let mut second = info[0].clone();
+        second["lastContactTime"] = Value::from(1623025180.0);
+        info.push(second);
+        let text = serde_json::to_string(&root).unwrap();
+        let out = normalize_lldp_neighbors(&obs(
+            LldpStructuredSource::AristaEosJson,
+            &text,
+            "leaf02",
+            "2021-06-06T22:59:36Z",
+        ));
+        assert_eq!(out.report.duplicate_records, 0);
+        assert_eq!(out.report.repeated_neighbor_records, 1);
+        assert_eq!(out.report.conflicting_neighbor_records, 0);
+        assert_eq!(out.facts.len(), 5);
+    }
+
+    #[test]
+    fn eos_reordered_source_array_preserves_fact_identity_set() {
+        let original = normalize_lldp_neighbors(&obs(
+            LldpStructuredSource::AristaEosJson,
+            EOS,
+            "leaf02",
+            "2021-06-06T22:59:36Z",
+        ));
+        let mut root: Value = serde_json::from_str(EOS).unwrap();
+        let info = root
+            .pointer_mut("/lldpNeighbors/Ethernet1/lldpNeighborInfo")
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        info.reverse();
+        let text = serde_json::to_string(&root).unwrap();
+        let reordered = normalize_lldp_neighbors(&obs(
+            LldpStructuredSource::AristaEosJson,
+            &text,
+            "leaf02",
+            "2021-06-06T22:59:36Z",
+        ));
+        // Reordered bytes are distinct raw evidence, so typed fact/evidence
+        // digests may legitimately differ. Semantic neighbor identity and
+        // population classification must not: array position is not identity.
+        let key = |f: &TypedFact| {
+            let p = payload(f);
+            (
+                p.local_interface_name,
+                p.remote_chassis_id_subtype.value,
+                p.remote_chassis_id.value,
+                p.remote_port_id_subtype.value,
+                p.remote_port_id.value,
+                p.remote_system_name.value,
+            )
+        };
+        let a: BTreeSet<_> = original.facts.iter().map(key).collect();
+        let b: BTreeSet<_> = reordered.facts.iter().map(key).collect();
+        assert_eq!(a, b);
+        assert_eq!(
+            original.report.neighbors_decoded,
+            reordered.report.neighbors_decoded
+        );
+        assert_eq!(
+            original.report.duplicate_records,
+            reordered.report.duplicate_records
+        );
+    }
+
+    #[test]
+    fn zero_output_budget_is_exact_omission_not_empty_success() {
+        let observation = obs(
+            LldpStructuredSource::AristaEosJson,
+            EOS,
+            "leaf02",
+            "2021-06-06T22:59:36Z",
+        );
+        let out = normalize_lldp_neighbors_with_limits(
+            &observation,
+            NormalizerLimits {
+                max_output_facts: 0,
+                ..NormalizerLimits::default()
+            },
+        );
+        assert_eq!(out.report.output_facts_omitted, 4);
+        assert_eq!(out.facts.len(), 1);
+        assert_eq!(
+            out.facts[0].payload.state,
+            Some(PayloadState::OutputBudgetExhausted)
+        );
+    }
+
+    #[test]
+    fn cumulus_empty_without_lldp_provenance_is_not_positive_empty() {
+        let raw = br#"{"lldp":[{"interface":[{"name":"swp1"}]}]}"#;
+        let out = normalize_lldp_neighbors(&obs(
+            LldpStructuredSource::CumulusLldpdJson,
+            std::str::from_utf8(raw).unwrap(),
+            "leaf02",
+            "2021-03-21T18:26:43Z",
+        ));
+        assert_eq!(out.report.empty_local_interfaces, 0);
+        assert!(out.report.invalid_records > 0);
+        assert!(
+            out.report
+                .invalid_samples
+                .iter()
+                .any(|s| s.contains("discovery protocol")),
+            "missing protocol provenance must be explicit invalid evidence"
+        );
+    }
+
+    #[test]
+    fn cumulus_positive_empty_differs_from_malformed_containers() {
+        let text = serde_json::json!({
+            "lldp": [{"interface": [
+                {"name":"swp1","via":"LLDP"},
+                {"name":"swp2","via":"LLDP","chassis":{},"port":[]}
+            ]}]
+        })
+        .to_string();
+        let out = normalize_lldp_neighbors(&obs(
+            LldpStructuredSource::CumulusLldpdJson,
+            &text,
+            "leaf02",
+            "2021-03-21T18:26:43Z",
+        ));
+        assert_eq!(out.report.empty_local_interface_names, vec!["swp1"]);
+        assert_eq!(out.report.invalid_records, 1);
+        assert!(
+            !out.report
+                .empty_local_interface_names
+                .contains(&"swp2".to_string())
+        );
+    }
+
+    #[test]
+    fn cumulus_multi_object_chassis_cardinality_is_invalid_not_first_selected() {
+        let mut root: Value = serde_json::from_str(CUMULUS).unwrap();
+        let chassis = root
+            .pointer_mut("/lldp/0/interface/0/chassis")
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        let second = chassis[0].clone();
+        chassis.push(second);
+        let text = serde_json::to_string(&root).unwrap();
+        let out = normalize_lldp_neighbors(&obs(
+            LldpStructuredSource::CumulusLldpdJson,
+            &text,
+            "leaf02",
+            "2021-03-21T18:26:43Z",
+        ));
+        assert_eq!(out.report.invalid_records, 1);
+        assert_eq!(out.facts.len(), 1);
+        assert!(
+            out.report
+                .invalid_samples
+                .iter()
+                .any(|s| s.contains("cardinality"))
+        );
+    }
+
+    #[test]
+    fn duplicate_json_keys_are_rejected_before_field_interpretation() {
+        let text = CUMULUS.replacen(
+            "\"name\": \"swp1\"",
+            "\"name\":\"swp1\",\"name\":\"swp1x\"",
+            1,
+        );
+        let out = normalize_lldp_neighbors(&obs(
+            LldpStructuredSource::CumulusLldpdJson,
+            &text,
+            "leaf02",
+            "2021-03-21T18:26:43Z",
+        ));
+        assert_eq!(out.facts.len(), 1);
+        assert_eq!(out.facts[0].payload.state, Some(PayloadState::InvalidInput));
+    }
+
+    #[test]
+    fn oversized_input_is_refused_before_raw_evidence_hashing() {
+        let observation = obs(
+            LldpStructuredSource::AristaEosJson,
+            EOS,
+            "leaf02",
+            "2021-06-06T22:59:36Z",
+        );
+        let out = normalize_lldp_neighbors_with_limits(
+            &observation,
+            NormalizerLimits {
+                max_input_bytes: 8,
+                ..NormalizerLimits::default()
+            },
+        );
+        assert_eq!(out.facts.len(), 1);
+        assert_eq!(out.facts[0].payload.state, Some(PayloadState::InvalidInput));
+        assert!(out.facts[0].evidence.is_empty());
+    }
+
+    #[test]
+    fn eos_ttl_zero_expires_at_last_contact_not_capture_plus_full_ttl() {
+        let mut root: Value = serde_json::from_str(EOS).unwrap();
+        for entry in root
+            .pointer_mut("/lldpNeighbors/Ethernet1/lldpNeighborInfo")
+            .and_then(Value::as_array_mut)
+            .unwrap()
+        {
+            entry["ttl"] = Value::from(0);
+        }
+        let text = serde_json::to_string(&root).unwrap();
+        let out = normalize_lldp_neighbors(&obs(
+            LldpStructuredSource::AristaEosJson,
+            &text,
+            "leaf02",
+            "2021-06-06T22:59:36Z",
+        ));
+        let fact = out
+            .facts
+            .iter()
+            .find(|f| f.subject.entity.as_deref() == Some("Ethernet1"))
+            .unwrap();
+        assert_eq!(fact.valid_from, fact.valid_until);
     }
 }

@@ -923,6 +923,12 @@ fn walk_xrd_bgp_blob(value: &JsonValue) -> Option<TelemetryEvent> {
 
 /// Normalize an XRd `lldp/nodes/.../detail` blob.
 ///
+/// Explicit BN-024 event boundary:
+/// Multiple entries preserved in telemetry event: IMPLEMENTED
+/// Typed model-driven normalization: PENDING
+/// Multiple-neighbor downstream persistence: PENDING
+/// Lifecycle-safe graph projection: PENDING
+///
 /// XR native represents `lldp-neighbor` either as one object or as an array.
 /// The previous extraction silently selected index zero. Preserve every entry
 /// in `neighbors` while retaining the first entry's flat keys at top level for
@@ -965,7 +971,7 @@ fn walk_xr_lldp_blob(value: &JsonValue) -> Option<JsonValue> {
 
 #[cfg(test)]
 mod tests {
-    use super::walk_xr_lldp_blob;
+    use super::{TelemetryEvent, TelemetryUpdate, walk_xr_lldp_blob};
 
     #[test]
     fn xr_lldp_multi_neighbor_blob_preserves_every_entry() {
@@ -993,6 +999,40 @@ mod tests {
             out.get("chassis-id").and_then(|v| v.as_str()),
             Some("aa:aa:aa:aa:aa:01")
         );
+    }
+
+    #[test]
+    fn xr_lldp_event_boundary_preserves_multi_entry_state_value() {
+        let update = TelemetryUpdate {
+            target: "xrd1".into(),
+            vendor: "cisco".into(),
+            hostname: "xrd1".into(),
+            role: "spine".into(),
+            site: "lab".into(),
+            timestamp_ns: 1,
+            path: "lldp/nodes/node[node-name=0/RP0/CPU0]/neighbors/details/detail[interface-name=GigabitEthernet0/0/0/0][device-id=leaf1]".into(),
+            value: serde_json::json!({
+                "lldp-neighbor": [
+                    {"chassis-id":"aa:aa:aa:aa:aa:01","port-id-detail":"GigabitEthernet0/0/0/1","detail":{"system-name":"leaf1"}},
+                    {"chassis-id":"aa:aa:aa:aa:aa:02","port-id-detail":"GigabitEthernet0/0/0/2","detail":{"system-name":"leaf2"}}
+                ]
+            }),
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: String::new(),
+            gnmi_path: vec![],
+            is_delete: false,
+            collector_id: String::new(),
+        };
+        let TelemetryEvent::LldpNeighbor { state_value, .. } = update.classify() else {
+            panic!("XR native detail must classify as LLDP neighbor");
+        };
+        let neighbors = state_value
+            .as_ref()
+            .and_then(|v| v.get("neighbors"))
+            .and_then(|v| v.as_array())
+            .expect("event boundary carries all normalized entries");
+        assert_eq!(neighbors.len(), 2);
     }
 
     #[test]

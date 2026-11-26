@@ -503,7 +503,7 @@ impl<'a> DuplicateKeyScanner<'a> {
     }
 }
 
-fn reject_duplicate_json_keys(bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn reject_duplicate_json_keys(bytes: &[u8]) -> Result<(), String> {
     let mut scanner = DuplicateKeyScanner::new(bytes);
     scanner.scan_value(0)
 }
