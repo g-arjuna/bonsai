@@ -1,0 +1,2 @@
+PASS capability ledger structural validation
+entries 66 dispositions {'PORT_REQUIRED': 43, 'EXISTING_PARTIAL': 20, 'NATIVE_PORT_IMPLEMENTED': 1, 'EXISTING_EQUIVALENT': 1, 'IMPROVE_UPON_UPSTREAM': 1} implementation {'completed_existing_equivalent': 1, 'completed_native_port_implemented': 1, 'completed_improvement': 0, 'completed_equivalent_total': 2, 'planned_improvement_not_completed': 1, 'partially_implemented': 20, 'not_implemented_port_required': 43, 'unassessed': 0}

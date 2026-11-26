@@ -1,0 +1,138 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: env CARGO_BUILD_JOBS=2 PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome GATE_BASE=4c100ba56a06dfe57a5aed65c3920eb5c894757e scripts/ci/gates.sh l0 l1 l2 l3
+
+=== [gate] L0 source checks ===
+L0: rustfmt --check on changed files (base: 4c100ba56a06dfe57a5aed65c3920eb5c894757e)
+L0: python compile check
+L0: OK
+
+=== [gate] L1 compile/static validation ===
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel)
+warning: variable `evA` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1154:9
+     |
+1154 |     let evA = fetch_unembedded(&rig).await;
+     |         ^^^ help: convert the identifier to snake case: `ev_a`
+     |
+     = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: variable `tokA` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1155:9
+     |
+1155 |     let tokA = event_field(&evA, "ev-s1", "claim_token").expect("token");
+     |         ^^^^ help: convert the identifier to snake case: `tok_a`
+
+warning: variable `evB` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1169:9
+     |
+1169 |     let evB = fetch_unembedded(&rig).await;
+     |         ^^^ help: convert the identifier to snake case: `ev_b`
+
+warning: variable `tokB` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1170:9
+     |
+1170 |     let tokB = event_field(&evB, "ev-s1", "claim_token").expect("token");
+     |         ^^^^ help: convert the identifier to snake case: `tok_b`
+
+warning: variable `itemA` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1177:13
+     |
+1177 |     let mut itemA = embedding_item("ev-s1", vec![0.5, 0.5, 0.5, 0.5]);
+     |             ^^^^^ help: convert the identifier to snake case: `item_a`
+
+warning: variable `itemB` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1191:13
+     |
+1191 |     let mut itemB = embedding_item("ev-s1", vec![0.5, 0.5, 0.5, 0.5]);
+     |             ^^^^^ help: convert the identifier to snake case: `item_b`
+
+warning: `bonsai` (test "wp65a_embedding_lifecycle") generated 6 warnings
+    Finished `ci` profile [optimized] target(s) in 1m 16s
+npm warn deprecated lucide-svelte@1.0.1: Package deprecated. Please use @lucide/svelte instead.
+
+added 79 packages in 2s
+
+> ui@0.0.0 build
+> vite build
+
+vite v8.0.14 building client environment for production...
+[2Ktransforming...✓ 4388 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                              0.82 kB │ gzip:  0.43 kB
+dist/assets/Credentials-B8ZOODJG.css         0.26 kB │ gzip:  0.19 kB
+dist/assets/Devices-kkJBlgtO.css             0.69 kB │ gzip:  0.31 kB
+dist/assets/Login-D_IFbD2j.css               1.22 kB │ gzip:  0.48 kB
+dist/assets/Environments-DjS07TPk.css        1.32 kB │ gzip:  0.51 kB
+dist/assets/Audit-D8l50QhK.css               1.39 kB │ gzip:  0.52 kB
+dist/assets/Sites-CsS4H3IW.css               1.97 kB │ gzip:  0.68 kB
+dist/assets/Governance-O2IWmCK4.css          2.50 kB │ gzip:  0.73 kB
+dist/assets/Approvals-UefCT8B6.css           2.68 kB │ gzip:  0.86 kB
+dist/assets/Endpoints-D2TLTZQo.css           3.13 kB │ gzip:  0.88 kB
+dist/assets/HA-Xb9Bzpk9.css                  3.46 kB │ gzip:  0.87 kB
+dist/assets/Collectors-FiPXdDAP.css          3.64 kB │ gzip:  1.00 kB
+dist/assets/Snmp-Co64qwKn.css                3.66 kB │ gzip:  0.97 kB
+dist/assets/Routing-B0Tn-MPE.css             4.01 kB │ gzip:  1.00 kB
+dist/assets/Profiles-Cznzd6v9.css            4.31 kB │ gzip:  1.12 kB
+dist/assets/StreamControl-6Pv1m0uz.css       4.37 kB │ gzip:  1.09 kB
+dist/assets/Operations-BRSSdp_I.css          4.76 kB │ gzip:  1.16 kB
+dist/assets/Investigations-CJq1TmNK.css      5.15 kB │ gzip:  1.33 kB
+dist/assets/SynthesizerRules-BFjxUqzV.css    5.33 kB │ gzip:  1.35 kB
+dist/assets/DbManagement-8-a4S8Kt.css        5.38 kB │ gzip:  1.35 kB
+dist/assets/Users-BIsXuUzs.css               5.42 kB │ gzip:  1.32 kB
+dist/assets/Sidecar-CD5LlqSL.css             6.65 kB │ gzip:  1.51 kB
+dist/assets/Syslog-C9TSxXxF.css              6.76 kB │ gzip:  1.41 kB
+dist/assets/TraceRoute-B3bCl7_A.css          6.85 kB │ gzip:  1.54 kB
+dist/assets/Incidents-Dsnq1Gpv.css           8.84 kB │ gzip:  1.98 kB
+dist/assets/Settings-C6yoJP8n.css            9.26 kB │ gzip:  2.02 kB
+dist/assets/Certs-D701NUgl.css              10.06 kB │ gzip:  1.86 kB
+dist/assets/Integrations-BHDVPnuJ.css       12.50 kB │ gzip:  2.28 kB
+dist/assets/Explorer-CxzsolDX.css           13.82 kB │ gzip:  2.88 kB
+dist/assets/index-ByuP9UfC.css              55.14 kB │ gzip: 10.73 kB
+dist/assets/Login-BRTR6h2i.js                1.70 kB │ gzip:  0.90 kB
+dist/assets/Audit-OH3a9iql.js                3.11 kB │ gzip:  1.54 kB
+dist/assets/Governance-BVZr8_BI.js           5.11 kB │ gzip:  2.10 kB
+dist/assets/Credentials-DImKTvvr.js          6.01 kB │ gzip:  2.24 kB
+dist/assets/Endpoints-BcpfHgX1.js            6.16 kB │ gzip:  2.35 kB
+dist/assets/Devices-Ct7AwK91.js              6.46 kB │ gzip:  2.87 kB
+dist/assets/Environments-BO4giz6n.js         6.80 kB │ gzip:  2.56 kB
+dist/assets/StreamControl-DXwIu5Df.js        7.02 kB │ gzip:  2.84 kB
+dist/assets/SynthesizerRules-DgvzwP5p.js     7.66 kB │ gzip:  2.89 kB
+dist/assets/HA-akhZx5pU.js                   8.24 kB │ gzip:  2.67 kB
+dist/assets/TraceRoute-Pdw2h1KP.js           8.72 kB │ gzip:  3.06 kB
+dist/assets/Investigations-BPx0wAt-.js       9.65 kB │ gzip:  3.34 kB
+dist/assets/Syslog-BniMwxvd.js              10.61 kB │ gzip:  3.61 kB
+dist/assets/Approvals-C-aWZZx3.js           10.63 kB │ gzip:  3.69 kB
+dist/assets/Snmp-CMAtCIMv.js                10.83 kB │ gzip:  3.68 kB
+dist/assets/Incidents-DFNe28Jt.js           11.05 kB │ gzip:  4.15 kB
+dist/assets/Sites-BY_mJRS_.js               12.95 kB │ gzip:  4.35 kB
+dist/assets/Collectors-DOSak0JI.js          13.24 kB │ gzip:  4.16 kB
+dist/assets/Profiles-BkqugO0l.js            13.41 kB │ gzip:  4.34 kB
+dist/assets/Sidecar-Ca_T0NUZ.js             14.11 kB │ gzip:  4.84 kB
+dist/assets/Users-DkBRbfcw.js               15.45 kB │ gzip:  5.06 kB
+dist/assets/Certs-BA3JKmkP.js               18.36 kB │ gzip:  6.13 kB
+dist/assets/Settings-WFg_gPFR.js            21.68 kB │ gzip:  6.52 kB
+dist/assets/DbManagement-CddKknzJ.js        22.15 kB │ gzip:  6.20 kB
+dist/assets/Operations-D_7wOEJC.js          26.37 kB │ gzip:  6.88 kB
+dist/assets/Explorer-Bq8qSTDq.js            28.56 kB │ gzip:  8.15 kB
+dist/assets/Routing-BY6yQPhz.js             32.69 kB │ gzip:  9.48 kB
+dist/assets/Integrations-YsI5GDCe.js        40.63 kB │ gzip: 10.54 kB
+dist/assets/Onboarding-Cnv1O0Vc.js          64.47 kB │ gzip: 18.87 kB
+dist/assets/vendor-CHeVoQBM.js             118.08 kB │ gzip: 41.81 kB
+dist/assets/index-Dr5N8b30.js              168.48 kB │ gzip: 46.99 kB
+
+[33m[PLUGIN_TIMINGS] [0mYour build spent significant time in plugins. Here is a breakdown:
+  - vite-plugin-svelte:load-custom (55%)
+  - vite-plugin-svelte:compile (41%)
+See https://rolldown.rs/options/checks#plugintimings for more details.
+
+✓ built in 6.39s
+bonsai_sdk import OK
+L1: OK
+
+=== [gate] L2 required behavioral tests ===
+L2: 35 integration targets + bonsai lib + rbmp crates
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel)
+
+NOTE: gate run intentionally superseded during L2 compile before behavioral completion because stale active-capability ledger semantics were discovered in documentation; no L2/L3 verdict was produced by this run.

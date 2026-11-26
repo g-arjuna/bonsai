@@ -1,8 +1,10 @@
 # BN-024-06 interface relationship assessment — first capability-led slice
 
-Status: REVIEW_READY implementation candidate, focused offline analysis only.
-Canonical L0–L3 gates: NOT_EXECUTED — deferred until independent review under
-the approved review-first validation policy.
+Status: MERGE_READY implementation candidate, focused offline analysis only.
+Canonical L0–L3 gates: PASS on frozen implementation candidate
+`89382018f3c4e14886c7a55fd28fb236c62ac9cd` against base
+`4c100ba56a06dfe57a5aed65c3920eb5c894757e`. L4 remains NOT_EXECUTED; this slice
+has no live acquisition or operator-surface acceptance boundary.
 
 ## Selected enterprise use case
 
@@ -192,5 +194,34 @@ narrow native port, 0 completed improvements, 1 planned-but-incomplete
 improvement, 20 partial and 43 not-implemented port-required capabilities
 (`capability-ledger-validation.log`).
 
-Canonical L0–L3 gates remain **NOT_EXECUTED** until the corrected candidate is
-committed/frozen under the review-first validation policy.
+Canonical L0–L3 gates were executed through the trusted shared ci lane with
+prebuilt lbug on frozen implementation candidate
+`89382018f3c4e14886c7a55fd28fb236c62ac9cd` against base
+`4c100ba56a06dfe57a5aed65c3920eb5c894757e`:
+
+```text
+scripts/ci/build-lane.sh --lbug-native "$HOME/.cache/bonsai-ci/lbug-native" -- \
+  env CARGO_BUILD_JOBS=2 \
+  PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome \
+  GATE_BASE=4c100ba56a06dfe57a5aed65c3920eb5c894757e \
+  scripts/ci/gates.sh l0 l1 l2 l3
+```
+
+Result: **L0 PASS, L1 PASS, L2 PASS, L3 PASS** in 28m21.78s wall time, maximum
+RSS 6,589,888 KiB, exit 0. L2 executed 45 Rust suites with 1362 passed, 0
+failed and 10 ignored; this includes the bonsai lib result of 724 passed, 0
+failed and 6 ignored. L3 executed 13 Rust integration/browser targets with 71
+passed and 0 failed, followed by root Python 66 passed and SDK Python 318
+passed plus 1 explicitly skipped and 1 deselected test. L4 remains
+**NOT_EXECUTED** because this offline analyzer slice has no live lab or
+operator-surface acceptance boundary. Evidence:
+`docs/bn024/evidence/2026-11-26-pr91-corrective/canonical-l0-l3-8938201.log`.
+
+The first canonical attempt on corrected candidate `d7796c3` failed L2 in
+`typed_facts::tests::structured_interface_identity_is_bound_into_authority`:
+semantic payload validation ran before the authority-binding check and masked
+the required authority error. The authority integrity check was moved ahead of
+semantic payload consistency validation, the focused regression passed, and
+the full canonical run above passed on the frozen descendant. The superseded
+`d7796c3`/`a2360e0` logs are retained as failure/interrupted-candidate evidence
+only; they do not validate the final candidate.

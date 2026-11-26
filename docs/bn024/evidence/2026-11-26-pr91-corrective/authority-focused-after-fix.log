@@ -1,0 +1,36 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline typed_facts::tests::structured_interface_identity_is_bound_into_authority
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel)
+    Finished `ci` profile [optimized] target(s) in 4m 12s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 1 test
+test typed_facts::tests::structured_interface_identity_is_bound_into_authority ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 729 filtered out; finished in 0.00s
+
+	Command being timed: "scripts/ci/build-lane.sh --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native -- cargo test -p bonsai --lib --profile ci --offline typed_facts::tests::structured_interface_identity_is_bound_into_authority"
+	User time (seconds): 1054.89
+	System time (seconds): 19.11
+	Percent of CPU this job got: 413%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 4:19.52
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 5733964
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 4429308
+	Voluntary context switches: 1283
+	Involuntary context switches: 494200
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 5065592
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+exit=0

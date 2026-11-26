@@ -1,0 +1,46 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline typed_facts::tests::structured_interface_identity_is_bound_into_authority -- --nocapture
+    Finished `ci` profile [optimized] target(s) in 0.35s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 1 test
+
+thread 'typed_facts::tests::structured_interface_identity_is_bound_into_authority' (966781) panicked at src/typed_facts.rs:1888:13:
+assertion failed: matches!(f.validate(), Err(FactError::InvalidField("authority")))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test typed_facts::tests::structured_interface_identity_is_bound_into_authority ... FAILED
+
+failures:
+
+failures:
+    typed_facts::tests::structured_interface_identity_is_bound_into_authority
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 729 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bonsai --lib`
+Command exited with non-zero status 101
+	Command being timed: "scripts/ci/build-lane.sh --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native -- cargo test -p bonsai --lib --profile ci --offline typed_facts::tests::structured_interface_identity_is_bound_into_authority -- --nocapture"
+	User time (seconds): 6.82
+	System time (seconds): 0.52
+	Percent of CPU this job got: 98%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:07.42
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 120408
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 57960
+	Voluntary context switches: 314
+	Involuntary context switches: 1222
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 352
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 101
+exit=101

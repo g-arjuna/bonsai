@@ -90,7 +90,7 @@ Evidence: `docs/bn024/evidence/2026-11-24-bn024-01*/`,
 `docs/bn024/extension-seam.md`, `docs/bn024/source-crosswalk/`.
 
 
-BN-024 SuzieQ capability ledger — **review candidate** (2026-11-26):
+BN-024 SuzieQ capability ledger — **merge-ready implementation candidate** (2026-11-26):
 `docs/bn024/source-crosswalk/` now contains a source-derived inventory of the
 pinned upstream revision and a machine/human capability delivery ledger. Counts:
 27 upstream object families (19 polled service families + 8 derived/virtual
@@ -100,13 +100,13 @@ port, 1 existing equivalent, 1 intentional improvement, 20 partial and 43
 missing after the first narrow LAG-consistency assertion slice moved
 `interfaces.assert` to partial.
 This is a delivery map, not a claim of feature parity or production readiness.
-Canonical gates: NOT_EXECUTED for the ledger publication; focused
-implementation regressions are reported separately. The cross-NOS interface
-qualification matrix now also records the roadmap-only status of Nokia SR OS,
-MikroTik RouterOS and IP Infusion OcNOS without implying implementation.
+The cross-NOS interface qualification matrix now also records the roadmap-only
+status of Nokia SR OS, MikroTik RouterOS and IP Infusion OcNOS without implying
+implementation. Canonical gate evidence is reported with the implementation
+slice below.
 
 BN-024 structured interface identity and first relationship-assessment slice —
-**review candidate** (2026-11-26): additive optional v1
+**merge-ready implementation candidate** (2026-11-26): additive optional v1
 `subject.interface_identity` identity refinement implemented in
 `src/typed_facts.rs` with JSON-schema/Python compatibility regressions. Legacy
 facts omitting the refinement retain their serialized shape and fact identity;
@@ -119,7 +119,20 @@ structural regressions only. First capability-led implementation:
 reports bridge/parent/VRF/unresolved relationships from typed interface facts,
 verified against the genuine Cumulus fixture. It is offline analysis only —
 no graph writer, live acquisition, API/UI exposure or cross-NOS qualification.
-Focused verification through the trusted ci lane: typed-facts 42 passed/2 ignored, interface relationships 2 passed, Cumulus/SONiC CLI normalizer 21 passed, FRR structured JSON 20 passed, XRd OpenConfig 34 passed (119 passed total, 0 failed); typed-fact pytest schema compatibility 9 passed. Canonical L0–L3 gates: NOT_EXECUTED under the approved review-first policy.
+Focused verification through the trusted ci lane after the final corrections:
+typed-facts 42 passed/2 ignored, interface relationships 17 passed,
+Cumulus/SONiC CLI normalizer 29 passed/2 ignored, FRR structured JSON 20
+passed, XRd OpenConfig 34 passed (142 passed total, 0 failed, 4 ignored);
+typed-fact pytest schema compatibility 9 passed. Canonical L0–L3 gates passed
+on frozen implementation candidate
+`89382018f3c4e14886c7a55fd28fb236c62ac9cd` against base
+`4c100ba56a06dfe57a5aed65c3920eb5c894757e` in 28m21.78s with maximum RSS
+6,589,888 KiB: L2 1362 Rust tests passed/0 failed/10 ignored across 45 suites;
+L3 71 Rust integration/browser tests passed/0 failed across 13 targets, root
+Python 66 passed, SDK Python 318 passed with 1 explicit skip and 1 deselected
+test. L4 remains NOT_EXECUTED because this offline slice has no live lab or
+operator-surface acceptance boundary. Evidence:
+`docs/bn024/evidence/2026-11-26-pr91-corrective/canonical-l0-l3-8938201.log`.
 
 BN-024 first native intelligence slice — **PR #86**
 (`feat/bn024-native-interface-state`): native Rust normalizer for the

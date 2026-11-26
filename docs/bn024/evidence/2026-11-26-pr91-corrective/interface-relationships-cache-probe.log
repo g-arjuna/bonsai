@@ -1,0 +1,68 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline interface_relationships
+warning: field `key` is never read
+   --> src/interface_relationships.rs:356:5
+    |
+355 | struct EntityEvidence<'a> {
+    |        -------------- field in this struct
+356 |     key: InterfaceEntityKey,
+    |     ^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `fact_ids` is never used
+   --> src/interface_relationships.rs:367:8
+    |
+362 | impl<'a> EntityEvidence<'a> {
+    | --------------------------- method in this implementation
+...
+367 |     fn fact_ids(&self) -> Vec<String> {
+    |        ^^^^^^^^
+
+warning: `bonsai` (lib test) generated 2 warnings
+    Finished `ci` profile [optimized] target(s) in 0.38s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 14 tests
+test interface_relationships::tests::incompatible_lag_target_type_remains_explicit ... ok
+test interface_relationships::tests::exact_duplicate_evidence_is_idempotent_and_permutation_deterministic ... ok
+test interface_relationships::tests::conflicting_same_generation_observations_are_explicit_and_order_independent ... ok
+test interface_relationships::tests::different_capture_ids_and_epochs_cannot_produce_merged_pass ... ok
+test interface_relationships::tests::forward_membership_distinguishes_empty_partial_and_complete ... ok
+test interface_relationships::tests::identical_names_in_separate_network_namespaces_remain_separate ... ok
+test interface_relationships::tests::operational_link_findings_do_not_claim_active_capacity_and_admin_down_is_not_fault ... ok
+test interface_relationships::tests::legacy_facts_without_structured_identity_remain_readable ... ok
+test interface_relationships::tests::subinterface_cannot_be_selected_as_lag_aggregate ... ok
+test interface_relationships::tests::structured_physical_and_subinterfaces_do_not_collapse ... ok
+test interface_relationships::tests::unknown_aggregate_state_and_unknown_membership_cannot_pass ... ok
+test interface_relationships::tests::unresolved_evidence_is_unknown_not_not_applicable ... ok
+test interface_relationships::tests::withdrawn_superseded_expired_and_non_operational_facts_are_not_current ... ok
+test interface_relationships::tests::genuine_cumulus_lag_bridge_and_vrf_relationships_are_reported ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 713 filtered out; finished in 0.01s
+
+	Command being timed: "scripts/ci/build-lane.sh --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native -- cargo test -p bonsai --lib --profile ci --offline interface_relationships"
+	User time (seconds): 6.51
+	System time (seconds): 0.52
+	Percent of CPU this job got: 98%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:07.13
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 120168
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 58321
+	Voluntary context switches: 338
+	Involuntary context switches: 1227
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 352
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+exit=0

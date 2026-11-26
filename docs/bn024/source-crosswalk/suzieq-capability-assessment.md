@@ -74,7 +74,7 @@ explicit; they are not overall parity percentages:
 ## Post-ledger implementation movement
 
 `interfaces.assert` moved from `PORT_REQUIRED` to `EXISTING_PARTIAL` in this
-same review candidate: `src/interface_relationships.rs` implements a narrow
+same validated implementation candidate: `src/interface_relationships.rs` implements a narrow
 offline LAG aggregate/member consistency slice using genuine Cumulus evidence
 plus typed synthetic regressions. The corrective review pass repaired entity
 identity, lifecycle filtering, duplicate accounting, batch-boundary handling
@@ -123,7 +123,7 @@ replaced with a competing subsystem.
 
 ## Artifact structural validation
 
-Focused validation in this review candidate: both JSON artifacts parse;
+Focused validation in this validated implementation candidate: both JSON artifacts parse;
 domain/disposition summary counts recompute exactly from the capability
 entries; the capability ledger contains 66 entries with exactly the
 disposition counts shown above (43 `PORT_REQUIRED`, 20 `EXISTING_PARTIAL`, 1

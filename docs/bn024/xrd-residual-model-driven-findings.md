@@ -26,6 +26,6 @@ Cisco interface workspace claim.
 - Foreign module using a recognized local leaf name.
 - Sync response plus update/delete content.
 - Non-boolean `atomic` and malformed/non-integer `duplicates` metadata.
-- Root path/payload interface-name mismatch, invalid identity types and conflicts across notifications — implemented in the current review candidate.
+- Root path/payload interface-name mismatch, invalid identity types and conflicts across notifications — implemented in the current validated implementation candidate.
 - Separate observation/acquisition interval from fact validity semantics.
 - Partial/truncated outer capture with terminal sync must not be represented as confirmed empty absence.
