@@ -46,6 +46,7 @@ use crate::lldp_facts::{
     LldpCoverage, LldpNeighborPayload, LldpTemporalEvidence, LldpValidityBasis, ManagementAddress,
     ManagementAddressType, NeighborProtocol, PopulationCoverage, PortIdSubtype, SubtypeObservation,
 };
+use crate::lldp_relationships::CaptureCoverageEvidence;
 use crate::typed_facts::{
     Completeness, EvidenceRef, FactPayload, FactSource, FactSubject, Lifecycle, PayloadState,
     Quality, TrustClass, TypedFact,
@@ -167,6 +168,11 @@ pub struct LldpNormalizationOutput {
     pub facts: Vec<TypedFact>,
     pub neighbors: Vec<LldpNeighborDiagnostic>,
     pub report: LldpNormalizationReport,
+    /// Coverage derived directly from the completed normalization outcome.
+    /// Keeping this object outside per-neighbor facts preserves positively
+    /// empty captures: an all-empty valid population emits no neighbor entity
+    /// fact, but its scoped coverage evidence must not disappear.
+    pub capture_coverage: Vec<CaptureCoverageEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -287,6 +293,45 @@ fn capture_coverage(outcome: CaptureOutcome) -> LldpCaptureOutcome {
         CaptureOutcome::Truncated => LldpCaptureOutcome::Truncated,
         CaptureOutcome::Unsupported => LldpCaptureOutcome::Unsupported,
         CaptureOutcome::Unknown => LldpCaptureOutcome::Unknown,
+    }
+}
+
+fn normalization_capture_coverage(
+    obs: &LldpObservation,
+    population: PopulationCoverage,
+    empty_interface_names: &BTreeSet<String>,
+    covered_interface_names: &BTreeSet<String>,
+    evidence_refs: Vec<EvidenceRef>,
+) -> CaptureCoverageEvidence {
+    let covered_interfaces = covered_interface_names
+        .iter()
+        .chain(empty_interface_names.iter())
+        .cloned()
+        .collect();
+    CaptureCoverageEvidence {
+        device_id: obs.context.device_id.to_string(),
+        scope: obs.context.scope.map(str::to_string),
+        network_namespace: obs.context.network_namespace.map(str::to_string),
+        collector_id: Some(obs.context.collector_id.to_string()),
+        source_kind: Some(obs.source.source_kind().to_string()),
+        capture_outcome: capture_coverage(obs.capture.outcome),
+        population_coverage: population,
+        capture_id: Some(obs.context.capture_id.to_string()),
+        source_generation: Some(obs.context.session_epoch),
+        acquisition_scope: Some(format!(
+            "device={} scope={} network_namespace={} source={}",
+            obs.context.device_id,
+            obs.context.scope.unwrap_or("<default>"),
+            obs.context.network_namespace.unwrap_or("<unspecified>"),
+            obs.source.label()
+        )),
+        observation_time: Some(obs.context.observed_at.to_string()),
+        // LLDP capture coverage has no independent source-established expiry.
+        // Consumers must apply explicit freshness policy rather than treating
+        // caller-supplied validity as evidence invented by normalization.
+        valid_until: None,
+        covered_interfaces,
+        evidence_refs,
     }
 }
 
@@ -1270,6 +1315,7 @@ pub fn normalize_lldp_neighbors_with_limits(
         return LldpNormalizationOutput {
             facts: vec![],
             neighbors: vec![],
+            capture_coverage: vec![],
             report: base_report(
                 0,
                 Some(err.clone()),
@@ -1295,6 +1341,7 @@ pub fn normalize_lldp_neighbors_with_limits(
         return LldpNormalizationOutput {
             facts,
             neighbors: vec![],
+            capture_coverage: vec![],
             report: base_report(
                 emitted,
                 None,
@@ -1328,6 +1375,7 @@ pub fn normalize_lldp_neighbors_with_limits(
         return LldpNormalizationOutput {
             facts,
             neighbors: vec![],
+            capture_coverage: vec![],
             report: base_report(
                 emitted,
                 None,
@@ -1354,6 +1402,7 @@ pub fn normalize_lldp_neighbors_with_limits(
         return LldpNormalizationOutput {
             facts,
             neighbors: vec![],
+            capture_coverage: vec![],
             report: base_report(
                 emitted,
                 None,
@@ -1382,6 +1431,7 @@ pub fn normalize_lldp_neighbors_with_limits(
         return LldpNormalizationOutput {
             facts,
             neighbors: vec![],
+            capture_coverage: vec![],
             report: base_report(
                 emitted,
                 None,
@@ -1612,9 +1662,17 @@ pub fn normalize_lldp_neighbors_with_limits(
 
     let facts_len = facts.len();
     let diagnostics_len = diagnostics.len();
+    let capture_coverage = vec![normalization_capture_coverage(
+        obs,
+        population,
+        &parse_outcome.empty_interfaces,
+        &parse_outcome.covered_interfaces,
+        evidence,
+    )];
     LldpNormalizationOutput {
         facts,
         neighbors: diagnostics,
+        capture_coverage,
         report: LldpNormalizationReport {
             source: obs.source.label(),
             applicability: obs.source.applicability(),
@@ -2093,6 +2151,30 @@ mod tests {
                 .empty_local_interface_names
                 .contains(&"swp2".to_string())
         );
+    }
+
+    #[test]
+    fn positive_empty_capture_preserves_scoped_coverage_without_neighbor_facts() {
+        let text = serde_json::json!({
+            "lldp": [{"interface": [
+                {"name":"swp1","via":"LLDP"}
+            ]}]
+        })
+        .to_string();
+        let out = normalize_lldp_neighbors(&obs(
+            LldpStructuredSource::CumulusLldpdJson,
+            &text,
+            "leaf02",
+            "2021-03-21T18:26:43Z",
+        ));
+        assert!(out.facts.iter().all(|f| f.subject.entity.is_none()));
+        assert_eq!(out.capture_coverage.len(), 1);
+        let coverage = &out.capture_coverage[0];
+        assert_eq!(coverage.population_coverage, PopulationCoverage::Complete);
+        assert!(coverage.covered_interfaces.contains("swp1"));
+        assert_eq!(coverage.collector_id.as_deref(), Some("collector-a"));
+        assert_eq!(coverage.capture_id.as_deref(), Some("capture-1"));
+        assert_eq!(coverage.valid_until, None);
     }
 
     #[test]

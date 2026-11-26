@@ -30,10 +30,18 @@ pub enum AddressFamily {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum NeighborResolutionState {
+    /// Generic resolved/successful state when the source does not expose a
+    /// more precise neighbor-cache state.
     Resolved,
-    Permanent,
+    Reachable,
     Stale,
+    Delay,
+    Probe,
+    Incomplete,
     Failed,
+    Permanent,
+    #[serde(rename = "noarp")]
+    NoArp,
     Unknown,
 }
 
@@ -43,6 +51,23 @@ pub enum MacEntryType {
     Static,
     Dynamic,
     Permanent,
+    Unknown,
+}
+
+/// Typed forwarding-entry context evidence. Several contexts can legitimately
+/// apply to one entry (for example master-table + externally-learned).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum MacEntryContext {
+    Local,
+    Remote,
+    SelfTable,
+    MasterTable,
+    ExternallyLearned,
+    Offloaded,
+    Router,
+    Special,
+    Other,
     Unknown,
 }
 
@@ -92,6 +117,14 @@ pub struct ArpndNeighborPayload {
     /// Complete interface evidence before compound-interface decomposition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_interface_raw: Option<String>,
+    /// Semantic neighbor-entry correlation key derived from scoped identity
+    /// components. The components remain authoritative; this key is a stable
+    /// correlation handle, not a flattened replacement for them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neighbor_entity_key: Option<String>,
+    /// Bridge/L2 forwarding-domain association when independently established
+    /// by source or normalization evidence. Unknown means no L2 join is made.
+    pub forwarding_domain: ObservedField<String>,
 }
 
 /// One observed MAC forwarding-table entry. `outgoing_interface` is source
@@ -114,6 +147,18 @@ pub struct MacForwardingPayload {
     /// It is not converted into a validity interval without capture-time
     /// semantics.
     pub last_move_epoch_seconds: ObservedField<f64>,
+    /// Bridge/forwarding domain established by source evidence (for example
+    /// the Linux master bridge name). Unknown means VLAN alone is not promoted
+    /// to a forwarding-domain identity.
+    pub bridge_domain: ObservedField<String>,
+    /// Typed source context evidence; free-form flags remain in `flags`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entry_contexts: Vec<MacEntryContext>,
+    /// Semantic forwarding-entry correlation key derived from scoped identity
+    /// components. The components remain authoritative; this key is a stable
+    /// correlation handle, not a flattened replacement for them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarding_entity_key: Option<String>,
 }
 
 pub fn validate_arpnd_payload(fields: &Value) -> Result<(), FactError> {
@@ -167,6 +212,14 @@ pub fn validate_arpnd_typed(p: &ArpndNeighborPayload) -> Result<(), FactError> {
     {
         return Err(FactError::InvalidField("protocol"));
     }
+    check_field(&p.forwarding_domain, "forwarding_domain", |v| {
+        valid_text(v, MAX_DETAIL_LEN)
+    })?;
+    if let Some(key) = &p.neighbor_entity_key
+        && !valid_text(key, 512)
+    {
+        return Err(FactError::InvalidField("neighbor_entity_key"));
+    }
     Ok(())
 }
 
@@ -200,6 +253,17 @@ pub fn validate_mac_typed(p: &MacForwardingPayload) -> Result<(), FactError> {
     {
         return Err(FactError::InvalidField("flags"));
     }
+    check_field(&p.bridge_domain, "bridge_domain", |v| {
+        valid_text(v, MAX_DETAIL_LEN)
+    })?;
+    if p.entry_contexts.len() > MAX_FLAGS {
+        return Err(FactError::InvalidField("entry_contexts"));
+    }
+    if let Some(key) = &p.forwarding_entity_key
+        && !valid_text(key, 512)
+    {
+        return Err(FactError::InvalidField("forwarding_entity_key"));
+    }
     Ok(())
 }
 
@@ -210,6 +274,25 @@ pub fn arpnd_entity_key(vrf: Option<&str>, ip: &str) -> String {
     format!("ip/{}/{}", vrf.unwrap_or("<unknown>"), ip)
 }
 
+/// Neighbor attachment identity used for correlation. Interface is included
+/// for every family because even non-link-local addresses can recur on
+/// distinct attachments inside one VRF in malformed or transitional evidence.
+pub fn arpnd_attachment_entity_key(
+    vrf: Option<&str>,
+    family: AddressFamily,
+    ip: &str,
+    interface: &str,
+    subinterface_index: Option<u32>,
+) -> String {
+    serde_json::json!({
+        "neighbor": arpnd_entity_key(vrf, ip),
+        "address_family": family,
+        "interface_attachment": interface,
+        "subinterface_index": subinterface_index,
+    })
+    .to_string()
+}
+
 /// Deterministic scoped subject key for a MAC table entry. VLAN absence is
 /// explicit rather than silently treating the entry as VLAN zero.
 pub fn mac_entity_key(vlan: Option<u32>, mac: &str) -> String {
@@ -217,6 +300,19 @@ pub fn mac_entity_key(vlan: Option<u32>, mac: &str) -> String {
         Some(v) => format!("mac/vlan/{v}/{mac}"),
         None => format!("mac/vlan/<unknown>/{mac}"),
     }
+}
+
+/// Forwarding-entry identity scoped by bridge/forwarding-domain evidence.
+pub fn mac_forwarding_entity_key(
+    bridge_domain: Option<&str>,
+    vlan: Option<u32>,
+    mac: &str,
+) -> String {
+    serde_json::json!({
+        "bridge_domain": bridge_domain,
+        "entry": mac_entity_key(vlan, mac),
+    })
+    .to_string()
 }
 
 #[cfg(test)]
@@ -244,6 +340,11 @@ mod tests {
             protocol: None,
             router: None,
             source_interface_raw: Some("Vlan30, Vxlan1".into()),
+            neighbor_entity_key: None,
+            forwarding_domain: ObservedField::unavailable(
+                FieldAvailability::Unknown,
+                Some("test domain unknown".into()),
+            ),
         };
         validate_arpnd_typed(&p).unwrap();
         validate_arpnd_payload(&serde_json::to_value(&p).unwrap()).unwrap();
@@ -261,6 +362,9 @@ mod tests {
             flags: vec![],
             move_count: ObservedField::unavailable(FieldAvailability::Unknown, None),
             last_move_epoch_seconds: ObservedField::unavailable(FieldAvailability::Unknown, None),
+            bridge_domain: ObservedField::unavailable(FieldAvailability::Unknown, None),
+            entry_contexts: vec![],
+            forwarding_entity_key: None,
         };
         assert!(validate_mac_typed(&p).is_err());
     }

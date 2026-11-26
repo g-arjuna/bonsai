@@ -4828,7 +4828,7 @@
         "implementation_source_locations": [
           "src/neighbor_facts.rs (arpnd.neighbor typed payload contract)",
           "src/neighbor_normalizer.rs (offline EOS/NXOS structured JSON and Cumulus/Linux ip-neigh normalization)",
-          "src/neighbor_reconciliation.rs (deterministic ARP/ND to MAC cross-table consistency reconciliation)",
+          "src/neighbor_reconciliation.rs (scoped temporal ARP/ND to MAC cross-table consistency reconciliation); src/semantic_evidence.rs (shared freshness/coverage/envelope eligibility)",
           "tests/fixtures/bn024/neighbor (six genuine pinned upstream ARP/MAC capture slices)"
         ],
         "actual_qualification_evidence": [
@@ -6681,14 +6681,14 @@
         "implementation_source_locations": [
           "src/neighbor_facts.rs (mac.forwarding typed payload contract)",
           "src/neighbor_normalizer.rs (offline EOS/NXOS structured JSON and Linux bridge-fdb normalization)",
-          "src/neighbor_reconciliation.rs (deterministic VLAN+MAC candidate indexing and cross-table consistency reconciliation)",
+          "src/neighbor_reconciliation.rs (bounded scoped forwarding-domain VLAN+MAC candidate indexing and temporal consistency reconciliation); src/semantic_evidence.rs (shared freshness/coverage/envelope eligibility)",
           "tests/fixtures/bn024/neighbor (six genuine pinned upstream ARP/MAC capture slices)"
         ],
         "actual_qualification_evidence": [
           "genuine pinned upstream EOS leaf02 show mac-address-table unicast slice sha256:d764e964fa1f435e6861062a717c5485c0493e2ce06dac7e281f2d9ac34f8a46: eleven unicast entries with VLAN, type, interface and move/last-move evidence normalized",
           "genuine pinned upstream NXOS leaf03 show mac address-table | json-native slice sha256:3c277fe8d571dc77c6b6633a3678c914a0ef6f6810eefe9ec7e7cfc74f2a9046: fifteen entries preserving vPC peer-link and NVE remote-VTEP compound interface evidence without overinterpretation",
           "genuine pinned upstream Cumulus leaf01 bridge fdb show slice sha256:b22ee1afffa93cab5c42092b360d9a2410540eda2f704e6986d3a6e3f77036e5: nine entries preserving static/permanent flags, unknown VLAN applicability and VXLAN/backend evidence",
-          "deterministic reconciliation evaluates all VLAN+MAC candidates, distinguishes consistency/interface conflict/multiple candidates, and does not infer absence without explicit complete coverage"
+          "bounded deterministic reconciliation evaluates scoped forwarding-domain VLAN+MAC candidates without cross-device, cross-tenant, cross-ASIC or cross-bridge-domain matching; distinguishes consistency, comparable-interface conflict, multiple/truncated candidates and incompatible observations; absence requires exact current complete coverage"
         ],
         "missing_functionality": [
           "production/live acquisition qualification and authorized read path",

@@ -61,6 +61,7 @@ pub mod routing_service;
 pub mod schema_binding;
 pub mod schema_coverage;
 pub mod security;
+pub mod semantic_evidence;
 pub mod service_discovery;
 pub mod shun;
 pub mod sidecar_manager;

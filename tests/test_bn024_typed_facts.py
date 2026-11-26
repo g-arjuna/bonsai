@@ -318,6 +318,7 @@ def arpnd_neighbor_fields() -> dict:
         "interface_vlan_id": known(30),
         "remote": known(True),
         "source_interface_raw": "Vlan30, Vxlan1",
+        "forwarding_domain": unknown(),
     }
 
 
@@ -337,6 +338,7 @@ def mac_forwarding_fields() -> dict:
         "entry_type": known("dynamic"),
         "move_count": known(1),
         "last_move_epoch_seconds": known(1623025097.454588),
+        "bridge_domain": unknown(),
     }
 
 

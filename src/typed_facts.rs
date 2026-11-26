@@ -1040,18 +1040,43 @@ fn validate_neighbor_subject_payload_consistency(fact: &TypedFact) -> Result<(),
             let payload: crate::neighbor_facts::ArpndNeighborPayload =
                 serde_json::from_value(fields.clone())
                     .map_err(|_| FactError::InvalidField("payload.fields.arpnd.neighbor"))?;
-            if payload.outgoing_interface != entity {
-                return Err(FactError::InvalidField(
-                    "arpnd outgoing_interface/subject.entity mismatch",
-                ));
+            let identity = fact.subject.interface_identity.as_ref();
+            match identity.map(|i| i.kind) {
+                Some(InterfaceIdentityKind::Subinterface) => {
+                    if identity.and_then(|i| i.parent_entity.as_deref()) != Some(entity) {
+                        return Err(FactError::InvalidField(
+                            "arpnd subinterface subject entity must be canonical parent",
+                        ));
+                    }
+                }
+                _ if payload.outgoing_interface != entity => {
+                    return Err(FactError::InvalidField(
+                        "arpnd outgoing_interface/subject.entity mismatch",
+                    ));
+                }
+                _ => {}
             }
-            if let Some(identity) = &fact.subject.interface_identity
+            if let Some(identity) = identity
                 && let Some(native) = &identity.vendor_native_name
                 && *native != payload.outgoing_interface
             {
                 return Err(FactError::InvalidField(
                     "arpnd interface native name/payload interface mismatch",
                 ));
+            }
+            if let Some(key) = &payload.neighbor_entity_key {
+                let expected = crate::neighbor_facts::arpnd_attachment_entity_key(
+                    fact.subject.vrf.as_deref(),
+                    payload.address_family,
+                    &payload.ip_address,
+                    entity,
+                    identity.and_then(|identity| identity.subinterface_index),
+                );
+                if *key != expected {
+                    return Err(FactError::InvalidField(
+                        "arpnd neighbor_entity_key/scoped subject mismatch",
+                    ));
+                }
             }
         }
         crate::neighbor_facts::FACT_KIND_MAC_FORWARDING => {
@@ -1065,18 +1090,49 @@ fn validate_neighbor_subject_payload_consistency(fact: &TypedFact) -> Result<(),
                 .normalized_outgoing_interface
                 .as_deref()
                 .unwrap_or(&payload.outgoing_interface);
-            if canonical != entity {
-                return Err(FactError::InvalidField(
-                    "mac forwarding interface/subject.entity mismatch",
-                ));
+            let identity = fact.subject.interface_identity.as_ref();
+            match identity.map(|i| i.kind) {
+                Some(InterfaceIdentityKind::Subinterface) => {
+                    if identity.and_then(|i| i.parent_entity.as_deref()) != Some(entity) {
+                        return Err(FactError::InvalidField(
+                            "mac subinterface subject entity must be canonical parent",
+                        ));
+                    }
+                }
+                _ if canonical != entity => {
+                    return Err(FactError::InvalidField(
+                        "mac forwarding interface/subject.entity mismatch",
+                    ));
+                }
+                _ => {}
             }
-            if let Some(identity) = &fact.subject.interface_identity
+            if let Some(identity) = identity
                 && let Some(native) = &identity.vendor_native_name
                 && *native != payload.outgoing_interface
             {
                 return Err(FactError::InvalidField(
                     "mac interface native name/payload interface mismatch",
                 ));
+            }
+            if let Some(key) = &payload.forwarding_entity_key {
+                let bridge = (payload.bridge_domain.state
+                    == crate::interface_facts::FieldAvailability::Known)
+                    .then_some(payload.bridge_domain.value.clone())
+                    .flatten();
+                let vlan = (payload.vlan_id.state
+                    == crate::interface_facts::FieldAvailability::Known)
+                    .then_some(payload.vlan_id.value)
+                    .flatten();
+                let expected = crate::neighbor_facts::mac_forwarding_entity_key(
+                    bridge.as_deref(),
+                    vlan,
+                    &payload.mac_address,
+                );
+                if *key != expected {
+                    return Err(FactError::InvalidField(
+                        "mac forwarding_entity_key/scoped payload mismatch",
+                    ));
+                }
             }
         }
         _ => {}

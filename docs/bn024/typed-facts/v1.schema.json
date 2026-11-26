@@ -567,7 +567,8 @@
                   "age_seconds",
                   "outgoing_interface",
                   "interface_vlan_id",
-                  "remote"
+                  "remote",
+                  "forwarding_domain"
                 ],
                 "additionalProperties": false,
                 "properties": {
@@ -625,9 +626,14 @@
                       "value": {
                         "enum": [
                           "resolved",
-                          "permanent",
+                          "reachable",
                           "stale",
+                          "delay",
+                          "probe",
+                          "incomplete",
                           "failed",
+                          "permanent",
+                          "noarp",
                           "unknown"
                         ]
                       },
@@ -737,6 +743,37 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 255
+                  },
+                  "neighbor_entity_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "forwarding_domain": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      },
+                      "value": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "detail": {
+                        "type": "string",
+                        "maxLength": 200
+                      }
+                    }
                   }
                 }
               }
@@ -790,7 +827,8 @@
                   "outgoing_interface",
                   "entry_type",
                   "move_count",
-                  "last_move_epoch_seconds"
+                  "last_move_epoch_seconds",
+                  "bridge_domain"
                 ],
                 "additionalProperties": false,
                 "properties": {
@@ -926,6 +964,55 @@
                         "maxLength": 200
                       }
                     }
+                  },
+                  "bridge_domain": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      },
+                      "value": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "detail": {
+                        "type": "string",
+                        "maxLength": 200
+                      }
+                    }
+                  },
+                  "entry_contexts": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {
+                      "enum": [
+                        "local",
+                        "remote",
+                        "self_table",
+                        "master_table",
+                        "externally_learned",
+                        "offloaded",
+                        "router",
+                        "special",
+                        "other",
+                        "unknown"
+                      ]
+                    }
+                  },
+                  "forwarding_entity_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
                   }
                 }
               }

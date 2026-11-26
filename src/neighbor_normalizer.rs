@@ -10,7 +10,7 @@
 //! collapsing).
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
@@ -21,11 +21,13 @@ use crate::interface_facts::{
 use crate::interface_normalizer::{CaptureOutcome, CommandCapture, ObservationContext};
 use crate::neighbor_facts::{
     AddressFamily, ArpndNeighborPayload, FACT_KIND_ARPND_NEIGHBOR, FACT_KIND_MAC_FORWARDING,
-    MacEntryType, MacForwardingPayload, NeighborResolutionState,
+    MacEntryContext, MacEntryType, MacForwardingPayload, NeighborResolutionState,
+    arpnd_attachment_entity_key, mac_forwarding_entity_key,
 };
+use crate::semantic_evidence::{ScopedCaptureCoverage, ScopedPopulationCoverage};
 use crate::typed_facts::{
-    Completeness, EvidenceRef, FactPayload, FactSource, FactSubject, Lifecycle, Quality,
-    TrustClass, TypedFact,
+    Completeness, EvidenceRef, FactPayload, FactSource, FactSubject, InterfaceIdentityKind,
+    Lifecycle, Quality, TrustClass, TypedFact,
 };
 use crate::xrd_openconfig_interfaces::reject_duplicate_json_keys;
 
@@ -124,6 +126,7 @@ pub struct NeighborNormalizationReport {
     pub empty_records: bool,
     pub collection_presence: BTreeMap<String, String>,
     pub invalid_samples: Vec<String>,
+    pub invalid_samples_omitted: usize,
     pub notes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal_reason: Option<String>,
@@ -132,6 +135,10 @@ pub struct NeighborNormalizationReport {
 pub struct NeighborNormalizationOutput {
     pub facts: Vec<TypedFact>,
     pub report: NeighborNormalizationReport,
+    /// Actual acquisition/population coverage derived after decoding,
+    /// validation, omission accounting and final empty classification. This
+    /// object exists even when the validated population is empty.
+    pub coverage: ScopedCaptureCoverage,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -161,13 +168,24 @@ fn invalid<T>(detail: impl Into<String>) -> ObservedField<T> {
     ObservedField::unavailable(FieldAvailability::Invalid, Some(detail.into()))
 }
 
+fn push_invalid_sample(report: &mut NeighborNormalizationReport, sample: impl Into<String>) {
+    if report.invalid_samples.len() < MAX_INVALID_SAMPLES {
+        let mut sample = sample.into();
+        if sample.len() > 512 {
+            sample.truncate(512);
+            sample.push_str("…<truncated diagnostic>");
+        }
+        report.invalid_samples.push(sample);
+    } else {
+        report.invalid_samples_omitted += 1;
+    }
+}
+
 fn bound_invalid_samples(report: &mut NeighborNormalizationReport) {
     if report.invalid_samples.len() > MAX_INVALID_SAMPLES {
         let overflow = report.invalid_samples.len() - MAX_INVALID_SAMPLES;
-        report.invalid_samples.truncate(MAX_INVALID_SAMPLES - 1);
-        report.invalid_samples.push(format!(
-            "{overflow} additional invalid samples omitted by diagnostic bound"
-        ));
+        report.invalid_samples.truncate(MAX_INVALID_SAMPLES);
+        report.invalid_samples_omitted += overflow;
     }
 }
 
@@ -234,16 +252,25 @@ fn fact_for_interface_payload(
     vrf: Option<&str>,
     interface_identity: Option<crate::typed_facts::InterfaceSubjectIdentity>,
     fields: Value,
-    raw_output: &str,
+    raw_sha256: &str,
     locator: &str,
     completeness: Completeness,
     _sequence_offset: u64,
 ) -> TypedFact {
     let evidence = vec![EvidenceRef {
         kind: "raw_output".to_string(),
-        sha256: sha256_hex(raw_output.as_bytes()),
+        sha256: raw_sha256.to_string(),
         locator: Some(locator.to_string()),
     }];
+    let entity = match interface_identity.as_ref() {
+        Some(identity)
+            if identity.kind == InterfaceIdentityKind::Subinterface
+                && identity.parent_entity.is_some() =>
+        {
+            identity.parent_entity.clone().unwrap_or_default()
+        }
+        _ => interface.to_string(),
+    };
     let mut fact = TypedFact {
         schema_version: crate::typed_facts::SCHEMA_VERSION,
         fact_id: String::new(),
@@ -253,7 +280,7 @@ fn fact_for_interface_payload(
             scope: ctx.scope.map(str::to_string),
             namespace: "interface".to_string(),
             network_namespace: ctx.network_namespace.map(str::to_string),
-            entity: Some(interface.to_string()),
+            entity: Some(entity),
             vrf: vrf.map(str::to_string),
             afi_safi: None,
             plane: Some("operational".to_string()),
@@ -269,7 +296,10 @@ fn fact_for_interface_payload(
         },
         observed_at: ctx.observed_at.to_string(),
         ingested_at: None,
-        valid_from: None,
+        // The observation is valid evidence at least at its observation
+        // instant. No expiry is invented; consumers apply explicit freshness
+        // policy when the source cannot establish one.
+        valid_from: Some(ctx.observed_at.to_string()),
         valid_until: None,
         payload: FactPayload {
             produced_by: "native_neighbor_normalizer".to_string(),
@@ -300,14 +330,6 @@ fn fact_for_interface_payload(
 fn parse_json_input(input: &str) -> Result<Value, String> {
     reject_duplicate_json_keys(input.as_bytes()).map_err(|e| format!("duplicate JSON key: {e}"))?;
     serde_json::from_str(input).map_err(|e| format!("malformed JSON: {e}"))
-}
-
-fn rows(value: Option<&Value>) -> Vec<Value> {
-    match value {
-        Some(Value::Array(items)) => items.clone(),
-        Some(obj @ Value::Object(_)) => vec![obj.clone()],
-        _ => vec![],
-    }
 }
 
 fn str_field<'a>(obj: &'a Value, key: &str) -> Option<&'a str> {
@@ -349,15 +371,58 @@ fn parse_iso8601_duration_seconds(raw: &str) -> Option<u64> {
     (saw && num.is_empty()).then_some(total)
 }
 
+fn push_arp_record(
+    out: &mut Vec<ArpndRecord>,
+    report: &mut NeighborNormalizationReport,
+    record: ArpndRecord,
+) {
+    report.records_decoded += 1;
+    if out.len() < MAX_RECORDS {
+        out.push(record);
+    } else {
+        report.input_records_omitted += 1;
+    }
+}
+
+fn push_mac_record(
+    out: &mut Vec<MacRecord>,
+    report: &mut NeighborNormalizationReport,
+    record: MacRecord,
+) {
+    report.records_decoded += 1;
+    if out.len() < MAX_RECORDS {
+        out.push(record);
+    } else {
+        report.input_records_omitted += 1;
+    }
+}
+
+fn sample(report: &mut NeighborNormalizationReport, value: impl Into<String>) {
+    push_invalid_sample(report, value);
+}
+
 fn parse_eos_arp(root: &Value, report: &mut NeighborNormalizationReport) -> Vec<ArpndRecord> {
     let mut out = Vec::new();
     let Some(vrfs) = root.get("vrfs").and_then(Value::as_object) else {
         report.malformed_records += 1;
+        sample(report, "root vrfs object absent or wrong type");
         report
-            .invalid_samples
-            .push("root vrfs object absent or wrong type".into());
+            .collection_presence
+            .insert("vrfs".into(), "missing_or_malformed".into());
         return out;
     };
+    if vrfs.is_empty() {
+        // An empty root object is not positive evidence that every VRF's
+        // neighbor collection is empty: the output does not establish which
+        // VRF collections were present at all. Keep that acquisition-scope
+        // ignorance explicit instead of manufacturing an empty global table.
+        report
+            .collection_presence
+            .insert("vrfs".into(), "unknown_scope".into());
+        report
+            .notes
+            .push("EOS vrfs object is empty; per-VRF collection presence unknown".into());
+    }
     let mut vrf_names: Vec<_> = vrfs.keys().cloned().collect();
     vrf_names.sort();
     for vrf in vrf_names {
@@ -366,7 +431,7 @@ fn parse_eos_arp(root: &Value, report: &mut NeighborNormalizationReport) -> Vec<
             None => {
                 report
                     .collection_presence
-                    .insert(vrf.clone(), "unknown".into());
+                    .insert(vrf.clone(), "missing".into());
                 report
                     .notes
                     .push(format!("vrf {vrf}: ipV4Neighbors collection absent"));
@@ -385,39 +450,40 @@ fn parse_eos_arp(root: &Value, report: &mut NeighborNormalizationReport) -> Vec<
                 for item in items {
                     let Some(address) = str_field(item, "address") else {
                         report.malformed_records += 1;
-                        report
-                            .invalid_samples
-                            .push(format!("vrf {vrf}: neighbor missing address"));
+                        sample(report, format!("vrf {vrf}: neighbor missing address"));
                         continue;
                     };
                     if address.parse::<IpAddr>().is_err() {
                         report.malformed_records += 1;
-                        report
-                            .invalid_samples
-                            .push(format!("vrf {vrf}: invalid address {address}"));
+                        sample(report, format!("vrf {vrf}: invalid address {address}"));
                         continue;
                     }
                     let Some(raw_interface) = str_field(item, "interface") else {
                         report.malformed_records += 1;
-                        report
-                            .invalid_samples
-                            .push(format!("vrf {vrf} {address}: missing interface"));
+                        sample(report, format!("vrf {vrf} {address}: missing interface"));
                         continue;
                     };
-                    let Some(mac_raw) = str_field(item, "hwAddress") else {
-                        report.malformed_records += 1;
-                        report
-                            .invalid_samples
-                            .push(format!("vrf {vrf} {address}: missing hwAddress"));
-                        continue;
+                    // EOS incomplete/unresolved entries can legitimately lack a
+                    // usable hardware address. Preserve the neighbor evidence;
+                    // absence/invalidity of the MAC is not a protocol failure.
+                    let (mac, mac_note) = match str_field(item, "hwAddress") {
+                        None => (
+                            unknown(
+                                "EOS hwAddress absent; incomplete/unresolved evidence retained",
+                            ),
+                            Some(format!("vrf {vrf} {address}: hwAddress absent")),
+                        ),
+                        Some(raw) => match normalize_mac_address(raw) {
+                            Some(mac) => (ObservedField::known(mac), None),
+                            None => (
+                                invalid("EOS hwAddress is not a valid MAC"),
+                                Some(format!("vrf {vrf} {address}: invalid hwAddress")),
+                            ),
+                        },
                     };
-                    let Some(mac) = normalize_mac_address(mac_raw) else {
-                        report.malformed_records += 1;
-                        report
-                            .invalid_samples
-                            .push(format!("vrf {vrf} {address}: invalid hwAddress"));
-                        continue;
-                    };
+                    if let Some(note) = mac_note {
+                        report.notes.push(note);
+                    }
                     let mut parts = raw_interface.split(',').map(str::trim);
                     let logical = parts.next().unwrap_or(raw_interface).to_string();
                     let physical = parts.next().filter(|p| !p.is_empty()).map(str::to_string);
@@ -429,35 +495,43 @@ fn parse_eos_arp(root: &Value, report: &mut NeighborNormalizationReport) -> Vec<
                         }
                         Some(_) => invalid("EOS age is not an unsigned integer"),
                     };
-                    out.push(ArpndRecord {
-                        interface: logical.clone(),
-                        vrf: Some(vrf.clone()),
-                        payload: ArpndNeighborPayload {
-                            ip_address: address.to_string(),
-                            address_family: AddressFamily::Ipv4,
-                            mac_address: ObservedField::known(mac),
-                            resolution_state: unknown(
-                                "EOS ARP output does not expose reachability state",
-                            ),
-                            raw_state: None,
-                            age_seconds: age,
-                            outgoing_interface: logical,
-                            physical_interface: physical.clone(),
-                            interface_vlan_id: match vlan {
-                                Some(v) => ObservedField::known(v),
-                                None => unknown("interface is not a qualified Vlan<N> SVI"),
-                            },
-                            remote: match physical.as_deref() {
-                                Some("Vxlan1") => ObservedField::known(true),
-                                _ => unknown(
-                                    "EOS output does not positively establish non-VXLAN locality",
+                    push_arp_record(
+                        &mut out,
+                        report,
+                        ArpndRecord {
+                            interface: logical.clone(),
+                            vrf: Some(vrf.clone()),
+                            payload: ArpndNeighborPayload {
+                                ip_address: address.to_string(),
+                                address_family: AddressFamily::Ipv4,
+                                mac_address: mac,
+                                resolution_state: unknown(
+                                    "EOS ARP output does not expose reachability state",
+                                ),
+                                raw_state: None,
+                                age_seconds: age,
+                                outgoing_interface: logical,
+                                physical_interface: physical.clone(),
+                                interface_vlan_id: match vlan {
+                                    Some(v) => ObservedField::known(v),
+                                    None => unknown("interface is not a qualified Vlan<N> SVI"),
+                                },
+                                remote: match physical.as_deref() {
+                                    Some("Vxlan1") => ObservedField::known(true),
+                                    _ => unknown(
+                                        "EOS output does not positively establish non-VXLAN locality",
+                                    ),
+                                },
+                                protocol: None,
+                                router: None,
+                                source_interface_raw: Some(raw_interface.to_string()),
+                                neighbor_entity_key: None,
+                                forwarding_domain: unknown(
+                                    "EOS ARP output does not establish an L2 forwarding domain",
                                 ),
                             },
-                            protocol: None,
-                            router: None,
-                            source_interface_raw: Some(raw_interface.to_string()),
                         },
-                    });
+                    );
                 }
             }
             Some(_) => {
@@ -465,27 +539,77 @@ fn parse_eos_arp(root: &Value, report: &mut NeighborNormalizationReport) -> Vec<
                     .collection_presence
                     .insert(vrf.clone(), "malformed".into());
                 report.malformed_records += 1;
-                report
-                    .invalid_samples
-                    .push(format!("vrf {vrf}: ipV4Neighbors wrong type"));
+                sample(report, format!("vrf {vrf}: ipV4Neighbors wrong type"));
             }
         }
     }
     out
 }
 
+#[derive(Debug)]
+enum RowCollection {
+    Rows(Vec<Value>),
+    Empty,
+    Missing,
+    Malformed,
+}
+
+fn row_collection(value: Option<&Value>) -> RowCollection {
+    match value {
+        Some(Value::Array(items)) if items.is_empty() => RowCollection::Empty,
+        Some(Value::Array(items)) => RowCollection::Rows(items.clone()),
+        Some(obj @ Value::Object(_)) => RowCollection::Rows(vec![obj.clone()]),
+        None => RowCollection::Missing,
+        Some(_) => RowCollection::Malformed,
+    }
+}
+
+fn nxos_rows(
+    value: Option<&Value>,
+    label: &str,
+    report: &mut NeighborNormalizationReport,
+) -> Vec<Value> {
+    match row_collection(value) {
+        RowCollection::Rows(rows) => {
+            report
+                .collection_presence
+                .insert(label.into(), "populated".into());
+            rows
+        }
+        RowCollection::Empty => {
+            report
+                .collection_presence
+                .insert(label.into(), "empty".into());
+            vec![]
+        }
+        RowCollection::Missing => {
+            report
+                .collection_presence
+                .insert(label.into(), "missing".into());
+            report.notes.push(format!("NXOS collection {label} absent"));
+            vec![]
+        }
+        RowCollection::Malformed => {
+            report
+                .collection_presence
+                .insert(label.into(), "malformed".into());
+            report.malformed_records += 1;
+            sample(
+                report,
+                format!("NXOS collection {label} has unsupported shape"),
+            );
+            vec![]
+        }
+    }
+}
+
 fn parse_nxos_arp(root: &Value, report: &mut NeighborNormalizationReport) -> Vec<ArpndRecord> {
     let mut out = Vec::new();
-    let vrf_rows = rows(root.get("TABLE_vrf").and_then(|v| v.get("ROW_vrf")));
-    if vrf_rows.is_empty() {
-        report
-            .collection_presence
-            .insert("TABLE_vrf.ROW_vrf".into(), "empty".into());
-        return out;
-    }
-    report
-        .collection_presence
-        .insert("TABLE_vrf.ROW_vrf".into(), "populated".into());
+    let vrf_rows = nxos_rows(
+        root.get("TABLE_vrf").and_then(|v| v.get("ROW_vrf")),
+        "TABLE_vrf.ROW_vrf",
+        report,
+    );
     for vrf_row in vrf_rows {
         let vrf_raw = str_field(&vrf_row, "vrf-name-out");
         let vrf = vrf_raw.filter(|v| *v != "all").map(str::to_string);
@@ -494,28 +618,29 @@ fn parse_nxos_arp(root: &Value, report: &mut NeighborNormalizationReport) -> Vec
                 .notes
                 .push("NXOS vrf-name-out is aggregate/unknown; VRF left unscoped".into());
         }
-        for item in rows(vrf_row.get("TABLE_adj").and_then(|v| v.get("ROW_adj"))) {
-            let (Some(ip), Some(interface), Some(mac_raw)) = (
+        let adjacency = nxos_rows(
+            vrf_row.get("TABLE_adj").and_then(|v| v.get("ROW_adj")),
+            "TABLE_adj.ROW_adj",
+            report,
+        );
+        for item in adjacency {
+            let (Some(ip), Some(interface)) = (
                 str_field(&item, "ip-addr-out"),
                 str_field(&item, "intf-out"),
-                str_field(&item, "mac"),
             ) else {
                 report.malformed_records += 1;
-                report
-                    .invalid_samples
-                    .push("NXOS adjacency missing ip/intf/mac".into());
+                sample(report, "NXOS adjacency missing ip/intf");
                 continue;
             };
             if ip.parse::<IpAddr>().is_err() {
                 report.malformed_records += 1;
-                report
-                    .invalid_samples
-                    .push(format!("NXOS invalid address {ip}"));
+                sample(report, format!("NXOS invalid address {ip}"));
                 continue;
             }
-            let mac = normalize_mac_address(mac_raw);
-            let lower_mac = mac_raw.to_ascii_lowercase();
-            let failed = mac.is_none() || lower_mac == "incomplete";
+            let mac_raw = str_field(&item, "mac");
+            let mac = mac_raw.and_then(normalize_mac_address);
+            let explicit_incomplete =
+                mac_raw.is_some_and(|raw| raw.eq_ignore_ascii_case("incomplete"));
             let vlan = vlan_from_svi(interface);
             let age = match str_field(&item, "time-stamp") {
                 None => unknown("NXOS time-stamp absent"),
@@ -524,42 +649,78 @@ fn parse_nxos_arp(root: &Value, report: &mut NeighborNormalizationReport) -> Vec
                     None => invalid("NXOS time-stamp is not a supported ISO-8601 duration"),
                 },
             };
-            out.push(ArpndRecord {
-                interface: interface.to_string(),
-                vrf: vrf.clone(),
-                payload: ArpndNeighborPayload {
-                    ip_address: ip.to_string(),
-                    address_family: if ip.parse::<IpAddr>().is_ok_and(|a| a.is_ipv6()) {
-                        AddressFamily::Ipv6
-                    } else {
-                        AddressFamily::Ipv4
+            let (mac_field, state) = if explicit_incomplete {
+                (
+                    unknown("NXOS adjacency is explicitly incomplete"),
+                    ObservedField::known(NeighborResolutionState::Incomplete),
+                )
+            } else if let Some(mac) = mac {
+                (
+                    ObservedField::known(mac),
+                    unknown("NXOS ARP detail does not expose reachability state"),
+                )
+            } else {
+                (
+                    match mac_raw {
+                        Some(_) => invalid("NXOS MAC text is not a valid MAC"),
+                        None => unknown("NXOS MAC absent"),
                     },
-                    mac_address: match mac {
-                        Some(mac) if !failed => ObservedField::known(mac),
-                        _ => unknown("NXOS adjacency has absent/incomplete MAC evidence"),
+                    unknown(
+                        "NXOS MAC syntax/presence does not establish neighbor resolution state",
+                    ),
+                )
+            };
+            push_arp_record(
+                &mut out,
+                report,
+                ArpndRecord {
+                    interface: interface.to_string(),
+                    vrf: vrf.clone(),
+                    payload: ArpndNeighborPayload {
+                        ip_address: ip.to_string(),
+                        address_family: if ip.parse::<IpAddr>().is_ok_and(|a| a.is_ipv6()) {
+                            AddressFamily::Ipv6
+                        } else {
+                            AddressFamily::Ipv4
+                        },
+                        mac_address: mac_field,
+                        resolution_state: state,
+                        raw_state: str_field(&item, "flags").map(str::to_string),
+                        age_seconds: age,
+                        outgoing_interface: interface.to_string(),
+                        physical_interface: str_field(&item, "phy-intf").map(str::to_string),
+                        interface_vlan_id: match vlan {
+                            Some(v) => ObservedField::known(v),
+                            None => unknown("interface is not a qualified Vlan<N> SVI"),
+                        },
+                        remote: unknown("NXOS ARP output does not expose EVPN remote locality"),
+                        protocol: None,
+                        router: None,
+                        source_interface_raw: Some(interface.to_string()),
+                        neighbor_entity_key: None,
+                        forwarding_domain: unknown(
+                            "NXOS ARP output does not establish an L2 forwarding domain",
+                        ),
                     },
-                    resolution_state: if failed {
-                        ObservedField::known(NeighborResolutionState::Failed)
-                    } else {
-                        unknown("NXOS ARP detail does not expose reachability state")
-                    },
-                    raw_state: str_field(&item, "flags").map(str::to_string),
-                    age_seconds: age,
-                    outgoing_interface: interface.to_string(),
-                    physical_interface: str_field(&item, "phy-intf").map(str::to_string),
-                    interface_vlan_id: match vlan {
-                        Some(v) => ObservedField::known(v),
-                        None => unknown("interface is not a qualified Vlan<N> SVI"),
-                    },
-                    remote: unknown("NXOS ARP output does not expose EVPN remote locality"),
-                    protocol: None,
-                    router: None,
-                    source_interface_raw: Some(interface.to_string()),
                 },
-            });
+            );
         }
     }
     out
+}
+
+fn linux_neighbor_state(raw: &str) -> NeighborResolutionState {
+    match raw.to_ascii_uppercase().as_str() {
+        "REACHABLE" => NeighborResolutionState::Reachable,
+        "STALE" => NeighborResolutionState::Stale,
+        "DELAY" => NeighborResolutionState::Delay,
+        "PROBE" => NeighborResolutionState::Probe,
+        "INCOMPLETE" => NeighborResolutionState::Incomplete,
+        "FAILED" => NeighborResolutionState::Failed,
+        "PERMANENT" => NeighborResolutionState::Permanent,
+        "NOARP" => NeighborResolutionState::NoArp,
+        _ => NeighborResolutionState::Unknown,
+    }
 }
 
 fn parse_cumulus_arp(input: &str, report: &mut NeighborNormalizationReport) -> Vec<ArpndRecord> {
@@ -576,38 +737,30 @@ fn parse_cumulus_arp(input: &str, report: &mut NeighborNormalizationReport) -> V
         let tokens: Vec<&str> = line.split_whitespace().collect();
         if tokens.len() < 3 {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push(format!("short ip neigh line: {line}"));
+            sample(report, format!("short ip neigh line: {line}"));
             continue;
         }
         let ip = tokens[0];
         if ip.parse::<IpAddr>().is_err() {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push(format!("invalid neighbor address in line: {line}"));
+            sample(report, format!("invalid neighbor address in line: {line}"));
             continue;
         }
         let Some(dev_pos) = tokens.iter().position(|t| *t == "dev") else {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push(format!("missing dev in line: {line}"));
+            sample(report, format!("missing dev in line: {line}"));
             continue;
         };
         let Some(interface) = tokens.get(dev_pos + 1).copied() else {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push(format!("missing interface in line: {line}"));
+            sample(report, format!("missing interface in line: {line}"));
             continue;
         };
-        let mac = tokens
+        let lladdr_raw = tokens
             .iter()
             .position(|t| *t == "lladdr")
-            .and_then(|p| tokens.get(p + 1))
-            .and_then(|raw| normalize_mac_address(raw));
+            .and_then(|p| tokens.get(p + 1));
+        let mac = lladdr_raw.and_then(|raw| normalize_mac_address(raw));
         let protocol = tokens
             .iter()
             .position(|t| *t == "proto")
@@ -617,51 +770,60 @@ fn parse_cumulus_arp(input: &str, report: &mut NeighborNormalizationReport) -> V
         let state_token = tokens.iter().rev().copied().find(|t| {
             matches!(
                 t.to_ascii_uppercase().as_str(),
-                "REACHABLE" | "STALE" | "DELAY" | "PERMANENT" | "FAILED" | "INCOMPLETE" | "NOARP"
+                "REACHABLE"
+                    | "STALE"
+                    | "DELAY"
+                    | "PROBE"
+                    | "PERMANENT"
+                    | "FAILED"
+                    | "INCOMPLETE"
+                    | "NOARP"
             )
         });
         let (state, raw_state) = match state_token {
-            Some(raw) => {
-                let upper = raw.to_ascii_uppercase();
-                let state = match upper.as_str() {
-                    "REACHABLE" | "NOARP" => NeighborResolutionState::Resolved,
-                    "PERMANENT" => NeighborResolutionState::Permanent,
-                    "STALE" | "DELAY" => NeighborResolutionState::Stale,
-                    "FAILED" | "INCOMPLETE" => NeighborResolutionState::Failed,
-                    _ => NeighborResolutionState::Unknown,
-                };
-                (ObservedField::known(state), Some(raw.to_string()))
-            }
+            Some(raw) => (
+                ObservedField::known(linux_neighbor_state(raw)),
+                Some(raw.to_string()),
+            ),
             None => (unknown("ip neigh state absent"), None),
         };
-        out.push(ArpndRecord {
-            interface: interface.to_string(),
-            vrf: None,
-            payload: ArpndNeighborPayload {
-                ip_address: ip.to_string(),
-                address_family: if ip.parse::<IpAddr>().is_ok_and(|a| a.is_ipv6()) {
-                    AddressFamily::Ipv6
-                } else {
-                    AddressFamily::Ipv4
+        push_arp_record(
+            &mut out,
+            report,
+            ArpndRecord {
+                interface: interface.to_string(),
+                vrf: None,
+                payload: ArpndNeighborPayload {
+                    ip_address: ip.to_string(),
+                    address_family: if ip.parse::<IpAddr>().is_ok_and(|a| a.is_ipv6()) {
+                        AddressFamily::Ipv6
+                    } else {
+                        AddressFamily::Ipv4
+                    },
+                    mac_address: match (lladdr_raw, mac) {
+                        (Some(_), Some(mac)) => ObservedField::known(mac),
+                        (Some(_), None) => invalid("ip neigh lladdr is not a valid MAC"),
+                        (None, _) => unknown("ip neigh lladdr absent"),
+                    },
+                    resolution_state: state,
+                    raw_state,
+                    age_seconds: unknown("ip neigh output does not expose age"),
+                    outgoing_interface: interface.to_string(),
+                    physical_interface: None,
+                    interface_vlan_id: unknown(
+                        "Linux interface names are not interpreted as VLAN evidence",
+                    ),
+                    remote: unknown("ip neigh output does not expose EVPN remote locality"),
+                    protocol,
+                    router: router.then_some(true),
+                    source_interface_raw: Some(interface.to_string()),
+                    neighbor_entity_key: None,
+                    forwarding_domain: unknown(
+                        "ip neigh output does not establish an L2 forwarding domain",
+                    ),
                 },
-                mac_address: match mac {
-                    Some(mac) => ObservedField::known(mac),
-                    None => unknown("ip neigh lladdr absent or invalid"),
-                },
-                resolution_state: state,
-                raw_state,
-                age_seconds: unknown("ip neigh output does not expose age"),
-                outgoing_interface: interface.to_string(),
-                physical_interface: None,
-                interface_vlan_id: unknown(
-                    "Linux interface names are not interpreted as VLAN evidence",
-                ),
-                remote: unknown("ip neigh output does not expose EVPN remote locality"),
-                protocol,
-                router: router.then_some(true),
-                source_interface_raw: Some(interface.to_string()),
             },
-        });
+        );
     }
     out
 }
@@ -670,13 +832,22 @@ fn parse_eos_mac(root: &Value, report: &mut NeighborNormalizationReport) -> Vec<
     let mut out = Vec::new();
     let entries_value = root.get("unicastTable").and_then(|v| v.get("tableEntries"));
     let Some(entries) = entries_value.and_then(Value::as_array) else {
+        let state = if entries_value.is_some() {
+            "malformed"
+        } else {
+            "missing"
+        };
         report
             .collection_presence
-            .insert("unicastTable.tableEntries".into(), "unknown".into());
-        report.malformed_records += 1;
-        report
-            .invalid_samples
-            .push("EOS unicastTable.tableEntries absent or wrong type".into());
+            .insert("unicastTable.tableEntries".into(), state.into());
+        if entries_value.is_some() {
+            report.malformed_records += 1;
+            sample(report, "EOS unicastTable.tableEntries wrong type");
+        } else {
+            report
+                .notes
+                .push("EOS unicastTable.tableEntries absent".into());
+        }
         return out;
     };
     report.collection_presence.insert(
@@ -694,16 +865,12 @@ fn parse_eos_mac(root: &Value, report: &mut NeighborNormalizationReport) -> Vec<
             str_field(item, "entryType"),
         ) else {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push("EOS MAC entry missing mac/interface/entryType".into());
+            sample(report, "EOS MAC entry missing mac/interface/entryType");
             continue;
         };
         let Some(mac) = normalize_mac_address(mac_raw) else {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push(format!("EOS invalid MAC {mac_raw}"));
+            sample(report, format!("EOS invalid MAC {mac_raw}"));
             continue;
         };
         let vlan = match item.get("vlanId") {
@@ -718,26 +885,37 @@ fn parse_eos_mac(root: &Value, report: &mut NeighborNormalizationReport) -> Vec<
             "dynamic" => ObservedField::known(MacEntryType::Dynamic),
             _ => ObservedField::known(MacEntryType::Unknown),
         };
-        out.push(MacRecord {
-            interface: interface.to_string(),
-            payload: MacForwardingPayload {
-                mac_address: mac,
-                vlan_id: vlan,
-                outgoing_interface: interface.to_string(),
-                normalized_outgoing_interface: None,
-                entry_type,
-                remote_vtep_ip: None,
-                flags: vec![],
-                move_count: match item.get("moves").and_then(Value::as_u64) {
-                    Some(v) => ObservedField::known(v),
-                    None => unknown("EOS moves absent"),
-                },
-                last_move_epoch_seconds: match item.get("lastMove").and_then(Value::as_f64) {
-                    Some(v) => ObservedField::known(v),
-                    None => unknown("EOS lastMove absent"),
+        push_mac_record(
+            &mut out,
+            report,
+            MacRecord {
+                interface: interface.to_string(),
+                payload: MacForwardingPayload {
+                    mac_address: mac,
+                    vlan_id: vlan,
+                    outgoing_interface: interface.to_string(),
+                    normalized_outgoing_interface: None,
+                    entry_type,
+                    remote_vtep_ip: None,
+                    flags: vec![],
+                    move_count: match item.get("moves").and_then(Value::as_u64) {
+                        Some(v) => ObservedField::known(v),
+                        None => unknown("EOS moves absent"),
+                    },
+                    last_move_epoch_seconds: match item.get("lastMove").and_then(Value::as_f64) {
+                        Some(v) => ObservedField::known(v),
+                        None => unknown("EOS lastMove absent"),
+                    },
+                    bridge_domain: unknown("EOS MAC output does not expose bridge-domain identity"),
+                    entry_contexts: if interface == "Vxlan1" {
+                        vec![MacEntryContext::Remote]
+                    } else {
+                        vec![]
+                    },
+                    forwarding_entity_key: None,
                 },
             },
-        });
+        );
     }
     out
 }
@@ -757,17 +935,11 @@ fn normalize_nxos_port(raw: &str) -> (String, Option<String>) {
 
 fn parse_nxos_mac(root: &Value, report: &mut NeighborNormalizationReport) -> Vec<MacRecord> {
     let mut out = Vec::new();
-    let entries = rows(
+    let entries = nxos_rows(
         root.get("TABLE_mac_address")
             .and_then(|v| v.get("ROW_mac_address")),
-    );
-    report.collection_presence.insert(
-        "TABLE_mac_address.ROW_mac_address".into(),
-        if entries.is_empty() {
-            "empty".into()
-        } else {
-            "populated".into()
-        },
+        "TABLE_mac_address.ROW_mac_address",
+        report,
     );
     for item in entries {
         let (Some(mac_raw), Some(port_raw)) = (
@@ -775,16 +947,12 @@ fn parse_nxos_mac(root: &Value, report: &mut NeighborNormalizationReport) -> Vec
             str_field(&item, "disp_port"),
         ) else {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push("NXOS MAC entry missing mac/port".into());
+            sample(report, "NXOS MAC entry missing mac/port");
             continue;
         };
         let Some(mac) = normalize_mac_address(mac_raw) else {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push(format!("NXOS invalid MAC {mac_raw}"));
+            sample(report, format!("NXOS invalid MAC {mac_raw}"));
             continue;
         };
         let vlan = match str_field(&item, "disp_vlan") {
@@ -800,20 +968,36 @@ fn parse_nxos_mac(root: &Value, report: &mut NeighborNormalizationReport) -> Vec
             _ => ObservedField::known(MacEntryType::Unknown),
         };
         let (normalized, remote_vtep) = normalize_nxos_port(port_raw);
-        out.push(MacRecord {
-            interface: normalized.clone(),
-            payload: MacForwardingPayload {
-                mac_address: mac,
-                vlan_id: vlan,
-                outgoing_interface: port_raw.to_string(),
-                normalized_outgoing_interface: Some(normalized),
-                entry_type,
-                remote_vtep_ip: remote_vtep,
-                flags: vec![],
-                move_count: unknown("NXOS disp_age is age, not move count"),
-                last_move_epoch_seconds: unknown("NXOS output does not expose last-move epoch"),
+        let mut contexts = Vec::new();
+        if remote_vtep.is_some() {
+            contexts.push(MacEntryContext::Remote);
+        }
+        if port_raw.ends_with("(R)") {
+            contexts.push(MacEntryContext::Special);
+        }
+        push_mac_record(
+            &mut out,
+            report,
+            MacRecord {
+                interface: normalized.clone(),
+                payload: MacForwardingPayload {
+                    mac_address: mac,
+                    vlan_id: vlan,
+                    outgoing_interface: port_raw.to_string(),
+                    normalized_outgoing_interface: Some(normalized),
+                    entry_type,
+                    remote_vtep_ip: remote_vtep,
+                    flags: vec![],
+                    move_count: unknown("NXOS disp_age is age, not move count"),
+                    last_move_epoch_seconds: unknown("NXOS output does not expose last-move epoch"),
+                    bridge_domain: unknown(
+                        "NXOS MAC output does not expose bridge-domain identity",
+                    ),
+                    entry_contexts: contexts,
+                    forwarding_entity_key: None,
+                },
             },
-        });
+        );
     }
     out
 }
@@ -832,69 +1016,158 @@ fn parse_cumulus_mac(input: &str, report: &mut NeighborNormalizationReport) -> V
         let tokens: Vec<&str> = line.split_whitespace().collect();
         if tokens.len() < 3 {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push(format!("short bridge fdb line: {line}"));
+            sample(report, format!("short bridge fdb line: {line}"));
             continue;
         }
         let Some(mac) = normalize_mac_address(tokens[0]) else {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push(format!("invalid bridge fdb MAC in line: {line}"));
+            sample(report, format!("invalid bridge fdb MAC in line: {line}"));
             continue;
         };
         let Some(dev_pos) = tokens.iter().position(|t| *t == "dev") else {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push(format!("missing dev in line: {line}"));
+            sample(report, format!("missing dev in line: {line}"));
             continue;
         };
         let Some(interface) = tokens.get(dev_pos + 1).copied() else {
             report.malformed_records += 1;
-            report
-                .invalid_samples
-                .push(format!("missing interface in line: {line}"));
+            sample(report, format!("missing interface in line: {line}"));
             continue;
         };
-        let vlan = tokens
-            .iter()
-            .position(|t| *t == "vlan")
-            .and_then(|p| tokens.get(p + 1))
-            .and_then(|v| v.parse::<u32>().ok())
-            .filter(|v| *v <= 4095);
-        let flags: Vec<String> = tokens
-            .iter()
-            .skip(dev_pos + 2)
-            .filter(|t| !matches!(**t, "vlan" | "master" | "bridge"))
-            .filter(|t| t.parse::<u32>().is_err())
-            .map(|s| s.to_string())
-            .collect();
-        let entry_type = if tokens.iter().any(|t| *t == "permanent") {
+
+        let mut vlan = None;
+        let mut master_name = None;
+        let mut remote_vtep = None;
+        let mut flags = Vec::new();
+        let mut contexts = BTreeSet::new();
+        let mut saw_permanent = false;
+        let mut saw_static = false;
+        let mut saw_stale = false;
+        let mut saw_dynamic = false;
+        let mut i = dev_pos + 2;
+        while i < tokens.len() {
+            match tokens[i] {
+                "vlan" => {
+                    if let Some(raw) = tokens.get(i + 1) {
+                        vlan = raw.parse::<u32>().ok().filter(|v| *v <= 4095);
+                        i += 2;
+                    } else {
+                        flags.push("vlan-missing-value".into());
+                        i += 1;
+                    }
+                }
+                "master" => {
+                    contexts.insert(MacEntryContext::MasterTable);
+                    if let Some(name) = tokens.get(i + 1) {
+                        master_name = Some((*name).to_string());
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                "self" => {
+                    contexts.insert(MacEntryContext::SelfTable);
+                    i += 1;
+                }
+                "extern_learn" => {
+                    contexts.insert(MacEntryContext::ExternallyLearned);
+                    flags.push("extern_learn".into());
+                    i += 1;
+                }
+                "offload" => {
+                    contexts.insert(MacEntryContext::Offloaded);
+                    flags.push("offload".into());
+                    i += 1;
+                }
+                "router" => {
+                    contexts.insert(MacEntryContext::Router);
+                    flags.push("router".into());
+                    i += 1;
+                }
+                "dst" => {
+                    if let Some(ip) = tokens.get(i + 1) {
+                        remote_vtep = Some((*ip).to_string());
+                        contexts.insert(MacEntryContext::Remote);
+                        i += 2;
+                    } else {
+                        flags.push("dst-missing-value".into());
+                        i += 1;
+                    }
+                }
+                "permanent" | "local" => {
+                    saw_permanent = true;
+                    contexts.insert(MacEntryContext::Local);
+                    flags.push(tokens[i].into());
+                    i += 1;
+                }
+                "static" | "sticky" => {
+                    saw_static = true;
+                    flags.push(tokens[i].into());
+                    i += 1;
+                }
+                "stale" => {
+                    saw_stale = true;
+                    flags.push("stale".into());
+                    i += 1;
+                }
+                "dynamic" => {
+                    saw_dynamic = true;
+                    flags.push("dynamic".into());
+                    i += 1;
+                }
+                other => {
+                    flags.push(other.into());
+                    if !other.parse::<u32>().is_ok() {
+                        contexts.insert(MacEntryContext::Other);
+                    }
+                    i += 1;
+                }
+            }
+        }
+        // iproute2 prints no state token for a reachable FDB entry. For bridge
+        // FDB, reachable without the static/NOARP or permanent/local bit is
+        // the dynamic learn state; stale is reachability state, not a type.
+        let entry_type = if saw_permanent {
             ObservedField::known(MacEntryType::Permanent)
-        } else if tokens.iter().any(|t| *t == "static" || *t == "sticky") {
+        } else if saw_static {
             ObservedField::known(MacEntryType::Static)
+        } else if saw_stale {
+            ObservedField::known(MacEntryType::Unknown)
         } else {
+            // iproute2 prints no state token for NUD_REACHABLE. In bridge FDB
+            // semantics, reachable without static/NOARP or permanent/local is
+            // the dynamic learn state. An explicit dynamic token is therefore
+            // corroborating evidence, not a required marker.
+            let _ = saw_dynamic;
             ObservedField::known(MacEntryType::Dynamic)
         };
-        out.push(MacRecord {
-            interface: interface.to_string(),
-            payload: MacForwardingPayload {
-                mac_address: mac,
-                vlan_id: match vlan {
-                    Some(v) => ObservedField::known(v),
-                    None => unknown("bridge fdb vlan absent"),
+        push_mac_record(
+            &mut out,
+            report,
+            MacRecord {
+                interface: interface.to_string(),
+                payload: MacForwardingPayload {
+                    mac_address: mac,
+                    vlan_id: match vlan {
+                        Some(v) => ObservedField::known(v),
+                        None => unknown("bridge fdb vlan absent"),
+                    },
+                    outgoing_interface: interface.to_string(),
+                    normalized_outgoing_interface: None,
+                    entry_type,
+                    remote_vtep_ip: remote_vtep,
+                    flags,
+                    move_count: unknown("bridge fdb does not expose move count"),
+                    last_move_epoch_seconds: unknown("bridge fdb does not expose last-move epoch"),
+                    bridge_domain: match master_name {
+                        Some(name) => ObservedField::known(name),
+                        None => unknown("bridge fdb master/bridge identity absent"),
+                    },
+                    entry_contexts: contexts.into_iter().collect(),
+                    forwarding_entity_key: None,
                 },
-                outgoing_interface: interface.to_string(),
-                normalized_outgoing_interface: None,
-                entry_type,
-                remote_vtep_ip: None,
-                flags,
-                move_count: unknown("bridge fdb does not expose move count"),
-                last_move_epoch_seconds: unknown("bridge fdb does not expose last-move epoch"),
             },
-        });
+        );
     }
     out
 }
@@ -908,6 +1181,186 @@ fn dedup_key_mac(record: &MacRecord) -> String {
     serde_json::to_string(&record.payload).unwrap_or_default()
 }
 
+fn canonical_interface_entity(
+    interface: &str,
+    identity: Option<&crate::typed_facts::InterfaceSubjectIdentity>,
+) -> String {
+    match identity {
+        Some(identity)
+            if identity.kind == InterfaceIdentityKind::Subinterface
+                && identity.parent_entity.is_some() =>
+        {
+            identity.parent_entity.clone().unwrap_or_default()
+        }
+        _ => interface.to_string(),
+    }
+}
+
+fn coverage_population(
+    capture: &CommandCapture<'_>,
+    report: &NeighborNormalizationReport,
+) -> ScopedPopulationCoverage {
+    if report.refusal_reason.is_some() || capture.outcome == CaptureOutcome::Unknown {
+        return ScopedPopulationCoverage::Unknown;
+    }
+    let mut saw_positive_collection = false;
+    let mut saw_missing_or_malformed_collection = false;
+    for state in report.collection_presence.values() {
+        match state.as_str() {
+            "empty" | "populated" => saw_positive_collection = true,
+            "missing" | "malformed" | "missing_or_malformed" | "unsupported" => {
+                saw_missing_or_malformed_collection = true
+            }
+            _ => saw_missing_or_malformed_collection = true,
+        }
+    }
+    if capture.outcome == CaptureOutcome::Complete
+        && report.malformed_records == 0
+        && report.input_records_omitted == 0
+        && report.output_facts_omitted == 0
+        && report.facts_rejected == 0
+        && !saw_missing_or_malformed_collection
+    {
+        ScopedPopulationCoverage::Complete
+    } else if saw_missing_or_malformed_collection
+        && !saw_positive_collection
+        && report.records_decoded == 0
+    {
+        // A missing/unsupported table container is not positive evidence of an
+        // empty or partially decoded population. Keep that ignorance explicit.
+        ScopedPopulationCoverage::Unknown
+    } else {
+        ScopedPopulationCoverage::Partial
+    }
+}
+
+fn positive_empty_population(report: &NeighborNormalizationReport) -> bool {
+    if report.records_decoded != 0
+        || report.malformed_records != 0
+        || report.input_records_omitted != 0
+        || report.refusal_reason.is_some()
+    {
+        return false;
+    }
+    let mut saw_empty = false;
+    for state in report.collection_presence.values() {
+        match state.as_str() {
+            "empty" => saw_empty = true,
+            "populated" => {}
+            _ => return false,
+        }
+    }
+    saw_empty
+}
+
+fn scoped_coverage(
+    ctx: &ObservationContext<'_>,
+    capture: &CommandCapture<'_>,
+    source_kind: &str,
+    profile: &str,
+    covered_fact_kind: &str,
+    report: &NeighborNormalizationReport,
+    facts: &[TypedFact],
+    raw_sha256: Option<&str>,
+) -> ScopedCaptureCoverage {
+    let mut covered_interfaces = BTreeSet::new();
+    let mut covered_forwarding_domains = BTreeSet::new();
+    let mut covered_vlan_ids = BTreeSet::new();
+    for fact in facts {
+        if let Some(entity) = &fact.subject.entity {
+            covered_interfaces.insert(entity.clone());
+        }
+        let Some(fields) = &fact.payload.fields else {
+            continue;
+        };
+        match fact.fact_kind.as_str() {
+            FACT_KIND_ARPND_NEIGHBOR => {
+                if let Ok(payload) = serde_json::from_value::<ArpndNeighborPayload>(fields.clone())
+                {
+                    if payload.interface_vlan_id.state == FieldAvailability::Known
+                        && let Some(vlan) = payload.interface_vlan_id.value
+                    {
+                        covered_vlan_ids.insert(vlan);
+                    }
+                    if payload.forwarding_domain.state == FieldAvailability::Known
+                        && let Some(domain) = payload.forwarding_domain.value
+                    {
+                        covered_forwarding_domains.insert(domain);
+                    }
+                }
+            }
+            FACT_KIND_MAC_FORWARDING => {
+                if let Ok(payload) = serde_json::from_value::<MacForwardingPayload>(fields.clone())
+                {
+                    if payload.vlan_id.state == FieldAvailability::Known
+                        && let Some(vlan) = payload.vlan_id.value
+                    {
+                        covered_vlan_ids.insert(vlan);
+                    }
+                    if payload.bridge_domain.state == FieldAvailability::Known
+                        && let Some(domain) = payload.bridge_domain.value
+                    {
+                        covered_forwarding_domains.insert(domain);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    ScopedCaptureCoverage {
+        device_id: ctx.device_id.to_string(),
+        scope: ctx.scope.map(str::to_string),
+        network_namespace: ctx.network_namespace.map(str::to_string),
+        collector_id: ctx.collector_id.to_string(),
+        source_kind: source_kind.to_string(),
+        capture_id: ctx.capture_id.to_string(),
+        source_generation: Some(ctx.session_epoch),
+        acquisition_scope: profile.to_string(),
+        covered_fact_kind: covered_fact_kind.to_string(),
+        capture_outcome: capture.outcome,
+        population_coverage: coverage_population(capture, report),
+        covers_declared_scope: true,
+        observation_time: Some(ctx.observed_at.to_string()),
+        valid_until: None,
+        covered_interfaces,
+        covered_forwarding_domains,
+        covered_vlan_ids,
+        records_decoded: report.records_decoded,
+        malformed_records: report.malformed_records,
+        omitted_records: report.input_records_omitted + report.output_facts_omitted,
+        rejected_records: report.facts_rejected,
+        evidence_refs: raw_sha256
+            .map(|sha256| {
+                vec![EvidenceRef {
+                    kind: "raw_output".into(),
+                    sha256: sha256.to_string(),
+                    locator: Some(profile.to_string()),
+                }]
+            })
+            .unwrap_or_default(),
+    }
+}
+
+fn empty_coverage(
+    ctx: &ObservationContext<'_>,
+    capture: &CommandCapture<'_>,
+    source_kind: &str,
+    profile: &str,
+    covered_fact_kind: &str,
+    report: &NeighborNormalizationReport,
+) -> ScopedCaptureCoverage {
+    scoped_coverage(
+        ctx,
+        capture,
+        source_kind,
+        profile,
+        covered_fact_kind,
+        report,
+        &[],
+        None,
+    )
+}
+
 /// Normalize one ARP/ND capture into typed facts. Invalid records are counted
 /// and omitted; no zero-MAC placeholder or reachability default is invented.
 pub fn normalize_arpnd(obs: &ArpndObservation<'_>) -> NeighborNormalizationOutput {
@@ -917,29 +1370,59 @@ pub fn normalize_arpnd(obs: &ArpndObservation<'_>) -> NeighborNormalizationOutpu
         input_bytes: obs.capture.output.len(),
         ..Default::default()
     };
-    if let Some(err) = context_error(&obs.context) {
-        report.refusal_reason = Some(err);
-        return NeighborNormalizationOutput {
-            facts: vec![],
-            report,
-        };
-    }
     if obs.capture.output.len() > MAX_INPUT_BYTES {
         report.refusal_reason = Some("input exceeds maximum byte budget before parsing".into());
+        let coverage = empty_coverage(
+            &obs.context,
+            &obs.capture,
+            obs.profile.source_kind(),
+            obs.profile.label(),
+            FACT_KIND_ARPND_NEIGHBOR,
+            &report,
+        );
         return NeighborNormalizationOutput {
             facts: vec![],
             report,
+            coverage,
+        };
+    }
+    // Evidence integrity is bounded first and then hashed once per capture;
+    // every emitted fact references this same digest.
+    let raw_sha256 = sha256_hex(obs.capture.output.as_bytes());
+    if let Some(err) = context_error(&obs.context) {
+        report.refusal_reason = Some(err);
+        let coverage = empty_coverage(
+            &obs.context,
+            &obs.capture,
+            obs.profile.source_kind(),
+            obs.profile.label(),
+            FACT_KIND_ARPND_NEIGHBOR,
+            &report,
+        );
+        return NeighborNormalizationOutput {
+            facts: vec![],
+            report,
+            coverage,
         };
     }
     if !obs.capture.outcome.usable() {
         report.refusal_reason = Some("capture outcome is not usable".into());
+        let coverage = empty_coverage(
+            &obs.context,
+            &obs.capture,
+            obs.profile.source_kind(),
+            obs.profile.label(),
+            FACT_KIND_ARPND_NEIGHBOR,
+            &report,
+        );
         return NeighborNormalizationOutput {
             facts: vec![],
             report,
+            coverage,
         };
     }
 
-    let mut records = match obs.profile {
+    let records = match obs.profile {
         ArpndSourceProfile::EosShowArpVrfAllJson => match parse_json_input(obs.capture.output) {
             Ok(root) => parse_eos_arp(&root, &mut report),
             Err(e) => {
@@ -960,17 +1443,13 @@ pub fn normalize_arpnd(obs: &ArpndObservation<'_>) -> NeighborNormalizationOutpu
             parse_cumulus_arp(obs.capture.output, &mut report)
         }
     };
-    let decoded_records = records.len();
-    if decoded_records > MAX_RECORDS {
-        let omitted = decoded_records - MAX_RECORDS;
-        report.input_records_omitted = report.input_records_omitted.saturating_add(omitted);
+    if report.input_records_omitted > 0 {
         report.notes.push(format!(
-            "input record budget truncated {omitted} decoded records"
+            "input record budget omitted {} decoded records",
+            report.input_records_omitted
         ));
-        records.truncate(MAX_RECORDS);
     }
-    report.records_decoded = decoded_records;
-    report.empty_records = records.is_empty() && report.refusal_reason.is_none();
+    report.empty_records = positive_empty_population(&report);
 
     let mut seen = BTreeSet::new();
     let mut facts = Vec::new();
@@ -990,7 +1469,18 @@ pub fn normalize_arpnd(obs: &ArpndObservation<'_>) -> NeighborNormalizationOutpu
             continue;
         }
         let identity = interface_identity_for(obs.interface_identities, &record.interface);
-        let fields = serde_json::to_value(&record.payload).unwrap_or(Value::Null);
+        let canonical_entity = canonical_interface_entity(&record.interface, identity.as_ref());
+        let mut payload = record.payload.clone();
+        payload.neighbor_entity_key = Some(arpnd_attachment_entity_key(
+            record.vrf.as_deref(),
+            payload.address_family,
+            &payload.ip_address,
+            &canonical_entity,
+            identity
+                .as_ref()
+                .and_then(|identity| identity.subinterface_index),
+        ));
+        let fields = serde_json::to_value(&payload).unwrap_or(Value::Null);
         let fact = fact_for_interface_payload(
             &obs.context,
             obs.profile.source_kind(),
@@ -999,7 +1489,7 @@ pub fn normalize_arpnd(obs: &ArpndObservation<'_>) -> NeighborNormalizationOutpu
             record.vrf.as_deref(),
             identity,
             fields,
-            obs.capture.output,
+            &raw_sha256,
             obs.profile.label(),
             comp,
             index as u64,
@@ -1026,7 +1516,21 @@ pub fn normalize_arpnd(obs: &ArpndObservation<'_>) -> NeighborNormalizationOutpu
     }
     bound_invalid_samples(&mut report);
     report.facts_emitted = facts.len();
-    NeighborNormalizationOutput { facts, report }
+    let coverage = scoped_coverage(
+        &obs.context,
+        &obs.capture,
+        obs.profile.source_kind(),
+        obs.profile.label(),
+        FACT_KIND_ARPND_NEIGHBOR,
+        &report,
+        &facts,
+        Some(&raw_sha256),
+    );
+    NeighborNormalizationOutput {
+        facts,
+        report,
+        coverage,
+    }
 }
 
 /// Normalize one MAC forwarding-table capture into typed facts. The facts are
@@ -1038,29 +1542,57 @@ pub fn normalize_mac(obs: &MacObservation<'_>) -> NeighborNormalizationOutput {
         input_bytes: obs.capture.output.len(),
         ..Default::default()
     };
-    if let Some(err) = context_error(&obs.context) {
-        report.refusal_reason = Some(err);
-        return NeighborNormalizationOutput {
-            facts: vec![],
-            report,
-        };
-    }
     if obs.capture.output.len() > MAX_INPUT_BYTES {
         report.refusal_reason = Some("input exceeds maximum byte budget before parsing".into());
+        let coverage = empty_coverage(
+            &obs.context,
+            &obs.capture,
+            obs.profile.source_kind(),
+            obs.profile.label(),
+            FACT_KIND_MAC_FORWARDING,
+            &report,
+        );
         return NeighborNormalizationOutput {
             facts: vec![],
             report,
+            coverage,
+        };
+    }
+    let raw_sha256 = sha256_hex(obs.capture.output.as_bytes());
+    if let Some(err) = context_error(&obs.context) {
+        report.refusal_reason = Some(err);
+        let coverage = empty_coverage(
+            &obs.context,
+            &obs.capture,
+            obs.profile.source_kind(),
+            obs.profile.label(),
+            FACT_KIND_MAC_FORWARDING,
+            &report,
+        );
+        return NeighborNormalizationOutput {
+            facts: vec![],
+            report,
+            coverage,
         };
     }
     if !obs.capture.outcome.usable() {
         report.refusal_reason = Some("capture outcome is not usable".into());
+        let coverage = empty_coverage(
+            &obs.context,
+            &obs.capture,
+            obs.profile.source_kind(),
+            obs.profile.label(),
+            FACT_KIND_MAC_FORWARDING,
+            &report,
+        );
         return NeighborNormalizationOutput {
             facts: vec![],
             report,
+            coverage,
         };
     }
 
-    let mut records = match obs.profile {
+    let records = match obs.profile {
         MacSourceProfile::EosShowMacAddressTableUnicastJson => {
             match parse_json_input(obs.capture.output) {
                 Ok(root) => parse_eos_mac(&root, &mut report),
@@ -1083,17 +1615,13 @@ pub fn normalize_mac(obs: &MacObservation<'_>) -> NeighborNormalizationOutput {
             parse_cumulus_mac(obs.capture.output, &mut report)
         }
     };
-    let decoded_records = records.len();
-    if decoded_records > MAX_RECORDS {
-        let omitted = decoded_records - MAX_RECORDS;
-        report.input_records_omitted = report.input_records_omitted.saturating_add(omitted);
+    if report.input_records_omitted > 0 {
         report.notes.push(format!(
-            "input record budget truncated {omitted} decoded records"
+            "input record budget omitted {} decoded records",
+            report.input_records_omitted
         ));
-        records.truncate(MAX_RECORDS);
     }
-    report.records_decoded = decoded_records;
-    report.empty_records = records.is_empty() && report.refusal_reason.is_none();
+    report.empty_records = positive_empty_population(&report);
 
     let mut seen = BTreeSet::new();
     let mut facts = Vec::new();
@@ -1112,8 +1640,23 @@ pub fn normalize_mac(obs: &MacObservation<'_>) -> NeighborNormalizationOutput {
             report.output_facts_omitted += 1;
             continue;
         }
-        let identity = interface_identity_for(obs.interface_identities, &record.interface);
-        let fields = serde_json::to_value(&record.payload).unwrap_or(Value::Null);
+        let identity =
+            interface_identity_for(obs.interface_identities, &record.interface).or_else(|| {
+                interface_identity_for(obs.interface_identities, &record.payload.outgoing_interface)
+            });
+        let mut payload = record.payload.clone();
+        let bridge_domain = (payload.bridge_domain.state == FieldAvailability::Known)
+            .then_some(payload.bridge_domain.value.clone())
+            .flatten();
+        let vlan = (payload.vlan_id.state == FieldAvailability::Known)
+            .then_some(payload.vlan_id.value)
+            .flatten();
+        payload.forwarding_entity_key = Some(mac_forwarding_entity_key(
+            bridge_domain.as_deref(),
+            vlan,
+            &payload.mac_address,
+        ));
+        let fields = serde_json::to_value(&payload).unwrap_or(Value::Null);
         let fact = fact_for_interface_payload(
             &obs.context,
             obs.profile.source_kind(),
@@ -1122,7 +1665,7 @@ pub fn normalize_mac(obs: &MacObservation<'_>) -> NeighborNormalizationOutput {
             None,
             identity,
             fields,
-            obs.capture.output,
+            &raw_sha256,
             obs.profile.label(),
             comp,
             index as u64,
@@ -1149,12 +1692,27 @@ pub fn normalize_mac(obs: &MacObservation<'_>) -> NeighborNormalizationOutput {
     }
     bound_invalid_samples(&mut report);
     report.facts_emitted = facts.len();
-    NeighborNormalizationOutput { facts, report }
+    let coverage = scoped_coverage(
+        &obs.context,
+        &obs.capture,
+        obs.profile.source_kind(),
+        obs.profile.label(),
+        FACT_KIND_MAC_FORWARDING,
+        &report,
+        &facts,
+        Some(&raw_sha256),
+    );
+    NeighborNormalizationOutput {
+        facts,
+        report,
+        coverage,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn ctx() -> ObservationContext<'static> {
         ObservationContext::minimal(
@@ -1438,6 +1996,231 @@ mod tests {
             out.report
                 .refusal_reason
                 .is_some_and(|r| r.contains("duplicate"))
+        );
+    }
+    #[test]
+    fn linux_neighbor_states_preserve_probe_delay_noarp_and_unknown() {
+        let input = "10.0.0.1 dev swp1 lladdr aa:bb:cc:dd:ee:01 PROBE\n\
+                     10.0.0.2 dev swp1 lladdr aa:bb:cc:dd:ee:02 DELAY\n\
+                     10.0.0.3 dev swp1 lladdr aa:bb:cc:dd:ee:03 NOARP\n\
+                     10.0.0.4 dev swp1 lladdr aa:bb:cc:dd:ee:04 STALE\n";
+        let out = normalize_arpnd(&ArpndObservation {
+            profile: ArpndSourceProfile::CumulusIpNeighShow,
+            capture: complete(input),
+            context: ctx(),
+            interface_identities: None,
+        });
+        assert_eq!(out.report.malformed_records, 0);
+        let states: BTreeSet<_> = out
+            .facts
+            .iter()
+            .map(|f| {
+                serde_json::from_value::<ArpndNeighborPayload>(f.payload.fields.clone().unwrap())
+                    .unwrap()
+                    .resolution_state
+                    .value
+                    .unwrap()
+            })
+            .collect();
+        assert!(states.contains(&NeighborResolutionState::Probe));
+        assert!(states.contains(&NeighborResolutionState::Delay));
+        assert!(states.contains(&NeighborResolutionState::NoArp));
+        assert!(states.contains(&NeighborResolutionState::Stale));
+    }
+
+    #[test]
+    fn malformed_linux_lladdr_is_invalid_evidence_not_protocol_failure() {
+        let input = "10.0.0.9 dev swp1 lladdr not-a-mac\n";
+        let out = normalize_arpnd(&ArpndObservation {
+            profile: ArpndSourceProfile::CumulusIpNeighShow,
+            capture: complete(input),
+            context: ctx(),
+            interface_identities: None,
+        });
+        assert_eq!(out.facts.len(), 1);
+        let p: ArpndNeighborPayload =
+            serde_json::from_value(out.facts[0].payload.fields.clone().unwrap()).unwrap();
+        assert_eq!(p.mac_address.state, FieldAvailability::Invalid);
+        assert_eq!(
+            p.resolution_state.state,
+            FieldAvailability::Unknown,
+            "malformed MAC text must not fabricate a resolution state"
+        );
+    }
+
+    #[test]
+    fn eos_neighbor_without_hardware_address_is_retained_as_incomplete_unknown() {
+        let input = r#"{"vrfs":{"default":{"ipV4Neighbors":[{"address":"192.0.2.44","age":0,"interface":"Ethernet1"}]}}}"#;
+        let out = normalize_arpnd(&ArpndObservation {
+            profile: ArpndSourceProfile::EosShowArpVrfAllJson,
+            capture: complete(input),
+            context: ctx(),
+            interface_identities: None,
+        });
+        assert_eq!(out.report.malformed_records, 0);
+        assert_eq!(out.facts.len(), 1);
+        let p: ArpndNeighborPayload =
+            serde_json::from_value(out.facts[0].payload.fields.clone().unwrap()).unwrap();
+        assert_eq!(p.mac_address.state, FieldAvailability::Unknown);
+        assert!(p.mac_address.value.is_none());
+        assert_eq!(p.resolution_state.state, FieldAvailability::Unknown);
+    }
+
+    #[test]
+    fn eos_empty_vrf_root_is_unknown_scope_not_positive_empty_table() {
+        let out = normalize_arpnd(&ArpndObservation {
+            profile: ArpndSourceProfile::EosShowArpVrfAllJson,
+            capture: complete(r#"{"vrfs":{}}"#),
+            context: ctx(),
+            interface_identities: None,
+        });
+        assert!(out.facts.is_empty());
+        assert!(!out.report.empty_records);
+        assert_eq!(out.report.collection_presence["vrfs"], "unknown_scope");
+        assert_eq!(
+            out.coverage.population_coverage,
+            ScopedPopulationCoverage::Unknown
+        );
+    }
+
+    #[test]
+    fn missing_or_malformed_nxos_containers_are_not_confirmed_empty_tables() {
+        let missing = normalize_mac(&MacObservation {
+            profile: MacSourceProfile::NxosShowMacAddressTableJsonNative,
+            capture: complete(r#"{"TABLE_mac_address":{}}"#),
+            context: ctx(),
+            interface_identities: None,
+        });
+        assert!(missing.facts.is_empty());
+        assert!(!missing.report.empty_records);
+        assert_eq!(
+            missing.coverage.population_coverage,
+            ScopedPopulationCoverage::Unknown
+        );
+        assert_eq!(
+            missing.report.collection_presence["TABLE_mac_address.ROW_mac_address"],
+            "missing"
+        );
+
+        let malformed = normalize_mac(&MacObservation {
+            profile: MacSourceProfile::NxosShowMacAddressTableJsonNative,
+            capture: complete(r#"{"TABLE_mac_address":{"ROW_mac_address":"wrong"}}"#),
+            context: ctx(),
+            interface_identities: None,
+        });
+        assert!(malformed.facts.is_empty());
+        assert!(!malformed.report.empty_records);
+        assert!(malformed.report.malformed_records > 0);
+        assert_ne!(
+            malformed.coverage.population_coverage,
+            ScopedPopulationCoverage::Complete
+        );
+    }
+
+    #[test]
+    fn raw_capture_evidence_digest_is_shared_across_all_emitted_facts() {
+        let input = include_str!(
+            "../tests/fixtures/bn024/neighbor/eos-leaf02-show-mac-address-table-unicast.json"
+        );
+        let out = normalize_mac(&MacObservation {
+            profile: MacSourceProfile::EosShowMacAddressTableUnicastJson,
+            capture: complete(input),
+            context: ctx(),
+            interface_identities: None,
+        });
+        assert!(out.facts.len() > 1);
+        let expected = sha256_hex(input.as_bytes());
+        assert!(
+            out.facts
+                .iter()
+                .all(|f| f.evidence.len() == 1 && f.evidence[0].sha256 == expected)
+        );
+        assert_eq!(out.coverage.evidence_refs[0].sha256, expected);
+    }
+
+    #[test]
+    fn cumulus_bridge_master_and_entry_contexts_are_preserved() {
+        let input = "aa:bb:cc:dd:ee:ff dev bond1 vlan 100 master bridge extern_learn offload\n";
+        let out = normalize_mac(&MacObservation {
+            profile: MacSourceProfile::CumulusBridgeFdbShow,
+            capture: complete(input),
+            context: ctx(),
+            interface_identities: None,
+        });
+        assert_eq!(out.facts.len(), 1);
+        let p: MacForwardingPayload =
+            serde_json::from_value(out.facts[0].payload.fields.clone().unwrap()).unwrap();
+        assert_eq!(p.bridge_domain.value.as_deref(), Some("bridge"));
+        assert!(p.entry_contexts.contains(&MacEntryContext::MasterTable));
+        assert!(
+            p.entry_contexts
+                .contains(&MacEntryContext::ExternallyLearned)
+        );
+        assert!(p.entry_contexts.contains(&MacEntryContext::Offloaded));
+        assert!(out.coverage.covered_forwarding_domains.contains("bridge"));
+        assert!(out.coverage.covered_vlan_ids.contains(&100));
+    }
+
+    #[test]
+    fn structured_subinterface_subject_uses_canonical_parent_without_losing_native_name() {
+        let mut identities = InterfaceIdentityEvidence::default();
+        identities.by_native_name.insert(
+            "Ethernet1.100".into(),
+            crate::typed_facts::InterfaceSubjectIdentity {
+                kind: InterfaceIdentityKind::Subinterface,
+                parent_entity: Some("Ethernet1".into()),
+                subinterface_index: Some(100),
+                vendor_native_name: Some("Ethernet1.100".into()),
+            },
+        );
+        let input = "10.0.0.9 dev Ethernet1.100 lladdr aa:bb:cc:dd:ee:ff REACHABLE\n";
+        let out = normalize_arpnd(&ArpndObservation {
+            profile: ArpndSourceProfile::CumulusIpNeighShow,
+            capture: complete(input),
+            context: ctx(),
+            interface_identities: Some(&identities),
+        });
+        assert_eq!(out.report.facts_rejected, 0);
+        assert_eq!(out.facts.len(), 1);
+        let fact = &out.facts[0];
+        assert_eq!(fact.subject.entity.as_deref(), Some("Ethernet1"));
+        let identity = fact.subject.interface_identity.as_ref().unwrap();
+        assert_eq!(identity.subinterface_index, Some(100));
+        let p: ArpndNeighborPayload =
+            serde_json::from_value(fact.payload.fields.clone().unwrap()).unwrap();
+        assert_eq!(p.outgoing_interface, "Ethernet1.100");
+        assert!(
+            p.neighbor_entity_key
+                .as_deref()
+                .is_some_and(|key| key.contains("Ethernet1"))
+        );
+    }
+
+    #[test]
+    fn normalization_performance_smoke_reports_once_per_capture_digest_cost() {
+        let input = include_str!(
+            "../tests/fixtures/bn024/neighbor/eos-leaf02-show-mac-address-table-unicast.json"
+        );
+        let iterations = 100usize;
+        let started = std::time::Instant::now();
+        let mut facts = 0usize;
+        for _ in 0..iterations {
+            let out = normalize_mac(&MacObservation {
+                profile: MacSourceProfile::EosShowMacAddressTableUnicastJson,
+                capture: complete(input),
+                context: ctx(),
+                interface_identities: None,
+            });
+            facts = std::hint::black_box(out.facts.len());
+        }
+        let elapsed = started.elapsed();
+        assert_eq!(facts, 11);
+        println!(
+            "neighbor_mac_normalization_perf iterations={} total_ms={:.3} avg_us={:.1} normalizations_per_sec={:.1}",
+            iterations,
+            elapsed.as_secs_f64() * 1000.0,
+            elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64,
+            iterations as f64 / elapsed.as_secs_f64().max(f64::EPSILON)
         );
     }
 }
