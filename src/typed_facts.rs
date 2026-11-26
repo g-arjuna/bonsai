@@ -1140,6 +1140,37 @@ fn validate_neighbor_subject_payload_consistency(fact: &TypedFact) -> Result<(),
     Ok(())
 }
 
+/// Cross-check a VLAN/bridge-domain fact subject against its typed payload.
+/// The subject entity is the scoped domain or membership occurrence key; VLAN
+/// number alone is never a complete subject identity.
+fn validate_vlan_subject_payload_consistency(fact: &TypedFact) -> Result<(), FactError> {
+    if fact.fact_kind != crate::vlan_facts::FACT_KIND_VLAN_BRIDGE_DOMAIN {
+        return Ok(());
+    }
+    if fact.subject.namespace != "forwarding" {
+        return Err(FactError::InvalidField(
+            "vlan.bridge_domain subject namespace must be forwarding",
+        ));
+    }
+    let entity = fact.subject.entity.as_deref().unwrap_or("");
+    if entity.is_empty() {
+        return Err(FactError::InvalidField(
+            "subject.entity required for vlan.bridge_domain",
+        ));
+    }
+    let Some(fields) = &fact.payload.fields else {
+        return Ok(());
+    };
+    let payload: crate::vlan_facts::VlanBridgePayload = serde_json::from_value(fields.clone())
+        .map_err(|_| FactError::InvalidField("payload.fields.vlan.bridge_domain"))?;
+    if payload.domain_entity_key.as_deref() != Some(entity) {
+        return Err(FactError::InvalidField(
+            "vlan domain_entity_key/subject.entity mismatch",
+        ));
+    }
+    Ok(())
+}
+
 /// Fact kinds with a registered typed payload validator. Unregistered
 /// kinds still require an object-shaped `fields` payload — the generic
 /// envelope never implies arbitrary JSON is semantically valid.
@@ -1154,6 +1185,9 @@ fn validate_kind_payload(fact_kind: &str, fields: &Value) -> Result<(), FactErro
         }
         crate::neighbor_facts::FACT_KIND_MAC_FORWARDING => {
             crate::neighbor_facts::validate_mac_payload(fields)
+        }
+        crate::vlan_facts::FACT_KIND_VLAN_BRIDGE_DOMAIN => {
+            crate::vlan_facts::validate_vlan_payload(fields)
         }
         _ => Ok(()),
     }
@@ -1276,6 +1310,7 @@ impl TypedFact {
         validate_interface_subject_payload_consistency(self)?;
         validate_lldp_subject_payload_consistency(self)?;
         validate_neighbor_subject_payload_consistency(self)?;
+        validate_vlan_subject_payload_consistency(self)?;
         // A degraded/failed payload can never claim complete coverage.
         if let Some(state) = self.payload.state
             && is_degraded_state(state)

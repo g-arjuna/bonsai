@@ -1,0 +1,38 @@
+{
+  "cumulus-leaf01-bridge-c-vlan-show.txt": {
+    "capture_ms": 1616638469693,
+    "cmd_timestamp_ms": 1616638469693,
+    "command": "/sbin/bridge -c vlan show",
+    "devtype": "cumulus",
+    "hostname": "leaf01",
+    "namespace": "dual-bgp",
+    "sha256": "2d930d12f8686f17d1ad8014b62267d3acf04860db526d689da09183e65dc10f",
+    "status": 0,
+    "upstream_input": "tests/integration/sqcmds/cumulus-input/dual-bgp/vlan.output",
+    "version": "4.3.0"
+  },
+  "eos-leaf02-show-vlan-brief.json": {
+    "capture_ms": 1623025174532,
+    "cmd_timestamp_ms": 1623025174532,
+    "command": "show vlan brief",
+    "devtype": "eos",
+    "hostname": "leaf02",
+    "namespace": "eos",
+    "sha256": "af73f4b4c16c467acf45c1b7f7b7d5a035281aff9316c2ba0434dc836e378d78",
+    "status": 200,
+    "upstream_input": "tests/integration/sqcmds/eos-input/vlan.output",
+    "version": null
+  },
+  "nxos-leaf03-show-vlan-brief-json-native.json": {
+    "capture_ms": 1619275257446,
+    "cmd_timestamp_ms": 1619275257446,
+    "command": "show vlan brief | json native",
+    "devtype": "nxos",
+    "hostname": "leaf03",
+    "namespace": "nxos",
+    "sha256": "21afcf20a44ba59c1a7b19606434151a7cf4ba521834c096a958612f7021e9ef",
+    "status": 0,
+    "upstream_input": "tests/integration/sqcmds/nxos-input/vlan.output",
+    "version": "9.3(4)"
+  }
+}
