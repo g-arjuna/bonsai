@@ -101,6 +101,19 @@ physical member versus logical bond layering, parallel-link preservation and
 explicit one-sided/stale evidence. Query-time replacement of peer/interface
 identity and silent CDP/LLDP merging are upstream limitations, not Bonsai
 requirements.
+
+The existing Bonsai implementation review is recorded in the same ledger
+entry rather than treated as a greenfield parser task: `src/telemetry.rs`
+already extracts SR Linux, OpenConfig and XR-native LLDP events;
+`src/subscriber.rs` already performs capability-driven LLDP subscription
+selection; `src/graph/mod.rs`, `src/collector/graph.rs` and
+`src/http_server/device.rs` already write and expose neighbor/topology
+projections. Those paths are reusable partial implementation evidence, but
+they are not yet qualified typed adjacency intelligence: subtype resolution,
+parallel-link identity, lifecycle/coverage and deterministic reverse
+reconciliation remain missing and must be corrected in place rather than
+replaced with a competing subsystem.
+
 **Wave 2 — neighbor and routing evidence:** ARP/ND, MAC, route-aware LPM, recursive next-hop resolution, BGP operational state complementing BMP and explicit collection coverage.
 **Wave 3 — assertions and operator scenarios:** interface/MTU/LAG/VLAN/LLDP/address assertions with deterministic verdicts and BN-030 evidence surfaces.
 **Wave 4 — overlay and advanced routing:** EVPN/VNI/VTEP, underlay recursion, OSPF/IS-IS/LSDB topology using BN-026 contracts.

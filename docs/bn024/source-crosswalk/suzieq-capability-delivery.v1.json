@@ -6005,7 +6005,7 @@
         "inventory_reference": "suzieq-upstream-inventory.v1.json"
       },
       "required_acquisition_sources": "vendor structured JSON/XML/CLI/TextFSM commands recorded in upstream YAML where applicable; Bonsai should prefer native structured/model-driven sources and never use arbitrary writes",
-      "required_typed_semantics": "schema-shaped acquisition, cleaner extraction, malformed/missing handling and qualification",
+      "required_typed_semantics": "Typed interface.state facts preserve exact source-native interface occurrence, canonical entity, structured physical/logical/subinterface axes where established, administrative/operational state, type, ifindex, MTU/speed/MAC/address availability, parent/master/VRF relationships, forward LAG membership when the source establishes it, source provenance, completeness and evidence digests. Missing or malformed fields remain explicit through FieldAvailability/payload state; legacy unrefined facts remain readable.",
       "required_identity_dimensions": [
         "canonical_device",
         "namespace/tenant/scope",
@@ -6016,7 +6016,7 @@
         "source/session_epoch",
         "evidence_digest"
       ],
-      "required_query_assertion_behavior": "schema-shaped acquisition, cleaner extraction, malformed/missing handling and qualification",
+      "required_query_assertion_behavior": "Normalization emits deterministic typed facts suitable for scoped relationship analysis. Malformed input is rejected or degraded without panic or fabricated success; capture truncation and unknown population remain explicit; regressions use genuine vendor evidence plus labeled synthetic negative controls.",
       "historical_lifecycle_requirements": "explicit active/withdrawn/stale/gap lifecycle; observation time distinct from validity",
       "known_upstream_defaults_and_limitations": "Exact commands, version selectors, cleaner functions and schema defaults are inventoried in nos_service_depth and suzieq-upstream-inventory.v1.json; upstream commonly uses all-version selectors and normalize-time defaults.",
       "bonsai": {
@@ -6056,9 +6056,11 @@
       ],
       "existing_backlog_owner": "BN-024-06",
       "acceptance_scenarios": [
-        "genuine vendor fixture or typed synthetic regression labeled correctly",
-        "missing/malformed evidence remains explicit unknown or partial",
-        "identity collision regression passes"
+        "genuine FRR 10.6.1 JSON fixture emits expected interface state, type, MTU, MAC, speed and unknown-field availability without inventing absent data",
+        "genuine historical Cumulus fixture preserves peerlink/bridge/VRF relationship evidence and source limitations",
+        "genuine XRd 24.4.2 subscribe-once fixture handles subinterface zero, unknown population and qualified OpenConfig path semantics",
+        "malformed JSON, wrong payload shape, inconsistent structured subject/payload identity and unsupported source variants fail closed or degrade explicitly",
+        "physical, logical, subinterface-zero and numbered-subinterface identities do not collapse; legacy facts without structured identity remain readable"
       ],
       "reuse_license_disposition": "Apache-2.0 upstream study/reimplementation permitted by BN-024-00; no SuzieQ runtime dependency; verbatim fixture/template reuse requires separate approved_reuse review."
     },
@@ -6234,7 +6236,7 @@
         "source/session_epoch",
         "evidence_digest"
       ],
-      "required_query_assertion_behavior": "deterministic verdict with evidence and scope",
+      "required_query_assertion_behavior": "Bounded offline scope assessment returns per-scope and per-aggregate verdicts with membership status, relationship/input reason codes and fact-id evidence. PASS means only coherent, complete, internally consistent observed interface link-state evidence; it does not assert LACP selection, forwarding participation or capacity. UNKNOWN is required for missing, conflicting, incomplete or unreconciled evidence; FAIL only for a proven contradiction; NOT_APPLICABLE only when LAG applicability is genuinely absent.",
       "historical_lifecycle_requirements": "verdicts must use correct snapshot and lifecycle state",
       "known_upstream_defaults_and_limitations": "Upstream aver/assert behavior is implemented in pandas engines; verdict semantics are not Bonsai trust/coverage algebra.",
       "bonsai": {
@@ -6247,9 +6249,9 @@
           "tests/fixtures/bn024/interface-cumulus"
         ],
         "actual_qualification_evidence": [
-          "genuine offline Cumulus interface fixture: peerlink aggregate/member consistency",
+          "genuine offline Cumulus interface fixture: peerlink aggregate/member evidence is assessed only for narrow observed link-state consistency",
           "genuine negative evidence: swp1 -> bond01 remains unresolved when aggregate type is not independently established",
-          "synthetic negative control: swp49 operational down produces lag_member_down/lag_reduced_capacity"
+          "synthetic negative control: an administratively and operationally down member is reported as observed_member_oper_down/observed_member_admin_down without an active-capacity or forwarding claim"
         ],
         "missing_functionality": [
           "complete interface assertion matrix beyond the initial LAG consistency slice",
@@ -6274,9 +6276,14 @@
       ],
       "existing_backlog_owner": "BN-024-06",
       "acceptance_scenarios": [
-        "positive and negative independent fixtures",
-        "missing evidence UNKNOWN",
-        "unsupported scope NOT_APPLICABLE"
+        "genuine Cumulus peerlink fixture reports narrow observed member/aggregate link-state consistency without claiming LACP, forwarding or capacity health",
+        "physical, subinterface-zero and numbered-subinterface identities remain distinct; a numbered subinterface is never selected as a bare LAG aggregate target",
+        "exact duplicate replay is idempotent and input permutation does not change verdicts, counts, ordering or evidence references",
+        "different capture IDs, source epochs, conflicting same-generation observations or withdrawn/superseded/expired/non-operational facts cannot produce PASS",
+        "unknown aggregate operational state, unknown/unavailable/partial membership or unresolved relationship evidence remains UNKNOWN rather than PASS or NOT_APPLICABLE",
+        "aggregate-reported empty, partial, complete and reverse-only membership states are distinguished; absence of member observations is not proof of empty membership",
+        "administrative shutdown is reported as administrative evidence, not automatically an unexpected operational fault; operationally up members are not called active forwarding participants",
+        "incompatible target type, contradictory master/member evidence, self-membership, parent cycles and conflicting VRF attachment remain explicit bounded issues with fact references"
       ],
       "reuse_license_disposition": "Apache-2.0 upstream study/reimplementation permitted by BN-024-00; no SuzieQ runtime dependency; verbatim fixture/template reuse requires separate approved_reuse review."
     },
@@ -6440,16 +6447,20 @@
         "observation timestamp and lifecycle",
         "evidence digest"
       ],
-      "required_query_assertion_behavior": "schema-shaped acquisition, cleaner extraction, malformed/missing handling and qualification",
+      "required_query_assertion_behavior": "Deterministic adjacency reconciliation over coherent observation batches: list neighbors per canonical local interface; classify remote device/interface identity as independently resolved, candidate, ambiguous or unresolved; compare forward/reverse evidence when both exist; report current, one-sided, stale, ambiguous or incomplete explicitly; never infer cable/forwarding failure from missing LLDP or replace physical member identity with bond identity.",
       "historical_lifecycle_requirements": "explicit active/withdrawn/stale/gap lifecycle; observation time distinct from validity",
       "known_upstream_defaults_and_limitations": "Pinned upstream often selects all-version commands, executes shell/TextFSM fallbacks, drops rows missing ifname or peerHostname, mutates peerIfname during query-time resolution, uses locally assigned numeric values as ifindexes without carrying resolver evidence, strips FQDNs heuristically, can merge CDP and LLDP into one table, and resolves bonds by replacement. Bonsai must not copy those silent defaults: unresolved subtype, resolver miss, protocol mixing, poll gaps and aggregate-versus-member layering must remain explicit.",
       "bonsai": {
         "disposition": "PORT_REQUIRED",
         "implementation_source_locations": [
-          "src/graph/mod.rs (legacy topology edges only)"
+          "src/telemetry.rs (existing SR Linux/OpenConfig/XR-native LLDP event extraction)",
+          "src/subscriber.rs (existing capability-driven LLDP subscription selection)",
+          "src/graph/mod.rs and src/collector/graph.rs (existing neighbor/topology writers requiring semantic qualification)",
+          "src/http_server/device.rs (existing device neighbor API projection)"
         ],
         "actual_qualification_evidence": [],
         "missing_functionality": [
+          "qualification and semantic correction of existing streaming LLDP extraction/topology paths",
           "typed LLDP adjacency fact schema and genuine FRR/Cumulus normalizer",
           "subtype-aware unresolved peer identity handling",
           "same-batch cross-resolution to address/interface facts without fabrication",
