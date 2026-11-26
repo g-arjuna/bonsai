@@ -153,7 +153,7 @@ impl CaptureOutcome {
     }
 
     /// Whether this outcome prevents a `Complete` completeness claim.
-    fn degrades(self) -> bool {
+    pub(crate) fn degrades(self) -> bool {
         !matches!(self, Self::Complete)
     }
 

@@ -1,0 +1,303 @@
+{
+  "lldp": [
+    {
+      "interface": [
+        {
+          "name": "swp1",
+          "via": "LLDP",
+          "rid": "2",
+          "age": "0 day, 00:06:24",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "52:54:00:a0:1a:f4"
+                }
+              ],
+              "name": [
+                {
+                  "value": "spine01"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "Cumulus Linux version 4.3.0 running on QEMU Standard PC (i440FX + PIIX, 1996)"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "10.0.0.21"
+                },
+                {
+                  "value": "fe80::5054:ff:fea0:1af4"
+                }
+              ],
+              "mgmt-iface": [
+                {
+                  "value": "1"
+                },
+                {
+                  "value": "2"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": true
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "ifname",
+                  "value": "swp2"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "swp2"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ],
+              "auto-negotiation": [
+                {
+                  "supported": false,
+                  "enabled": false,
+                  "current": [
+                    {
+                      "value": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "lldp-med": [
+            {
+              "device-type": [
+                {
+                  "value": "Network Connectivity Device"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Capabilities",
+                  "available": true
+                },
+                {
+                  "type": "Policy",
+                  "available": true
+                },
+                {
+                  "type": "Location",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PSE",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PD",
+                  "available": true
+                },
+                {
+                  "type": "Inventory",
+                  "available": true
+                }
+              ],
+              "inventory": [
+                {
+                  "software": [
+                    {
+                      "value": "4.3.0"
+                    }
+                  ],
+                  "firmware": [
+                    {
+                      "value": "1.13.0-1ubuntu1.1"
+                    }
+                  ],
+                  "serial": [
+                    {
+                      "value": "Not Specified"
+                    }
+                  ],
+                  "manufacturer": [
+                    {
+                      "value": "QEMU"
+                    }
+                  ],
+                  "model": [
+                    {
+                      "value": "Standard PC (i440FX + PIIX, 1996"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "swp2",
+          "via": "LLDP",
+          "rid": "1",
+          "age": "0 day, 00:06:24",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "52:54:00:ae:03:dc"
+                }
+              ],
+              "name": [
+                {
+                  "value": "spine02"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "Cumulus Linux version 4.3.0 running on QEMU Standard PC (i440FX + PIIX, 1996)"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "10.0.0.22"
+                },
+                {
+                  "value": "fe80::5054:ff:feae:3dc"
+                }
+              ],
+              "mgmt-iface": [
+                {
+                  "value": "1"
+                },
+                {
+                  "value": "2"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": true
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "ifname",
+                  "value": "swp2"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "swp2"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ],
+              "auto-negotiation": [
+                {
+                  "supported": false,
+                  "enabled": false,
+                  "current": [
+                    {
+                      "value": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "lldp-med": [
+            {
+              "device-type": [
+                {
+                  "value": "Network Connectivity Device"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Capabilities",
+                  "available": true
+                },
+                {
+                  "type": "Policy",
+                  "available": true
+                },
+                {
+                  "type": "Location",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PSE",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PD",
+                  "available": true
+                },
+                {
+                  "type": "Inventory",
+                  "available": true
+                }
+              ],
+              "inventory": [
+                {
+                  "software": [
+                    {
+                      "value": "4.3.0"
+                    }
+                  ],
+                  "firmware": [
+                    {
+                      "value": "1.13.0-1ubuntu1.1"
+                    }
+                  ],
+                  "serial": [
+                    {
+                      "value": "Not Specified"
+                    }
+                  ],
+                  "manufacturer": [
+                    {
+                      "value": "QEMU"
+                    }
+                  ],
+                  "model": [
+                    {
+                      "value": "Standard PC (i440FX + PIIX, 1996"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+

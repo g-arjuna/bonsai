@@ -1,0 +1,53 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline lldp_
+    Finished `ci` profile [optimized] target(s) in 0.61s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 43 tests
+test lldp_facts::tests::missing_protocol_mandatory_identity_is_invalid ... ok
+test lldp_facts::tests::mac_subtype_requires_normalized_mac ... ok
+test lldp_facts::tests::empty_management_list_is_positive_empty_not_unknown ... ok
+test lldp_facts::tests::last_contact_ttl_validity_basis_requires_exact_evidence ... ok
+test lldp_facts::tests::valid_payload_accepted ... ok
+test lldp_facts::tests::locally_assigned_is_not_ifindex ... ok
+test lldp_normalizer::tests::cumulus_positive_empty_differs_from_malformed_containers ... ok
+test lldp_normalizer::tests::cumulus_empty_without_lldp_provenance_is_not_positive_empty ... ok
+test lldp_normalizer::tests::duplicate_json_keys_are_rejected_before_field_interpretation ... ok
+test lldp_normalizer::tests::cumulus_multi_object_chassis_cardinality_is_invalid_not_first_selected ... ok
+test lldp_normalizer::tests::genuine_cumulus_430_fixture_expected_values ... ok
+test lldp_normalizer::tests::malformed_input_is_explicit_status_not_panic ... ok
+test lldp_normalizer::tests::eos_distinct_neighbor_on_same_interface_is_not_duplicate ... ok
+test lldp_normalizer::tests::eos_conflicting_attributes_are_retained_and_classified ... ok
+test lldp_normalizer::tests::oversized_input_is_refused_before_raw_evidence_hashing ... ok
+test lldp_normalizer::tests::eos_ttl_zero_expires_at_last_contact_not_capture_plus_full_ttl ... ok
+test lldp_normalizer::tests::eos_repeated_observation_with_changed_age_is_not_exact_duplicate ... ok
+test lldp_normalizer::tests::missing_mandatory_identity_is_counted_not_dropped_silently ... ok
+test lldp_normalizer::tests::zero_output_budget_is_exact_omission_not_empty_success ... ok
+test lldp_relationships::tests::conflicting_same_generation_coverage_cannot_establish_absence ... ok
+test lldp_relationships::tests::hostname_collision_is_not_authority_and_namespaces_do_not_merge ... ok
+test lldp_relationships::tests::conflicting_reverse_observation_batch_cannot_confirm_reciprocal_adjacency ... ok
+test lldp_relationships::tests::coverage_from_wrong_network_namespace_cannot_establish_absence ... ok
+test lldp_relationships::tests::malformed_payload_is_input_error_and_structured_subinterface_is_not_string_inferred ... ok
+test lldp_relationships::tests::invalid_typed_evidence_cannot_establish_resolution ... ok
+test lldp_normalizer::tests::eos_multiple_neighbors_on_one_interface_are_preserved ... ok
+test lldp_relationships::tests::normalization_coverage_output_can_drive_reverse_absence_evidence ... ok
+test lldp_relationships::tests::matching_chassis_with_opaque_reverse_port_is_candidate_not_confirmed ... ok
+test lldp_normalizer::tests::genuine_eos_fixture_preserves_parallel_links_and_empty_interfaces ... ok
+test lldp_relationships::tests::reconciliation_scaling_100_1000_10000_completes_with_indexed_bounds ... ignored, synthetic scaling measurement; run explicitly for performance evidence
+test lldp_relationships::tests::conflicting_duplicate_stale_and_withdrawn_evidence_are_explicit ... ok
+test lldp_relationships::tests::one_sided_adjacency_distinguishes_confirmed_missing_from_unknown_coverage ... ok
+test lldp_relationships::tests::conflicting_reverse_wins_over_agreeing_candidate_regardless_of_order ... ok
+test lldp_relationships::tests::same_chassis_value_with_different_subtype_is_not_identity_evidence ... ok
+test lldp_relationships::tests::parallel_links_multiple_neighbors_mac_and_ifindex_remain_distinct ... ok
+test lldp_relationships::tests::permutation_of_lldp_interface_identity_and_coverage_inputs_is_independent ... ok
+test lldp_relationships::tests::reconciliation_results_carry_interface_identity_and_supporting_evidence ... ok
+test lldp_relationships::tests::replayed_consistent_interface_evidence_dedupes_and_conflicts_remain_ambiguous ... ok
+test lldp_relationships::tests::two_sided_consistent_adjacency_is_confirmed_not_forwarding_proof ... ok
+test telemetry::tests::xr_lldp_missing_identity_fields_remain_absent_not_empty_strings ... ok
+test telemetry::tests::xr_lldp_event_boundary_preserves_multi_entry_state_value ... ok
+test telemetry::tests::xr_lldp_multi_neighbor_blob_preserves_every_entry ... ok
+test lldp_normalizer::tests::eos_reordered_source_array_preserves_fact_identity_set ... ok
+
+test result: ok. 42 passed; 0 failed; 1 ignored; 0 measured; 730 filtered out; finished in 0.02s
+

@@ -217,3 +217,82 @@ def test_payload_state_and_fields_are_mutually_exclusive(schema, fixture) -> Non
     bad_state["payload"]["state"] = "bogus_state"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(bad_state, schema)
+
+
+def lldp_neighbor_fields() -> dict:
+    """Minimal schema-level valid lldp.neighbor typed-fields object.
+
+    This is deliberately schema evidence, not a substitute for the Rust
+    TypedFact::validate() digest/state/subject-payload gates.
+    """
+    def known(value):
+        return {"state": "known", "value": value}
+
+    def unknown():
+        return {"state": "unknown"}
+
+    return {
+        "local_interface_name": "Ethernet1",
+        "protocol": "lldp",
+        "remote_chassis_id": known("aa:bb:cc:dd:ee:ff"),
+        "remote_chassis_id_subtype": known("mac_address"),
+        "remote_port_id": known("Ethernet2"),
+        "remote_port_id_subtype": known("interface_name"),
+        "remote_system_name": unknown(),
+        "remote_port_description": unknown(),
+        "remote_management_addresses": unknown(),
+        "capabilities": unknown(),
+        "ttl_seconds": known(120),
+        "age_seconds": unknown(),
+        "coverage": {
+            "capture_outcome": "complete",
+            "population_coverage": "complete",
+            "empty_local_interfaces": 0,
+        },
+    }
+
+
+@requires_jsonschema
+def test_lldp_neighbor_payload_schema_accepts_valid_typed_fields(schema, fixture) -> None:
+    fact = copy.deepcopy(fixture)
+    fact["fact_kind"] = "lldp.neighbor"
+    fact["subject"]["namespace"] = "interface"
+    fact["subject"]["entity"] = "Ethernet1"
+    fact["subject"]["plane"] = "operational"
+    fact["payload"]["fields"] = lldp_neighbor_fields()
+    fact["payload"].pop("state", None)
+    jsonschema.validate(fact, schema)
+
+
+@requires_jsonschema
+def test_lldp_neighbor_payload_schema_rejects_missing_identity_and_bad_enums(
+    schema, fixture
+) -> None:
+    fact = copy.deepcopy(fixture)
+    fact["fact_kind"] = "lldp.neighbor"
+    fact["subject"]["namespace"] = "interface"
+    fact["subject"]["entity"] = "Ethernet1"
+    fact["subject"]["plane"] = "operational"
+    fact["payload"]["fields"] = lldp_neighbor_fields()
+    fact["payload"].pop("state", None)
+
+    missing_port = copy.deepcopy(fact)
+    del missing_port["payload"]["fields"]["remote_port_id"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_port, schema)
+
+    wrong_protocol = copy.deepcopy(fact)
+    wrong_protocol["payload"]["fields"]["protocol"] = "cdp"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(wrong_protocol, schema)
+
+    wrong_coverage = copy.deepcopy(fact)
+    wrong_coverage["payload"]["fields"]["coverage"]["population_coverage"] = "mostly"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(wrong_coverage, schema)
+
+
+@requires_jsonschema
+def test_lldp_schema_extension_does_not_change_legacy_fact_compatibility(schema, fixture) -> None:
+    assert fixture["fact_kind"] != "lldp.neighbor"
+    jsonschema.validate(fixture, schema)

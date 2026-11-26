@@ -1,0 +1,24 @@
+{
+  "cumulus": {
+    "address": "10.255.2.203",
+    "cmd": "net show lldp json",
+    "cmd_timestamp": 1616352403891,
+    "devtype": "cumulus",
+    "hostname": "leaf02",
+    "namespace": "ospf-single",
+    "status": 0,
+    "timestamp": 1616352403891,
+    "version": "4.3.0"
+  },
+  "eos": {
+    "address": "10.255.2.185",
+    "cmd": "show lldp neighbors detail",
+    "cmd_timestamp": 1623025176214,
+    "devtype": "eos",
+    "hostname": "leaf02",
+    "namespace": "eos",
+    "status": 200,
+    "timestamp": 1623025176214,
+    "version": null
+  }
+}

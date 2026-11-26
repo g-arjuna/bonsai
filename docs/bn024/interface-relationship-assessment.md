@@ -162,6 +162,32 @@ and consumes only validated typed facts.
 7. SuzieQ's full interface assertion semantics, LLDP reconciliation, ARP/ND,
    MAC movement and VLAN mismatch scenarios remain missing.
 
+### Residual production-promotion prerequisites recorded 2026-11-26
+
+R1. Population completeness still partly depends on diagnostic strings in
+    `capture_population_gap()` (`entity population truncated`, `capture outcome=`,
+    `resource limit`). Future producer wording must not alter semantics; replace
+    this with typed capture/population coverage at the shared acquisition/analysis
+    boundary. Individual fact completeness is not population coverage.
+R2. `is_expired_before_observation()` does not establish currency at an explicit
+    analysis time. Historical evidence may be analyzed, but operational assertions
+    require explicit as-of/freshness semantics passed into pure analysis. The
+    BN-024-06 LLDP reconciliation boundary adopts that pattern; this interface
+    analyzer still needs the same correction before production-facing promotion.
+R3. Aggregate verdicts can remain PASS while the enclosing scope/input verdict is
+    degraded. Consumers must propagate quality prerequisites into each actionable
+    assertion and must not extract narrow evidence-consistency results as healthy
+    LAG assertions.
+R4. `find_parent_cycles()` deterministically follows only one contradictory parent
+    successor. Production-facing cycle analysis requires bounded complete traversal
+    or explicit refusal of contradictory multi-parent evidence.
+R5. `InterfaceEntityKey` includes `identity_kind`; a later classification refinement
+    must not manufacture a different canonical interface entity. Explicit equivalence
+    or ambiguity rules are required when structured-identity producers arrive.
+
+These items are recorded for upcoming feature integration; they do not invalidate
+PR #91's accepted offline scope and do not authorize production assertion promotion.
+
 ## Next implementation dependency
 
 The next useful increment should add genuine LLDP evidence for at least one

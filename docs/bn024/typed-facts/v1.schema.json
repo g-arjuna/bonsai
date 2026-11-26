@@ -193,6 +193,333 @@
     {
       "if": { "properties": { "lifecycle": { "const": "superseded" } } },
       "then": { "required": ["superseded_by"] }
+    },
+    {
+      "if": {
+        "allOf": [
+          {
+            "properties": {
+              "fact_kind": {
+                "const": "lldp.neighbor"
+              }
+            },
+            "required": [
+              "fact_kind"
+            ]
+          },
+          {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "fields": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "fields"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "fields": {
+                "type": "object",
+                "required": [
+                  "local_interface_name",
+                  "protocol",
+                  "remote_chassis_id",
+                  "remote_chassis_id_subtype",
+                  "remote_port_id",
+                  "remote_port_id_subtype",
+                  "remote_system_name",
+                  "remote_port_description",
+                  "remote_management_addresses",
+                  "capabilities",
+                  "ttl_seconds",
+                  "age_seconds",
+                  "coverage"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "local_interface_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255
+                  },
+                  "normalized_local_interface_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255
+                  },
+                  "source_neighbor_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255
+                  },
+                  "capture_record_locator": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255
+                  },
+                  "protocol": {
+                    "const": "lldp"
+                  },
+                  "remote_chassis_id": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      }
+                    }
+                  },
+                  "remote_chassis_id_subtype": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      }
+                    }
+                  },
+                  "remote_port_id": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      }
+                    }
+                  },
+                  "remote_port_id_subtype": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      }
+                    }
+                  },
+                  "remote_system_name": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      }
+                    }
+                  },
+                  "remote_port_description": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      }
+                    }
+                  },
+                  "remote_management_addresses": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      }
+                    }
+                  },
+                  "capabilities": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      }
+                    }
+                  },
+                  "ttl_seconds": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      }
+                    }
+                  },
+                  "age_seconds": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      }
+                    }
+                  },
+                  "remote_chassis_id_raw": {
+                    "type": "string"
+                  },
+                  "remote_port_id_raw": {
+                    "type": "string"
+                  },
+                  "temporal": {
+                    "type": "object"
+                  },
+                  "coverage": {
+                    "type": "object",
+                    "required": [
+                      "capture_outcome",
+                      "population_coverage",
+                      "empty_local_interfaces"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "capture_outcome": {
+                        "enum": [
+                          "complete",
+                          "partial",
+                          "unavailable",
+                          "failed",
+                          "timed_out",
+                          "truncated",
+                          "unsupported",
+                          "unknown"
+                        ]
+                      },
+                      "population_coverage": {
+                        "enum": [
+                          "complete",
+                          "partial",
+                          "unknown"
+                        ]
+                      },
+                      "empty_local_interfaces": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "empty_local_interface_names": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "capture_id": {
+                        "type": "string"
+                      },
+                      "source_generation": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "observation_time": {
+                        "type": "string"
+                      },
+                      "acquisition_scope": {
+                        "type": "string"
+                      },
+                      "covered_interfaces": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "evidence_references": {
+                        "type": "array"
+                      }
+                    }
+                  }
+                },
+                "description": "BN-024-06 lldp.neighbor typed fields contract. Rust validation is authoritative for observed-field state/value consistency, subtype normalization, temporal evidence and subject/payload consistency."
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

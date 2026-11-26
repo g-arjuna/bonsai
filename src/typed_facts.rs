@@ -968,6 +968,55 @@ fn validate_interface_subject_payload_consistency(fact: &TypedFact) -> Result<()
     Ok(())
 }
 
+/// Cross-check an LLDP neighbor fact's local-interface subject against its
+/// typed payload. The remote identity is intentionally NOT part of subject
+/// identity: parallel links and multiple neighbors on one local interface
+/// are distinct observations, not distinct canonical local entities.
+fn validate_lldp_subject_payload_consistency(fact: &TypedFact) -> Result<(), FactError> {
+    if fact.fact_kind != crate::lldp_facts::FACT_KIND_LLDP_NEIGHBOR {
+        return Ok(());
+    }
+    let Some(fields) = &fact.payload.fields else {
+        return Ok(());
+    };
+    let payload: crate::lldp_facts::LldpNeighborPayload = serde_json::from_value(fields.clone())
+        .map_err(|_| FactError::InvalidField("payload.fields.lldp.neighbor"))?;
+    let entity = fact.subject.entity.as_deref().unwrap_or("");
+    if entity.is_empty() {
+        return Err(FactError::InvalidField(
+            "subject.entity required for lldp.neighbor",
+        ));
+    }
+    if let Some(normalized) = &payload.normalized_local_interface_name {
+        if normalized != entity {
+            return Err(FactError::InvalidField(
+                "payload.normalized_local_interface_name/subject.entity mismatch",
+            ));
+        }
+    } else if payload.local_interface_name != entity {
+        return Err(FactError::InvalidField(
+            "payload.local_interface_name/subject.entity mismatch",
+        ));
+    }
+    if let Some(identity) = &fact.subject.interface_identity {
+        if let Some(native) = &identity.vendor_native_name
+            && *native != payload.local_interface_name
+        {
+            return Err(FactError::InvalidField(
+                "interface_identity.vendor_native_name/payload.local_interface_name mismatch",
+            ));
+        }
+        if identity.kind == InterfaceIdentityKind::Subinterface
+            && identity.parent_entity.as_deref() != Some(entity)
+        {
+            return Err(FactError::InvalidField(
+                "lldp subinterface subject entity must be canonical parent",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Fact kinds with a registered typed payload validator. Unregistered
 /// kinds still require an object-shaped `fields` payload — the generic
 /// envelope never implies arbitrary JSON is semantically valid.
@@ -976,6 +1025,7 @@ fn validate_kind_payload(fact_kind: &str, fields: &Value) -> Result<(), FactErro
         crate::interface_facts::FACT_KIND_INTERFACE_STATE => {
             crate::interface_facts::validate_payload(fields)
         }
+        crate::lldp_facts::FACT_KIND_LLDP_NEIGHBOR => crate::lldp_facts::validate_payload(fields),
         _ => Ok(()),
     }
 }
@@ -1095,6 +1145,7 @@ impl TypedFact {
             validate_kind_payload(&self.fact_kind, fields)?;
         }
         validate_interface_subject_payload_consistency(self)?;
+        validate_lldp_subject_payload_consistency(self)?;
         // A degraded/failed payload can never claim complete coverage.
         if let Some(state) = self.payload.state
             && is_degraded_state(state)
