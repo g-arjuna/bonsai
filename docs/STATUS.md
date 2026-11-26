@@ -90,7 +90,7 @@ Evidence: `docs/bn024/evidence/2026-11-24-bn024-01*/`,
 `docs/bn024/extension-seam.md`, `docs/bn024/source-crosswalk/`.
 
 
-BN-024 SuzieQ capability ledger — **unpublished review candidate** (2026-11-26):
+BN-024 SuzieQ capability ledger — **review candidate** (2026-11-26):
 `docs/bn024/source-crosswalk/` now contains a source-derived inventory of the
 pinned upstream revision and a machine/human capability delivery ledger. Counts:
 27 upstream object families (19 polled service families + 8 derived/virtual
@@ -106,7 +106,7 @@ qualification matrix now also records the roadmap-only status of Nokia SR OS,
 MikroTik RouterOS and IP Infusion OcNOS without implying implementation.
 
 BN-024 structured interface identity and first relationship-assessment slice —
-**unpublished review candidate** (2026-11-26): additive optional v1
+**review candidate** (2026-11-26): additive optional v1
 `subject.interface_identity` identity refinement implemented in
 `src/typed_facts.rs` with JSON-schema/Python compatibility regressions. Legacy
 facts omitting the refinement retain their serialized shape and fact identity;
