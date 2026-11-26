@@ -623,6 +623,7 @@ fn status_fact(
             vrf: None,
             afi_safi: None,
             plane: Some("operational".into()),
+            interface_identity: None,
         },
         source: FactSource {
             collector_id: obs.context.collector_id.into(),
@@ -1029,6 +1030,7 @@ pub fn normalize_frr_interface_json(
             description,
             parent_interface,
             member_of,
+            lag_members: None,
             parent_relationship: parent_relationship.clone(),
             master_relationship: master_relationship.clone(),
             source_conflicts: vec![],
@@ -1183,6 +1185,7 @@ pub fn normalize_frr_interface_json(
                 vrf: rec.vrf_name.clone(),
                 afi_safi: None,
                 plane: Some("operational".into()),
+                interface_identity: None,
             },
             source: FactSource {
                 collector_id: obs.context.collector_id.into(),

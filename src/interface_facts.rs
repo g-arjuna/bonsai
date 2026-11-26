@@ -240,6 +240,16 @@ pub struct InterfaceStatePayload {
     /// a bare master name is never assumed to be a LAG.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_of: Option<String>,
+    /// Aggregate-reported member interfaces, only when the source itself
+    /// exposes the aggregate's membership list. `Known` with an empty list
+    /// is positive evidence of empty membership for the declared source
+    /// scope; absence or `Unknown` is not empty-membership evidence. This
+    /// optional additive field exists so relationship analysis can
+    /// distinguish confirmed-empty, complete, partial and reverse-only
+    /// membership instead of treating no reverse observations as zero
+    /// members. No current NOS producer fabricates this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lag_members: Option<ObservedField<Vec<String>>>,
     /// Observed lower-layer parent relationship, classified strictly from
     /// the source's parent/link field. This is never LAG membership even
     /// when the parent target happens to be a bond.
@@ -407,6 +417,56 @@ pub fn validate_typed(p: &InterfaceStatePayload) -> Result<(), FactError> {
             return Err(FactError::InvalidField(field));
         }
     }
+    // `member_of` is the typed LAG consequence of a LAG-classified master
+    // relationship. The two axes must not carry independent contradictory
+    // relationship claims.
+    match (&p.member_of, &p.master_relationship) {
+        (Some(member), Some(master))
+            if master.kind == MasterKind::Lag && master.target == *member => {}
+        (None, Some(master)) if master.kind != MasterKind::Lag => {}
+        (None, None) => {}
+        _ => {
+            return Err(FactError::InvalidField(
+                "member_of/master_relationship mismatch",
+            ));
+        }
+    }
+    // Direct self-membership/self-parentage is invalid within one payload.
+    // Cross-entity cycles require scoped relationship analysis and are not
+    // rejected here.
+    let mut local_names = std::collections::BTreeSet::from([p.interface_name.as_str()]);
+    if let Some(n) = &p.normalized_name {
+        local_names.insert(n.as_str());
+    }
+    if p.parent_interface
+        .as_deref()
+        .is_some_and(|n| local_names.contains(n))
+        || p.member_of
+            .as_deref()
+            .is_some_and(|n| local_names.contains(n))
+    {
+        return Err(FactError::InvalidField("interface self-reference"));
+    }
+    for rel in [&p.parent_relationship, &p.master_relationship]
+        .into_iter()
+        .flatten()
+    {
+        if local_names.contains(rel.target.as_str()) {
+            return Err(FactError::InvalidField("interface self-relationship"));
+        }
+    }
+    if let Some(members) = &p.lag_members {
+        check_field(members, "lag_members", |members| {
+            members.len() <= 64
+                && members
+                    .iter()
+                    .all(|m| valid_name(m) && !local_names.contains(m.as_str()))
+                && {
+                    let mut seen = std::collections::BTreeSet::new();
+                    members.iter().all(|m| seen.insert(m.as_str()))
+                }
+        })?;
+    }
     for c in &p.source_conflicts {
         if c.field.is_empty() || c.field.len() > 64 || c.field.chars().any(|ch| ch.is_control()) {
             return Err(FactError::InvalidField("source_conflicts.field"));
@@ -498,6 +558,7 @@ mod tests {
             description: Some("server-facing".into()),
             parent_interface: None,
             member_of: None,
+            lag_members: None,
             parent_relationship: None,
             master_relationship: None,
             source_conflicts: vec![],

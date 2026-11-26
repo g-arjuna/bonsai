@@ -1,0 +1,42 @@
+=== first interface_relationships invocation ===
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline interface_relationships
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel)
+    Finished `ci` profile [optimized] target(s) in 4m 04s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 2 tests
+test interface_relationships::tests::genuine_cumulus_lag_bridge_and_vrf_relationships_are_reported ... ok
+test interface_relationships::tests::failed_member_produces_reduced_capacity_fail ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 713 filtered out; finished in 0.01s
+
+	Command being timed: "scripts/ci/build-lane.sh --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native -- cargo test -p bonsai --lib --profile ci --offline interface_relationships"
+	User time (seconds): 1049.64
+	System time (seconds): 19.01
+	Percent of CPU this job got: 423%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 4:12.24
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 5670876
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 4388865
+	Voluntary context switches: 1370
+	Involuntary context switches: 523412
+	Swaps: 0
+	File system inputs: 264
+	File system outputs: 5065080
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+=== second interface_relationships invocation ===
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline interface_relationships
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel)

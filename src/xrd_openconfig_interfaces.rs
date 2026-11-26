@@ -1418,6 +1418,7 @@ fn status_fact(
             vrf: None,
             afi_safi: None,
             plane: Some("operational".into()),
+            interface_identity: None,
         },
         source: FactSource {
             collector_id: obs.context.collector_id.into(),
@@ -1528,15 +1529,30 @@ fn invalid_output(
 
 fn payload_identity_errors(value: &Value, expected_name: &str) -> Vec<String> {
     let mut errors = Vec::new();
-    for path in [&["state", "name"][..], &["config", "name"][..]] {
-        if let Some(observed) = object_at(value, path).and_then(Value::as_str) {
-            if observed != expected_name {
-                errors.push(format!(
-                    "payload identity '{}' at {} disagrees with path key '{}'",
-                    observed,
-                    path.join("."),
-                    expected_name
-                ));
+    // OpenConfig list-key identity can appear at the entry root (`name`) as
+    // well as in the state/config instantiations. A malformed identity leaf
+    // is invalid evidence, not absent evidence; a mismatch must never make
+    // the update unambiguous evidence for the path key.
+    for path in [
+        &["name"][..],
+        &["state", "name"][..],
+        &["config", "name"][..],
+    ] {
+        if let Some(node) = object_at(value, path) {
+            match node.as_str() {
+                Some(observed) if observed != expected_name => {
+                    errors.push(format!(
+                        "payload identity '{}' at {} disagrees with path key '{}'",
+                        observed,
+                        path.join("."),
+                        expected_name
+                    ));
+                }
+                Some(_) => {}
+                None => errors.push(format!(
+                    "payload identity at {} has non-string type",
+                    path.join(".")
+                )),
             }
         }
     }
@@ -1732,7 +1748,11 @@ pub fn normalize_xrd_openconfig_interfaces(
             output_facts_omitted = output_facts_omitted.saturating_add(1);
             continue;
         }
-        let identity_errors = payload_identity_errors(&record.value, name);
+        let conflicts = conflict_maps.get(name).cloned().unwrap_or_default();
+        let mut identity_errors = payload_identity_errors(&record.value, name);
+        if conflicts.has(C_INTERFACE_IDENTITY) {
+            identity_errors.push("conflicting gNMI updates for interface identity leaves".into());
+        }
         if !identity_errors.is_empty() {
             invalid_entities = invalid_entities.saturating_add(1);
             if rejected_samples.len() < 8 {
@@ -1746,7 +1766,6 @@ pub fn normalize_xrd_openconfig_interfaces(
 
         let state = object_at(&record.value, &["state"]);
         let ethernet_state = object_at(&record.value, &["ethernet", "state"]);
-        let conflicts = conflict_maps.get(name).cloned().unwrap_or_default();
         let mut source_conflicts = Vec::new();
         for (path, (first, later)) in conflicts.samples.iter().take(MAX_SOURCE_CONFLICTS_EMITTED) {
             source_conflicts.push(SourceFieldConflict {
@@ -1838,6 +1857,7 @@ pub fn normalize_xrd_openconfig_interfaces(
             description,
             parent_interface: None,
             member_of: None,
+            lag_members: None,
             parent_relationship: None,
             master_relationship: None,
             source_conflicts,
@@ -1964,6 +1984,7 @@ pub fn normalize_xrd_openconfig_interfaces(
                 vrf: None,
                 afi_safi: None,
                 plane: Some("operational".into()),
+                interface_identity: None,
             },
             source: FactSource {
                 collector_id: obs.context.collector_id.into(),
@@ -2455,6 +2476,70 @@ mod tests {
         let out = normalize_xrd_openconfig_interfaces(&obs(&raw), NormalizerLimits::default());
         assert_eq!(out.report.invalid_entities, 1);
         assert_eq!(out.facts.len(), 1);
+        assert_eq!(
+            out.facts[0].payload.state,
+            Some(PayloadState::NoUsableRecords)
+        );
+    }
+
+    #[test]
+    fn root_payload_identity_mismatch_invalidates_entity() {
+        let mut payload = state_payload("Eth0");
+        payload["name"] = Value::String("Ethernet2".into());
+        let raw = capture_with(
+            vec![response_for("Eth0", &payload, 1_700_000_000_000_000_000)],
+            true,
+        );
+        let out = normalize_xrd_openconfig_interfaces(&obs(&raw), NormalizerLimits::default());
+        assert_eq!(out.report.invalid_entities, 1);
+        assert_eq!(
+            out.facts[0].payload.state,
+            Some(PayloadState::NoUsableRecords)
+        );
+    }
+
+    #[test]
+    fn malformed_payload_identity_types_invalidate_entity() {
+        for mutate in [
+            (|payload: &mut Value| {
+                payload["name"] = serde_json::json!(42);
+            }) as fn(&mut Value),
+            (|payload: &mut Value| {
+                payload["state"]["name"] = serde_json::json!(false);
+            }),
+            (|payload: &mut Value| {
+                payload["config"] = serde_json::json!({"name": 100});
+            }),
+        ] {
+            let mut payload = state_payload("Eth0");
+            mutate(&mut payload);
+            let raw = capture_with(
+                vec![response_for("Eth0", &payload, 1_700_000_000_000_000_000)],
+                true,
+            );
+            let out = normalize_xrd_openconfig_interfaces(&obs(&raw), NormalizerLimits::default());
+            assert_eq!(out.report.invalid_entities, 1);
+            assert_eq!(
+                out.facts[0].payload.state,
+                Some(PayloadState::NoUsableRecords)
+            );
+        }
+    }
+
+    #[test]
+    fn conflicting_identity_across_notifications_invalidates_entity() {
+        let first = state_payload("Eth0");
+        let mut second = state_payload("Eth0");
+        second["state"]["name"] = Value::String("Ethernet2".into());
+        let raw = capture_with(
+            vec![
+                response_for("Eth0", &first, 1_700_000_000_000_000_000),
+                response_for("Eth0", &second, 1_700_000_000_000_000_001),
+            ],
+            true,
+        );
+        let out = normalize_xrd_openconfig_interfaces(&obs(&raw), NormalizerLimits::default());
+        assert_eq!(out.report.invalid_entities, 1);
         assert_eq!(
             out.facts[0].payload.state,
             Some(PayloadState::NoUsableRecords)

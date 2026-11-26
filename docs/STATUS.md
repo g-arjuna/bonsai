@@ -1,7 +1,7 @@
 # Bonsai current state
 
-BN-024-04 first authorized native acquisition vertical slice — **PR #89 candidate**
-(`feat/bn024-04-native-acquisition`; merge/review pending). This is the first end-to-end native
+BN-024-04 first authorized native acquisition vertical slice — **MERGED PR #89**
+(merge commit `54d4cb65140ffbf202190f67b5c3b736345a5572`). This is the first end-to-end native
 intelligence path, bounded to standalone FRR interface state: canonical inventory identity plus
 independently enforced read/collection scopes → operator-authenticated production API →
 pinned-host-key verified SSH → fixed read-only `vtysh -c 'show version json'` / `vtysh -c 'show
@@ -22,10 +22,25 @@ in `docs/merger/evidence/2026-11-25-bn024-04-native-acquisition/`. L4 remains NO
 BN-024-04 is therefore a partial capture slice, not completion of the broader capture epic;
 BN-024-08 SONiC and BN-024-08A Cumulus structured intelligence remain outstanding.
 
+BN-024 XRd model-driven interface normalization — **MERGED PR #90** (merge commit
+`4c100ba56a06dfe57a5aed65c3920eb5c894757e`; final production head
+`be277f97be8500d43fa724e0352d207ea26746ff`). Genuine XRd 24.4.2 read-only gNMI
+subscribe-once evidence now feeds an offline Rust OpenConfig interface normalizer with exact
+revisioned registry/profile wiring. Canonical L0–L3 passed on `be277f9` after correction;
+durable evidence is `docs/merger/evidence/2026-11-25-bn025-xrd-native-interfaces/canonical-l0-l3-be277f9.log`.
+The retained log contains 1,409 Rust test executions passed / 0 failed / 10 ignored and 382 Python
+tests passed / 1 skipped / 1 deselected when summing target executions across canonical tiers
+(not unique-test counts); focused `xrd_openconfig` coverage was 32/32. L4 remains NOT_EXECUTED.
+The capability is experimental offline/shadow only: production acquisition, durable shadow
+lifecycle integration, structured non-zero subinterface identity, network-instance/VRF attachment,
+LAG relationships, broader cross-NOS relationship coverage and operator/API integration remain
+outstanding. Residual model-driven findings are explicitly assigned to the next shared increment in
+`docs/bn024/xrd-residual-model-driven-findings.md`; they do not reopen PR #90.
+
 BN-024 native network intelligence — **G0 landed 2026-11-24** on main
 `e578595`/`09c2d60` (PRs #82/#83): BN-024-00 pinned SuzieQ OSS provenance
 manifest + offline validator; BN-024-01 parser-chain contract repair.
-**Corrective pass (this branch, pending merge):** independent review of
+**Corrective pass (merged through PR #83 and later descendants):** independent review of
 the merged BN-024-01 found residual defects — fixed: structured-first
 ordering no longer lets `bonsai_native` shadow Genie/TextFSM, canonical
 platform ids (`cisco.iosxr`) are translated to backend vendor ids
@@ -66,12 +81,58 @@ fixture and IS-IS/SR composition tests; BN-024-00A first crosswalk
 increment at `docs/bn024/source-crosswalk/`; parser-contract known
 limitations documented (unbounded Python worker post-timeout, sidecar
 `/learn` iosxe default, AutoAddPolicy posture, structured-empty
-ambiguity). Focused tests: 30 lib + 31 pytest pass. Canonical L0–L3 gate
-rerun pending on the reconciled SHA; L4 not applicable. No
+ambiguity). Focused tests: 30 lib + 31 pytest pass. Canonical L0–L3 subsequently
+passed on descendant production validation heads; no separate gate was run on the
+historical reconciled SHA itself. L4 not applicable. No
 authoritative graph projection; BN-021/BN-008 gates still precede it.
 Evidence: `docs/bn024/evidence/2026-11-24-bn024-01*/`,
 `docs/bn024/parser-contract.md`, `docs/bn024/typed-facts/`,
 `docs/bn024/extension-seam.md`, `docs/bn024/source-crosswalk/`.
+
+
+BN-024 SuzieQ capability ledger — **merge-ready implementation candidate** (2026-11-26):
+`docs/bn024/source-crosswalk/` now contains a source-derived inventory of the
+pinned upstream revision and a machine/human capability delivery ledger. Counts:
+27 upstream object families (19 polled service families + 8 derived/virtual
+objects), 66 ledger capabilities (64 implemented upstream, 2 enterprise/Bonsai
+improvements absent upstream). Conservative Bonsai dispositions: 1 narrow native
+port, 1 existing equivalent, 1 intentional improvement, 20 partial and 43
+missing after the first narrow LAG-consistency assertion slice moved
+`interfaces.assert` to partial.
+This is a delivery map, not a claim of feature parity or production readiness.
+The cross-NOS interface qualification matrix now also records the roadmap-only
+status of Nokia SR OS, MikroTik RouterOS and IP Infusion OcNOS without implying
+implementation. Canonical gate evidence is reported with the implementation
+slice below.
+
+BN-024 structured interface identity and first relationship-assessment slice —
+**merge-ready implementation candidate** (2026-11-26): additive optional v1
+`subject.interface_identity` identity refinement implemented in
+`src/typed_facts.rs` with JSON-schema/Python compatibility regressions. Legacy
+facts omitting the refinement retain their serialized shape and fact identity;
+when present, structured parent/subinterface/vendor-native axes participate in
+`fact_id` and `AuthorityGrant` binding. Producers still emit no refinement
+unless positive structured evidence exists; current genuine FRR/XRd evidence
+does not contain non-zero subinterfaces, so non-zero cases are synthetic
+structural regressions only. First capability-led implementation:
+`src/interface_relationships.rs` assesses LAG aggregate/member consistency and
+reports bridge/parent/VRF/unresolved relationships from typed interface facts,
+verified against the genuine Cumulus fixture. It is offline analysis only —
+no graph writer, live acquisition, API/UI exposure or cross-NOS qualification.
+Focused verification through the trusted ci lane after the final corrections:
+typed-facts 42 passed/2 ignored, interface relationships 17 passed,
+Cumulus/SONiC CLI normalizer 29 passed/2 ignored, FRR structured JSON 20
+passed, XRd OpenConfig 34 passed (142 passed total, 0 failed, 4 ignored);
+typed-fact pytest schema compatibility 9 passed. Canonical L0–L3 gates passed
+on frozen implementation candidate
+`89382018f3c4e14886c7a55fd28fb236c62ac9cd` against base
+`4c100ba56a06dfe57a5aed65c3920eb5c894757e` in 28m21.78s with maximum RSS
+6,589,888 KiB: L2 1362 Rust tests passed/0 failed/10 ignored across 45 suites;
+L3 71 Rust integration/browser tests passed/0 failed across 13 targets, root
+Python 66 passed, SDK Python 318 passed with 1 explicit skip and 1 deselected
+test. L4 remains NOT_EXECUTED because this offline slice has no live lab or
+operator-surface acceptance boundary. Evidence:
+`docs/bn024/evidence/2026-11-26-pr91-corrective/canonical-l0-l3-8938201.log`.
 
 BN-024 first native intelligence slice — **PR #86**
 (`feat/bn024-native-interface-state`): native Rust normalizer for the

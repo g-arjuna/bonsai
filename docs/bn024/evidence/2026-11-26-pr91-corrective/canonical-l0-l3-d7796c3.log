@@ -1,0 +1,920 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: env CARGO_BUILD_JOBS=2 PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome GATE_BASE=4c100ba56a06dfe57a5aed65c3920eb5c894757e scripts/ci/gates.sh l0 l1 l2 l3
+
+=== [gate] L0 source checks ===
+L0: rustfmt --check on changed files (base: 4c100ba56a06dfe57a5aed65c3920eb5c894757e)
+L0: python compile check
+L0: OK
+
+=== [gate] L1 compile/static validation ===
+    Checking rbmp-core v0.2.0 (/home/arjuna/Desktop/bonsai-netintel/crates/rbmp-core)
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel)
+    Checking rbmp-rib v0.2.0 (/home/arjuna/Desktop/bonsai-netintel/crates/rbmp-rib)
+    Checking rbmp-store v0.2.0 (/home/arjuna/Desktop/bonsai-netintel/crates/rbmp-store)
+warning: variable `evA` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1154:9
+     |
+1154 |     let evA = fetch_unembedded(&rig).await;
+     |         ^^^ help: convert the identifier to snake case: `ev_a`
+     |
+     = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: variable `tokA` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1155:9
+     |
+1155 |     let tokA = event_field(&evA, "ev-s1", "claim_token").expect("token");
+     |         ^^^^ help: convert the identifier to snake case: `tok_a`
+
+warning: variable `evB` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1169:9
+     |
+1169 |     let evB = fetch_unembedded(&rig).await;
+     |         ^^^ help: convert the identifier to snake case: `ev_b`
+
+warning: variable `tokB` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1170:9
+     |
+1170 |     let tokB = event_field(&evB, "ev-s1", "claim_token").expect("token");
+     |         ^^^^ help: convert the identifier to snake case: `tok_b`
+
+warning: variable `itemA` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1177:13
+     |
+1177 |     let mut itemA = embedding_item("ev-s1", vec![0.5, 0.5, 0.5, 0.5]);
+     |             ^^^^^ help: convert the identifier to snake case: `item_a`
+
+warning: variable `itemB` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1191:13
+     |
+1191 |     let mut itemB = embedding_item("ev-s1", vec![0.5, 0.5, 0.5, 0.5]);
+     |             ^^^^^ help: convert the identifier to snake case: `item_b`
+
+warning: `bonsai` (test "wp65a_embedding_lifecycle") generated 6 warnings
+    Finished `ci` profile [optimized] target(s) in 1m 13s
+npm warn deprecated lucide-svelte@1.0.1: Package deprecated. Please use @lucide/svelte instead.
+
+added 79 packages in 2s
+
+> ui@0.0.0 build
+> vite build
+
+vite v8.0.14 building client environment for production...
+[2Ktransforming...✓ 4388 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                              0.82 kB │ gzip:  0.43 kB
+dist/assets/Credentials-B8ZOODJG.css         0.26 kB │ gzip:  0.19 kB
+dist/assets/Devices-kkJBlgtO.css             0.69 kB │ gzip:  0.31 kB
+dist/assets/Login-D_IFbD2j.css               1.22 kB │ gzip:  0.48 kB
+dist/assets/Environments-DjS07TPk.css        1.32 kB │ gzip:  0.51 kB
+dist/assets/Audit-D8l50QhK.css               1.39 kB │ gzip:  0.52 kB
+dist/assets/Sites-CsS4H3IW.css               1.97 kB │ gzip:  0.68 kB
+dist/assets/Governance-O2IWmCK4.css          2.50 kB │ gzip:  0.73 kB
+dist/assets/Approvals-UefCT8B6.css           2.68 kB │ gzip:  0.86 kB
+dist/assets/Endpoints-D2TLTZQo.css           3.13 kB │ gzip:  0.88 kB
+dist/assets/HA-Xb9Bzpk9.css                  3.46 kB │ gzip:  0.87 kB
+dist/assets/Collectors-FiPXdDAP.css          3.64 kB │ gzip:  1.00 kB
+dist/assets/Snmp-Co64qwKn.css                3.66 kB │ gzip:  0.97 kB
+dist/assets/Routing-B0Tn-MPE.css             4.01 kB │ gzip:  1.00 kB
+dist/assets/Profiles-Cznzd6v9.css            4.31 kB │ gzip:  1.12 kB
+dist/assets/StreamControl-6Pv1m0uz.css       4.37 kB │ gzip:  1.09 kB
+dist/assets/Operations-BRSSdp_I.css          4.76 kB │ gzip:  1.16 kB
+dist/assets/Investigations-CJq1TmNK.css      5.15 kB │ gzip:  1.33 kB
+dist/assets/SynthesizerRules-BFjxUqzV.css    5.33 kB │ gzip:  1.35 kB
+dist/assets/DbManagement-8-a4S8Kt.css        5.38 kB │ gzip:  1.35 kB
+dist/assets/Users-BIsXuUzs.css               5.42 kB │ gzip:  1.32 kB
+dist/assets/Sidecar-CD5LlqSL.css             6.65 kB │ gzip:  1.51 kB
+dist/assets/Syslog-C9TSxXxF.css              6.76 kB │ gzip:  1.41 kB
+dist/assets/TraceRoute-B3bCl7_A.css          6.85 kB │ gzip:  1.54 kB
+dist/assets/Incidents-Dsnq1Gpv.css           8.84 kB │ gzip:  1.98 kB
+dist/assets/Settings-C6yoJP8n.css            9.26 kB │ gzip:  2.02 kB
+dist/assets/Certs-D701NUgl.css              10.06 kB │ gzip:  1.86 kB
+dist/assets/Integrations-BHDVPnuJ.css       12.50 kB │ gzip:  2.28 kB
+dist/assets/Explorer-CxzsolDX.css           13.82 kB │ gzip:  2.88 kB
+dist/assets/index-ByuP9UfC.css              55.14 kB │ gzip: 10.73 kB
+dist/assets/Login-BRTR6h2i.js                1.70 kB │ gzip:  0.90 kB
+dist/assets/Audit-OH3a9iql.js                3.11 kB │ gzip:  1.54 kB
+dist/assets/Governance-BVZr8_BI.js           5.11 kB │ gzip:  2.10 kB
+dist/assets/Credentials-DImKTvvr.js          6.01 kB │ gzip:  2.24 kB
+dist/assets/Endpoints-BcpfHgX1.js            6.16 kB │ gzip:  2.35 kB
+dist/assets/Devices-Ct7AwK91.js              6.46 kB │ gzip:  2.87 kB
+dist/assets/Environments-BO4giz6n.js         6.80 kB │ gzip:  2.56 kB
+dist/assets/StreamControl-DXwIu5Df.js        7.02 kB │ gzip:  2.84 kB
+dist/assets/SynthesizerRules-DgvzwP5p.js     7.66 kB │ gzip:  2.89 kB
+dist/assets/HA-akhZx5pU.js                   8.24 kB │ gzip:  2.67 kB
+dist/assets/TraceRoute-Pdw2h1KP.js           8.72 kB │ gzip:  3.06 kB
+dist/assets/Investigations-BPx0wAt-.js       9.65 kB │ gzip:  3.34 kB
+dist/assets/Syslog-BniMwxvd.js              10.61 kB │ gzip:  3.61 kB
+dist/assets/Approvals-C-aWZZx3.js           10.63 kB │ gzip:  3.69 kB
+dist/assets/Snmp-CMAtCIMv.js                10.83 kB │ gzip:  3.68 kB
+dist/assets/Incidents-DFNe28Jt.js           11.05 kB │ gzip:  4.15 kB
+dist/assets/Sites-BY_mJRS_.js               12.95 kB │ gzip:  4.35 kB
+dist/assets/Collectors-DOSak0JI.js          13.24 kB │ gzip:  4.16 kB
+dist/assets/Profiles-BkqugO0l.js            13.41 kB │ gzip:  4.34 kB
+dist/assets/Sidecar-Ca_T0NUZ.js             14.11 kB │ gzip:  4.84 kB
+dist/assets/Users-DkBRbfcw.js               15.45 kB │ gzip:  5.06 kB
+dist/assets/Certs-BA3JKmkP.js               18.36 kB │ gzip:  6.13 kB
+dist/assets/Settings-WFg_gPFR.js            21.68 kB │ gzip:  6.52 kB
+dist/assets/DbManagement-CddKknzJ.js        22.15 kB │ gzip:  6.20 kB
+dist/assets/Operations-D_7wOEJC.js          26.37 kB │ gzip:  6.88 kB
+dist/assets/Explorer-Bq8qSTDq.js            28.56 kB │ gzip:  8.15 kB
+dist/assets/Routing-BY6yQPhz.js             32.69 kB │ gzip:  9.48 kB
+dist/assets/Integrations-YsI5GDCe.js        40.63 kB │ gzip: 10.54 kB
+dist/assets/Onboarding-Cnv1O0Vc.js          64.47 kB │ gzip: 18.87 kB
+dist/assets/vendor-CHeVoQBM.js             118.08 kB │ gzip: 41.81 kB
+dist/assets/index-Dr5N8b30.js              168.48 kB │ gzip: 46.99 kB
+
+[33m[PLUGIN_TIMINGS] [0mYour build spent significant time in plugins. Here is a breakdown:
+  - vite-plugin-svelte:load-custom (65%)
+  - vite-plugin-svelte:compile (31%)
+See https://rolldown.rs/options/checks#plugintimings for more details.
+
+✓ built in 7.26s
+bonsai_sdk import OK
+L1: OK
+
+=== [gate] L2 required behavioral tests ===
+L2: 35 integration targets + bonsai lib + rbmp crates
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel)
+    Finished `ci` profile [optimized] target(s) in 4m 11s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 730 tests
+test api::schema_binding_tests::forged_or_partial_echo_fails_closed ... ok
+test api::schema_binding_tests::lifecycle_echo_uses_dedicated_binding_plan_id ... ok
+test archive::tests::hourly_file_name_sanitizes_target ... ok
+test assignment::tests::child_site_matches_parent_rule ... ok
+test archive::tests::hourly_writer_reuses_file_across_flushes_for_same_target_hour ... ok
+test assignment::tests::cycle_does_not_loop_forever ... ok
+test assignment::tests::empty_cache_falls_back_to_exact_match ... ok
+test assignment::tests::exact_match_without_hierarchy ... ok
+test archive::tests::hourly_writer_rolls_file_at_hour_boundary ... ok
+test archive::tests::hourly_writer_limits_one_hour_four_targets_to_four_files ... ok
+test assignment::tests::contract_collector_receives_explicit_assignment ... ok
+test assignment::tests::lifecycle_unaware_collector_never_receives_rejected_assignment ... ok
+test assignment::tests::credential_bearing_assignment_requires_authenticated_boundary ... ok
+test assignment::tests::partial_inline_credentials_are_rejected ... ok
+test assignment::tests::assignment_update_generation_is_stamped_and_monotonic ... ok
+test assignment::tests::authority_loss_while_still_assigned_is_a_withdrawal ... ok
+test assignment::tests::pre_contract_collector_never_receives_disabled_assignment ... ok
+test assignment::tests::pre_contract_collector_still_receives_automatic_assignment ... ok
+test assignment::tests::pre_security_collector_never_receives_mtls_assignment ... ok
+test assignment::tests::pre_contract_collector_never_receives_explicit_assignment ... ok
+test assignment::tests::authority_epoch_differs_across_core_instances ... ok
+test assignment::tests::three_level_hierarchy ... ok
+test assignment::tests::security_collector_receives_mtls_assignment ... ok
+test assignment::tests::schema_bound_approval_fails_closed_when_selection_postdates_it ... ok
+test assignment::tests::schema_bound_inherited_binding_fails_closed_after_global_activation ... ok
+test assignment::tests::schema_bound_assignment_requires_v5_and_roundtrips_binding ... ok
+test auth_store::tests::api_key_lifecycle_is_atomic ... ok
+test auth_store::tests::file_permissions_are_owner_only ... ok
+test auth_store::tests::jwt_revocation_roundtrip ... ok
+test assignment::tests::session_authority_window_accepts_only_current_assignment ... ok
+test assignment::tests::session_authority_epoch_changes_across_restart ... ok
+test assignment::tests::unregister_retires_active_registration_but_keeps_issued_generation ... ok
+test assignment::tests::unresolvable_credential_alias_is_rejected_never_anonymous ... ok
+test catalogue::tests::semver_gt_handles_double_digit_patch ... ok
+test config::tests::runtime_mode_accepts_the_three_supported_modes ... ok
+test config::tests::runtime_mode_rejects_unknown_values ... ok
+test config::tests::runtime_tls_config_deserializes_under_runtime ... ok
+test config_store::tests::sha256_hex_is_stable ... ok
+test config_store::tests::summarize_diff_counts_added_and_removed_lines ... ok
+test correlation_buffer::tests::legacy_joined_names_no_longer_map ... ok
+test correlation_buffer::tests::snmp_fact_candidate_names_map_to_semantics ... ok
+test correlation_buffer::tests::syslog_fact_candidate_interface_state ... ok
+test correlation_buffer::tests::syslog_fact_candidate_names_map_to_semantics ... ok
+test correlation_buffer::tests::unknown_fact_type_is_explicit_nonmatch ... ok
+test counter_summarizer::tests::summarizer_emits_one_summary_per_interface_when_window_rolls ... ok
+test counter_summarizer::tests::summarizer_ignores_non_counter_paths ... ok
+test counter_summarizer::tests::summarizer_summary_carries_target_and_if_name ... ok
+test credentials::tests::last_used_write_window_skips_recent_updates ... ok
+test assignment::tests::session_authority_window_closes_on_removal_and_reassignment ... ok
+test assignment::tests::withdrawal_ack_requires_current_epoch_and_issued_generation ... ok
+test credentials::tests::resolve_debounces_last_used_metadata_writes ... ok
+test discovery::tests::capability_summary_detects_vendor ... ok
+test enrichment::frr_interfaces::tests::fixed_commands_match_the_approved_contract ... ok
+test enrichment::frr_interfaces::tests::helper_deadline_covers_exit_with_inherited_output_pipe_open ... ok
+test enrichment::frr_interfaces::tests::helper_deadline_terminates_and_reaps_a_hung_child ... ok
+test enrichment::frr_interfaces::tests::helper_output_limit_is_an_explicit_refusal ... ok
+test enrichment::frr_interfaces::tests::helper_stderr_overflow_is_an_explicit_bounded_refusal ... ok
+test enrichment::frr_interfaces::tests::live_frr_ssh_capture_dispatches_validated_shadow_facts ... ignored, requires authorized live FRR lab and pinned SSH host key
+test enrichment::frr_interfaces::tests::sequential_device_admission_does_not_retain_inventory_churn_keys ... ok
+test enrichment::frr_interfaces::tests::unqualified_software_build_is_refused_before_network_contact ... ok
+test enrichment::multi_source::tests::parse_root_path_returns_empty_elems ... ok
+test enrichment::multi_source::tests::parse_selected_path_with_keys ... ok
+test enrichment::netbox::tests::max_concurrent_requests_defaults_to_two ... ok
+test enrichment::netbox::tests::max_concurrent_requests_reads_from_extra ... ok
+test enrichment::netbox::tests::pagination_advances_offset_correctly_across_pages ... ok
+test enrichment::netbox::tests::pagination_returns_error_on_non_success_status ... ok
+test enrichment::netbox::tests::write_to_graph_counts_prefix_nodes ... ok
+test credentials::tests::vault_adds_lists_resolves_and_removes_credentials ... ok
+test auth_store::tests::jwt_rotation_keeps_old_key_verifying_during_overlap ... ok
+test enrichment::netbox::tests::writes_to_declares_netbox_namespace ... ok
+test enrichment::parser_chain_enricher::tests::inferred_vendor_output_reaches_sidecar_as_backend_id ... ok
+test enrichment::parser_chain_enricher::tests::ssh_target_uses_host_portion_of_gnmi_address ... ok
+test enrichment::parser_chain_enricher::tests::vendor_command_mapping_covers_current_lab_vendors ... ok
+test enrichment::parser_chain_enricher::tests::vendor_inference_requires_explicit_vendor_while_hostname_is_advisory_only ... ok
+test enrichment::registry::tests::gnmi_blocked_readiness_puts_cli_first ... ok
+test enrichment::registry::tests::gnmi_ready_readiness_puts_gnmi_first ... ok
+test enrichment::registry::tests::no_readiness_report_falls_back_to_vendor_heuristic ... ok
+test enrichment::servicenow::tests::criticality_mapping_covers_known_codes ... ok
+test auth_store::tests::jwt_secret_env_override_wins_and_short_env_fails ... ok
+test credentials::tests::wrong_passphrase_fails_during_open ... ok
+test enrichment::servicenow::tests::snow_ref_deserialises_from_object_form ... ok
+test enrichment::servicenow::tests::snow_ref_deserialises_from_plain_string ... ok
+test enrichment::servicenow::tests::snow_ref_option_handles_null ... ok
+test enrichment::netbox::tests::write_to_graph_counts_vlan_nodes ... ok
+test enrichment::netbox::tests::write_to_graph_idempotent_vlan_upsert ... ok
+test enrichment::servicenow::tests::snow_get_retries_on_429_and_succeeds ... ok
+test auth_store::tests::jwt_secret_fails_when_key_material_is_wrong ... ok
+test enrichment::servicenow::tests::write_locations_creates_hierarchy ... ok
+test enrichment::servicenow::tests::write_server_ci_properties ... ok
+test enrichment::servicenow::tests::write_to_graph_creates_application_nodes ... ok
+test enrichment::servicenow::tests::write_to_graph_idempotent_application_upsert ... ok
+test enrichment::tests::configs_persist_and_reload ... ok
+test enrichment::servicenow::tests::snow_get_fails_after_exhausting_retries ... ok
+test enrichment::tests::load_returns_empty_and_does_not_panic_on_corrupted_file ... ok
+test enrichment::tests::load_returns_empty_registry_when_no_file ... ok
+test frr_interface_json::tests::bn02404_repro_all_rejected_population_is_not_empty_table ... ok
+test frr_interface_json::tests::bn02404_repro_bond_parent_is_lower_layer_not_lag_membership ... ok
+test frr_interface_json::tests::bn02404_repro_contradictory_slave_and_target_type_is_unresolved ... ok
+test frr_interface_json::tests::bn02404_repro_malformed_capture_timestamp_is_rejected ... ok
+test frr_interface_json::tests::bn02404_repro_three_duplicate_indices_never_resolve ... ok
+test frr_interface_json::tests::bn02404_repro_truncated_family_is_not_observed_none ... ok
+test frr_interface_json::tests::contradictory_explicit_and_numeric_references_never_resolve_to_edges ... ok
+test frr_interface_json::tests::duplicate_interface_names_in_different_network_namespaces_remain_distinct ... ok
+test frr_interface_json::tests::duplicate_object_keys_and_wrong_known_field_types_are_format_errors ... ok
+test frr_interface_json::tests::entity_output_and_address_budgets_are_explicitly_enforced ... ok
+test frr_interface_json::tests::genuine_frr_1061_fixture_has_independent_expected_values ... ok
+test frr_interface_json::tests::invalid_address_and_missing_required_values_do_not_fabricate_success ... ok
+test frr_interface_json::tests::invalid_json_unexpected_fields_oversize_and_failed_capture_are_explicit ... ok
+test frr_interface_json::tests::missing_optional_fields_are_explicit_unknowns_not_failures ... ok
+test frr_interface_json::tests::operator_presentation_fixture_matches_implementation_contract ... ok
+test frr_interface_json::tests::same_observation_master_ifindex_resolution_establishes_lag_membership ... ok
+test frr_interface_json::tests::simultaneous_parent_and_master_relationships_remain_distinct ... ok
+test frr_interface_json::tests::structured_fixture_performance_smoke_reports_bounded_native_latency ... ok
+test frr_interface_json::tests::structured_identity_preserves_namespace_release_and_source_axes ... ok
+test frr_interface_json::tests::synthetic_scale_workloads_report_scaling_and_budget_refusal ... ok
+test gnmi_path::tests::canonical_key_stable_origin_sensitive_and_unambiguous ... ok
+test gnmi_path::tests::delete_covers_is_conservative_and_structured ... ok
+test gnmi_path::tests::escaped_brackets_and_backslash_in_values ... ok
+test gnmi_path::tests::key_values_not_trimmed ... ok
+test gnmi_path::tests::keyed_interface_with_slash_survives ... ok
+test gnmi_path::tests::malformed_and_duplicate_rejected ... ok
+test gnmi_path::tests::multiple_keys_preserved ... ok
+test gnmi_path::tests::observation_covers_is_exact_and_structured ... ok
+test gnmi_path::tests::observation_covers_star_key_is_single_value_wildcard ... ok
+test gnmi_path::tests::observation_covers_tolerates_module_prefixed_element_names ... ok
+test gnmi_path::tests::vendor_interface_name_with_slashes ... ok
+test gnmi_security::tests::auth_metadata_validation_rejects_unencodable_values ... ok
+test gnmi_security::tests::conn_security_tls_config_fails_closed_without_material ... ok
+test gnmi_security::tests::legacy_inference_preserved ... ok
+test gnmi_security::tests::legacy_plaintext_is_migration_required_for_acquisition ... ok
+test gnmi_security::tests::security_mode_parse_is_strict ... ok
+test gnmi_security::tests::tls_modes_never_downgrade_to_unauthorized_plaintext ... ok
+test gnmi_security::tests::validation_matrix ... ok
+test enrichment::tests::record_run_updates_state_and_clears_is_running ... ok
+test enrichment::tests::remove_deletes_entry_and_its_state ... ok
+test enrichment::tests::remove_nonexistent_returns_false ... ok
+test enrichment::tests::upsert_adds_new_entry ... ok
+test auth_store::tests::jwt_secret_is_csprng_stable_and_persisted ... ok
+test enrichment::tests::upsert_updates_existing_entry_no_duplicate ... ok
+test auth_store::tests::user_lifecycle_preserves_verifier ... ok
+test graph::algorithms::tests::centrality_isolated_device_not_in_results ... ok
+test graph::explorer::tests::admin_access_keeps_full_read_scope ... ok
+test graph::algorithms::tests::centrality_spines_have_highest_degree ... ok
+test graph::algorithms::tests::detection_correlation_finds_cofiring_pair ... ok
+test graph::explorer::tests::extract_columns_simple ... ok
+test graph::explorer::tests::extract_columns_with_as_aliases ... ok
+test graph::explorer::tests::extract_columns_with_order_by ... ok
+test graph::explorer::tests::standard_access_allows_bound_variable_references ... ok
+test graph::explorer::tests::standard_access_allows_labeled_safe_query ... ok
+test graph::explorer::tests::standard_access_function_calls_are_not_patterns ... ok
+test graph::explorer::tests::standard_access_rejects_configitem_direct ... ok
+test graph::explorer::tests::standard_access_rejects_unlabeled_and_anonymous_patterns ... ok
+test graph::explorer::tests::standard_access_union_resets_bound_variables ... ok
+test graph::explorer::tests::validate_allows_legitimate_comments ... ok
+test graph::explorer::tests::validate_allows_match_return ... ok
+test graph::explorer::tests::validate_allows_mutation_keywords_inside_string_literals ... ok
+test graph::explorer::tests::validate_allows_optional_match ... ok
+test graph::explorer::tests::validate_does_not_false_positive_on_inlined_words ... ok
+test graph::explorer::tests::validate_rejects_comment_evasion ... ok
+test graph::explorer::tests::validate_rejects_create ... ok
+test graph::explorer::tests::validate_rejects_delete ... ok
+test graph::explorer::tests::validate_rejects_detach_delete ... ok
+test graph::explorer::tests::validate_rejects_extended_mutation_keywords ... ok
+test graph::explorer::tests::validate_rejects_merge ... ok
+test graph::explorer::tests::validate_rejects_quoted_comment_mutation_evasion ... ok
+test graph::explorer::tests::validate_rejects_set ... ok
+test graph::explorer::tests::validate_rejects_transaction_control_and_multistatement ... ok
+test graph::algorithms::tests::graph_insights_runs_without_error ... ok
+test graph::algorithms::tests::site_dependency_dc_has_correct_local_count ... ok
+test graph::algorithms::tests::site_dependency_returns_dc_and_sp_sites ... ok
+test graph::algorithms::tests::subscription_health_active_subscription_counted ... ok
+test graph::algorithms::tests::subscription_health_by_tier_has_four_tiers ... ok
+test graph::explorer::tests::execute_query_rejects_create ... ok
+test graph::explorer::tests::execute_query_runs_against_test_graph ... ok
+test graph::queries::tests::applications_on_site_returns_apps ... ok
+test graph::queries::tests::blast_radius_1hop_from_spine1_includes_both_leaves ... ok
+test graph::queries::tests::blast_radius_includes_apps_on_origin ... ok
+test graph::queries::tests::co_firing_detections_returns_rows ... ok
+test graph::queries::tests::detections_in_environment_returns_rows_in_window ... ok
+test graph::queries::tests::detections_without_remediation_excludes_resolved ... ok
+test graph::queries::tests::device_enrichment_context_returns_properties ... ok
+test graph::queries::tests::devices_in_environment_returns_dc_devices ... ok
+test graph::queries::tests::devices_missing_enrichment_finds_unenriched_devices ... ok
+test graph::queries::tests::neighbors_of_spine1_returns_both_leaves ... ok
+test graph::queries::tests::orphan_devices_returns_isolated_device ... ok
+test graph::queries::tests::shortest_path_direct_neighbors_has_two_hops ... ok
+test graph::queries::tests::shortest_path_same_device_returns_single_hop ... ok
+test graph::queries::tests::shortest_path_two_hops_traverses_spine ... ok
+test graph::tests::add_and_list_tool_calls ... ok
+test graph::queries::tests::shortest_path_unreachable_returns_none ... ok
+test graph::queries::tests::subscription_health_returns_paths_for_device ... ok
+test graph::tests::backfill_remediation_trust_marks_marks_legacy_rows ... ok
+test graph::queries::tests::topology_edges_returns_all_links ... ok
+test graph::tests::bgp_batch_failure_does_not_poison_other_updates ... ok
+test graph::tests::bgp_batch_ambiguous_peer_produces_no_edge ... ok
+test graph::tests::bgp_batch_write_produces_session_edges_and_state ... ok
+test graph::tests::bgp_edge_invalidated_on_identity_claim_change ... ok
+test graph::tests::bgp_gnmi_same_peer_two_network_instances_keep_separate_sessions ... ok
+test graph::tests::bgp_peer_as_preserved_when_update_omits_it ... ok
+test graph::tests::bgp_edge_invalidated_when_ownership_becomes_ambiguous ... ok
+test graph::tests::bgp_resolution_unavailable_fails_closed ... ok
+test graph::tests::bgp_same_peer_distinct_peer_types_keep_separate_edges ... ok
+test graph::tests::bgp_same_peer_distinct_route_distinguishers_keep_separate_edges ... ok
+test graph::tests::bgp_session_ambiguous_alias_produces_no_edge ... ok
+test graph::tests::bgp_session_conflicting_tiers_produces_no_edge ... ok
+test graph::tests::bgp_session_gnmi_and_bmp_keep_separate_provenance ... ok
+test graph::tests::bgp_session_multiple_peers_to_same_device_keep_state ... ok
+test graph::tests::bgp_session_resolves_unique_alias_and_isolates_neighbors ... ok
+test graph::tests::bgp_session_stale_edge_reconciled_on_ownership_loss ... ok
+test graph::tests::complete_investigation_updates_status ... ok
+test graph::tests::create_and_get_investigation ... ok
+test graph::tests::get_investigation_returns_none_for_unknown ... ok
+test graph::tests::list_device_embeddings_returns_empty_for_unknown_device ... ok
+test graph::tests::bgp_session_replay_is_idempotent_across_restart ... ok
+test graph::tests::list_investigations_returns_newest_first ... ok
+test graph::tests::site_sync_ambiguous_display_name_creates_no_duplicate ... ok
+test graph::tests::bgp_legacy_unkeyed_edges_migrated_on_open ... ok
+test graph::tests::site_sync_ambiguous_name_with_slug_owner_stays_unresolved ... ok
+test graph::tests::site_sync_creates_site_and_located_at_edge ... ok
+test graph::tests::site_sync_move_changes_only_device_association ... ok
+test graph::tests::site_sync_omitted_site_preserves_existing_association ... ok
+test graph::tests::site_sync_preserves_imported_site_record ... ok
+test graph::tests::site_sync_preserves_existing_hierarchy ... ok
+test graph::tests::site_sync_slug_collision_with_unrelated_site ... ok
+test graph::tests::site_sync_preserves_slug_id_site_record ... ok
+test graph::tests::site_sync_idempotent_and_survives_restart ... ok
+test graph::tests::site_upsert_rejects_self_parent_and_cycles ... ok
+test graph::tests::site_upsert_rejects_parent_chain_deeper_than_ten ... ok
+test graph::tests::syslog_bfd_fact_candidate_probe_matches_session_without_mutation ... ok
+test graph::tests::subscription_status_write_preserves_device_metadata ... ok
+test graph::tests::syslog_bfd_fact_candidate_without_graph_match_stays_candidate ... ok
+test graph::tests::syslog_fact_candidate_probe_finds_known_bgp_neighbor_without_joining ... ok
+test http_server::auth::rbac_tests::m6c1_applicability_refresh_requires_admin_reads_stay_viewer ... ok
+test http_server::auth::rbac_tests::schema_activate_viewer_denied ... ok
+test http_server::auth::rbac_tests::schema_preview_viewer_allowed ... ok
+test http_server::auth::rbac_tests::schema_revoke_viewer_denied ... ok
+test http_server::auth::rbac_tests::yang_mutations_require_admin ... ok
+test http_server::auth::rbac_tests::yang_reads_stay_read_only ... ok
+test http_server::auth::tests::concurrent_failures_stay_bounded ... ok
+test http_server::auth::tests::eviction_preserves_locked_and_live_window_entries ... ok
+test http_server::auth::tests::eviction_preserves_pre_lockout_failure_counts ... ok
+test http_server::auth::tests::expired_source_lockout_recovers ... ok
+test http_server::auth::tests::overflow_does_not_engage_without_saturation ... ok
+test http_server::auth::tests::repeated_failures_do_not_grow_order_queue ... ok
+test http_server::auth::tests::saturated_live_tracker_does_not_evict_or_grow ... ok
+test http_server::auth::tests::saturated_tracker_bounds_untracked_usernames_via_overflow ... ok
+test http_server::auth::tests::session_cookie_secure_only_over_tls ... ok
+test http_server::auth::tests::source_ip_lockout_rejects_all_usernames_from_source ... ok
+test http_server::change_capture::tests::identical_snapshots_pass_all ... ok
+test http_server::change_capture::tests::incomplete_capture_fails ... ok
+test http_server::change_capture::tests::prefix_loss_and_new_down_fail ... ok
+test http_server::device::tests::instance_identity_distinguishes_deployments ... ok
+test http_server::device::tests::instance_identity_handles_ipv6_and_rejects_malformed ... ok
+test http_server::device::tests::instance_identity_never_contains_credentials ... ok
+test http_server::device::tests::instance_identity_normalizes_case_scheme_and_default_port ... ok
+test http_server::managed_devices::bn02404_tests::software_build_request_is_declared_qualification_metadata ... ok
+test graph::tests::syslog_fact_unresolved_event_is_emitted_without_candidate ... ok
+test graph::tests::site_sync_stale_edge_lifecycle ... ok
+test graph::tests::syslog_isis_fact_never_writes_adjacency ... ok
+test graph::tests::syslog_ospf_fact_is_unresolved_without_candidate ... ok
+test graph::tests::write_and_read_device_embedding_roundtrip ... ok
+test graph::tests::write_device_embedding_multiple_versions ... ok
+test graph::tests::write_device_embedding_upsert_overwrites_same_version ... ok
+test http_server::managed_devices::tests::inventory_import_ambiguous_external_id_fails_closed ... ok
+test http_server::managed_devices::tests::inventory_import_concurrent_same_identity ... ok
+test http_server::managed_devices::tests::inventory_import_creates_declared_only_assets ... ok
+test http_server::managed_devices::tests::inventory_import_graph_pending_reported ... ok
+test http_server::managed_devices::tests::inventory_import_host_port_conflict_and_ipv6 ... ok
+test http_server::managed_devices::tests::inventory_import_persistence_failure_is_truthful ... ok
+test http_server::nl_query::tests::budget_day_roll ... ok
+test http_server::managed_devices::tests::inventory_import_instance_scoped_identities ... ok
+test http_server::tests::openapi_schema_includes_examples_and_schema_version_fields ... ok
+test http_server::tests::openapi_schema_uses_envelope_shapes_for_primary_responses ... ok
+test ingest::lifecycle_resend_tests::resend_index_eviction_is_lru_not_fifo ... ok
+test ingest::lifecycle_resend_tests::resend_index_keeps_latest_per_session_and_drains_in_note_order ... ok
+test ingest::lifecycle_resend_tests::shutdown_drain_is_bounded_when_sender_stays_open ... ok
+test ingest::lifecycle_resend_tests::shutdown_drain_waits_for_inflight_terminal_event ... ok
+test ingest::schema_binding_proto_tests::lifecycle_proto_echoes_binding_without_conflating_plan_ids ... ok
+test ingest::tests::collector_queue_replays_after_restart_and_ack ... ok
+test ingest::tests::collector_queue_retention_drops_expired_and_oversized_records ... ok
+test ingest::tests::collector_tls_config_requires_ca_cert_and_identity ... ok
+test ingest::tests::collector_tls_rejects_http_endpoint_when_enabled ... ok
+test ingest::tests::drain_acks_consistent_scripted_batch ... ok
+test http_server::managed_devices::tests::inventory_import_preserves_existing_device_and_restarts ... ok
+test ingest::tests::drain_replays_retained_batch_after_core_recovers ... ok
+test ingest::tests::drain_retains_batch_on_accounting_mismatch ... ok
+test http_server::nl_query::tests::run_cypher_rejects_configitem_for_model_context ... ok
+test ingest::tests::drain_retains_batch_on_impossible_counts ... ok
+test ingest::tests::drain_retains_batch_on_protocol_version_skew ... ok
+test http_server::managed_devices::tests::inventory_import_retry_reconciles_projection ... ok
+test http_server::managed_devices::tests::inventory_reimport_preserves_operational_config ... ok
+test ingest::tests::telemetry_ingest_msgpack_counter_payload_is_smaller_than_json_baseline ... ok
+test ingest::tests::telemetry_ingest_proto_round_trips_msgpack_payload ... ok
+test ingest::tests::telemetry_ingest_zstd_estimate_reduces_repetitive_batch ... ok
+test http_server::managed_devices::tests::inventory_lifecycle_requires_explicit_activation ... ok
+test integrations::servicenow_aiops::tests::incident_description_contains_operator_bridge_hint ... ok
+test integrations::servicenow_aiops::tests::incident_id_round_trips_from_short_description ... ok
+test integrations::servicenow_aiops::tests::playbook_commands_are_parsed_from_comments_and_notes ... ok
+test integrations::servicenow_aiops::tests::root_cause_hint_formats_available_context ... ok
+test interface_facts::tests::address_entries_must_be_valid_cidr_of_declared_family ... ok
+test interface_facts::tests::invalid_mac_and_bad_mtu_rejected ... ok
+test interface_facts::tests::mac_normalization_accepts_vendor_forms ... ok
+test interface_facts::tests::scalar_fields_value_rejected ... ok
+test interface_facts::tests::source_conflicts_and_relationship_are_validated ... ok
+test interface_facts::tests::unknown_is_not_a_value ... ok
+test interface_facts::tests::valid_payload_roundtrips ... ok
+test interface_normalizer::oracle_emit::emit_cumulus_oracle_input ... ignored, artifact emitter for the differential oracle
+test interface_normalizer::perf::all_facts_rejected_still_emits_valid_status_fact ... ok
+test interface_normalizer::perf::complete_capture_with_malformed_addresses_is_partial_not_complete ... ok
+test interface_normalizer::perf::conflict_truncation_is_accounted ... ok
+test interface_normalizer::perf::fixture_normalization_throughput ... ignored, perf measurement, not a correctness gate
+test interface_normalizer::perf::mtu_above_ethernet_bound_is_known_not_invalid ... ok
+test interface_normalizer::perf::oversized_observation_is_refused_not_truncated ... ok
+test interface_normalizer::perf::oversized_with_invalid_context_is_explicit_report_not_fact ... ok
+test interface_normalizer::perf::single_source_interface_is_partial_with_explicit_note ... ok
+test interface_normalizer::perf::skewed_or_unparseable_timestamps_degrade_completeness ... ok
+test interface_normalizer::tests::address_limit_omissions_are_counted ... ok
+test interface_normalizer::tests::admin_down_does_not_fabricate_oper_down ... ok
+test interface_normalizer::tests::bond_member_is_lag_member_not_aggregate ... ok
+test interface_normalizer::tests::bridge_and_unresolved_masters_are_not_lag ... ok
+test interface_normalizer::tests::capture_skew_is_reported ... ok
+test interface_normalizer::tests::case_sensitive_names_are_not_folded ... ok
+test interface_normalizer::tests::complete_empty_observation_can_claim_complete ... ok
+test interface_normalizer::tests::conflicting_mtu_is_preserved_not_collapsed ... ok
+test interface_normalizer::tests::empty_observation_is_explicit_state_not_success ... ok
+test interface_normalizer::tests::entity_limit_counts_omissions_and_still_updates_known ... ok
+test interface_normalizer::tests::every_emitted_fact_validates_against_canonical_abi ... ok
+test interface_normalizer::tests::fact_identity_binds_namespace_and_entity ... ok
+test interface_normalizer::tests::failed_capture_is_never_parsed_or_successful ... ok
+test interface_normalizer::tests::fixture_normalizes_and_validates ... ok
+test interface_normalizer::tests::hostile_input_does_not_panic ... ok
+test interface_normalizer::tests::invalid_addresses_make_field_invalid_not_fact ... ok
+test interface_normalizer::tests::malformed_lines_are_counted_not_fatal ... ok
+test interface_normalizer::tests::partial_and_truncated_captures_downgrade_completeness ... ok
+test interface_normalizer::tests::sonic_marks_internal_interfaces ... ok
+test interface_normalizer::tests::speed_sentinel_and_zero_are_unavailable_not_values ... ok
+test interface_normalizer::tests::vrf_master_is_not_lag ... ok
+test interface_relationships::tests::ambiguous_structured_target_is_explicit_unknown ... ok
+test interface_relationships::tests::conflicting_same_generation_observations_are_explicit_and_order_independent ... ok
+test interface_relationships::tests::different_capture_ids_and_epochs_cannot_produce_merged_pass ... ok
+test interface_relationships::tests::exact_duplicate_evidence_is_idempotent_and_permutation_deterministic ... ok
+test interface_relationships::tests::forward_membership_distinguishes_empty_partial_and_complete ... ok
+test interface_relationships::tests::genuine_cumulus_lag_bridge_and_vrf_relationships_are_reported ... ok
+test interface_relationships::tests::identical_names_in_separate_network_namespaces_remain_separate ... ok
+test interface_relationships::tests::incompatible_lag_target_type_remains_explicit ... ok
+test interface_relationships::tests::legacy_facts_without_structured_identity_remain_readable ... ok
+test interface_relationships::tests::operational_link_findings_do_not_claim_active_capacity_and_admin_down_is_not_fault ... ok
+test interface_relationships::tests::partial_completeness_and_unavailable_forward_membership_are_not_passable ... ok
+test interface_relationships::tests::reverse_observed_membership_can_pass_only_as_narrow_consistency ... ok
+test interface_relationships::tests::structured_physical_and_subinterfaces_do_not_collapse ... ok
+test interface_relationships::tests::subinterface_cannot_be_selected_as_lag_aggregate ... ok
+test interface_relationships::tests::unknown_aggregate_state_and_unknown_membership_cannot_pass ... ok
+test interface_relationships::tests::unresolved_evidence_is_unknown_not_not_applicable ... ok
+test interface_relationships::tests::withdrawn_superseded_expired_and_non_operational_facts_are_not_current ... ok
+test mcp_client::tests::call_error_status_surfaces_as_error ... ok
+test mcp_client::tests::call_happy_path_parses_content_text ... ok
+test mcp_client::tests::call_missing_content_text_surfaces_as_error ... ok
+test mcp_client::tests::from_extra_empty_defaults_to_rest ... ok
+test mcp_client::tests::from_extra_explicit_rest ... ok
+test mcp_client::tests::from_extra_mcp_defaults_server_url_when_missing ... ok
+test mcp_client::tests::from_extra_mcp_uses_provided_server_url ... ok
+test mcp_server::tests::every_rule_has_three_recurrence_indicators ... ok
+test mcp_server::tests::match_score_exact_prefix_substring ... ok
+test mcp_server::tests::readonly_cypher_allows_reads ... ok
+test mcp_server::tests::readonly_cypher_rejects_mutations ... ok
+test mcp_server::tests::rule_catalogue_no_duplicates ... ok
+test mcp_server::tests::rule_meta_lookup_hit_and_miss ... ok
+test normalizer_registry::tests::builtin_cli_profile_is_not_release_qualified ... ok
+test normalizer_registry::tests::same_git_version_with_different_build_artifact_is_not_qualified ... ok
+test normalizer_registry::tests::standalone_frr_json_exact_release_dispatch_is_qualified_and_shadow_only ... ok
+test normalizer_registry::tests::standalone_frr_json_rejects_wrong_release_and_namespace ... ok
+test normalizer_registry::tests::wrong_observation_input_shape_fails_closed ... ok
+test normalizer_registry::tests::xrd_openconfig_fixture_dispatch_is_experimental_shadow_only ... ok
+test nos_features::tests::ambiguous_profiles_are_explicit_conflict ... ok
+test nos_features::tests::cumulus_metadata_fixture_matches_profile_contract ... ok
+test nos_features::tests::cumulus_release_and_asic_constraints_gate_selection ... ok
+test nos_features::tests::dummy_future_nos_registers_without_core_changes ... ok
+test nos_features::tests::exact_version_is_exact_and_prefix_is_declared_policy ... ok
+test nos_features::tests::feature_composition_rejects_undeclared_prereq_and_cycles ... ok
+test nos_features::tests::feature_composition_validates_requires_and_conflicts ... ok
+test nos_features::tests::namespace_scope_gates_observation_applicability ... ok
+test nos_features::tests::platform_query_is_case_normalized ... ok
+test nos_features::tests::profiles_roundtrip_through_json ... ok
+test nos_features::tests::sonic_namespace_fixture_declares_distinct_scopes ... ok
+test nos_features::tests::sonic_namespace_fixture_selects_and_scopes ... ok
+test nos_features::tests::support_state_gates_enabled_flag ... ok
+test nos_features::tests::unknown_platform_is_explicitly_unsupported ... ok
+test nos_features::tests::wildcard_on_unknown_release_is_discovery_only ... ok
+test nos_features::tests::wrong_version_is_explicitly_unsupported ... ok
+test output::elastic::tests::build_returns_none_for_wrong_adapter_type ... ok
+test output::elastic::tests::bulk_ndjson_ends_with_newline ... ok
+test output::elastic::tests::bulk_url_uses_custom_index ... ok
+test output::elastic::tests::bulk_url_uses_default_index ... ok
+test output::elastic::tests::dedup_window_default_is_300s ... ok
+test output::elastic::tests::ecs_doc_required_fields ... ok
+test output::elastic::tests::severity_ecs_mapping ... ok
+test output::prometheus::tests::encode_empty_request_is_valid_snappy ... ok
+test output::prometheus::tests::extract_object_fields ... ok
+test output::prometheus::tests::extract_single_number ... ok
+test output::prometheus::tests::parse_path_hyphen_in_segment ... ok
+test output::prometheus::tests::parse_path_multiple_keys ... ok
+test output::prometheus::tests::parse_path_no_filters ... ok
+test output::prometheus::tests::parse_path_with_list_key ... ok
+test output::servicenow_em::tests::critical_passes_any_min ... ok
+test output::servicenow_em::tests::high_passes_high_and_below ... ok
+test output::servicenow_em::tests::info_blocked_by_warning_min ... ok
+test output::servicenow_em::tests::severity_mapping_matches_snow_codes ... ok
+test output::servicenow_em::tests::unknown_severity_treated_as_info ... ok
+test output::servicenow_em::tests::warning_passes_warning_and_below ... ok
+test output::splunk_hec::tests::build_returns_none_for_wrong_adapter_type ... ok
+test output::splunk_hec::tests::dedup_suppresses_same_device_rule_within_window ... ok
+test output::splunk_hec::tests::hec_event_shape_roundtrips ... ok
+test output::splunk_hec::tests::hec_url_strips_trailing_slash ... ok
+test output::splunk_hec::tests::sourcetype_defaults_to_bonsai_detection ... ok
+test output::splunk_hec::tests::sourcetype_overrideable_via_extra ... ok
+test http_server::managed_devices::tests::managed_device_api_site_claim_lifecycle ... ok
+test output::traits::tests::stub_adapter_compiles ... ok
+test parser_chain::live_sidecar_tests::live_pyats_sidecar_genie_textfsm_and_fallback ... ignored, requires a live pyats sidecar (BONSAI_LIVE_PYATS_URL)
+test parser_chain::tests::all_structured_unavailable_falls_back_to_native ... ok
+test parser_chain::tests::canonical_platform_id_translates_to_sidecar_vendor ... ok
+test parser_chain::tests::consensus_mode_runs_all_backends ... ok
+test parser_chain::tests::consensus_no_structured_result_when_all_failed ... ok
+test parser_chain::tests::consensus_not_comparable_without_structured ... ok
+test parser_chain::tests::consensus_representation_difference ... ok
+test parser_chain::tests::consensus_representation_match ... ok
+test parser_chain::tests::consensus_single_structured_result ... ok
+test parser_chain::tests::default_priorities_try_structured_backends_first ... ok
+test parser_chain::tests::duplicate_backend_names_are_deduplicated ... ok
+test parser_chain::tests::echoed_vendor_and_command_mismatch_rejected ... ok
+test parser_chain::tests::explicit_native_only_configuration_returns_line_split ... ok
+test parser_chain::tests::fallback_disabled_fails_when_no_structured_result ... ok
+test parser_chain::tests::fallback_shaped_payload_mislabeled_structured_is_rejected ... ok
+test parser_chain::tests::genie_fallback_does_not_shadow_textfsm ... ok
+test parser_chain::tests::genie_malformed_structured_claim_rejected_then_textfsm ... ok
+test parser_chain::tests::genie_unknown_quality_does_not_shadow_textfsm ... ok
+test parser_chain::tests::genie_unsupported_then_textfsm ... ok
+test parser_chain::tests::mismatched_backend_identity_is_rejected ... ok
+test parser_chain::tests::missing_backend_used_is_unknown_quality ... ok
+test parser_chain::tests::native_parse_truncates_at_line_cap ... ok
+test parser_chain::tests::ntc_templates_dispatches_textfsm_backend ... ok
+test parser_chain::tests::null_payload_labeled_structured_is_rejected ... ok
+test parser_chain::tests::parser_chain_uses_vendor_command_key ... ok
+test parser_chain::tests::pyats_genie_sends_command_field_and_wire_parser ... ok
+test parser_chain::tests::sidecar_error_falls_through_to_next_parser ... ok
+test parser_chain::tests::sidecar_fallback_output_is_labeled_unstructured ... ok
+test parser_chain::tests::structured_empty_is_a_valid_structured_result ... ok
+test parser_chain::tests::suzieq_native_is_explicitly_unsupported ... ok
+test parser_chain::tests::unknown_backend_claim_is_rejected ... ok
+test parser_chain::tests::unknown_platform_has_no_parser_backend_mapping ... ok
+test ingest::tests::drain_acks_whole_batch_with_interleaved_rejections ... ok
+test ingest::tests::drain_retains_batch_on_bus_router_overload ... ok
+test http_server::managed_devices::tests::inventory_import_requires_operator_via_authenticated_router ... ok
+test integrations::change_management::tests::change_request_upsert_creates_then_matches ... ok
+test registry::tests::failed_persistence_leaves_memory_untouched ... ok
+test output::traits::tests::registry_upsert_and_remove ... ok
+test registry::tests::ipv6_canonical_key_normalizes ... ok
+test registry::tests::normalize_address_accepts_host_port_forms ... ok
+test registry::tests::normalize_address_rejects_invalid_forms ... ok
+test registry::tests::normalize_external_id_validates_shape ... ok
+test ingest::tests::drain_retains_records_on_retryable_core_failure ... ok
+test remediation::graduation::tests::auto_silent_and_auto_with_notification_never_graduate ... ok
+test remediation::graduation::tests::blocked_by_any_rejection ... ok
+test remediation::graduation::tests::blocked_by_insufficient_consecutive_successes ... ok
+test remediation::graduation::tests::graduation_key_preserved_in_hint ... ok
+test remediation::graduation::tests::threshold_triggers_suggestion_for_approve_each ... ok
+test remediation::graduation::tests::threshold_triggers_suggestion_for_suggest_only ... ok
+test remediation::rollback::tests::active_windows_excludes_expired ... ok
+test remediation::rollback::tests::expired_after_window ... ok
+test remediation::rollback::tests::mark_rolled_back_prevents_reuse ... ok
+test remediation::rollback::tests::not_expired_within_window ... ok
+test remediation::rollback::tests::prune_removes_expired_entries ... ok
+test remediation::rollback::tests::register_and_get ... ok
+test remediation::rollback::tests::rolled_back_flag_causes_immediate_expiry ... ok
+test remediation::trust::tests::approval_increments_consecutive_and_approval_counters ... ok
+test remediation::trust::tests::default_state_data_center_maps_to_config ... ok
+test remediation::trust::tests::default_state_home_lab_maps_to_config ... ok
+test remediation::trust::tests::failed_parent_dir_sync_cannot_report_persisted ... ok
+test remediation::trust::tests::failed_persistence_write_is_bounded_and_non_fatal ... ok
+test remediation::trust::tests::failed_then_successful_write_reports_persisted ... ok
+test registry::tests::ambiguous_external_id_fails_closed ... ok
+test remediation::trust::tests::get_or_default_creates_new_record_with_default_state ... ok
+test remediation::trust::tests::get_or_default_returns_existing_record_unchanged ... ok
+test remediation::trust::tests::persistence_round_trip ... ok
+test remediation::trust::tests::queue_overflow_still_converges_to_latest_state ... ok
+test remediation::trust::tests::rapid_persists_converge_to_newest_state ... ok
+test remediation::trust::tests::rejection_resets_consecutive_successes ... ok
+test remediation::trust::tests::set_state_persists_and_updates_timestamp ... ok
+test remediation::trust::tests::shutdown_drains_queued_snapshots ... ok
+test remediation::trust::tests::total_failures_not_reset_before_ten_consecutive ... ok
+test remediation::trust::tests::total_failures_resets_after_ten_consecutive_auto_successes ... ok
+test remediation::trust::tests::unknown_archetype_returns_approve_each ... ok
+test registry::tests::api_registry_persists_and_emits_changes ... ok
+test registry::tests::canonical_address_rejects_port_variants ... ok
+test remediation::trust::tests::flush_barriers_survive_stalled_writer_queue_pressure ... ok
+test registry::tests::external_id_is_unique_per_device ... ok
+test ingest::tests::drain_retires_fully_rejected_batch_without_blocking ... ok
+test registry::tests::inventory_only_requires_plan_for_activation ... ok
+test registry::tests::sqlite_write_failure_propagates ... ok
+test schema_binding::tests::binding_schema_authority_covers_explicit_and_inherited_matrix ... ok
+test schema_binding::tests::concurrent_registry_update_preserved ... ok
+test schema_binding::tests::evidence_state_classifies_current_expired_and_unverifiable ... ok
+test retention::tests::prune_events_by_count_deletes_exact_number_when_timestamps_tie ... ok
+test schema_coverage::tests::absent_and_ambiguous_templates_fail_closed ... ok
+test schema_coverage::tests::deeper_qualified_elements_verify_per_position ... ok
+test schema_coverage::tests::multi_key_lists_verify_key_names_not_values ... ok
+test schema_coverage::tests::verified_prefix_accepted_unqualified_and_wrong_rejected ... ok
+test service_discovery::tests::service_pattern_matching ... ok
+test service_discovery::tests::traffic_pattern_analysis ... ok
+test shun::tests::device_scope_only_matches_target_device ... ok
+test shun::tests::disabled_rule_is_skipped ... ok
+test shun::tests::drop_rule_blocks_matching_message ... ok
+test shun::tests::drop_rule_passes_non_matching ... ok
+test shun::tests::fact_type_rule_matches ... ok
+test shun::tests::rate_limit_allows_first_then_blocks ... ok
+test shun::tests::regex_rule_matches ... ok
+test sidecar_registry::tests::heartbeat_unknown_id_returns_err ... ok
+test sidecar_registry::tests::missing_required_is_none_during_grace_window ... ok
+test sidecar_registry::tests::missing_required_is_none_without_required_kinds ... ok
+test sidecar_registry::tests::missing_required_lists_kinds_after_grace ... ok
+test sidecar_registry::tests::parse_required_kinds_empty_input ... ok
+test sidecar_registry::tests::parse_required_kinds_handles_spaces_and_empties ... ok
+test sidecar_registry::tests::re_register_same_name_kind_replaces ... ok
+test sidecar_registry::tests::register_then_heartbeat_then_snapshot ... ok
+test sidecar_registry::tests::status_healthy_within_window ... ok
+test sidecar_registry::tests::status_lost_after_120s ... ok
+test sidecar_registry::tests::status_stale_after_45s ... ok
+test signals::snmp::tests::community_allowlist_rejects_empty_and_missing ... ok
+test signals::snmp::tests::dedup_domains_isolate_provisional_from_verified ... ok
+test signals::snmp::tests::dedup_store_suppresses_only_same_domain_key ... ok
+test signals::snmp::tests::duplicate_target_ips_are_ambiguous_not_arbitrary ... ok
+test signals::snmp::tests::extracts_peer_address_from_oid_index_suffix ... ok
+test signals::snmp::tests::oid_suffix_too_short_returns_none_for_field ... ok
+test signals::snmp::tests::parses_v1_enterprise_specific_environmental_trap ... ok
+test signals::snmp::tests::parses_v2c_cold_start_trap ... ok
+test signals::snmp::tests::resolves_target_by_source_ip ... ok
+test signals::snmp::tests::snmp_archive_open_and_append ... ok
+test signals::snmp::tests::v1_agent_address_is_decoded_as_claim ... ok
+test signals::syslog::tests::classifies_hardware_and_license_messages ... ok
+test signals::syslog::tests::extracts_named_syslog_fact_fields ... ok
+test signals::syslog::tests::matches_config_change_patterns_for_vendor ... ok
+test signals::syslog::tests::parses_legacy_protocol_message ... ok
+test signals::syslog::tests::parses_rfc5424_auth_failure ... ok
+test signals::syslog::tests::resolves_syslog_hostname_to_managed_target ... ok
+test schema_binding::tests::reconcile_revokes_expired_and_spares_fresh_and_reapproved ... ok
+test schema_binding::tests::reconcile_revokes_inherited_schema_drift_and_spares_explicit ... ok
+test schema_binding::tests::reconcile_revokes_unverifiable_evidence ... ok
+test schema_binding::tests::reconcile_spares_current_evidence_and_newer_reapproval ... ok
+test schema_binding::tests::selection_epoch_survives_clear_aba ... ok
+test schema_binding::tests::stale_config_revision_rejects_activation ... ok
+test schema_binding::tests::stale_selection_commit_preserves_approval_and_selection ... ok
+test sqlite_store::tests::compiled_schema_references_fails_closed_on_corrupt_authority ... ok
+test signals::syslog::tests::syslog_fixture_catalog_matches_expected_fields ... ok
+test sqlite_store::tests::external_id_unique_index_rejects_concurrent_style_duplicates ... ok
+test streaming::bmp::rfc_contract_reproductions::initiation_uses_rfc7854_tlv_numbers ... ok
+test streaming::bmp::rfc_contract_reproductions::local_instance_is_inbound_without_o_flag ... ok
+test streaming::bmp::rfc_contract_reproductions::outbound_view_follows_o_flag_for_all_adj_rib_peer_types ... ok
+test streaming::bmp::tests::capability_name_maps_known_codes ... ok
+test streaming::bmp::tests::classify_rib_type_pre_post_policy ... ok
+test streaming::bmp::tests::parse_bgp_update_extracts_announced_prefix_and_attrs ... ok
+test streaming::bmp::tests::parse_initiation_extracts_admin_string_tlv ... ok
+test streaming::bmp::tests::parse_initiation_extracts_sys_name_and_descr ... ok
+test streaming::bmp::tests::parse_peer_down_reason_names_code_3 ... ok
+test streaming::bmp::tests::parse_peer_up_extracts_bgp_open_info ... ok
+test streaming::bmp::tests::parse_statistics_report_reads_4byte_and_8byte_counters ... ok
+test streaming::bmp::tests::parse_termination_extracts_free_form_message ... ok
+test streaming::bmp::tests::parse_termination_extracts_reason_code ... ok
+test streaming::netflow::tests::provisional_source_key_is_unambiguous ... ok
+test streaming::netflow::tests::udp_path_stays_provisional_even_with_matching_binding ... ok
+test streaming::netflow::tests::verified_ingress_resolves_only_with_attested_principal ... ok
+test streaming::sflow::tests::provisional_source_key_separates_transport_agent_and_collector ... ok
+test streaming::sflow::tests::test_parse_ipv4_sampled_header ... ok
+test streaming::sflow::tests::test_protocol_name ... ok
+test streaming::sflow::tests::test_read_u32 ... ok
+test streaming::sflow::tests::udp_sflow_identity_stays_provisional ... ok
+test streaming::tests::streaming_readiness_prefers_gnmi_then_bmp_for_bgp_roles ... ok
+test subscriber::tests::exec_seq_survives_entry_removal_and_respawn ... ok
+test subscriber::tests::explicit_plan_collapses_identical_duplicate ... ok
+test subscriber::tests::explicit_plan_id_is_order_independent ... ok
+test subscriber::tests::explicit_plan_rejects_conflicting_duplicate ... ok
+test subscriber::tests::sample_idle_timeout_scales_with_slowest_sample_interval ... ok
+test subscriber::tests::sample_mode_requires_positive_interval ... ok
+test subscriber::tests::schema_bound_guard_accepts_exact_approved_binding ... ok
+test subscriber::tests::schema_bound_guard_rejects_collector_and_mode_drift ... ok
+test subscriber::tests::schema_bound_guard_rejects_invalid_and_incomplete_bindings ... ok
+test subscriber::tests::selected_path_parser_handles_keys_and_origin ... ok
+test subscriber::tests::selected_subscription_preserves_mode_and_interval ... ok
+test subscriber::tests::session_origin_fills_only_unique_authorized_origin ... ok
+test subscriber::tests::shutdown_emit_on_closed_channel_returns_promptly ... ok
+test sqlite_store::tests::fresh_database_reaches_v8_with_inventory_columns_and_index ... ok
+test subscription_sessions::tests::reconnect_mints_fresh_session_and_supersedes_old ... ok
+test subscription_sessions::tests::retire_collector_revokes_current_authority ... ok
+test subscription_sessions::tests::superseded_execution_cannot_replay_into_authority ... ok
+test subscription_sessions::tests::synchronized_session_becomes_current_and_duplicate_is_idempotent ... ok
+test subscription_sessions::tests::terminal_first_new_execution_invalidates_older_current ... ok
+test subscription_sessions::tests::terminal_session_cannot_be_resurrected ... ok
+test sqlite_store::tests::v7_fails_closed_on_duplicate_external_id ... ok
+test subscription_sessions::tests::unverified_higher_rank_cannot_supersede_verified_current ... ok
+test subscription_sessions::tests::unverified_session_never_authorizes_coverage ... ok
+test subscription_sessions::tests::updates_before_sync_do_not_imply_synchronization ... ok
+test subscription_status::tests::bgp_update_matches_network_instances_expectation ... ok
+test subscription_sessions::tests::twenty_thousand_sequential_executions_all_admitted ... ok
+test subscription_status::tests::current_session_provenance_authorizes_coverage ... ok
+test subscriber::tests::shutdown_emit_waits_bounded_for_channel_capacity ... ok
+test sqlite_store::tests::partial_v6_columns_are_tolerated_but_verified ... ok
+test subscription_status::tests::module_qualified_deletes_require_verified_schema_identity ... ok
+test subscription_status::tests::module_qualified_observations_require_verified_schema_identity ... ok
+test subscription_status::tests::module_qualified_origin_mismatch_never_covers ... ok
+test subscription_status::tests::non_gnmi_protocol_cannot_establish_coverage ... ok
+test subscription_status::tests::pending_buffer_expires_each_observation_by_receipt_time ... ok
+test subscription_status::tests::pending_buffer_global_cap_binds_every_insertion ... ok
+test subscription_status::tests::pending_buffer_rejects_oversized_evidence ... ok
+test subscription_status::tests::pending_sweep_fences_foreign_and_discards_terminal_sessions ... ok
+test subscription_status::tests::pending_take_preserves_arrival_order_and_receipt_times ... ok
+test sqlite_store::tests::malformed_persisted_json_recovers_to_empty_lists ... ok
+test subscription_status::tests::sample_freshness_bound_is_mode_aware ... ok
+test sqlite_store::tests::v5_database_upgrades_to_v8_preserving_rows_and_paths ... ok
+test sqlite_store::tests::schema_activation_rejects_binding_diverging_from_effective_schema ... ok
+test subscription_status::tests::structured_path_expectation_matching_is_exact ... ok
+test subscription_status::tests::superseded_session_cannot_satisfy_current_coverage ... ok
+test sqlite_store::tests::schema_binding_activation_is_atomic_revisioned_and_revocable ... ok
+test synthesizer::tests::synthesizer_applies_device_override_precedence ... ok
+test synthesizer::tests::synthesizer_falls_back_to_catalogue_when_discovery_missing ... ok
+test synthesizer::tests::synthesizer_prefers_live_profile_matches ... ok
+test synthesizer::tests::synthesizer_surfaces_missing_local_yang_coverage ... ok
+test typed_facts::tests::authoritative_trust_rejects_unstructured_payload ... ok
+test typed_facts::tests::authority_eligibility_boundary ... ok
+test typed_facts::tests::committed_fixture_is_valid ... ok
+test typed_facts::tests::committed_state_fixtures_cover_every_payload_state ... ok
+test typed_facts::tests::consistent_grant_and_fact_mutation_still_fails ... ok
+test typed_facts::tests::degraded_payload_cannot_be_authority_eligible ... ok
+test typed_facts::tests::degraded_state_cannot_claim_complete_coverage ... ok
+test typed_facts::tests::deserialized_grant_loses_attestation ... ok
+test typed_facts::tests::emit_fixture_artifact ... ignored, artifact generator; run explicitly to regenerate fixture
+test typed_facts::tests::emit_state_fixtures ... ignored, artifact generator; run explicitly to regenerate state fixtures
+test typed_facts::tests::fact_id_binds_schema_version_and_producer ... ok
+test typed_facts::tests::fact_id_changes_with_payload ... ok
+test typed_facts::tests::forged_trust_claim_is_not_authority ... ok
+test typed_facts::tests::grant_does_not_transfer_across_subjects ... ok
+test typed_facts::tests::grant_rejects_resolution_from_unrelated_source ... ok
+test typed_facts::tests::grant_requires_resolver_attested_resolution ... ok
+test typed_facts::tests::identical_interface_names_across_asic_namespaces_differ ... ok
+test typed_facts::tests::identity_dimensions_are_independent ... ok
+test typed_facts::tests::interface_state_payload_is_typed ... ok
+test typed_facts::tests::lifecycle_and_temporal_fields_do_not_change_fact_id ... ok
+test typed_facts::tests::lifecycle_transitions_are_terminal ... ok
+test typed_facts::tests::malformed_timestamps_and_windows_rejected ... ok
+test typed_facts::tests::mutated_resolution_cannot_mint_grant ... ok
+test typed_facts::tests::payload_or_evidence_mutation_breaks_grant ... ok
+test typed_facts::tests::payload_state_required_when_fields_absent ... ok
+test typed_facts::tests::payload_states_without_fields_have_distinct_identities ... ok
+test typed_facts::tests::post_seal_mutation_is_detected ... ok
+test typed_facts::tests::public_mutation_after_grant_breaks_eligibility ... ok
+test typed_facts::tests::reordered_json_keys_do_not_change_identity ... ok
+test typed_facts::tests::replayed_state_confers_no_authority ... ok
+test typed_facts::tests::roundtrip_preserves_all_fields ... ok
+test typed_facts::tests::scalar_payload_rejected ... ok
+test typed_facts::tests::schema_version_gate_rejects_future_versions ... ok
+test typed_facts::tests::seal_produces_stable_fact_id ... ok
+test typed_facts::tests::seal_roundtrip_stable_across_payload_shapes ... ok
+test typed_facts::tests::serialized_structured_identity_roundtrips_but_authority_does_not_reattest ... ok
+test typed_facts::tests::state_and_fields_are_mutually_exclusive ... ok
+test typed_facts::tests::structured_interface_identity_is_additive_and_collision_safe ... ok
+test typed_facts::tests::structured_interface_identity_is_bound_into_authority ... FAILED
+test typed_facts::tests::structured_interface_identity_validation_rejects_inconsistent_axes ... ok
+test typed_facts::tests::supersede_requires_target_and_timestamp ... ok
+test typed_facts::tests::unknown_completeness_is_explicit ... ok
+test typed_facts::tests::withdraw_requires_reason_timestamp_and_active_lifecycle ... ok
+test typed_facts::tests::withdrawn_without_reason_fails_validation ... ok
+test xrd_openconfig_interfaces::tests::actual_update_count_is_bounded ... ok
+test xrd_openconfig_interfaces::tests::address_entries_beyond_limit_are_counted ... ok
+test xrd_openconfig_interfaces::tests::conflicting_auto_negotiation_prerequisite_invalidates_speed ... ok
+test xrd_openconfig_interfaces::tests::conflicting_identity_across_notifications_invalidates_entity ... ok
+test xrd_openconfig_interfaces::tests::conflicting_logical_prerequisite_invalidates_interface_type ... ok
+test xrd_openconfig_interfaces::tests::conflicting_prefix_and_update_origin_are_rejected ... ok
+test xrd_openconfig_interfaces::tests::deletes_are_explicitly_rejected_in_subscribe_once_slice ... ok
+test xrd_openconfig_interfaces::tests::duplicate_json_identity_keys_are_rejected ... ok
+test xrd_openconfig_interfaces::tests::duplicate_sync_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::empty_without_sync_is_not_authoritative_empty ... ok
+test xrd_openconfig_interfaces::tests::foreign_identityref_namespace_is_invalid_not_stripped ... ok
+test xrd_openconfig_interfaces::tests::foreign_module_state_cannot_inject_openconfig_fields ... ok
+test xrd_openconfig_interfaces::tests::foreign_speed_identityref_namespace_is_invalid ... ok
+test xrd_openconfig_interfaces::tests::genuine_xrd_capture_expected_values ... ok
+test xrd_openconfig_interfaces::tests::invalid_interface_identities_do_not_become_empty_success ... ok
+test xrd_openconfig_interfaces::tests::lowercase_enum_is_invalid_not_case_folded ... ok
+test xrd_openconfig_interfaces::tests::malformed_envelope_is_invalid_not_empty_success ... ok
+test xrd_openconfig_interfaces::tests::malformed_notification_timestamp_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::malformed_payload_identity_types_invalidate_entity ... ok
+test xrd_openconfig_interfaces::tests::missing_ethernet_state_on_ethernet_interface_is_unknown_not_unsupported ... ok
+test xrd_openconfig_interfaces::tests::missing_sync_marks_completeness_unknown ... ok
+test xrd_openconfig_interfaces::tests::namespace_collision_is_rejected_not_first_wins ... ok
+test xrd_openconfig_interfaces::tests::nonboolean_logical_prerequisite_is_invalid ... ok
+test xrd_openconfig_interfaces::tests::nonempty_prefix_with_valid_relative_path_is_resolved ... ok
+test xrd_openconfig_interfaces::tests::path_payload_identity_mismatch_invalidates_entity ... ok
+test xrd_openconfig_interfaces::tests::path_target_and_atomic_notification_are_fail_closed ... ok
+test xrd_openconfig_interfaces::tests::root_payload_identity_mismatch_invalidates_entity ... ok
+test xrd_openconfig_interfaces::tests::subinterface_key_state_mismatch_invalidates_entity ... ok
+test xrd_openconfig_interfaces::tests::sync_only_response_is_genuinely_empty_scoped_population ... ok
+test xrd_openconfig_interfaces::tests::unexpected_response_type_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::update_after_terminal_sync_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::wrong_contract_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::wrong_model_origin_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::yang_numeric_bounds_are_enforced ... ok
+test yang::tests::parses_basic_yang_metadata ... ok
+test yang::tests::path_requirement_check_reports_missing_models ... ok
+test yang::tests::search_matches_modules_and_paths ... ok
+test yang_schema::acquisition::tests::config_path_is_excluded ... ok
+test yang_schema::acquisition::tests::duplicate_concrete_path_rejected ... ok
+test yang_schema::acquisition::tests::keyless_list_segment_is_rejected ... ok
+test yang_schema::acquisition::tests::positive_evaluation_is_deterministic ... ok
+test yang_schema::acquisition::tests::stale_config_revision_rejects_evaluation ... ok
+test yang_schema::acquisition::tests::stale_snapshot_rejects_activation ... ok
+test yang_schema::acquisition::tests::two_distinct_list_instances_are_eligible ... ok
+test yang_schema::compiler::tests::add_respects_cardinality_and_argument_dedup ... ok
+test yang_schema::compiler::tests::delete_rejects_absent_and_non_deviable_properties ... ok
+test yang_schema::compiler::tests::delete_removes_only_the_matching_must_occurrence ... ok
+test yang_schema::compiler::tests::delete_removes_only_the_matching_unique_occurrence ... ok
+test yang_schema::compiler::tests::delete_scalar_properties_require_exact_argument_match ... ok
+test yang_schema::compiler::tests::replace_requires_existing_property ... ok
+test yang_schema::tests::pre_upgrade_compiler_version_bundles_are_never_reinterpreted ... ok
+test yang_source::tests::parses_checked_in_manifest ... ok
+test yang_source::tests::platform_applicability ... ok
+test yang_source::tests::rejects_moving_refs ... ok
+test yang_source::tests::rejects_traversal_subdir ... ok
+test subscription_status::tests::boot_expiry_failure_fails_readiness_and_stops_verifier ... ok
+test subscription_status::tests::durable_ack_is_exact_row_identity_not_device_status ... ok
+test subscription_status::tests::early_observation_binds_to_owning_session_not_stale_expectations ... ok
+test subscription_status::tests::replayed_pending_evidence_keeps_original_receipt_time ... ok
+test subscription_status::tests::shutdown_during_boot_fails_readiness_promptly ... ok
+test subscription_status::tests::session_unbound_preview_never_satisfies_execution_coverage ... ok
+test subscription_status::tests::verifier_readiness_captures_immediate_initial_telemetry ... ok
+
+failures:
+
+---- typed_facts::tests::structured_interface_identity_is_bound_into_authority stdout ----
+
+thread 'typed_facts::tests::structured_interface_identity_is_bound_into_authority' (960462) panicked at src/typed_facts.rs:1888:13:
+assertion failed: matches!(f.validate(), Err(FactError::InvalidField("authority")))
+
+
+failures:
+    typed_facts::tests::structured_interface_identity_is_bound_into_authority
+
+test result: FAILED. 723 passed; 1 failed; 6 ignored; 0 measured; 0 filtered out; finished in 104.73s
+
+error: test failed, to rerun pass `-p bonsai --lib`
+
+=== Gate outcomes ===
+  l0   PASS
+  l1   PASS
+  l2   FAIL
+  l3   NOT_EXECUTED
+GATES INCOMPLETE: see per-tier outcomes above (NOT_EXECUTED is not a pass)
+Command exited with non-zero status 1
+	Command being timed: "scripts/ci/build-lane.sh --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native -- env CARGO_BUILD_JOBS=2 PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome GATE_BASE=4c100ba56a06dfe57a5aed65c3920eb5c894757e scripts/ci/gates.sh l0 l1 l2 l3"
+	User time (seconds): 1209.82
+	System time (seconds): 55.61
+	Percent of CPU this job got: 282%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 7:28.51
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 6823088
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 39
+	Minor (reclaiming a frame) page faults: 15964230
+	Voluntary context switches: 437585
+	Involuntary context switches: 563702
+	Swaps: 0
+	File system inputs: 48456
+	File system outputs: 8102088
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1
+exit=1

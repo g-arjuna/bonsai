@@ -19,7 +19,7 @@
 //!   withdrawal requires a reason and a superseding/terminating timestamp.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 /// Serialized schema version. Bump only with a documented evolution rule:
@@ -74,6 +74,12 @@ pub struct FactSource {
 /// - `plane`: truth plane — "operational" | "configured" | "effective" |
 ///   "startup" | ... Configured/effective/observed state must never be
 ///   merged into one property.
+/// - `interface_identity`: optional structured refinement for interface
+///   subjects. This is not a second identity authority: `entity` remains
+///   the existing canonical entity key, `network_namespace` remains the
+///   ASIC/namespace axis and `vrf` remains evidence-based network-instance
+///   scoping. The refinement exists because dotted vendor names alone cannot
+///   safely distinguish base interfaces, logical interfaces and subinterfaces.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FactSubject {
     pub device_id: String,
@@ -90,6 +96,66 @@ pub struct FactSubject {
     pub afi_safi: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plane: Option<String>,
+    /// Structured interface identity refinement. Present only when the
+    /// producing normalizer has positive structured evidence; never infer
+    /// this object merely by splitting a display name at a dot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface_identity: Option<InterfaceSubjectIdentity>,
+}
+
+/// Coarse identity class for an interface subject. `Physical` means the
+/// base/physical interface itself, `Logical` a logical interface that is not
+/// a numbered subinterface, and `Subinterface` a numbered child of a base
+/// interface. Absence of `interface_identity` means the refinement is
+/// unknown/not supplied, not that the interface is physical.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum InterfaceIdentityKind {
+    Physical,
+    Logical,
+    Subinterface,
+}
+
+/// Structured interface identity refinement for [`FactSubject`].
+///
+/// Compatibility rule: this object is additive optional schema-v1 data. It
+/// is omitted from serialization and fact identity when absent, so existing
+/// v1 facts and evidence ids are unchanged. Once present, every field that
+/// is present is part of fact identity and authority binding.
+///
+/// Identity convention for numbered subinterfaces: `subject.entity` is the
+/// canonical base-interface key and MUST equal `parent_entity`; the numeric
+/// `subinterface_index` distinguishes children (including zero). The exact
+/// vendor-native display name (for example `Ethernet1.100`) is preserved
+/// independently in `vendor_native_name` and is never parsed to invent these
+/// axes. Network-instance attachment remains the separate evidence-based
+/// `subject.vrf` axis; ASIC/host placement remains `network_namespace`.
+///
+/// Canonical entity identity and observation/fact identity are deliberately
+/// distinct: the canonical interface entity key is the scoped subject axes
+/// plus this structured refinement, while `fact_id` additionally binds the
+/// observation, interpretation, payload and evidence. `vendor_native_name`
+/// is an alias/display evidence axis and interface kind is classification
+/// evidence supplied by the producer; changing either changes the complete
+/// fact interpretation identity, but consumers must not use the native alias
+/// as a second canonical entity authority.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterfaceSubjectIdentity {
+    pub kind: InterfaceIdentityKind,
+    /// Canonical parent/base interface entity when the evidence establishes
+    /// one. Required for subinterfaces; optional for logical interfaces;
+    /// forbidden for physical base interfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_entity: Option<String>,
+    /// Numeric subinterface index. Required for `subinterface` (zero is a
+    /// real value and must not be conflated with the physical/base interface),
+    /// forbidden otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subinterface_index: Option<u32>,
+    /// Exact source-native interface display/name evidence. Preserved for
+    /// corroboration and operator display; never used as a parsing authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor_native_name: Option<String>,
 }
 
 // ── Payload & quality ───────────────────────────────────────────────────────
@@ -249,6 +315,8 @@ pub struct AuthorityGrant {
     pub afi_safi: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plane: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface_identity: Option<InterfaceSubjectIdentity>,
     pub collector_id: String,
     pub source_kind: String,
     pub capture_id: String,
@@ -359,6 +427,7 @@ impl AuthorityGrant {
             vrf: fact.subject.vrf.clone(),
             afi_safi: fact.subject.afi_safi.clone(),
             plane: fact.subject.plane.clone(),
+            interface_identity: fact.subject.interface_identity.clone(),
             collector_id: fact.source.collector_id.clone(),
             source_kind: fact.source.source_kind.clone(),
             capture_id: fact.source.capture_id.clone(),
@@ -411,6 +480,7 @@ impl AuthorityGrant {
             && self.vrf == fact.subject.vrf
             && self.afi_safi == fact.subject.afi_safi
             && self.plane == fact.subject.plane
+            && self.interface_identity == fact.subject.interface_identity
             && self.collector_id == fact.source.collector_id
             && self.source_kind == fact.source.source_kind
             && self.capture_id == fact.source.capture_id
@@ -450,6 +520,8 @@ impl<'de> Deserialize<'de> for AuthorityGrant {
             afi_safi: Option<String>,
             #[serde(default)]
             plane: Option<String>,
+            #[serde(default)]
+            interface_identity: Option<InterfaceSubjectIdentity>,
             collector_id: String,
             source_kind: String,
             capture_id: String,
@@ -472,6 +544,7 @@ impl<'de> Deserialize<'de> for AuthorityGrant {
             vrf: repr.vrf,
             afi_safi: repr.afi_safi,
             plane: repr.plane,
+            interface_identity: repr.interface_identity,
             collector_id: repr.collector_id,
             source_kind: repr.source_kind,
             capture_id: repr.capture_id,
@@ -657,6 +730,30 @@ fn evidence_digest(evidence: &[EvidenceRef]) -> String {
     sha256_hex(canonical_json(&body).as_bytes())
 }
 
+/// Canonical subject identity value used in `fact_id`. Existing v1 axes
+/// retain their original explicit-null representation. The additive
+/// `interface_identity` key is inserted only when present, so legacy v1 fact
+/// identities are byte-for-byte stable while structured facts bind every
+/// supplied interface axis.
+fn subject_identity_value(subject: &FactSubject) -> Value {
+    let mut entity = serde_json::Map::new();
+    entity.insert("device_id".into(), json!(&subject.device_id));
+    entity.insert("scope".into(), json!(&subject.scope));
+    entity.insert("namespace".into(), json!(&subject.namespace));
+    entity.insert(
+        "network_namespace".into(),
+        json!(&subject.network_namespace),
+    );
+    entity.insert("entity".into(), json!(&subject.entity));
+    entity.insert("vrf".into(), json!(&subject.vrf));
+    entity.insert("afi_safi".into(), json!(&subject.afi_safi));
+    entity.insert("plane".into(), json!(&subject.plane));
+    if let Some(interface_identity) = &subject.interface_identity {
+        entity.insert("interface_identity".into(), json!(interface_identity));
+    }
+    Value::Object(entity)
+}
+
 /// The canonical fact-identity tuple. Combines five independent
 /// dimensions so that a new observation, a new interpretation, a
 /// different entity scope or a lifecycle annotation are each
@@ -672,16 +769,7 @@ fn fact_identity(fact: &TypedFact, payload_sha256: &str, evidence_sha256: &str) 
     serde_json::json!({
         "schema_version": fact.schema_version,
         "fact_kind": fact.fact_kind,
-        "entity": {
-            "device_id": fact.subject.device_id,
-            "scope": fact.subject.scope,
-            "namespace": fact.subject.namespace,
-            "network_namespace": fact.subject.network_namespace,
-            "entity": fact.subject.entity,
-            "vrf": fact.subject.vrf,
-            "afi_safi": fact.subject.afi_safi,
-            "plane": fact.subject.plane,
-        },
+        "entity": subject_identity_value(&fact.subject),
         "observation": {
             "collector_id": fact.source.collector_id,
             "source_kind": fact.source.source_kind,
@@ -717,6 +805,167 @@ fn is_degraded_state(state: PayloadState) -> bool {
             | PayloadState::UnknownQuality
             | PayloadState::CaptureFailed
     )
+}
+
+/// Validate the optional structured interface identity refinement. This
+/// function deliberately does not parse vendor display names: producers must
+/// supply structured axes only when the source evidence establishes them.
+fn validate_interface_subject_identity(fact: &TypedFact) -> Result<(), FactError> {
+    let Some(identity) = &fact.subject.interface_identity else {
+        return Ok(());
+    };
+    if fact.subject.namespace != "interface" {
+        return Err(FactError::InvalidField(
+            "subject.interface_identity outside interface namespace",
+        ));
+    }
+    let entity = fact.subject.entity.as_deref().unwrap_or("");
+    if entity.is_empty() {
+        return Err(FactError::InvalidField(
+            "subject.entity required with interface_identity",
+        ));
+    }
+    fn valid_component(value: &str) -> bool {
+        !value.is_empty() && value.len() <= 256 && value.bytes().all(|b| !b.is_ascii_control())
+    }
+    if !valid_component(entity) {
+        return Err(FactError::InvalidField("subject.entity"));
+    }
+    for (name, value) in [
+        ("parent_entity", &identity.parent_entity),
+        ("vendor_native_name", &identity.vendor_native_name),
+    ] {
+        if let Some(value) = value
+            && !valid_component(value)
+        {
+            return Err(FactError::InvalidField(name));
+        }
+    }
+    match identity.kind {
+        InterfaceIdentityKind::Subinterface => {
+            if identity.subinterface_index.is_none() {
+                return Err(FactError::InvalidField(
+                    "subinterface_index required for subinterface",
+                ));
+            }
+            let parent = identity
+                .parent_entity
+                .as_deref()
+                .ok_or(FactError::InvalidField(
+                    "parent_entity required for subinterface",
+                ))?;
+            if parent != entity {
+                return Err(FactError::InvalidField(
+                    "subinterface entity must be canonical parent entity",
+                ));
+            }
+        }
+        InterfaceIdentityKind::Logical => {
+            if identity.subinterface_index.is_some() {
+                return Err(FactError::InvalidField(
+                    "logical interface cannot carry subinterface_index",
+                ));
+            }
+        }
+        InterfaceIdentityKind::Physical => {
+            if identity.subinterface_index.is_some() || identity.parent_entity.is_some() {
+                return Err(FactError::InvalidField(
+                    "physical base interface cannot carry parent/subinterface axes",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Cross-check the interface subject against the typed interface payload.
+///
+/// Field relationship contract:
+/// - `payload.interface_name` is the exact source-native occurrence name;
+/// - `payload.normalized_name`, when present, is the canonical occurrence
+///   name selected by the producer;
+/// - `subject.entity` is the canonical base/entity key (for a numbered
+///   subinterface it is intentionally the parent/base interface);
+/// - `interface_identity.vendor_native_name` corroborates
+///   `payload.interface_name` and is never parsed as an identity authority.
+///
+/// Legacy facts without `interface_identity` remain readable even when a
+/// historical producer used a native/display name that differs from the
+/// canonical entity. New structured facts must not carry arbitrary identity
+/// contradictions: their native-name evidence and parent/subinterface axes
+/// must agree with the payload relationships when those payload axes are
+/// present.
+fn validate_interface_subject_payload_consistency(fact: &TypedFact) -> Result<(), FactError> {
+    if fact.fact_kind != crate::interface_facts::FACT_KIND_INTERFACE_STATE {
+        return Ok(());
+    }
+    let Some(fields) = &fact.payload.fields else {
+        return Ok(());
+    };
+    let payload: crate::interface_facts::InterfaceStatePayload =
+        serde_json::from_value(fields.clone())
+            .map_err(|_| FactError::InvalidField("payload.fields.interface.state"))?;
+    let Some(identity) = &fact.subject.interface_identity else {
+        return Ok(());
+    };
+    let entity = fact.subject.entity.as_deref().unwrap_or("");
+    if let Some(native) = &identity.vendor_native_name
+        && *native != payload.interface_name
+    {
+        return Err(FactError::InvalidField(
+            "interface_identity.vendor_native_name/payload.interface_name mismatch",
+        ));
+    }
+    match identity.kind {
+        InterfaceIdentityKind::Physical | InterfaceIdentityKind::Logical => {
+            // For non-subinterfaces the canonical occurrence and entity key
+            // are the same interface. A native spelling difference is valid
+            // only when `normalized_name` explicitly carries the canonical
+            // form; otherwise the payload could be about an unrelated
+            // interface.
+            if let Some(normalized) = &payload.normalized_name {
+                if normalized != entity {
+                    return Err(FactError::InvalidField(
+                        "payload.normalized_name/subject.entity mismatch",
+                    ));
+                }
+            } else if payload.interface_name != entity {
+                return Err(FactError::InvalidField(
+                    "payload.interface_name/subject.entity mismatch",
+                ));
+            }
+        }
+        InterfaceIdentityKind::Subinterface => {
+            // `subject.entity` is the canonical parent for numbered
+            // subinterfaces, so the occurrence name may legitimately differ.
+            // If lower-layer parentage is also present in the payload it must
+            // corroborate the structured parent rather than contradict it.
+            let parent = identity.parent_entity.as_deref().unwrap_or("");
+            if let Some(parent_interface) = &payload.parent_interface
+                && parent_interface != parent
+            {
+                return Err(FactError::InvalidField(
+                    "payload.parent_interface/interface_identity.parent mismatch",
+                ));
+            }
+            if let Some(parent_rel) = &payload.parent_relationship
+                && parent_rel.kind == crate::interface_facts::MasterKind::Parent
+                && parent_rel.target != parent
+            {
+                return Err(FactError::InvalidField(
+                    "payload.parent_relationship/interface_identity.parent mismatch",
+                ));
+            }
+        }
+    }
+    if identity.kind == InterfaceIdentityKind::Logical
+        && identity.parent_entity.as_deref() == Some(entity)
+    {
+        return Err(FactError::InvalidField(
+            "logical interface cannot be its own parent",
+        ));
+    }
+    Ok(())
 }
 
 /// Fact kinds with a registered typed payload validator. Unregistered
@@ -812,6 +1061,15 @@ impl TypedFact {
         if self.fact_id != expected_id {
             return Err(FactError::InvalidField("fact_id"));
         }
+        // A serialized grant is evidence only, but it must still bind to
+        // THIS fact's current axes — a grant minted for another device,
+        // scope, collector or capture is invalid here regardless of
+        // attestation.
+        if let Some(grant) = &self.authority
+            && !grant.binds(self)
+        {
+            return Err(FactError::InvalidField("authority"));
+        }
         // Unknown/absent/invalid must stay explicit: a payload with no
         // fields must carry a PayloadState explaining why, and vice versa.
         if self.payload.fields.is_none() && self.payload.state.is_none() {
@@ -831,10 +1089,12 @@ impl TypedFact {
         {
             return Err(FactError::InvalidField("payload.fields"));
         }
+        validate_interface_subject_identity(self)?;
         // Registered fact kinds enforce their typed payload contract.
         if let Some(fields) = &self.payload.fields {
             validate_kind_payload(&self.fact_kind, fields)?;
         }
+        validate_interface_subject_payload_consistency(self)?;
         // A degraded/failed payload can never claim complete coverage.
         if let Some(state) = self.payload.state
             && is_degraded_state(state)
@@ -897,15 +1157,6 @@ impl TypedFact {
             return Err(FactError::TrustViolation(
                 "authoritative trust requires structured payload",
             ));
-        }
-        // A serialized grant is evidence only, but it must still bind to
-        // THIS fact's current axes — a grant minted for another device,
-        // scope, collector or capture is invalid here regardless of
-        // attestation.
-        if let Some(grant) = &self.authority
-            && !grant.binds(self)
-        {
-            return Err(FactError::InvalidField("authority"));
         }
         Ok(())
     }
@@ -1085,6 +1336,7 @@ mod tests {
                 vrf: Some("default".into()),
                 afi_safi: Some("ipv4-unicast".into()),
                 plane: Some("operational".into()),
+                interface_identity: None,
             },
             source: FactSource {
                 collector_id: "collector-a".into(),
@@ -1150,6 +1402,38 @@ mod tests {
             "speed": {"state": "unknown"},
             "mac_address": {"state": "unknown"},
         }));
+        f.seal();
+        f
+    }
+
+    /// Synthetic structured-interface helper. These tests are deliberately
+    /// structural: neither the current genuine FRR fixture nor the genuine
+    /// XRd fixture contains a non-zero subinterface, so no test here claims
+    /// vendor evidence that does not exist.
+    fn structured_interface_fact(
+        namespace: &str,
+        kind: InterfaceIdentityKind,
+        index: Option<u32>,
+        parent: Option<&str>,
+        vendor_name: &str,
+    ) -> TypedFact {
+        let mut f = interface_fact(namespace);
+        let canonical_entity = match kind {
+            InterfaceIdentityKind::Subinterface => parent.expect("subinterface parent"),
+            _ => "Ethernet1",
+        };
+        f.subject.entity = Some(canonical_entity.into());
+        f.subject.interface_identity = Some(InterfaceSubjectIdentity {
+            kind,
+            parent_entity: parent.map(str::to_string),
+            subinterface_index: index,
+            vendor_native_name: Some(vendor_name.into()),
+        });
+        if let Some(fields) = f.payload.fields.as_mut()
+            && let Some(obj) = fields.as_object_mut()
+        {
+            obj.insert("interface_name".into(), vendor_name.into());
+        }
         f.seal();
         f
     }
@@ -1409,6 +1693,229 @@ mod tests {
         let mut g = sample_fact();
         g.fact_kind = "bgp.neighbor.summary".into();
         g.validate().unwrap();
+    }
+
+    #[test]
+    fn structured_interface_identity_is_additive_and_collision_safe() {
+        // Existing unstructured v1 identity remains valid and stable.
+        let legacy = interface_fact("asic-0");
+        legacy.validate().unwrap();
+        assert!(legacy.subject.interface_identity.is_none());
+
+        let physical = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Physical,
+            None,
+            None,
+            "Ethernet1",
+        );
+        let subzero = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Subinterface,
+            Some(0),
+            Some("Ethernet1"),
+            "Ethernet1.0",
+        );
+        let sub100 = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Subinterface,
+            Some(100),
+            Some("Ethernet1"),
+            "Ethernet1.100",
+        );
+        let sub200 = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Subinterface,
+            Some(200),
+            Some("Ethernet1"),
+            "Ethernet1.200",
+        );
+        for fact in [&physical, &subzero, &sub100, &sub200] {
+            fact.validate().unwrap();
+        }
+        assert_ne!(physical.fact_id, subzero.fact_id);
+        assert_ne!(subzero.fact_id, sub100.fact_id);
+        assert_ne!(sub100.fact_id, sub200.fact_id);
+
+        // Same vendor-native interface identity in another ASIC namespace
+        // cannot collide even when every structured interface axis matches.
+        let other_asic = structured_interface_fact(
+            "asic-1",
+            InterfaceIdentityKind::Subinterface,
+            Some(100),
+            Some("Ethernet1"),
+            "Ethernet1.100",
+        );
+        assert_ne!(sub100.fact_id, other_asic.fact_id);
+    }
+
+    #[test]
+    fn structured_interface_identity_validation_rejects_inconsistent_axes() {
+        let mut missing_index = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Subinterface,
+            Some(100),
+            Some("Ethernet1"),
+            "Ethernet1.100",
+        );
+        missing_index
+            .subject
+            .interface_identity
+            .as_mut()
+            .unwrap()
+            .subinterface_index = None;
+        missing_index.seal();
+        assert!(missing_index.validate().is_err());
+
+        let mut missing_parent = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Subinterface,
+            Some(100),
+            Some("Ethernet1"),
+            "Ethernet1.100",
+        );
+        missing_parent
+            .subject
+            .interface_identity
+            .as_mut()
+            .unwrap()
+            .parent_entity = None;
+        missing_parent.seal();
+        assert!(missing_parent.validate().is_err());
+
+        let mut wrong_entity = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Subinterface,
+            Some(100),
+            Some("Ethernet1"),
+            "Ethernet1.100",
+        );
+        wrong_entity.subject.entity = Some("Ethernet1.100".into());
+        wrong_entity.seal();
+        assert!(wrong_entity.validate().is_err());
+
+        let mut logical_with_index = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Logical,
+            None,
+            None,
+            "Vlan100",
+        );
+        logical_with_index
+            .subject
+            .interface_identity
+            .as_mut()
+            .unwrap()
+            .subinterface_index = Some(100);
+        logical_with_index.seal();
+        assert!(logical_with_index.validate().is_err());
+
+        let mut physical_with_parent = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Physical,
+            None,
+            None,
+            "Ethernet1",
+        );
+        physical_with_parent
+            .subject
+            .interface_identity
+            .as_mut()
+            .unwrap()
+            .parent_entity = Some("Ethernet0".into());
+        physical_with_parent.seal();
+        assert!(physical_with_parent.validate().is_err());
+
+        let mut wrong_namespace = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Physical,
+            None,
+            None,
+            "Ethernet1",
+        );
+        wrong_namespace.subject.namespace = "routing".into();
+        wrong_namespace.seal();
+        assert!(wrong_namespace.validate().is_err());
+    }
+
+    #[test]
+    fn structured_interface_identity_is_bound_into_authority() {
+        let res = resolver_resolution("edge-rtr-01");
+        let mut fact = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Subinterface,
+            Some(100),
+            Some("Ethernet1"),
+            "Ethernet1.100",
+        );
+        fact.trust = TrustClass::Corroborated;
+        fact.authority = AuthorityGrant::for_fact(&res, &fact);
+        assert!(fact.authority_eligible());
+        fact.seal();
+        fact.validate().unwrap();
+
+        // Any structured-axis mutation after issuance invalidates the grant,
+        // including vendor-native evidence and the numeric subinterface axis.
+        for mutate in [
+            (|f: &mut TypedFact| {
+                f.subject
+                    .interface_identity
+                    .as_mut()
+                    .unwrap()
+                    .subinterface_index = Some(200);
+            }) as fn(&mut TypedFact),
+            (|f: &mut TypedFact| {
+                f.subject
+                    .interface_identity
+                    .as_mut()
+                    .unwrap()
+                    .vendor_native_name = Some("Ethernet1.200".into());
+            }),
+        ] {
+            let res = resolver_resolution("edge-rtr-01");
+            let mut f = structured_interface_fact(
+                "asic-0",
+                InterfaceIdentityKind::Subinterface,
+                Some(100),
+                Some("Ethernet1"),
+                "Ethernet1.100",
+            );
+            f.trust = TrustClass::Corroborated;
+            f.authority = AuthorityGrant::for_fact(&res, &f);
+            assert!(f.authority_eligible());
+            mutate(&mut f);
+            f.seal();
+            assert!(matches!(
+                f.validate(),
+                Err(FactError::InvalidField("authority"))
+            ));
+            assert!(!f.authority_eligible());
+        }
+    }
+
+    #[test]
+    fn serialized_structured_identity_roundtrips_but_authority_does_not_reattest() {
+        let res = resolver_resolution("edge-rtr-01");
+        let mut fact = structured_interface_fact(
+            "asic-0",
+            InterfaceIdentityKind::Subinterface,
+            Some(100),
+            Some("Ethernet1"),
+            "Ethernet1.100",
+        );
+        fact.trust = TrustClass::Corroborated;
+        fact.authority = AuthorityGrant::for_fact(&res, &fact);
+        assert!(fact.authority_eligible());
+        fact.seal();
+        let bytes = fact.to_vec().unwrap();
+        let back = TypedFact::from_slice(&bytes).unwrap();
+        assert_eq!(back.fact_id, fact.fact_id);
+        assert_eq!(
+            back.subject.interface_identity,
+            fact.subject.interface_identity
+        );
+        assert!(back.authority.as_ref().is_some_and(|g| !g.is_attested()));
+        assert!(!back.authority_eligible());
     }
 
     #[test]

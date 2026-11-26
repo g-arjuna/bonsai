@@ -159,6 +159,48 @@ def test_forged_authority_claim_is_schema_valid_but_only_a_claim(
 
 
 @requires_jsonschema
+def test_interface_identity_extension_schema_shape(schema, fixture) -> None:
+    """Additive v1 structured-interface extension: the schema admits the
+    optional typed object and rejects malformed axis types/extra keys. Rust
+    validate() remains authoritative for kind/entity/parent consistency."""
+    good = copy.deepcopy(fixture)
+    good["subject"]["namespace"] = "interface"
+    good["subject"]["entity"] = "Ethernet1"
+    good["subject"]["interface_identity"] = {
+        "kind": "subinterface",
+        "parent_entity": "Ethernet1",
+        "subinterface_index": 100,
+        "vendor_native_name": "Ethernet1.100",
+    }
+    jsonschema.validate(good, schema)
+
+    bad = copy.deepcopy(good)
+    bad["subject"]["interface_identity"]["subinterface_index"] = "100"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+    bad = copy.deepcopy(good)
+    bad["subject"]["interface_identity"]["unexpected"] = True
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+    bad = copy.deepcopy(good)
+    bad["subject"]["interface_identity"]["kind"] = "virtual-ish"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+
+@requires_jsonschema
+def test_existing_v1_fixture_has_no_interface_identity_and_still_validates(
+    schema, fixture
+) -> None:
+    """Compatibility regression: committed v1 evidence does not use the
+    additive axis and must remain schema-valid without resealing or migration."""
+    assert "interface_identity" not in fixture["subject"]
+    jsonschema.validate(fixture, schema)
+
+
+@requires_jsonschema
 def test_payload_state_and_fields_are_mutually_exclusive(schema, fixture) -> None:
     """Rust validate() rejects fields+state together; the schema cannot
     express the XOR, so this drift is documented — the Rust gate is

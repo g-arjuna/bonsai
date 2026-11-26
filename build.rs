@@ -6,8 +6,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Bake git SHA + build timestamp into the binary ───────────────────────
     // Accessible at runtime via env!("BONSAI_GIT_SHA") and env!("BONSAI_BUILD_TS").
     // Used by /health to expose version info for operational tracking.
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs");
+    // Linked worktrees have a `.git` file rather than a `.git` directory, so
+    // watching the literal `.git/HEAD`/`.git/refs` paths leaves Cargo with no
+    // existing input to fingerprint and can rerun this script for every test
+    // invocation. Resolve the real per-worktree gitdir and common refs instead.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
+    let git_output = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&manifest_dir)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let resolve_git_path = |raw: String| {
+        let path = PathBuf::from(raw);
+        if path.is_absolute() {
+            path
+        } else {
+            Path::new(&manifest_dir).join(path)
+        }
+    };
+    let mut emitted_git_input = false;
+    if let Some(git_dir) = git_output(&["rev-parse", "--git-dir"]).map(&resolve_git_path) {
+        for candidate in [git_dir.join("HEAD"), git_dir.join("refs")] {
+            if candidate.exists() {
+                println!("cargo:rerun-if-changed={}", candidate.display());
+                emitted_git_input = true;
+            }
+        }
+    }
+    if let Some(common_dir) = git_output(&["rev-parse", "--git-common-dir"]).map(&resolve_git_path)
+    {
+        for candidate in [common_dir.join("refs"), common_dir.join("packed-refs")] {
+            if candidate.exists() {
+                println!("cargo:rerun-if-changed={}", candidate.display());
+                emitted_git_input = true;
+            }
+        }
+    }
+    if !emitted_git_input {
+        // Non-git source archive: retain a stable existing input rather than
+        // naming absent paths, which makes every fingerprint dirty.
+        println!("cargo:rerun-if-changed=build.rs");
+    }
 
     let git_sha = Command::new("git")
         .args(["rev-parse", "--short=8", "HEAD"])

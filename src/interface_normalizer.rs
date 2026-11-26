@@ -1550,6 +1550,7 @@ fn status_fact(
             vrf: None,
             afi_safi: None,
             plane: Some("operational".to_string()),
+            interface_identity: None,
         },
         source: FactSource {
             collector_id: obs.context.collector_id.to_string(),
@@ -2110,6 +2111,7 @@ pub fn normalize_with_limits(
             description,
             parent_interface,
             member_of,
+            lag_members: None,
             parent_relationship: None,
             master_relationship,
             source_conflicts: entity_conflicts.clone(),
@@ -2282,6 +2284,7 @@ pub fn normalize_with_limits(
             vrf: m.get("vrf").map(|s| s.to_string()),
             afi_safi: None,
             plane: Some("operational".to_string()),
+            interface_identity: None,
         };
         let fields = match serde_json::to_value(&payload) {
             Ok(v) => v,

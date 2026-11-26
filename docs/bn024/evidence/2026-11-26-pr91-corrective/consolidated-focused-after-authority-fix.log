@@ -1,0 +1,208 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: bash -c set -euo pipefail; cargo test -p bonsai --lib --profile ci --offline typed_facts; cargo test -p bonsai --lib --profile ci --offline interface_relationships; cargo test -p bonsai --lib --profile ci --offline interface_normalizer; cargo test -p bonsai --lib --profile ci --offline frr_interface_json; cargo test -p bonsai --lib --profile ci --offline xrd_openconfig_interfaces
+    Finished `ci` profile [optimized] target(s) in 0.57s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 44 tests
+test typed_facts::tests::authority_eligibility_boundary ... ok
+test typed_facts::tests::authoritative_trust_rejects_unstructured_payload ... ok
+test typed_facts::tests::committed_fixture_is_valid ... ok
+test typed_facts::tests::consistent_grant_and_fact_mutation_still_fails ... ok
+test typed_facts::tests::emit_fixture_artifact ... ignored, artifact generator; run explicitly to regenerate fixture
+test typed_facts::tests::emit_state_fixtures ... ignored, artifact generator; run explicitly to regenerate state fixtures
+test typed_facts::tests::committed_state_fixtures_cover_every_payload_state ... ok
+test typed_facts::tests::forged_trust_claim_is_not_authority ... ok
+test typed_facts::tests::degraded_payload_cannot_be_authority_eligible ... ok
+test typed_facts::tests::fact_id_changes_with_payload ... ok
+test typed_facts::tests::degraded_state_cannot_claim_complete_coverage ... ok
+test typed_facts::tests::deserialized_grant_loses_attestation ... ok
+test typed_facts::tests::fact_id_binds_schema_version_and_producer ... ok
+test typed_facts::tests::grant_requires_resolver_attested_resolution ... ok
+test typed_facts::tests::identical_interface_names_across_asic_namespaces_differ ... ok
+test typed_facts::tests::identity_dimensions_are_independent ... ok
+test typed_facts::tests::grant_rejects_resolution_from_unrelated_source ... ok
+test typed_facts::tests::lifecycle_and_temporal_fields_do_not_change_fact_id ... ok
+test typed_facts::tests::lifecycle_transitions_are_terminal ... ok
+test typed_facts::tests::mutated_resolution_cannot_mint_grant ... ok
+test typed_facts::tests::malformed_timestamps_and_windows_rejected ... ok
+test typed_facts::tests::payload_state_required_when_fields_absent ... ok
+test typed_facts::tests::payload_or_evidence_mutation_breaks_grant ... ok
+test typed_facts::tests::payload_states_without_fields_have_distinct_identities ... ok
+test typed_facts::tests::post_seal_mutation_is_detected ... ok
+test typed_facts::tests::public_mutation_after_grant_breaks_eligibility ... ok
+test typed_facts::tests::interface_state_payload_is_typed ... ok
+test typed_facts::tests::reordered_json_keys_do_not_change_identity ... ok
+test typed_facts::tests::schema_version_gate_rejects_future_versions ... ok
+test typed_facts::tests::roundtrip_preserves_all_fields ... ok
+test typed_facts::tests::replayed_state_confers_no_authority ... ok
+test typed_facts::tests::grant_does_not_transfer_across_subjects ... ok
+test typed_facts::tests::scalar_payload_rejected ... ok
+test typed_facts::tests::seal_produces_stable_fact_id ... ok
+test typed_facts::tests::supersede_requires_target_and_timestamp ... ok
+test typed_facts::tests::serialized_structured_identity_roundtrips_but_authority_does_not_reattest ... ok
+test typed_facts::tests::seal_roundtrip_stable_across_payload_shapes ... ok
+test typed_facts::tests::state_and_fields_are_mutually_exclusive ... ok
+test typed_facts::tests::structured_interface_identity_is_additive_and_collision_safe ... ok
+test typed_facts::tests::structured_interface_identity_validation_rejects_inconsistent_axes ... ok
+test typed_facts::tests::withdrawn_without_reason_fails_validation ... ok
+test typed_facts::tests::withdraw_requires_reason_timestamp_and_active_lifecycle ... ok
+test typed_facts::tests::unknown_completeness_is_explicit ... ok
+test typed_facts::tests::structured_interface_identity_is_bound_into_authority ... ok
+
+test result: ok. 42 passed; 0 failed; 2 ignored; 0 measured; 686 filtered out; finished in 0.02s
+
+    Finished `ci` profile [optimized] target(s) in 0.49s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 17 tests
+test interface_relationships::tests::identical_names_in_separate_network_namespaces_remain_separate ... ok
+test interface_relationships::tests::incompatible_lag_target_type_remains_explicit ... ok
+test interface_relationships::tests::ambiguous_structured_target_is_explicit_unknown ... ok
+test interface_relationships::tests::conflicting_same_generation_observations_are_explicit_and_order_independent ... ok
+test interface_relationships::tests::legacy_facts_without_structured_identity_remain_readable ... ok
+test interface_relationships::tests::different_capture_ids_and_epochs_cannot_produce_merged_pass ... ok
+test interface_relationships::tests::exact_duplicate_evidence_is_idempotent_and_permutation_deterministic ... ok
+test interface_relationships::tests::operational_link_findings_do_not_claim_active_capacity_and_admin_down_is_not_fault ... ok
+test interface_relationships::tests::forward_membership_distinguishes_empty_partial_and_complete ... ok
+test interface_relationships::tests::reverse_observed_membership_can_pass_only_as_narrow_consistency ... ok
+test interface_relationships::tests::unresolved_evidence_is_unknown_not_not_applicable ... ok
+test interface_relationships::tests::partial_completeness_and_unavailable_forward_membership_are_not_passable ... ok
+test interface_relationships::tests::unknown_aggregate_state_and_unknown_membership_cannot_pass ... ok
+test interface_relationships::tests::subinterface_cannot_be_selected_as_lag_aggregate ... ok
+test interface_relationships::tests::structured_physical_and_subinterfaces_do_not_collapse ... ok
+test interface_relationships::tests::withdrawn_superseded_expired_and_non_operational_facts_are_not_current ... ok
+test interface_relationships::tests::genuine_cumulus_lag_bridge_and_vrf_relationships_are_reported ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 713 filtered out; finished in 0.01s
+
+    Finished `ci` profile [optimized] target(s) in 0.41s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 31 tests
+test interface_normalizer::oracle_emit::emit_cumulus_oracle_input ... ignored, artifact emitter for the differential oracle
+test interface_normalizer::perf::fixture_normalization_throughput ... ignored, perf measurement, not a correctness gate
+test interface_normalizer::perf::conflict_truncation_is_accounted ... ok
+test interface_normalizer::perf::complete_capture_with_malformed_addresses_is_partial_not_complete ... ok
+test interface_normalizer::perf::mtu_above_ethernet_bound_is_known_not_invalid ... ok
+test interface_normalizer::perf::all_facts_rejected_still_emits_valid_status_fact ... ok
+test interface_normalizer::perf::single_source_interface_is_partial_with_explicit_note ... ok
+test interface_normalizer::tests::admin_down_does_not_fabricate_oper_down ... ok
+test interface_normalizer::tests::address_limit_omissions_are_counted ... ok
+test interface_normalizer::tests::complete_empty_observation_can_claim_complete ... ok
+test interface_normalizer::perf::oversized_observation_is_refused_not_truncated ... ok
+test interface_normalizer::tests::empty_observation_is_explicit_state_not_success ... ok
+test interface_normalizer::perf::oversized_with_invalid_context_is_explicit_report_not_fact ... ok
+test interface_normalizer::tests::bond_member_is_lag_member_not_aggregate ... ok
+test interface_normalizer::tests::capture_skew_is_reported ... ok
+test interface_normalizer::tests::case_sensitive_names_are_not_folded ... ok
+test interface_normalizer::tests::bridge_and_unresolved_masters_are_not_lag ... ok
+test interface_normalizer::tests::conflicting_mtu_is_preserved_not_collapsed ... ok
+test interface_normalizer::tests::hostile_input_does_not_panic ... ok
+test interface_normalizer::tests::malformed_lines_are_counted_not_fatal ... ok
+test interface_normalizer::tests::fixture_normalizes_and_validates ... ok
+test interface_normalizer::perf::skewed_or_unparseable_timestamps_degrade_completeness ... ok
+test interface_normalizer::tests::every_emitted_fact_validates_against_canonical_abi ... ok
+test interface_normalizer::tests::failed_capture_is_never_parsed_or_successful ... ok
+test interface_normalizer::tests::sonic_marks_internal_interfaces ... ok
+test interface_normalizer::tests::invalid_addresses_make_field_invalid_not_fact ... ok
+test interface_normalizer::tests::fact_identity_binds_namespace_and_entity ... ok
+test interface_normalizer::tests::vrf_master_is_not_lag ... ok
+test interface_normalizer::tests::speed_sentinel_and_zero_are_unavailable_not_values ... ok
+test interface_normalizer::tests::partial_and_truncated_captures_downgrade_completeness ... ok
+test interface_normalizer::tests::entity_limit_counts_omissions_and_still_updates_known ... ok
+
+test result: ok. 29 passed; 0 failed; 2 ignored; 0 measured; 699 filtered out; finished in 0.70s
+
+    Finished `ci` profile [optimized] target(s) in 0.45s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 20 tests
+test frr_interface_json::tests::bn02404_repro_all_rejected_population_is_not_empty_table ... ok
+test frr_interface_json::tests::bn02404_repro_malformed_capture_timestamp_is_rejected ... ok
+test frr_interface_json::tests::bn02404_repro_contradictory_slave_and_target_type_is_unresolved ... ok
+test frr_interface_json::tests::bn02404_repro_bond_parent_is_lower_layer_not_lag_membership ... ok
+test frr_interface_json::tests::bn02404_repro_truncated_family_is_not_observed_none ... ok
+test frr_interface_json::tests::contradictory_explicit_and_numeric_references_never_resolve_to_edges ... ok
+test frr_interface_json::tests::bn02404_repro_three_duplicate_indices_never_resolve ... ok
+test frr_interface_json::tests::operator_presentation_fixture_matches_implementation_contract ... ok
+test frr_interface_json::tests::duplicate_object_keys_and_wrong_known_field_types_are_format_errors ... ok
+test frr_interface_json::tests::invalid_json_unexpected_fields_oversize_and_failed_capture_are_explicit ... ok
+test frr_interface_json::tests::entity_output_and_address_budgets_are_explicitly_enforced ... ok
+test frr_interface_json::tests::simultaneous_parent_and_master_relationships_remain_distinct ... ok
+test frr_interface_json::tests::genuine_frr_1061_fixture_has_independent_expected_values ... ok
+test frr_interface_json::tests::same_observation_master_ifindex_resolution_establishes_lag_membership ... ok
+test frr_interface_json::tests::missing_optional_fields_are_explicit_unknowns_not_failures ... ok
+test frr_interface_json::tests::invalid_address_and_missing_required_values_do_not_fabricate_success ... ok
+test frr_interface_json::tests::structured_identity_preserves_namespace_release_and_source_axes ... ok
+test frr_interface_json::tests::duplicate_interface_names_in_different_network_namespaces_remain_distinct ... ok
+test frr_interface_json::tests::structured_fixture_performance_smoke_reports_bounded_native_latency ... ok
+test frr_interface_json::tests::synthetic_scale_workloads_report_scaling_and_budget_refusal ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 710 filtered out; finished in 0.37s
+
+    Finished `ci` profile [optimized] target(s) in 0.43s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 34 tests
+test xrd_openconfig_interfaces::tests::conflicting_prefix_and_update_origin_are_rejected ... ok
+test xrd_openconfig_interfaces::tests::conflicting_identity_across_notifications_invalidates_entity ... ok
+test xrd_openconfig_interfaces::tests::deletes_are_explicitly_rejected_in_subscribe_once_slice ... ok
+test xrd_openconfig_interfaces::tests::duplicate_json_identity_keys_are_rejected ... ok
+test xrd_openconfig_interfaces::tests::conflicting_auto_negotiation_prerequisite_invalidates_speed ... ok
+test xrd_openconfig_interfaces::tests::conflicting_logical_prerequisite_invalidates_interface_type ... ok
+test xrd_openconfig_interfaces::tests::duplicate_sync_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::empty_without_sync_is_not_authoritative_empty ... ok
+test xrd_openconfig_interfaces::tests::foreign_identityref_namespace_is_invalid_not_stripped ... ok
+test xrd_openconfig_interfaces::tests::foreign_module_state_cannot_inject_openconfig_fields ... ok
+test xrd_openconfig_interfaces::tests::invalid_interface_identities_do_not_become_empty_success ... ok
+test xrd_openconfig_interfaces::tests::foreign_speed_identityref_namespace_is_invalid ... ok
+test xrd_openconfig_interfaces::tests::malformed_envelope_is_invalid_not_empty_success ... ok
+test xrd_openconfig_interfaces::tests::malformed_notification_timestamp_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::missing_ethernet_state_on_ethernet_interface_is_unknown_not_unsupported ... ok
+test xrd_openconfig_interfaces::tests::lowercase_enum_is_invalid_not_case_folded ... ok
+test xrd_openconfig_interfaces::tests::genuine_xrd_capture_expected_values ... ok
+test xrd_openconfig_interfaces::tests::namespace_collision_is_rejected_not_first_wins ... ok
+test xrd_openconfig_interfaces::tests::address_entries_beyond_limit_are_counted ... ok
+test xrd_openconfig_interfaces::tests::nonboolean_logical_prerequisite_is_invalid ... ok
+test xrd_openconfig_interfaces::tests::malformed_payload_identity_types_invalidate_entity ... ok
+test xrd_openconfig_interfaces::tests::missing_sync_marks_completeness_unknown ... ok
+test xrd_openconfig_interfaces::tests::path_payload_identity_mismatch_invalidates_entity ... ok
+test xrd_openconfig_interfaces::tests::nonempty_prefix_with_valid_relative_path_is_resolved ... ok
+test xrd_openconfig_interfaces::tests::path_target_and_atomic_notification_are_fail_closed ... ok
+test xrd_openconfig_interfaces::tests::root_payload_identity_mismatch_invalidates_entity ... ok
+test xrd_openconfig_interfaces::tests::sync_only_response_is_genuinely_empty_scoped_population ... ok
+test xrd_openconfig_interfaces::tests::subinterface_key_state_mismatch_invalidates_entity ... ok
+test xrd_openconfig_interfaces::tests::unexpected_response_type_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::update_after_terminal_sync_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::wrong_contract_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::yang_numeric_bounds_are_enforced ... ok
+test xrd_openconfig_interfaces::tests::wrong_model_origin_is_rejected ... ok
+test xrd_openconfig_interfaces::tests::actual_update_count_is_bounded ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 696 filtered out; finished in 0.22s
+
+	Command being timed: "scripts/ci/build-lane.sh --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native -- bash -c set -euo pipefail; cargo test -p bonsai --lib --profile ci --offline typed_facts; cargo test -p bonsai --lib --profile ci --offline interface_relationships; cargo test -p bonsai --lib --profile ci --offline interface_normalizer; cargo test -p bonsai --lib --profile ci --offline frr_interface_json; cargo test -p bonsai --lib --profile ci --offline xrd_openconfig_interfaces"
+	User time (seconds): 10.03
+	System time (seconds): 1.22
+	Percent of CPU this job got: 101%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:11.03
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 120492
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 211043
+	Voluntary context switches: 778
+	Involuntary context switches: 1733
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 376
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+exit=0

@@ -1,0 +1,108 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline interface_relationships
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel)
+warning: unused import: `Completeness`
+  --> src/interface_relationships.rs:25:26
+   |
+25 | use crate::typed_facts::{Completeness, InterfaceIdentityKind, Lifecycle, PayloadState, TypedFact};
+   |                          ^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::interface_facts::AdminState`
+    --> src/interface_relationships.rs:1608:9
+     |
+1608 |     use crate::interface_facts::AdminState;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0277]: can't compare `typed_facts::InterfaceIdentityKind` with `typed_facts::InterfaceIdentityKind`
+   --> src/interface_relationships.rs:55:5
+    |
+ 46 | #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+    |                                                               ---------- in this derive macro expansion
+...
+ 55 |     pub identity_kind: Option<InterfaceIdentityKind>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no implementation for `typed_facts::InterfaceIdentityKind < typed_facts::InterfaceIdentityKind` and `typed_facts::InterfaceIdentityKind > typed_facts::InterfaceIdentityKind`
+    |
+    = help: the trait `PartialOrd` is not implemented for `typed_facts::InterfaceIdentityKind`
+    = note: required for `std::option::Option<typed_facts::InterfaceIdentityKind>` to implement `PartialOrd`
+help: consider annotating `typed_facts::InterfaceIdentityKind` with `#[derive(PartialOrd)]`
+   --> src/typed_facts.rs:113:1
+    |
+113 + #[derive(PartialOrd)]
+114 | pub enum InterfaceIdentityKind {
+    |
+
+error[E0277]: the trait bound `typed_facts::InterfaceIdentityKind: std::cmp::Ord` is not satisfied
+    --> src/interface_relationships.rs:55:5
+     |
+  46 | #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+     |                                                                           --- in this derive macro expansion
+...
+  55 |     pub identity_kind: Option<InterfaceIdentityKind>,
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `std::cmp::Ord` is not implemented for `typed_facts::InterfaceIdentityKind`
+     |
+help: the trait `std::cmp::Ord` is implemented for `std::option::Option<T>`
+    --> /home/arjuna/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:2455:1
+     |
+2455 | impl<T: [const] Ord> const Ord for Option<T> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = note: required for `std::option::Option<typed_facts::InterfaceIdentityKind>` to implement `std::cmp::Ord`
+help: consider annotating `typed_facts::InterfaceIdentityKind` with `#[derive(Ord)]`
+    -->  src/typed_facts.rs:113:1
+     |
+ 113 + #[derive(Ord)]
+ 114 | pub enum InterfaceIdentityKind {
+     |
+
+error[E0282]: type annotations needed for `Vec<_>`
+   --> src/interface_relationships.rs:666:13
+    |
+666 |         let mut path = Vec::new();
+    |             ^^^^^^^^
+...
+674 |                     signature_nodes.push(cycle[0].clone());
+    |                                          -------- type must be known at this point
+    |
+help: consider giving `path` an explicit type, where the placeholders `_` are specified
+    |
+666 |         let mut path: Vec<T> = Vec::new();
+    |                     ++++++++
+
+warning: unused variable: `resolution`
+    --> src/interface_relationships.rs:1022:14
+     |
+1022 |         let (resolution, aggregate_key) = resolve_target(&aggregate, &entities, &by_canonical);
+     |              ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_resolution`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+Some errors have detailed explanations: E0277, E0282.
+For more information about an error, try `rustc --explain E0277`.
+warning: `bonsai` (lib test) generated 3 warnings
+error: could not compile `bonsai` (lib test) due to 3 previous errors; 3 warnings emitted
+Command exited with non-zero status 101
+	Command being timed: "scripts/ci/build-lane.sh --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native -- cargo test -p bonsai --lib --profile ci --offline interface_relationships"
+	User time (seconds): 57.87
+	System time (seconds): 2.48
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:00.67
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 2973388
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 134
+	Minor (reclaiming a frame) page faults: 937869
+	Voluntary context switches: 1030
+	Involuntary context switches: 9570
+	Swaps: 0
+	File system inputs: 27624
+	File system outputs: 2904
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 101
