@@ -211,9 +211,12 @@ pub(super) fn schema_components() -> serde_json::Value {
                     "local_if": { "type": "string" },
                     "system_name": { "type": "string" },
                     "port_id": { "type": "string" },
-                    "chassis_id": { "type": "string" }
+                    "chassis_id": { "type": "string" },
+                    "neighbor_key": { "type": "string" },
+                    "lifecycle": { "type": "string", "enum": ["active", "withdrawn", "superseded"] },
+                    "updated_at_ns": { "type": "integer" }
                 },
-                "required": ["local_if", "system_name", "port_id", "chassis_id"]
+                "required": ["local_if", "system_name", "port_id", "chassis_id", "neighbor_key", "lifecycle", "updated_at_ns"]
             },
             "StateChange": {
                 "type": "object",

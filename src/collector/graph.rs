@@ -103,6 +103,9 @@ impl CollectorGraphStore {
                 device_address STRING,\
                 local_if       STRING,\
                 neighbor_id    STRING,\
+                neighbor_key   STRING,\
+                lifecycle      STRING,\
+                withdrawn_at   TIMESTAMP_NS,\
                 chassis_id     STRING,\
                 system_name    STRING,\
                 port_id        STRING,\
@@ -114,6 +117,11 @@ impl CollectorGraphStore {
         conn.query(
             "CREATE REL TABLE IF NOT EXISTS HAS_LLDP_NEIGHBOR(FROM Device TO LldpNeighbor)",
         )?;
+        // Idempotent upgrades for collector-local databases created before
+        // lifecycle-aware multi-neighbor evidence projection.
+        let _ = conn.query("ALTER TABLE LldpNeighbor ADD neighbor_key STRING DEFAULT ''");
+        let _ = conn.query("ALTER TABLE LldpNeighbor ADD lifecycle STRING DEFAULT 'active'");
+        let _ = conn.query("ALTER TABLE LldpNeighbor ADD withdrawn_at TIMESTAMP_NS");
 
         // Collector still tracks state changes locally to trigger rules
         conn.query(
@@ -589,21 +597,61 @@ fn write_lldp_neighbor(
     val: &serde_json::Value,
 ) -> Result<()> {
     let bare = crate::registry::strip_port(&u.target);
-    let id = format!("{}:{}:{}", bare, local_if, neighbor_id);
     let now = ts(u.timestamp_ns);
     upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
+    if u.is_delete {
+        let mut withdraw = conn.prepare(
+            "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr AND n.local_if = $lif AND n.neighbor_id = $nid SET n.lifecycle = 'withdrawn', n.withdrawn_at = $ts, n.updated_at = $ts",
+        )?;
+        conn.execute(
+            &mut withdraw,
+            vec![
+                ("addr", Value::String(bare.to_string())),
+                ("lif", Value::String(local_if.to_string())),
+                ("nid", Value::String(neighbor_id.to_string())),
+                ("ts", now),
+            ],
+        )?;
+        return Ok(());
+    }
+    let entries = crate::lldp_operational::projection_entries(neighbor_id, val);
+    if entries.iter().any(|entry| entry.multi_entry_envelope) {
+        let legacy_id = format!("{}:{}:{}", bare, local_if, neighbor_id);
+        let mut supersede = conn.prepare(
+            "MATCH (n:LldpNeighbor {id: $id}) SET n.lifecycle = 'superseded', n.updated_at = $ts",
+        )?;
+        conn.execute(
+            &mut supersede,
+            vec![("id", Value::String(legacy_id)), ("ts", now.clone())],
+        )?;
+    }
+    for entry in entries {
+        write_one_lldp_neighbor(
+            conn,
+            u,
+            local_if,
+            neighbor_id,
+            &entry.record_key,
+            entry.value,
+        )?;
+    }
+    Ok(())
+}
+
+fn write_one_lldp_neighbor(
+    conn: &Connection<'_>,
+    u: &TelemetryUpdate,
+    local_if: &str,
+    neighbor_id: &str,
+    record_key: &str,
+    val: &serde_json::Value,
+) -> Result<()> {
+    let bare = crate::registry::strip_port(&u.target);
+    let id = format!("{}:{}:{}", bare, local_if, record_key);
+    let now = ts(u.timestamp_ns);
 
     let mut stmt = conn.prepare(
-        "MERGE (n:LldpNeighbor {id: $id}) \
-         ON CREATE SET \
-           n.device_address = $addr, n.local_if = $local_if, n.neighbor_id = $nid, \
-           n.chassis_id = $chassis, n.system_name = $sysname, n.port_id = $port, \
-           n.updated_at = $ts \
-         ON MATCH SET \
-           n.chassis_id  = CASE WHEN $chassis  <> '' THEN $chassis  ELSE n.chassis_id  END, \
-           n.system_name = CASE WHEN $sysname  <> '' THEN $sysname  ELSE n.system_name END, \
-           n.port_id     = CASE WHEN $port     <> '' THEN $port     ELSE n.port_id     END, \
-           n.updated_at  = $ts",
+        "MERGE (n:LldpNeighbor {id: $id})          ON CREATE SET            n.device_address = $addr, n.local_if = $local_if, n.neighbor_id = $nid,            n.neighbor_key = $record_key, n.lifecycle = 'active',            n.chassis_id = $chassis, n.system_name = $sysname, n.port_id = $port,            n.updated_at = $ts          ON MATCH SET            n.neighbor_key = $record_key, n.lifecycle = 'active',            n.chassis_id  = CASE WHEN $chassis  <> '' THEN $chassis  ELSE n.chassis_id  END,            n.system_name = CASE WHEN $sysname  <> '' THEN $sysname  ELSE n.system_name END,            n.port_id     = CASE WHEN $port     <> '' THEN $port     ELSE n.port_id     END,            n.updated_at  = $ts",
     )?;
 
     conn.execute(
@@ -613,6 +661,7 @@ fn write_lldp_neighbor(
             ("addr", Value::String(bare.to_string())),
             ("local_if", Value::String(local_if.to_string())),
             ("nid", Value::String(neighbor_id.to_string())),
+            ("record_key", Value::String(record_key.to_string())),
             (
                 "chassis",
                 Value::String(json_str(val, "chassis-id").to_string()),

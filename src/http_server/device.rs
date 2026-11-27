@@ -117,6 +117,9 @@ pub(super) struct LldpNeighborJson {
     system_name: String,
     port_id: String,
     chassis_id: String,
+    neighbor_key: String,
+    lifecycle: String,
+    updated_at_ns: i64,
 }
 #[derive(Serialize)]
 pub(super) struct StateChangeJson {
@@ -306,7 +309,8 @@ pub(super) async fn device_detail_handler(
         let mut stmt = conn
             .prepare(
                 "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr \
-                     RETURN n.local_if, n.system_name, n.port_id, n.chassis_id \
+                     RETURN n.local_if, n.system_name, n.port_id, n.chassis_id, \
+                            n.neighbor_key, n.lifecycle, n.updated_at \
                      ORDER BY n.local_if",
             )
             .map_err(|e| e.to_string())?;
@@ -319,6 +323,16 @@ pub(super) async fn device_detail_handler(
                 system_name: read_str(&row[1]),
                 port_id: read_str(&row[2]),
                 chassis_id: read_str(&row[3]),
+                neighbor_key: read_str(&row[4]),
+                lifecycle: {
+                    let lifecycle = read_str(&row[5]);
+                    if lifecycle.is_empty() {
+                        "active".into()
+                    } else {
+                        lifecycle
+                    }
+                },
+                updated_at_ns: read_ts_ns(&row[6]),
             })
             .collect();
 
