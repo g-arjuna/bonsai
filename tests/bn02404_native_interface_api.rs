@@ -6,16 +6,15 @@ use axum::{
 use bonsai::{
     config::TargetConfig,
     enrichment::frr_interfaces::{
-        StoredFrrInterfaceShadowObservation, canonical_device_id,
-        invalidate_device_native_interface_state, latest_observation, observation_id,
-        persist_degraded_observation, persist_observation,
-    },
-    frr_interface_json::{
-        FRR_JSON_ACQUISITION_CONTRACT, FrrInterfaceJsonObservation, normalize_frr_interface_json,
+        CaptureEnvelopeAssemblyInput, FRR_INTERFACE_COMMAND, FRR_MAC_COMMAND, FRR_NEIGHBOR_COMMAND,
+        FRR_VERSION_COMMAND, FRR_VLAN_COMMAND, RawAcquisitionBatchEnvelope, RawCaptureEnvelope,
+        RawCommandCaptureEnvelope, StoredFrrInterfaceShadowObservation, VerifiedHostKey,
+        canonical_device_id, invalidate_device_native_interface_state, latest_observation,
+        observation_from_capture_envelope, observation_id, persist_degraded_observation,
+        persist_observation,
     },
     graph::{ConfigItemRecord, GraphStore},
     http_server::{AppState, mint_jwt, router_from_state},
-    interface_normalizer::{CaptureOutcome, CommandCapture, NormalizerLimits, ObservationContext},
 };
 use serde_json::Value;
 use sha2::Digest;
@@ -101,75 +100,269 @@ async fn request(
     )
 }
 
-fn evidence() -> StoredFrrInterfaceShadowObservation {
-    let mut observation: StoredFrrInterfaceShadowObservation = serde_json::from_str(include_str!(
-        "../docs/merger/evidence/2026-11-25-bn024-04-native-acquisition/live-shadow-observation.json"
-    ))
-    .expect("committed live evidence shape");
-    // The committed artifact is genuine pre-correction evidence. Tests re-key
-    // the same observed facts into the corrected canonical v2 slot and add
-    // metadata that the collector now emits at acquisition time; no fact or
-    // device output is rewritten.
-    observation.collector_id = observation
-        .facts
-        .first()
-        .and_then(|fact| fact.get("source"))
-        .and_then(|source| source.get("collector_id"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("bn02404-live-test")
-        .to_string();
-    observation.observation_id =
-        observation_id(&observation.device_id, &observation.network_namespace);
-    observation.interpretation_outcome = "complete_usable".into();
-    observation.usable_entity_facts = observation
-        .facts
-        .iter()
-        .filter(|fact| {
-            fact.get("subject")
-                .and_then(|subject| subject.get("entity"))
-                .is_some()
-        })
-        .count();
-    observation.status_facts = observation
-        .facts
-        .iter()
-        .filter(|fact| {
-            fact.get("subject")
-                .and_then(|subject| subject.get("entity"))
-                .is_none()
-        })
-        .count();
-    observation
+fn rfc3339_ns(ns: i64) -> String {
+    chrono::DateTime::from_timestamp_nanos(ns).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn rewrite_fact_provenance(observation: &mut StoredFrrInterfaceShadowObservation) {
-    // Tests sometimes simulate a later acquisition using the genuine fixture's
-    // interface payloads. Typed facts are content-addressed, so provenance
-    // cannot merely be patched in JSON; reseal the fact after changing the
-    // acquisition axes. This is explicit test adaptation, not live evidence.
-    for value in &mut observation.facts {
-        let mut fact: bonsai::typed_facts::TypedFact =
-            serde_json::from_value(value.clone()).expect("typed fact fixture");
-        fact.source.capture_id = observation.capture_id.clone();
-        fact.source.session_epoch = observation.session_epoch;
-        fact.source.sequence = observation.sequence;
-        fact.observed_at = observation.captured_at.clone();
-        fact.seal();
-        *value = serde_json::to_value(fact).expect("resealed fact json");
+fn command_capture(
+    key: &str,
+    command: &str,
+    output: &str,
+    started_ns: i64,
+    duration_ns: i64,
+) -> RawCommandCaptureEnvelope {
+    RawCommandCaptureEnvelope {
+        command_key: key.into(),
+        command: command.into(),
+        outcome: "complete".into(),
+        started_at: Some(rfc3339_ns(started_ns)),
+        completed_at: Some(rfc3339_ns(started_ns + duration_ns)),
+        started_at_ns: Some(started_ns),
+        completed_at_ns: Some(started_ns + duration_ns),
+        output: Some(output.into()),
+        output_bytes: Some(output.len()),
+        output_sha256: Some(sha256_text(output)),
+        detail: None,
+        stderr_bytes: None,
     }
 }
 
+/// Genuine replay envelope assembled in the exact shape emitted by the fixed
+/// SSH helper. Command bytes are genuine read-only fixtures; the execution
+/// timestamps are synthetic replay metadata and the resulting observation is
+/// explicitly classified as replay, never live SSH acquisition.
+fn production_raw_envelope(
+    started_ns: i64,
+    neighbor_output: &str,
+    mac_output: &str,
+    vlan_output: &str,
+) -> RawCaptureEnvelope {
+    // `started_ns` is the logical monotonic test ordering token. Replay
+    // command intervals are placed slightly before it so current operational
+    // analysis never treats synthetic replay timestamps as future evidence;
+    // relative ordering between test captures is unchanged.
+    let started_ns = started_ns - 1_500_000_000;
+    let interface_output = include_str!("fixtures/bn024/l2-vertical/frr2-show-interface.json");
+    let version_output =
+        include_str!("fixtures/bn024/interface-frr-json/show-version-json-frr-10.6.1.json");
+    let mut commands = std::collections::BTreeMap::new();
+    commands.insert(
+        "version".to_string(),
+        command_capture(
+            "version",
+            FRR_VERSION_COMMAND,
+            version_output,
+            started_ns,
+            100_000_000,
+        ),
+    );
+    commands.insert(
+        "interfaces".to_string(),
+        command_capture(
+            "interfaces",
+            FRR_INTERFACE_COMMAND,
+            interface_output,
+            started_ns + 150_000_000,
+            200_000_000,
+        ),
+    );
+    commands.insert(
+        "arpnd".to_string(),
+        command_capture(
+            "arpnd",
+            FRR_NEIGHBOR_COMMAND,
+            neighbor_output,
+            started_ns + 400_000_000,
+            100_000_000,
+        ),
+    );
+    commands.insert(
+        "mac".to_string(),
+        command_capture(
+            "mac",
+            FRR_MAC_COMMAND,
+            mac_output,
+            started_ns + 550_000_000,
+            100_000_000,
+        ),
+    );
+    commands.insert(
+        "vlan".to_string(),
+        command_capture(
+            "vlan",
+            FRR_VLAN_COMMAND,
+            vlan_output,
+            started_ns + 700_000_000,
+            100_000_000,
+        ),
+    );
+    RawCaptureEnvelope {
+        host: "172.100.208.12".into(),
+        port: 22,
+        transport: "verified_ssh_read_only_cli".into(),
+        host_key: VerifiedHostKey {
+            algorithm: "ssh-ed25519".into(),
+            sha256: "SHA256:w/HyErTm6v1GknV7Mcae7K5xUMVnIVDvlFE5TfSoT1E".into(),
+        },
+        acquisition_batch: RawAcquisitionBatchEnvelope {
+            started_at: rfc3339_ns(started_ns),
+            started_at_ns: started_ns,
+            completed_at: rfc3339_ns(started_ns + 900_000_000),
+            completed_at_ns: started_ns + 900_000_000,
+            deadline_seconds: 40,
+            atomic_snapshot: false,
+            approved_families: vec![
+                "interfaces".into(),
+                "arpnd".into(),
+                "mac".into(),
+                "vlan".into(),
+            ],
+        },
+        commands,
+        release_raw: Some("10.6.1_git".into()),
+        device_hostname: Some("frr2".into()),
+    }
+}
+
+fn production_evidence_from_raw(
+    raw: RawCaptureEnvelope,
+    started_ns: i64,
+) -> StoredFrrInterfaceShadowObservation {
+    observation_from_capture_envelope(
+        raw,
+        CaptureEnvelopeAssemblyInput {
+            device_id: "containerlab:clab-bonsai-bn003-vrf-frr2".into(),
+            device_address: "172.100.208.12".into(),
+            collector_id: "bn02404-replay-test".into(),
+            release_build: Some(ARTIFACT.into()),
+            acquisition_started_at_ns: started_ns - 2_000_000_000,
+            acquisition_classification: "genuine_fixture_replay_not_live_ssh".into(),
+        },
+    )
+    .expect("production envelope assembly must produce persistable evidence")
+}
+
+fn production_evidence_with_outputs(
+    started_ns: i64,
+    neighbor_output: &str,
+    mac_output: &str,
+    vlan_output: &str,
+) -> StoredFrrInterfaceShadowObservation {
+    production_evidence_from_raw(
+        production_raw_envelope(started_ns, neighbor_output, mac_output, vlan_output),
+        started_ns,
+    )
+}
+
+fn empty_l2_outputs() -> (&'static str, &'static str, &'static str) {
+    (
+        include_str!("fixtures/bn024/l2-vertical/frr2-ip-neigh-show.txt"),
+        include_str!("fixtures/bn024/l2-vertical/frr2-bridge-fdb-show.txt"),
+        include_str!("fixtures/bn024/l2-vertical/frr2-bridge-c-vlan-show.txt"),
+    )
+}
+
+fn populated_l2_outputs() -> (&'static str, &'static str, &'static str) {
+    (
+        include_str!("fixtures/bn024/neighbor/cumulus-spine02-ip-neigh-show.txt"),
+        include_str!("fixtures/bn024/neighbor/cumulus-leaf01-bridge-fdb-show.txt"),
+        // No populated genuine Linux `bridge -c vlan show` fixture is currently
+        // available. This small Linux-shaped populated VLAN context is
+        // explicitly synthetic integration input; it is never represented as
+        // live or genuine device evidence in the final qualification.
+        "port              vlan-id  \neth0              10 PVID Egress Untagged\neth1              20\n",
+    )
+}
+
+fn evidence() -> StoredFrrInterfaceShadowObservation {
+    let (neighbor, mac, vlan) = empty_l2_outputs();
+    production_evidence_with_outputs(bonsai::graph::common::now_ns(), neighbor, mac, vlan)
+}
+
 fn fresh_evidence() -> StoredFrrInterfaceShadowObservation {
-    let mut observation = evidence();
-    let now = bonsai::graph::common::now_ns();
-    observation.capture_started_at_ns = now - 1;
-    observation.captured_at_ns = now;
-    observation.captured_at =
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    observation.session_epoch = observation.capture_started_at_ns as u64;
-    observation.sequence = 1;
-    rewrite_fact_provenance(&mut observation);
-    observation
+    evidence()
+}
+
+fn resealed_fact_with_namespace(fact: &mut Value, namespace: &str) {
+    let mut typed: bonsai::typed_facts::TypedFact =
+        serde_json::from_value(fact.clone()).expect("decode typed fact");
+    typed.subject.namespace = namespace.into();
+    typed.seal();
+    *fact = serde_json::to_value(typed).expect("encode resealed typed fact");
+}
+
+fn sha256_text(text: &str) -> String {
+    hex::encode(sha2::Sha256::digest(text.as_bytes()))
+}
+
+/// Offline vertical-slice evidence shape built by running the real native
+/// normalizers over the genuine captured Linux command outputs in
+/// `tests/fixtures/bn024/l2-vertical`. The interface facts come from the
+/// committed authorized-lab observation; the added family facts are generated
+/// here rather than hand-written so schema validation and provenance remain
+/// executable.
+fn l2_vertical_evidence() -> StoredFrrInterfaceShadowObservation {
+    evidence()
+}
+
+fn populated_l2_evidence() -> StoredFrrInterfaceShadowObservation {
+    let (neighbor, mac, vlan) = populated_l2_outputs();
+    production_evidence_with_outputs(bonsai::graph::common::now_ns(), neighbor, mac, vlan)
+}
+
+/// Explicitly synthetic coherent Linux operational relationships used only to
+/// prove that the authorized API can consume the real forwarding-domain and
+/// neighbor analyzers. Command shape and production normalization/persistence
+/// are genuine; the interface-to-neighbor relationship is not represented as
+/// live device evidence.
+fn coherent_bridge_interface_output() -> String {
+    let mut object: serde_json::Map<String, Value> = serde_json::from_str(include_str!(
+        "fixtures/bn024/l2-vertical/frr2-show-interface.json"
+    ))
+    .expect("interface fixture object");
+    let template = object
+        .get("eth0")
+        .expect("eth0 template")
+        .as_object()
+        .expect("interface object")
+        .clone();
+    let mut bond = template.clone();
+    bond.insert("index".into(), serde_json::json!(10));
+    bond.insert(
+        "hardwareAddress".into(),
+        serde_json::json!("52:54:00:00:13:01"),
+    );
+    bond.insert("ipAddresses".into(), serde_json::json!([]));
+    bond.insert("interfaceSlaveType".into(), serde_json::json!("Bridge"));
+    bond.insert("masterIfindex".into(), serde_json::json!(20));
+    bond.remove("parentIfindex");
+    let mut bridge = template;
+    bridge.insert("index".into(), serde_json::json!(20));
+    bridge.insert("type".into(), serde_json::json!("Bridge"));
+    bridge.insert("interfaceType".into(), serde_json::json!("Bridge"));
+    bridge.remove("parentIfindex");
+    bridge.insert(
+        "hardwareAddress".into(),
+        serde_json::json!("52:54:00:00:13:ff"),
+    );
+    bridge.insert("ipAddresses".into(), serde_json::json!([]));
+    bridge.insert("interfaceSlaveType".into(), serde_json::json!("None"));
+    object.insert("bond01".into(), Value::Object(bond));
+    object.insert("bridge".into(), Value::Object(bridge));
+    Value::Object(object).to_string()
+}
+
+fn coherent_l2_evidence(started_ns: i64) -> StoredFrrInterfaceShadowObservation {
+    let neighbor = "192.0.2.10 dev bond01 lladdr 52:54:00:d6:66:41 REACHABLE";
+    let mac = include_str!("fixtures/bn024/neighbor/cumulus-leaf01-bridge-fdb-show.txt");
+    let vlan = "port              vlan-id  \nbond01            13\n";
+    let mut raw = production_raw_envelope(started_ns, neighbor, mac, vlan);
+    let interface_output = coherent_bridge_interface_output();
+    let interface = raw.commands.get_mut("interfaces").expect("interface slot");
+    interface.output_bytes = Some(interface_output.len());
+    interface.output_sha256 = Some(sha256_text(&interface_output));
+    interface.output = Some(interface_output);
+    production_evidence_from_raw(raw, started_ns)
 }
 
 fn target(address: &str, username: Option<String>, password: Option<String>) -> TargetConfig {
@@ -189,7 +382,7 @@ fn target(address: &str, username: Option<String>, password: Option<String>) -> 
 #[tokio::test]
 async fn authorized_device_surface_exposes_bounded_shadow_evidence_and_staleness() {
     let h = harness().await;
-    let mut observation = fresh_evidence();
+    let observation = fresh_evidence();
     let address = observation.device_address.clone();
     h.registry
         .add_device_with_audit(target(&address, None, None), "bn02404-test", "test_add")
@@ -207,11 +400,11 @@ async fn authorized_device_surface_exposes_bounded_shadow_evidence_and_staleness
     assert_eq!(body["promotion"], "shadow_only");
     assert_eq!(body["authoritative_projection"], "none");
     assert_eq!(body["freshness"], "fresh");
-    assert_eq!(body["evidence"]["facts_emitted"], 4);
-    assert_eq!(body["evidence"]["facts_validated"], 4);
+    assert_eq!(body["evidence"]["facts_emitted"], 6);
+    assert_eq!(body["evidence"]["facts_validated"], 6);
     assert_eq!(
         body["evidence"]["interface_output_sha256"],
-        "b61b12df7142a9fcfacb4718eb9fc2b3210cd91a68122a87254dd093855c489a"
+        "2909f0cbc8247d0ca94a2d7b844c8d5f3676f51371a9583b1314dc98a358f44f"
     );
     assert!(body["evidence"].get("raw_interface_json").is_none());
     assert!(body["evidence"].get("interface_diagnostics").is_none());
@@ -220,7 +413,7 @@ async fn authorized_device_surface_exposes_bounded_shadow_evidence_and_staleness
         body["evidence"]["interpretation_outcome"],
         "complete_usable"
     );
-    assert_eq!(body["evidence"]["usable_entity_facts"], 4);
+    assert_eq!(body["evidence"]["usable_entity_facts"], 6);
     let replay_error = persist_observation(&h.store, &observation)
         .await
         .expect_err("exact replay must not overwrite newer retained evidence");
@@ -239,13 +432,25 @@ async fn authorized_device_surface_exposes_bounded_shadow_evidence_and_staleness
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    observation.captured_at_ns -= 2 * 3600 * 1_000_000_000;
-    observation.session_epoch += 1;
-    rewrite_fact_provenance(&mut observation);
-    persist_observation(&h.store, &observation)
+    let (neighbor, mac, vlan) = empty_l2_outputs();
+    // A stale presentation uses a separately constructed, internally
+    // consistent historical capture. Mutating only the aggregate timestamp
+    // would create contradictory command/fact timing and must fail validation.
+    let h2 = harness().await;
+    let aged = production_evidence_with_outputs(
+        bonsai::graph::common::now_ns() - 2 * 3600 * 1_000_000_000,
+        neighbor,
+        mac,
+        vlan,
+    );
+    h2.registry
+        .add_device_with_audit(target(&address, None, None), "bn02404-test", "test_add")
+        .expect("register aged target");
+    persist_observation(&h2.store, &aged)
         .await
         .expect("persist aged evidence");
-    let (status, body) = request(&h.router, "GET", &uri, Some(&viewer), None).await;
+    let viewer2 = token(&h2.store, "bn024-viewer", "viewer").await;
+    let (status, body) = request(&h2.router, "GET", &uri, Some(&viewer2), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["freshness"], "stale");
     assert!(body["age_seconds"].as_i64().unwrap() >= 7200);
@@ -379,7 +584,7 @@ async fn scoped_authorization_and_failed_attempt_visibility_are_enforced() {
     bonsai::enrichment::frr_interfaces::record_acquisition_failure(
         &h.store,
         &device,
-        observation.capture_started_at_ns + 10,
+        observation.captured_at_ns + 1,
         "capture_transport_or_interpretation_failed",
         "fixed read-only capture or bounded interpretation failed",
     )
@@ -400,10 +605,13 @@ async fn scoped_authorization_and_failed_attempt_visibility_are_enforced() {
 
     // Ordering is acquisition-start based: an older result cannot overwrite a
     // newer retained observation merely because processing completed later.
-    let mut older = observation.clone();
-    older.session_epoch = observation.session_epoch.saturating_sub(1);
-    older.sequence = observation.sequence;
-    rewrite_fact_provenance(&mut older);
+    let (neighbor, mac, vlan) = empty_l2_outputs();
+    let older = production_evidence_with_outputs(
+        observation.capture_started_at_ns.saturating_sub(1),
+        neighbor,
+        mac,
+        vlan,
+    );
     let err = persist_observation(&h.store, &older)
         .await
         .expect_err("older acquisition-start result must be rejected");
@@ -436,6 +644,688 @@ async fn scoped_authorization_and_failed_attempt_visibility_are_enforced() {
     assert_eq!(
         body["acquisition"]["last_failure_class"],
         "capture_deadline"
+    );
+}
+
+#[tokio::test]
+async fn invalid_stored_observation_is_not_presented_as_missing_evidence() {
+    let h = harness().await;
+    let observation = fresh_evidence();
+    let address = observation.device_address.clone();
+    let device = target(&address, None, None);
+    h.registry
+        .add_device_with_audit(device.clone(), "bn02404-test", "test_add")
+        .expect("register target");
+    bonsai::enrichment::frr_interfaces::record_acquisition_failure(
+        &h.store,
+        &device,
+        observation.capture_started_at_ns,
+        "capture_failed",
+        "prior failed attempt",
+    )
+    .await
+    .expect("record acquisition state");
+    h.store
+        .upsert_config_item(ConfigItemRecord {
+            id: observation.observation_id.clone(),
+            config_class: "native_interface_shadow_observation".into(),
+            vendor: "frr".into(),
+            name: observation.device_id.clone(),
+            version: "2".into(),
+            content_json: "{\"corrupted\":true}".into(),
+            enabled: true,
+            created_by: "bn02404-test".into(),
+        })
+        .await
+        .expect("seed corrupted stored observation");
+    let viewer = token(&h.store, "bn024-viewer", "viewer").await;
+    let uri = format!("/api/devices/{address}/native-interfaces/frr");
+    let (status, body) = request(&h.router, "GET", &uri, Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["reason_code"], "stored_shadow_observation_invalid");
+}
+
+#[tokio::test]
+async fn operator_surface_exposes_multifamily_coverage_and_bounded_l2_evidence() {
+    let h = harness().await;
+    let observation = l2_vertical_evidence();
+    let address = observation.device_address.clone();
+    h.registry
+        .add_device_with_audit(target(&address, None, None), "bn02404-test", "test_add")
+        .expect("register target");
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("persist multi-family evidence");
+    let viewer = token(&h.store, "bn024-viewer", "viewer").await;
+    let uri = format!("/api/devices/{address}/native-interfaces/frr");
+    let (status, body) = request(&h.router, "GET", &uri, Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    assert_eq!(body["evidence"]["facts_emitted"], 6);
+    assert_eq!(body["evidence"]["facts_validated"], 6);
+    assert!(body["evidence"]["neighbor_output_sha256"].is_string());
+    assert!(body["evidence"]["mac_output_sha256"].is_string());
+    assert!(body["evidence"]["vlan_output_sha256"].is_string());
+    assert_eq!(body["evidence"]["raw_neighbor_output_retained"], true);
+    assert_eq!(body["evidence"]["raw_mac_output_retained"], true);
+    assert_eq!(body["evidence"]["raw_vlan_output_retained"], true);
+    assert!(body["evidence"].get("raw_neighbor_output").is_none());
+    assert!(body["evidence"].get("raw_mac_output").is_none());
+    assert!(body["evidence"].get("raw_vlan_output").is_none());
+
+    let families = body["evidence"]["normalization_report"]["feature_families"]
+        .as_array()
+        .expect("feature-family coverage array");
+    assert_eq!(families.len(), 4);
+    let family = |name: &str| {
+        families
+            .iter()
+            .find(|entry| entry["feature"] == name)
+            .unwrap_or_else(|| panic!("missing feature family {name}"))
+    };
+    let arp = family("arpnd.linux_ip_neigh");
+    assert_eq!(arp["facts_emitted"], 0);
+    assert_eq!(arp["coverage"]["covered_fact_kind"], "arpnd.neighbor");
+    assert_eq!(arp["coverage"]["positive_empty_population"], true);
+    assert_eq!(arp["coverage"]["population_coverage"], "complete");
+    let mac = family("mac.linux_bridge_fdb");
+    assert_eq!(mac["facts_emitted"], 2);
+    assert_eq!(mac["coverage"]["covered_fact_kind"], "mac.forwarding");
+    assert_eq!(mac["coverage"]["positive_empty_population"], false);
+    let vlan = family("vlan.linux_bridge_vlan");
+    assert_eq!(vlan["facts_emitted"], 0);
+    assert_eq!(vlan["coverage"]["covered_fact_kind"], "vlan.bridge_domain");
+    assert_eq!(vlan["coverage"]["positive_empty_population"], true);
+
+    let fact_kinds: Vec<_> = body["evidence"]["facts"]
+        .as_array()
+        .expect("facts array")
+        .iter()
+        .filter_map(|fact| fact["fact_kind"].as_str())
+        .collect();
+    assert!(fact_kinds.contains(&"interface.state"));
+    assert!(fact_kinds.contains(&"mac.forwarding"));
+    // Positive-empty ARP/VLAN populations are explicit coverage, not fabricated
+    // empty entity rows and not evidence about each other's tables.
+    assert!(!fact_kinds.contains(&"arpnd.neighbor"));
+    assert!(!fact_kinds.contains(&"vlan.bridge_domain"));
+
+    // The bounded operator assessment invokes the existing forwarding-domain
+    // and interface-relationship analyzers, but the genuine Linux fixture is
+    // ARP/VLAN positive-empty and does not establish a bridge domain. It must
+    // therefore expose explicit unresolved prerequisites rather than invent a
+    // positive neighbor correlation.
+    let assessment = &body["l2_assessment"];
+    assert_eq!(assessment["state"], "unresolved_prerequisites");
+    assert_eq!(assessment["prerequisite_evidence"]["arpnd_facts"], 0);
+    assert_eq!(assessment["prerequisite_evidence"]["mac_facts"], 2);
+    assert_eq!(
+        assessment["prerequisite_evidence"]["derived_domain_evidence"],
+        0
+    );
+    assert!(assessment["forwarding_domain_derivation"]["report"].is_object());
+    assert!(assessment["interface_relationships"].is_object());
+    assert_eq!(assessment["authoritative_projection"], "none");
+}
+
+#[tokio::test]
+async fn nonempty_vlan_facts_survive_production_construction_and_persistence() {
+    let h = harness().await;
+    let observation = populated_l2_evidence();
+    let vlan_facts = observation
+        .facts
+        .iter()
+        .filter(|fact| fact["fact_kind"] == "vlan.bridge_domain")
+        .count();
+    assert!(
+        vlan_facts > 0,
+        "populated Linux VLAN fixture must emit typed facts"
+    );
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("nonempty multifamily VLAN evidence must pass persistence validation");
+    let retained = latest_observation(&h.store, &target(&observation.device_address, None, None))
+        .await
+        .expect("retained populated observation");
+    assert!(
+        retained
+            .facts
+            .iter()
+            .any(|fact| fact["fact_kind"] == "vlan.bridge_domain"
+                && fact["subject"]["namespace"] == "forwarding")
+    );
+
+    let mut wrong_vlan_namespace = observation.clone();
+    for fact in &mut wrong_vlan_namespace.facts {
+        if fact["fact_kind"] == "vlan.bridge_domain" {
+            resealed_fact_with_namespace(fact, "interface");
+        }
+    }
+    let err = persist_observation(&h.store, &wrong_vlan_namespace)
+        .await
+        .expect_err("VLAN facts must not be admitted in the interface namespace");
+    assert!(
+        err.to_string().contains("identity mismatch")
+            || err.to_string().contains("typed fact is undecodable"),
+        "{err}"
+    );
+
+    let mut wrong_interface_namespace = observation.clone();
+    for fact in &mut wrong_interface_namespace.facts {
+        if fact["fact_kind"] == "interface.state" {
+            resealed_fact_with_namespace(fact, "forwarding");
+        }
+    }
+    let err = persist_observation(&h.store, &wrong_interface_namespace)
+        .await
+        .expect_err("interface facts must not be admitted in the forwarding namespace");
+    assert!(
+        err.to_string().contains("identity mismatch")
+            || err.to_string().contains("typed fact is undecodable"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn tampered_family_coverage_and_raw_output_are_rejected() {
+    let h = harness().await;
+    let observation = populated_l2_evidence();
+
+    let mut wrong_device_coverage = observation.clone();
+    let vlan = wrong_device_coverage
+        .family_states
+        .iter_mut()
+        .find(|state| state.fact_kind == "vlan.bridge_domain")
+        .expect("vlan state");
+    vlan.retained
+        .as_mut()
+        .expect("retained vlan")
+        .coverage
+        .as_mut()
+        .expect("coverage")["device_id"] = serde_json::Value::String("other-device".into());
+    let err = persist_observation(&h.store, &wrong_device_coverage)
+        .await
+        .expect_err("coverage bound to another device must be rejected");
+    assert!(err.to_string().contains("coverage identity"), "{err}");
+
+    let mut wrong_digest = observation.clone();
+    wrong_digest.vlan_output_sha256 = Some("0".repeat(64));
+    let err = persist_observation(&h.store, &wrong_digest)
+        .await
+        .expect_err("raw evidence digest tampering must be rejected");
+    assert!(
+        err.to_string().contains("raw-output identity mismatch"),
+        "{err}"
+    );
+
+    let mut false_complete = observation.clone();
+    let mac = false_complete
+        .family_states
+        .iter_mut()
+        .find(|state| state.fact_kind == "mac.forwarding")
+        .expect("mac state");
+    let retained = mac.retained.as_mut().expect("retained mac");
+    retained.retention_truncated = true;
+    retained.facts_omitted_by_retention = 0;
+    let err = persist_observation(&h.store, &false_complete)
+        .await
+        .expect_err("inconsistent retention accounting must be rejected");
+    assert!(err.to_string().contains("retention accounting"), "{err}");
+}
+
+#[tokio::test]
+async fn positive_empty_interface_population_is_coverage_not_a_fabricated_fact() {
+    let h = harness().await;
+    let (neighbor, mac, vlan) = empty_l2_outputs();
+    let started = bonsai::graph::common::now_ns();
+    let mut raw = production_raw_envelope(started, neighbor, mac, vlan);
+    // Synthetic integration input in the exact FRR object shape: an empty
+    // top-level interface map. It is not represented as genuine device
+    // evidence; it exercises the positive-empty lifecycle boundary.
+    let empty_interfaces = "{}";
+    let interface = raw.commands.get_mut("interfaces").expect("interface slot");
+    interface.output = Some(empty_interfaces.into());
+    interface.output_bytes = Some(empty_interfaces.len());
+    interface.output_sha256 = Some(sha256_text(empty_interfaces));
+    let observation = production_evidence_from_raw(raw, started);
+    let interface_state = observation
+        .family_states
+        .iter()
+        .find(|state| state.fact_kind == "interface.state")
+        .expect("interface state");
+    let retained = interface_state
+        .retained
+        .as_ref()
+        .expect("positive-empty interface evidence");
+    assert!(retained.positive_empty_population);
+    assert_eq!(retained.facts_retained, 0);
+    assert!(
+        !observation
+            .facts
+            .iter()
+            .any(|fact| fact["fact_kind"] == "interface.state"),
+        "positive-empty interface coverage must not fabricate an entity/status fact"
+    );
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("positive-empty interface evidence must remain persistable bounded evidence");
+}
+
+#[tokio::test]
+async fn failed_family_preserves_unrelated_last_good_and_positive_empty_can_replace_populated_vlan()
+{
+    let h = harness().await;
+    let (neighbor, mac, vlan) = populated_l2_outputs();
+    let started = bonsai::graph::common::now_ns();
+    let first = production_evidence_with_outputs(started, neighbor, mac, vlan);
+    let initial_arp_facts = first
+        .facts
+        .iter()
+        .filter(|fact| fact["fact_kind"] == "arpnd.neighbor")
+        .count();
+    assert!(initial_arp_facts > 0);
+    persist_observation(&h.store, &first)
+        .await
+        .expect("persist initial populated multifamily evidence");
+
+    // ARP fails in the newer batch while interface/MAC/VLAN remain valid.
+    let (empty_neighbor, empty_mac, empty_vlan) = empty_l2_outputs();
+    let _ = (empty_neighbor, empty_mac);
+    let mut raw = production_raw_envelope(started + 1_000, neighbor, mac, vlan);
+    let arp = raw.commands.get_mut("arpnd").expect("arp slot");
+    arp.outcome = "failed".into();
+    arp.output = None;
+    arp.output_bytes = None;
+    arp.output_sha256 = None;
+    arp.detail = Some("fixed read-only command failed".into());
+    let second = production_evidence_from_raw(raw, started + 1_000);
+    persist_observation(&h.store, &second)
+        .await
+        .expect("partial multifamily batch remains bounded usable evidence");
+    let retained = latest_observation(&h.store, &target(&first.device_address, None, None))
+        .await
+        .expect("merged observation");
+    let retained_arp_facts = retained
+        .facts
+        .iter()
+        .filter(|fact| fact["fact_kind"] == "arpnd.neighbor")
+        .count();
+    assert_eq!(retained_arp_facts, initial_arp_facts);
+    let arp_state = retained
+        .family_states
+        .iter()
+        .find(|state| state.fact_kind == "arpnd.neighbor")
+        .expect("arp family state");
+    assert_eq!(arp_state.latest_attempt.outcome, "failed");
+    assert_eq!(
+        arp_state
+            .retained
+            .as_ref()
+            .expect("last-good arp")
+            .evidence_state,
+        "stale_last_usable"
+    );
+    assert!(
+        retained
+            .facts
+            .iter()
+            .any(|fact| fact["fact_kind"] == "mac.forwarding")
+    );
+
+    // A later genuinely complete empty VLAN capture is valid replacement
+    // evidence within the same scope and can supersede the populated VLAN set.
+    let third = production_evidence_with_outputs(started + 2_000, neighbor, mac, empty_vlan);
+    persist_observation(&h.store, &third)
+        .await
+        .expect("positive empty VLAN replacement must persist");
+    let retained = latest_observation(&h.store, &target(&first.device_address, None, None))
+        .await
+        .expect("merged positive-empty observation");
+    assert!(
+        !retained
+            .facts
+            .iter()
+            .any(|fact| fact["fact_kind"] == "vlan.bridge_domain")
+    );
+    let vlan_state = retained
+        .family_states
+        .iter()
+        .find(|state| state.fact_kind == "vlan.bridge_domain")
+        .expect("vlan family state");
+    let vlan_retained = vlan_state
+        .retained
+        .as_ref()
+        .expect("positive empty vlan state");
+    assert_eq!(vlan_retained.evidence_state, "current");
+    assert!(vlan_retained.positive_empty_population);
+    assert_eq!(vlan_retained.facts_retained, 0);
+}
+
+#[test]
+fn production_constructor_rejects_contradictory_mandatory_version_evidence() {
+    let (neighbor, mac, vlan) = empty_l2_outputs();
+    let started = bonsai::graph::common::now_ns();
+    let mut raw = production_raw_envelope(started, neighbor, mac, vlan);
+    raw.release_raw = Some("10.7".into());
+    let err = observation_from_capture_envelope(
+        raw,
+        CaptureEnvelopeAssemblyInput {
+            device_id: "containerlab:clab-bonsai-bn003-vrf-frr2".into(),
+            device_address: "172.100.208.12".into(),
+            collector_id: "bn02404-replay-test".into(),
+            release_build: Some(ARTIFACT.into()),
+            acquisition_started_at_ns: started - 2_000_000_000,
+            acquisition_classification: "genuine_fixture_replay_not_live_ssh".into(),
+        },
+    )
+    .expect_err("contradictory mandatory version evidence must be rejected");
+    assert!(
+        err.to_string().contains("version JSON contradicts"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn authorized_api_produces_positive_operational_neighbor_analysis() {
+    let h = harness().await;
+    let observation = coherent_l2_evidence(bonsai::graph::common::now_ns());
+    let address = observation.device_address.clone();
+    h.registry
+        .add_device_with_audit(target(&address, None, None), "bn02404-test", "test_add")
+        .expect("register target");
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("persist coherent operational evidence");
+    let viewer = token(&h.store, "bn024-viewer", "viewer").await;
+    let uri = format!("/api/devices/{address}/native-interfaces/frr");
+    let (status, body) = request(&h.router, "GET", &uri, Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let assessment = &body["l2_assessment"];
+    assert_eq!(assessment["state"], "available", "{assessment}");
+    assert_eq!(assessment["analysis_mode"], "current_operational");
+    assert!(
+        assessment["forwarding_domain_derivation"]["derived_domain_evidence"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0,
+        "{assessment}"
+    );
+    let reconciliation = &assessment["neighbor_reconciliation"];
+    assert_eq!(
+        reconciliation["arpnd_facts_considered"], 1,
+        "{reconciliation}"
+    );
+    assert!(
+        reconciliation["mac_facts_considered"].as_u64().unwrap_or(0) > 0,
+        "{reconciliation}"
+    );
+    assert_eq!(
+        reconciliation["outcome_counts"]["Consistent"], 1,
+        "{reconciliation}"
+    );
+    assert_eq!(reconciliation["results"][0]["outcome"], "consistent");
+}
+
+#[tokio::test]
+async fn newer_interface_evidence_does_not_refresh_older_retained_vlan_evidence() {
+    let h = harness().await;
+    let (neighbor, mac, vlan) = populated_l2_outputs();
+    let started = bonsai::graph::common::now_ns();
+    let first = production_evidence_with_outputs(started, neighbor, mac, vlan);
+    let address = first.device_address.clone();
+    let device = target(&address, None, None);
+    h.registry
+        .add_device_with_audit(device.clone(), "bn02404-test", "test_add")
+        .expect("register target");
+    persist_observation(&h.store, &first)
+        .await
+        .expect("persist initial multifamily evidence");
+
+    let mut raw = production_raw_envelope(started + 1_000, neighbor, mac, vlan);
+    for key in ["arpnd", "mac", "vlan"] {
+        let command = raw.commands.get_mut(key).expect("command slot");
+        command.outcome = "failed".into();
+        command.output = None;
+        command.output_bytes = None;
+        command.output_sha256 = None;
+        command.detail = Some("fixed read-only command failed".into());
+    }
+    let second = production_evidence_from_raw(raw, started + 1_000);
+    persist_observation(&h.store, &second)
+        .await
+        .expect("newer interface-only usable evidence must persist");
+    let retained = latest_observation(&h.store, &device)
+        .await
+        .expect("merged observation");
+    let interface_state = retained
+        .family_states
+        .iter()
+        .find(|state| state.fact_kind == "interface.state")
+        .expect("interface family");
+    assert_eq!(
+        interface_state
+            .retained
+            .as_ref()
+            .expect("interface retained")
+            .evidence_state,
+        "current"
+    );
+    let vlan_state = retained
+        .family_states
+        .iter()
+        .find(|state| state.fact_kind == "vlan.bridge_domain")
+        .expect("vlan family");
+    let vlan_retained = vlan_state.retained.as_ref().expect("retained vlan");
+    assert_eq!(vlan_retained.evidence_state, "stale_last_usable");
+    assert_eq!(vlan_retained.capture_id, first.capture_id);
+    assert_eq!(vlan_state.latest_attempt.outcome, "failed");
+
+    let viewer = token(&h.store, "bn024-viewer", "viewer").await;
+    let uri = format!("/api/devices/{address}/native-interfaces/frr");
+    let (status, body) = request(&h.router, "GET", &uri, Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let assessment = &body["l2_assessment"];
+    assert_eq!(
+        assessment["state"], "unresolved_prerequisites",
+        "{assessment}"
+    );
+    assert!(
+        assessment["family_lifecycle"]["excluded_families"]
+            .as_array()
+            .expect("excluded families")
+            .iter()
+            .any(|family| family["fact_kind"] == "vlan.bridge_domain"),
+        "{assessment}"
+    );
+}
+
+#[tokio::test]
+async fn transport_failure_excludes_stale_last_good_from_current_operational_analysis() {
+    let h = harness().await;
+    let observation = coherent_l2_evidence(bonsai::graph::common::now_ns());
+    let address = observation.device_address.clone();
+    let device = target(&address, None, None);
+    h.registry
+        .add_device_with_audit(device.clone(), "bn02404-test", "test_add")
+        .expect("register target");
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("persist coherent operational evidence");
+    bonsai::enrichment::frr_interfaces::record_acquisition_failure(
+        &h.store,
+        &device,
+        observation.captured_at_ns + 1,
+        "capture_transport_or_interpretation_failed",
+        "newer transport attempt failed before family commands completed",
+    )
+    .await
+    .expect("record newer transport failure");
+    let viewer = token(&h.store, "bn024-viewer", "viewer").await;
+    let uri = format!("/api/devices/{address}/native-interfaces/frr");
+    let (status, body) = request(&h.router, "GET", &uri, Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let assessment = &body["l2_assessment"];
+    assert_eq!(
+        assessment["state"], "unresolved_prerequisites",
+        "{assessment}"
+    );
+    assert_eq!(assessment["input_facts"], 0, "{assessment}");
+    let excluded = assessment["family_lifecycle"]["excluded_families"]
+        .as_array()
+        .expect("excluded families");
+    assert_eq!(excluded.len(), 4, "{assessment}");
+    assert!(
+        excluded
+            .iter()
+            .all(|family| family["evidence_state"] == "stale_last_usable"),
+        "{assessment}"
+    );
+}
+
+#[tokio::test]
+async fn observation_older_than_operational_freshness_window_is_not_current_analysis() {
+    let h = harness().await;
+    let started = bonsai::graph::common::now_ns() - 400 * 1_000_000_000;
+    let observation = coherent_l2_evidence(started);
+    let address = observation.device_address.clone();
+    h.registry
+        .add_device_with_audit(target(&address, None, None), "bn02404-test", "test_add")
+        .expect("register target");
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("persist old replay evidence");
+    let viewer = token(&h.store, "bn024-viewer", "viewer").await;
+    let uri = format!("/api/devices/{address}/native-interfaces/frr");
+    let (status, body) = request(&h.router, "GET", &uri, Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let assessment = &body["l2_assessment"];
+    assert_eq!(assessment["analysis_mode"], "current_operational");
+    assert_eq!(
+        assessment["state"], "unresolved_prerequisites",
+        "{assessment}"
+    );
+    assert!(
+        assessment["forwarding_domain_derivation"]["report"]["temporally_ineligible_facts"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0,
+        "{assessment}"
+    );
+}
+
+#[tokio::test]
+async fn per_family_retention_truncation_is_explicit_and_does_not_starve_l2_families() {
+    let h = harness().await;
+    let base: serde_json::Map<String, Value> = serde_json::from_str(include_str!(
+        "fixtures/bn024/l2-vertical/frr2-show-interface.json"
+    ))
+    .expect("interface fixture object");
+    let template = base.get("eth0").expect("eth0 template").clone();
+    let mut large = serde_json::Map::new();
+    for index in 0..100u64 {
+        let mut row = template.clone();
+        row["index"] = serde_json::json!(index + 2);
+        row["hardwareAddress"] = serde_json::json!(format!("02:00:00:00:00:{index:02x}"));
+        row["ipAddresses"] = serde_json::json!([]);
+        row.as_object_mut()
+            .expect("interface row object")
+            .remove("parentIfindex");
+        large.insert(format!("eth{index}"), row);
+    }
+    let large_interface = Value::Object(large).to_string();
+    let (neighbor, mac, vlan) = populated_l2_outputs();
+    let started = bonsai::graph::common::now_ns();
+    let mut raw = production_raw_envelope(started, neighbor, mac, vlan);
+    let interface = raw.commands.get_mut("interfaces").expect("interface slot");
+    interface.output = Some(large_interface.clone());
+    interface.output_bytes = Some(large_interface.len());
+    interface.output_sha256 = Some(sha256_text(&large_interface));
+    let observation = production_evidence_from_raw(raw, started);
+
+    let interface_state = observation
+        .family_states
+        .iter()
+        .find(|state| state.fact_kind == "interface.state")
+        .expect("interface family");
+    let interface_retained = interface_state
+        .retained
+        .as_ref()
+        .expect("interface retained");
+    assert_eq!(interface_retained.facts_retained, 64);
+    assert!(interface_retained.retention_truncated);
+    assert!(interface_retained.facts_omitted_by_retention > 0);
+    let coverage = interface_retained
+        .coverage
+        .as_ref()
+        .expect("interface coverage");
+    assert_eq!(
+        coverage["population_coverage"], "complete",
+        "source completeness remains distinct from bounded retained completeness"
+    );
+    assert_eq!(
+        interface_state
+            .latest_attempt
+            .normalization_outcome
+            .as_deref(),
+        Some("partial_usable")
+    );
+    assert!(observation.fact_retention_truncated);
+    assert!(
+        observation
+            .facts
+            .iter()
+            .any(|fact| fact["fact_kind"] == "mac.forwarding"),
+        "per-family allocation must prevent interfaces starving MAC evidence"
+    );
+    assert!(
+        observation
+            .facts
+            .iter()
+            .any(|fact| fact["fact_kind"] == "vlan.bridge_domain"),
+        "per-family allocation must prevent interfaces starving VLAN evidence"
+    );
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("legitimately truncated multifamily evidence remains valid bounded evidence");
+}
+
+#[tokio::test]
+async fn interface_failure_does_not_discard_independently_valid_l2_families() {
+    let h = harness().await;
+    let (neighbor, mac, vlan) = populated_l2_outputs();
+    let started = bonsai::graph::common::now_ns();
+    let mut raw = production_raw_envelope(started, neighbor, mac, vlan);
+    let interface = raw.commands.get_mut("interfaces").expect("interface slot");
+    interface.outcome = "unsupported".into();
+    interface.output = None;
+    interface.output_bytes = None;
+    interface.output_sha256 = None;
+    interface.detail = Some("interface command unsupported".into());
+    let observation = production_evidence_from_raw(raw, started);
+    assert_eq!(observation.interpretation_outcome, "partial_usable");
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("valid independent L2 families must persist despite interface failure");
+    let retained = latest_observation(&h.store, &target(&observation.device_address, None, None))
+        .await
+        .expect("retained independent family evidence");
+    assert!(
+        !retained
+            .facts
+            .iter()
+            .any(|fact| fact["fact_kind"] == "interface.state")
+    );
+    assert!(
+        retained
+            .facts
+            .iter()
+            .any(|fact| fact["fact_kind"] == "mac.forwarding")
+    );
+    assert!(
+        retained
+            .family_states
+            .iter()
+            .any(|state| state.fact_kind == "interface.state" && state.retained.is_none())
     );
 }
 
@@ -514,22 +1404,16 @@ async fn canonical_identity_prevents_address_reuse_or_fact_transfer() {
     let err = persist_observation(&h.store, &corrupted)
         .await
         .expect_err("cross-device typed facts must be rejected");
-    assert!(
-        err.to_string()
-            .contains("typed-fact subject/source identity mismatch")
-    );
+    assert!(err.to_string().contains("identity mismatch"), "{err}");
 }
 
 #[tokio::test]
 async fn concurrent_persistence_admits_newer_epoch_regardless_of_completion_order() {
     let h = harness().await;
-    let base = fresh_evidence();
-    let mut older = base.clone();
-    older.session_epoch = base.session_epoch.saturating_sub(1);
-    rewrite_fact_provenance(&mut older);
-    let mut newer = base;
-    newer.session_epoch += 1;
-    rewrite_fact_provenance(&mut newer);
+    let base_started = bonsai::graph::common::now_ns();
+    let (neighbor, mac, vlan) = empty_l2_outputs();
+    let older = production_evidence_with_outputs(base_started, neighbor, mac, vlan);
+    let newer = production_evidence_with_outputs(base_started + 1_000, neighbor, mac, vlan);
 
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
     let mut tasks = Vec::new();
@@ -562,11 +1446,9 @@ async fn concurrent_persistence_admits_newer_epoch_regardless_of_completion_orde
 #[tokio::test]
 async fn stale_failure_success_and_exact_replay_are_fenced_at_persistence_boundary() {
     let h = harness().await;
-    let mut success = fresh_evidence();
-    success.capture_started_at_ns -= 100;
-    success.captured_at_ns -= 90;
-    success.session_epoch = success.capture_started_at_ns as u64;
-    rewrite_fact_provenance(&mut success);
+    let (neighbor, mac, vlan) = empty_l2_outputs();
+    let base_started = bonsai::graph::common::now_ns() - 100;
+    let success = production_evidence_with_outputs(base_started, neighbor, mac, vlan);
     let device = target(&success.device_address, None, None);
     persist_observation(&h.store, &success)
         .await
@@ -592,7 +1474,7 @@ async fn stale_failure_success_and_exact_replay_are_fenced_at_persistence_bounda
 
     // A newer failure is operator-visible while preserving the last usable
     // observation pointer.
-    let newer_failure_started = success.capture_started_at_ns + 10;
+    let newer_failure_started = success.captured_at_ns + 1;
     bonsai::enrichment::frr_interfaces::record_acquisition_failure(
         &h.store,
         &device,
@@ -615,11 +1497,7 @@ async fn stale_failure_success_and_exact_replay_are_fenced_at_persistence_bounda
     // An older successful capture completing after that newer failure may be
     // retained as older usable evidence, but it must not erase the newer
     // latest-attempt failure.
-    let mut older_success = success.clone();
-    older_success.capture_started_at_ns = success.capture_started_at_ns + 5;
-    older_success.captured_at_ns = newer_failure_started + 20;
-    older_success.session_epoch = older_success.capture_started_at_ns as u64;
-    rewrite_fact_provenance(&mut older_success);
+    let older_success = production_evidence_with_outputs(base_started + 5, neighbor, mac, vlan);
     persist_observation(&h.store, &older_success)
         .await
         .expect("older usable evidence may be retained without altering latest failure");
@@ -672,49 +1550,24 @@ async fn degraded_interpretation_preserves_last_usable_evidence() {
         .await
         .expect("persist usable evidence");
 
-    let raw = "{\"unexpected-schema\":true}";
-    let capture =
-        CommandCapture::new(raw, CaptureOutcome::Complete).captured_at("2026-11-25T15:00:00.000Z");
-    let mut context = ObservationContext::minimal(
-        &observation.device_id,
-        &observation.collector_id,
-        &observation.capture_id,
-        "2026-11-25T15:00:00.000Z",
-    );
-    context.network_namespace = Some(&observation.network_namespace);
-    context.platform = Some("frr");
-    context.session_epoch = observation.session_epoch + 1;
-    context.sequence = observation.sequence;
-    let input = FrrInterfaceJsonObservation {
-        capture,
-        context,
-        acquisition_contract: FRR_JSON_ACQUISITION_CONTRACT,
-    };
-    let normalized = normalize_frr_interface_json(&input, NormalizerLimits::default());
-    assert_eq!(normalized.facts.len(), 1);
-    assert!(normalized.facts[0].subject.entity.is_none());
-    assert!(normalized.facts[0].payload.state.is_some());
-
-    let mut degraded = observation.clone();
-    degraded.session_epoch += 1;
-    degraded.capture_started_at_ns += 1;
-    degraded.captured_at_ns += 1;
-    degraded.raw_interface_json = Some(raw.into());
-    degraded.interface_output_bytes = raw.len();
-    degraded.interface_output_sha256 = format!("{:x}", sha2::Sha256::digest(raw.as_bytes()));
-    degraded.facts = normalized
-        .facts
-        .iter()
-        .map(|fact| serde_json::to_value(fact).expect("status fact json"))
-        .collect();
-    degraded.facts_emitted = degraded.facts.len();
-    degraded.facts_validated = degraded.facts.len();
-    degraded.facts_retained = degraded.facts.len();
-    degraded.usable_entity_facts = 0;
-    degraded.status_facts = degraded.facts.len();
-    degraded.interpretation_outcome = "invalid_input".into();
-    degraded.normalization_report =
-        serde_json::to_value(&normalized.report).expect("normalization report json");
+    // A later batch whose independent family commands all failed is genuine
+    // acquisition-attempt evidence, but it has no replacement populations and
+    // therefore cannot erase the retained last-usable observation.
+    let initial_logical_started = observation.session_epoch as i64 + 2_000_000_000;
+    let started = initial_logical_started + 1_000;
+    let (neighbor, mac, vlan) = empty_l2_outputs();
+    let mut raw = production_raw_envelope(started, neighbor, mac, vlan);
+    for key in ["interfaces", "arpnd", "mac", "vlan"] {
+        let command = raw.commands.get_mut(key).expect("command slot");
+        command.outcome = "failed".into();
+        command.output = None;
+        command.output_bytes = None;
+        command.output_sha256 = None;
+        command.detail = Some("fixed read-only command failed".into());
+    }
+    let degraded = production_evidence_from_raw(raw, started);
+    assert_eq!(degraded.interpretation_outcome, "no_usable_records");
+    assert_eq!(degraded.facts.len(), 0);
 
     let err = persist_observation(&h.store, &degraded)
         .await
@@ -726,8 +1579,8 @@ async fn degraded_interpretation_preserves_last_usable_evidence() {
     persist_degraded_observation(
         &h.store,
         &degraded,
-        "invalid_structured_input",
-        "structured input did not match the qualified schema",
+        "capture_failed",
+        "independent family command execution failed",
     )
     .await
     .expect("persist degraded attempt evidence");
@@ -736,7 +1589,7 @@ async fn degraded_interpretation_preserves_last_usable_evidence() {
         .await
         .expect("last usable evidence must survive degraded interpretation");
     assert_eq!(retained.session_epoch, observation.session_epoch);
-    assert_eq!(retained.usable_entity_facts, 4);
+    assert_eq!(retained.usable_entity_facts, 6);
     let state = bonsai::enrichment::frr_interfaces::acquisition_state(&h.store, &device)
         .await
         .expect("decode state")
@@ -744,7 +1597,7 @@ async fn degraded_interpretation_preserves_last_usable_evidence() {
     assert_eq!(state.last_attempt_outcome, "degraded");
     assert_eq!(
         state.last_interpretation_outcome.as_deref(),
-        Some("invalid_input")
+        Some("no_usable_records")
     );
     assert_eq!(
         state.last_successful_observation_id.as_deref(),
@@ -753,9 +1606,211 @@ async fn degraded_interpretation_preserves_last_usable_evidence() {
 }
 
 #[tokio::test]
+async fn pr89_interface_only_observation_remains_readable_replaceable_and_restart_safe() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let graph_path = dir.path().join("graph").to_string_lossy().into_owned();
+    let started = bonsai::graph::common::now_ns() - 10_000;
+    let modern_shape = production_evidence_with_outputs(
+        started,
+        include_str!("fixtures/bn024/l2-vertical/frr2-ip-neigh-show.txt"),
+        include_str!("fixtures/bn024/l2-vertical/frr2-bridge-fdb-show.txt"),
+        include_str!("fixtures/bn024/l2-vertical/frr2-bridge-c-vlan-show.txt"),
+    );
+    let device = target(&modern_shape.device_address, None, None);
+    let interface_facts: Vec<Value> = modern_shape
+        .facts
+        .iter()
+        .filter(|fact| fact["fact_kind"] == "interface.state")
+        .cloned()
+        .collect();
+    assert!(!interface_facts.is_empty());
+
+    // Transform the production shape back into the actual merged PR-89
+    // interface-only storage contract: no multifamily commands, execution
+    // slots, ingestion metadata or family lifecycle fields. In that contract
+    // the interface command was the acquisition, so the observation completion
+    // is the interface command completion rather than the later multifamily
+    // batch boundary. Canonical identity, collector, original capture time,
+    // interface facts, digest and acquisition ordering are preserved.
+    let interface_completion = modern_shape
+        .command_execution
+        .iter()
+        .find(|command| command.command_key == "interfaces")
+        .expect("interface command execution")
+        .clone();
+    let mut legacy = serde_json::to_value(&modern_shape).expect("serialize shape");
+    let object = legacy.as_object_mut().expect("observation object");
+    object.insert(
+        "acquisition_contract".into(),
+        Value::String("frr_vtysh_show_interface_json".into()),
+    );
+    object.insert("facts".into(), Value::Array(interface_facts.clone()));
+    object.insert(
+        "facts_emitted".into(),
+        serde_json::json!(interface_facts.len()),
+    );
+    object.insert(
+        "facts_validated".into(),
+        serde_json::json!(interface_facts.len()),
+    );
+    object.insert(
+        "facts_retained".into(),
+        serde_json::json!(interface_facts.len()),
+    );
+    object.insert(
+        "usable_entity_facts".into(),
+        serde_json::json!(interface_facts.len()),
+    );
+    object.insert("status_facts".into(), serde_json::json!(0));
+    object.insert(
+        "captured_at_ns".into(),
+        serde_json::json!(interface_completion.completed_at_ns),
+    );
+    object.insert(
+        "captured_at".into(),
+        serde_json::json!(interface_completion.completed_at),
+    );
+    for key in [
+        "neighbor_command",
+        "mac_command",
+        "vlan_command",
+        "neighbor_output_sha256",
+        "neighbor_output_bytes",
+        "raw_neighbor_output",
+        "raw_neighbor_output_omitted_reason",
+        "mac_output_sha256",
+        "mac_output_bytes",
+        "raw_mac_output",
+        "raw_mac_output_omitted_reason",
+        "vlan_output_sha256",
+        "vlan_output_bytes",
+        "raw_vlan_output",
+        "raw_vlan_output_omitted_reason",
+        "ingested_at_ns",
+        "ingested_at",
+        "command_execution",
+        "family_states",
+    ] {
+        object.remove(key);
+    }
+    if let Some(report) = object
+        .get_mut("normalization_report")
+        .and_then(Value::as_object_mut)
+    {
+        report.remove("feature_families");
+    }
+
+    {
+        let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("open graph"));
+        store
+            .upsert_config_item(ConfigItemRecord {
+                id: modern_shape.observation_id.clone(),
+                config_class: "native_interface_shadow_observation".into(),
+                vendor: "frr".into(),
+                name: modern_shape.device_id.clone(),
+                version: "1".into(),
+                content_json: legacy.to_string(),
+                enabled: true,
+                created_by: "bn02404-upgrade-test".into(),
+            })
+            .await
+            .expect("seed PR-89 interface-only record");
+
+        let upgraded = latest_observation(&store, &device)
+            .await
+            .expect("PR-89 interface-only evidence must remain readable");
+        assert_eq!(
+            upgraded.capture_started_at_ns,
+            modern_shape.capture_started_at_ns
+        );
+        assert_eq!(
+            upgraded.captured_at_ns,
+            interface_completion
+                .completed_at_ns
+                .expect("interface completion ns")
+        );
+        assert_eq!(
+            upgraded.interface_output_sha256,
+            modern_shape.interface_output_sha256
+        );
+        assert_eq!(
+            upgraded
+                .facts
+                .iter()
+                .filter(|fact| fact["fact_kind"] == "interface.state")
+                .count(),
+            interface_facts.len()
+        );
+        assert_eq!(upgraded.family_states.len(), 4);
+        assert!(
+            upgraded
+                .family_states
+                .iter()
+                .any(|state| state.fact_kind == "interface.state" && state.retained.is_some())
+        );
+        for kind in ["arpnd.neighbor", "mac.forwarding", "vlan.bridge_domain"] {
+            let state = upgraded
+                .family_states
+                .iter()
+                .find(|state| state.fact_kind == kind)
+                .expect("new family lifecycle");
+            assert_eq!(state.latest_attempt.outcome, "not_attempted");
+            assert!(state.retained.is_none());
+        }
+
+        let (neighbor, mac, vlan) = populated_l2_outputs();
+        let replacement = production_evidence_with_outputs(started + 1_000, neighbor, mac, vlan);
+        persist_observation(&store, &replacement)
+            .await
+            .expect("upgraded PR-89 record must be replaceable by multifamily evidence");
+    }
+
+    let store = Arc::new(GraphStore::open(&graph_path, 256 * 1024 * 1024).expect("reopen graph"));
+    let retained = latest_observation(&store, &device)
+        .await
+        .expect("replacement must survive restart");
+    assert_eq!(retained.family_states.len(), 4);
+    assert!(
+        retained
+            .facts
+            .iter()
+            .any(|fact| fact["fact_kind"] == "mac.forwarding")
+    );
+    let acquisition = bonsai::enrichment::frr_interfaces::acquisition_state(&store, &device)
+        .await
+        .expect("decode acquisition state")
+        .expect("acquisition state after restart");
+    assert_eq!(acquisition.last_attempt_outcome, "success");
+    let attempt = bonsai::enrichment::frr_interfaces::latest_attempt_evidence(&store, &device)
+        .await
+        .expect("decode latest attempt")
+        .expect("latest attempt after restart");
+    assert_eq!(attempt.family_states.len(), retained.family_states.len());
+    for kind in [
+        "interface.state",
+        "arpnd.neighbor",
+        "mac.forwarding",
+        "vlan.bridge_domain",
+    ] {
+        let retained_state = retained
+            .family_states
+            .iter()
+            .find(|state| state.fact_kind == kind)
+            .expect("retained family");
+        let attempt_state = attempt
+            .family_states
+            .iter()
+            .find(|state| state.fact_kind == kind)
+            .expect("attempt family");
+        assert_eq!(retained_state.latest_attempt, attempt_state.latest_attempt);
+        assert_eq!(retained_state.retained, attempt_state.retained);
+    }
+}
+
+#[tokio::test]
 async fn removal_invalidates_evidence_without_permanently_poisoning_identity() {
     let h = harness().await;
-    let mut observation = fresh_evidence();
+    let observation = fresh_evidence();
     let device = target(&observation.device_address, None, None);
     persist_observation(&h.store, &observation)
         .await
@@ -798,10 +1853,13 @@ async fn removal_invalidates_evidence_without_permanently_poisoning_identity() {
     // If the same canonical identity is deliberately re-registered later, a
     // new acquisition can write fresh evidence. The invalidated payload is not
     // resurrected; it is atomically replaced only by a newer validated result.
-    observation.session_epoch += 1;
-    observation.capture_started_at_ns += 1;
-    observation.captured_at_ns += 1;
-    rewrite_fact_provenance(&mut observation);
+    let (neighbor, mac, vlan) = empty_l2_outputs();
+    let observation = production_evidence_with_outputs(
+        observation.capture_started_at_ns + 1,
+        neighbor,
+        mac,
+        vlan,
+    );
     persist_observation(&h.store, &observation)
         .await
         .expect("new validated acquisition after explicit re-registration");
@@ -856,9 +1914,9 @@ async fn operator_collects_live_frr_shadow_evidence_through_production_api() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["qualification"], "Qualified");
     assert_eq!(body["shadow_only"], true);
-    assert_eq!(body["result"]["facts_emitted"], 4);
-    assert_eq!(body["result"]["facts_validated"], 4);
-    assert_eq!(body["result"]["usable_entity_facts"], 4);
+    assert_eq!(body["result"]["facts_emitted"], 6);
+    assert_eq!(body["result"]["facts_validated"], 6);
+    assert_eq!(body["result"]["usable_entity_facts"], 6);
     assert_eq!(body["result"]["interpretation_outcome"], "complete_usable");
     assert_eq!(
         body["result"]["interface_command"],
@@ -873,7 +1931,7 @@ async fn operator_collects_live_frr_shadow_evidence_through_production_api() {
     let (status, body) = request(&h.router, "GET", &base, Some(&viewer), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["promotion"], "shadow_only");
-    assert_eq!(body["evidence"]["facts_validated"], 4);
+    assert_eq!(body["evidence"]["facts_validated"], 6);
     assert_eq!(body["evidence"]["network_namespace"], "default");
     assert_eq!(
         body["evidence"]["network_namespace_evidence"],

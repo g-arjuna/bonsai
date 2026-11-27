@@ -13,15 +13,23 @@ use crate::{
     interface_normalizer::{
         CaptureOutcome, CommandCapture, NormalizationOutput, ObservationContext,
     },
+    neighbor_normalizer::{
+        ArpndObservation, ArpndSourceProfile, InterfaceIdentityEvidence, MacObservation,
+        MacSourceProfile, normalize_arpnd, normalize_mac,
+    },
     normalizer_registry::{InterfaceObservationInput, NormalizerRegistry},
     nos_features::{HardwareScope, ProfileQuery, SoftwareRelease, builtin_registry},
+    semantic_evidence::{
+        AcquisitionScopeContract, ScopedCaptureCoverage, ScopedPopulationCoverage,
+    },
     typed_facts::PayloadState,
+    vlan_normalizer::{VlanObservation, VlanSourceProfile, normalize_vlan},
 };
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, OnceLock, Weak},
@@ -33,14 +41,25 @@ use tokio::{
 
 pub const FRR_INTERFACE_COMMAND: &str = "vtysh -c 'show interface json'";
 pub const FRR_VERSION_COMMAND: &str = "vtysh -c 'show version json'";
+pub const FRR_NEIGHBOR_COMMAND: &str = "ip neigh show";
+pub const FRR_MAC_COMMAND: &str = "bridge fdb show";
+pub const FRR_VLAN_COMMAND: &str = "bridge -c vlan show";
 pub const FRR_INTERFACE_FEATURE: &str = "interfaces.frr_json";
-pub const FRR_INTERFACE_CAPTURE_CONTRACT: &str = FRR_JSON_ACQUISITION_CONTRACT;
+pub const FRR_ARPND_FEATURE: &str = "arpnd.linux_ip_neigh";
+pub const FRR_MAC_FEATURE: &str = "mac.linux_bridge_fdb";
+pub const FRR_VLAN_FEATURE: &str = "vlan.linux_bridge_vlan";
+pub const FRR_L2_CAPTURE_CONTRACT: &str = "frr_verified_ssh_l2_snapshot_v1";
+pub const FRR_INTERFACE_CAPTURE_CONTRACT: &str = FRR_L2_CAPTURE_CONTRACT;
 const CAPTURE_DEADLINE_SECS: u64 = 45;
 const MAX_CONCURRENT_CAPTURES: usize = 2;
 const MAX_STORED_FACTS: usize = 256;
+/// Deterministic per-family retention share. No single family can consume
+/// the aggregate shadow-evidence budget and starve independently acquired
+/// families. 4 families × 64 facts exactly fills the aggregate 256-fact bound.
+const MAX_STORED_FACTS_PER_FAMILY: usize = 64;
 const MAX_STORED_DIAGNOSTICS: usize = 128;
 const MAX_STORED_RAW_BYTES: usize = 1024 * 1024;
-const MAX_STORED_OBSERVATION_BYTES: usize = 2 * 1024 * 1024;
+const MAX_STORED_OBSERVATION_BYTES: usize = 6 * 1024 * 1024;
 const MAX_HELPER_STDOUT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_HELPER_STDERR_BYTES: usize = 64 * 1024;
 
@@ -285,6 +304,114 @@ pub struct VerifiedHostKey {
     pub sha256: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CommandExecutionMetadata {
+    pub command_key: String,
+    pub command: String,
+    /// `complete`, `failed`, `timed_out`, `unsupported`, `truncated` or
+    /// `not_attempted`. This is execution evidence only; a missing output is
+    /// never represented as a successful empty capture.
+    pub outcome: String,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub started_at_ns: Option<i64>,
+    #[serde(default)]
+    pub completed_at_ns: Option<i64>,
+    #[serde(default)]
+    pub output_bytes: Option<usize>,
+    #[serde(default)]
+    pub output_sha256: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FamilyAcquisitionAttemptState {
+    pub outcome: String,
+    #[serde(default)]
+    pub normalization_outcome: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub started_at_ns: Option<i64>,
+    #[serde(default)]
+    pub completed_at_ns: Option<i64>,
+    #[serde(default)]
+    pub output_bytes: Option<usize>,
+    #[serde(default)]
+    pub output_sha256: Option<String>,
+    #[serde(default)]
+    pub capture_id: Option<String>,
+    #[serde(default)]
+    pub session_epoch: Option<u64>,
+    #[serde(default)]
+    pub sequence: Option<u64>,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub facts_emitted: usize,
+    #[serde(default)]
+    pub facts_validated: usize,
+    #[serde(default)]
+    pub report: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FamilyRetainedEvidenceState {
+    /// `current` means this evidence came from the latest family acquisition;
+    /// `last_good` means an older accepted population was preserved after a
+    /// newer failed or partial family acquisition. `partial_current` is bounded
+    /// first-use evidence that has not yet established a complete last-good
+    /// population.
+    pub evidence_state: String,
+    pub capture_id: String,
+    pub session_epoch: u64,
+    pub sequence: u64,
+    pub observed_at: String,
+    #[serde(default)]
+    pub output_bytes: Option<usize>,
+    #[serde(default)]
+    pub output_sha256: Option<String>,
+    #[serde(default)]
+    pub raw_output_retained: bool,
+    #[serde(default)]
+    pub raw_output_omitted_reason: Option<String>,
+    #[serde(default)]
+    pub facts_emitted: usize,
+    #[serde(default)]
+    pub facts_validated: usize,
+    #[serde(default)]
+    pub facts_retained: usize,
+    #[serde(default)]
+    pub facts_omitted_by_retention: usize,
+    #[serde(default)]
+    pub retention_truncated: bool,
+    #[serde(default)]
+    pub positive_empty_population: bool,
+    #[serde(default)]
+    pub coverage: Option<serde_json::Value>,
+    #[serde(default)]
+    pub report: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct StoredFeatureFamilyState {
+    pub feature: String,
+    pub fact_kind: String,
+    #[serde(default)]
+    pub support_state: String,
+    pub latest_attempt: FamilyAcquisitionAttemptState,
+    #[serde(default)]
+    pub retained: Option<FamilyRetainedEvidenceState>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoredFrrInterfaceShadowObservation {
     pub observation_id: String,
@@ -302,6 +429,12 @@ pub struct StoredFrrInterfaceShadowObservation {
     pub acquisition_contract: String,
     pub interface_command: String,
     pub version_command: String,
+    #[serde(default)]
+    pub neighbor_command: Option<String>,
+    #[serde(default)]
+    pub mac_command: Option<String>,
+    #[serde(default)]
+    pub vlan_command: Option<String>,
     pub host_key: VerifiedHostKey,
     pub platform: String,
     pub release_raw: String,
@@ -315,12 +448,38 @@ pub struct StoredFrrInterfaceShadowObservation {
     /// selection feature; per-interface VRF bindings remain separate facts.
     pub network_namespace_evidence: String,
     pub device_hostname_reported: Option<String>,
-    pub interface_output_sha256: String,
-    pub interface_output_bytes: usize,
+    #[serde(default)]
+    pub interface_output_sha256: Option<String>,
+    #[serde(default)]
+    pub interface_output_bytes: Option<usize>,
     /// Raw output is retained only within this explicit bound. Larger inputs
     /// remain evidence-addressed by digest and are marked omitted.
     pub raw_interface_json: Option<String>,
     pub raw_output_omitted_reason: Option<String>,
+    #[serde(default)]
+    pub neighbor_output_sha256: Option<String>,
+    #[serde(default)]
+    pub neighbor_output_bytes: Option<usize>,
+    #[serde(default)]
+    pub raw_neighbor_output: Option<String>,
+    #[serde(default)]
+    pub raw_neighbor_output_omitted_reason: Option<String>,
+    #[serde(default)]
+    pub mac_output_sha256: Option<String>,
+    #[serde(default)]
+    pub mac_output_bytes: Option<usize>,
+    #[serde(default)]
+    pub raw_mac_output: Option<String>,
+    #[serde(default)]
+    pub raw_mac_output_omitted_reason: Option<String>,
+    #[serde(default)]
+    pub vlan_output_sha256: Option<String>,
+    #[serde(default)]
+    pub vlan_output_bytes: Option<usize>,
+    #[serde(default)]
+    pub raw_vlan_output: Option<String>,
+    #[serde(default)]
+    pub raw_vlan_output_omitted_reason: Option<String>,
     pub profile_id: String,
     pub profile_fingerprint: Option<String>,
     pub normalizer_id: String,
@@ -339,6 +498,23 @@ pub struct StoredFrrInterfaceShadowObservation {
     pub diagnostics_retained: usize,
     pub diagnostic_retention_truncated: bool,
     pub interface_diagnostics: Vec<serde_json::Value>,
+    /// Time Bonsai ingested/assembled this record. This is deliberately
+    /// separate from `captured_at`, which remains the source acquisition
+    /// interval boundary and must not be renewed by replay ingestion.
+    #[serde(default)]
+    pub ingested_at_ns: Option<i64>,
+    #[serde(default)]
+    pub ingested_at: Option<String>,
+    /// Per-command execution timing/outcome metadata for the acquisition
+    /// batch. The batch is sequential and explicitly non-atomic.
+    #[serde(default)]
+    pub command_execution: Vec<CommandExecutionMetadata>,
+    /// Authoritative per-family latest-attempt and retained-evidence lifecycle
+    /// state. The aggregate `facts` vector is a union of the retained family
+    /// populations, not a claim that every family was freshly acquired at the
+    /// aggregate capture timestamp.
+    #[serde(default)]
+    pub family_states: Vec<StoredFeatureFamilyState>,
     pub normalization_report: serde_json::Value,
     pub acquisition_classification: String,
     /// Semantic interpretation outcome independent of transport and storage
@@ -389,6 +565,8 @@ pub struct StoredFrrInterfaceAcquisitionAttempt {
     #[serde(default)]
     pub degraded_facts: Vec<serde_json::Value>,
     #[serde(default)]
+    pub family_states: Vec<StoredFeatureFamilyState>,
+    #[serde(default)]
     pub normalization_report: Option<serde_json::Value>,
 }
 
@@ -417,6 +595,12 @@ pub struct StoredFrrInterfaceAcquisitionState {
     pub last_interpretation_outcome: Option<String>,
     #[serde(default)]
     pub last_attempt_evidence_id: Option<String>,
+    /// Restart-durable per-family lifecycle summary copied from the latest
+    /// admitted attempt. Last-good evidence itself remains in the shadow
+    /// observation record; this field prevents process restart from erasing
+    /// the distinction between current, failed, partial and retained evidence.
+    #[serde(default)]
+    pub family_states: Vec<StoredFeatureFamilyState>,
 }
 
 pub const FRR_INTERFACE_OBSERVATION_CLASS: &str = "native_interface_shadow_observation";
@@ -528,19 +712,1636 @@ fn classify_interpretation(output: &NormalizationOutput) -> (&'static str, bool,
     (outcome, usable, entity_facts, status_facts)
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawCaptureEnvelope {
-    host: String,
-    port: u16,
-    transport: String,
-    host_key: VerifiedHostKey,
-    version_command: String,
-    interface_command: String,
-    version_output: String,
-    interface_output: String,
-    release_raw: Option<String>,
-    device_hostname: Option<String>,
+pub struct RawCommandCaptureEnvelope {
+    pub command_key: String,
+    pub command: String,
+    pub outcome: String,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub started_at_ns: Option<i64>,
+    #[serde(default)]
+    pub completed_at_ns: Option<i64>,
+    #[serde(default)]
+    pub output: Option<String>,
+    #[serde(default)]
+    pub output_bytes: Option<usize>,
+    #[serde(default)]
+    pub output_sha256: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub stderr_bytes: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawAcquisitionBatchEnvelope {
+    pub started_at: String,
+    pub started_at_ns: i64,
+    pub completed_at: String,
+    pub completed_at_ns: i64,
+    pub deadline_seconds: u64,
+    pub atomic_snapshot: bool,
+    /// Feature families admitted by the approved Rust acquisition plan and
+    /// passed to the fixed helper. `version` is mandatory identity evidence
+    /// and is not a feature family. Missing/empty is not executable evidence.
+    #[serde(default)]
+    pub approved_families: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawCaptureEnvelope {
+    pub host: String,
+    pub port: u16,
+    pub transport: String,
+    pub host_key: VerifiedHostKey,
+    pub acquisition_batch: RawAcquisitionBatchEnvelope,
+    pub commands: BTreeMap<String, RawCommandCaptureEnvelope>,
+    pub release_raw: Option<String>,
+    pub device_hostname: Option<String>,
+}
+
+impl RawCaptureEnvelope {
+    pub fn command(&self, key: &str) -> Option<&RawCommandCaptureEnvelope> {
+        self.commands.get(key)
+    }
+}
+
+fn interface_identity_evidence(
+    facts: &[crate::typed_facts::TypedFact],
+) -> InterfaceIdentityEvidence {
+    let mut by_native_name = BTreeMap::new();
+    for fact in facts {
+        let Some(identity) = fact.subject.interface_identity.clone() else {
+            continue;
+        };
+        // Only the exact source-native display name may key this corroboration
+        // map. For subinterfaces the canonical subject entity is deliberately
+        // the parent/base interface, so using that entity as a key would
+        // misattribute parent-interface neighbor/FDB evidence to the child.
+        if let Some(native_name) = identity
+            .vendor_native_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            by_native_name
+                .entry(native_name.to_string())
+                .or_insert(identity);
+        }
+    }
+    InterfaceIdentityEvidence { by_native_name }
+}
+
+fn sha256_text(text: &str) -> String {
+    hex::encode(Sha256::digest(text.as_bytes()))
+}
+
+fn expected_family_command(key: &str) -> &'static str {
+    match key {
+        "version" => FRR_VERSION_COMMAND,
+        "interfaces" => FRR_INTERFACE_COMMAND,
+        "arpnd" => FRR_NEIGHBOR_COMMAND,
+        "mac" => FRR_MAC_COMMAND,
+        "vlan" => FRR_VLAN_COMMAND,
+        _ => "",
+    }
+}
+
+fn rfc3339_precision_tolerance_ns(value: &str) -> Option<i64> {
+    let time_part = value.split_once('T').map(|(_, time)| time).unwrap_or(value);
+    let zone_start = time_part
+        .find('Z')
+        .or_else(|| time_part.find('+'))
+        .or_else(|| time_part.rfind('-'))
+        .unwrap_or(time_part.len());
+    let local_time = &time_part[..zone_start];
+    let fraction_digits = local_time
+        .rsplit_once('.')
+        .map(|(_, fraction)| fraction.len())
+        .unwrap_or(0);
+    if fraction_digits == 0 {
+        return Some(1_000_000_000);
+    }
+    let zeros = fraction_digits.min(9) as u32;
+    Some(10i64.pow(9_u32.saturating_sub(zeros)))
+}
+
+fn validate_timing_pair(
+    label: &str,
+    started_at: Option<&str>,
+    completed_at: Option<&str>,
+    started_at_ns: Option<i64>,
+    completed_at_ns: Option<i64>,
+) -> Result<(i64, i64)> {
+    let (Some(started_text), Some(completed_text), Some(started_ns), Some(completed_ns)) =
+        (started_at, completed_at, started_at_ns, completed_at_ns)
+    else {
+        bail!("{label} lacks execution timing evidence")
+    };
+    let started_time = crate::semantic_evidence::parse_time(started_text)
+        .ok_or_else(|| anyhow::anyhow!("{label} start timestamp is not RFC-3339"))?;
+    let completed_time = crate::semantic_evidence::parse_time(completed_text)
+        .ok_or_else(|| anyhow::anyhow!("{label} completion timestamp is not RFC-3339"))?;
+    let parsed_started_ns = started_time.timestamp_nanos_opt().ok_or_else(|| {
+        anyhow::anyhow!("{label} start timestamp is outside the representable range")
+    })?;
+    let parsed_completed_ns = completed_time.timestamp_nanos_opt().ok_or_else(|| {
+        anyhow::anyhow!("{label} completion timestamp is outside the representable range")
+    })?;
+    let started_tolerance = rfc3339_precision_tolerance_ns(started_text)
+        .ok_or_else(|| anyhow::anyhow!("{label} start timestamp precision is invalid"))?;
+    let completed_tolerance = rfc3339_precision_tolerance_ns(completed_text)
+        .ok_or_else(|| anyhow::anyhow!("{label} completion timestamp precision is invalid"))?;
+    if (parsed_started_ns - started_ns).abs() > started_tolerance
+        || (parsed_completed_ns - completed_ns).abs() > completed_tolerance
+    {
+        bail!("{label} RFC-3339 and epoch-nanosecond timing evidence disagree")
+    }
+    if started_ns > completed_ns {
+        bail!("{label} command start is after its completion")
+    }
+    Ok((started_ns, completed_ns))
+}
+
+fn validate_command_capture(raw: &RawCaptureEnvelope, key: &str) -> Result<()> {
+    let command = raw
+        .command(key)
+        .ok_or_else(|| anyhow::anyhow!("frr capture envelope is missing command slot {key}"))?;
+    if command.command_key != key || command.command != expected_family_command(key) {
+        bail!("frr interface capture envelope identity/contract mismatch")
+    }
+    let valid_outcome = matches!(
+        command.outcome.as_str(),
+        "complete" | "failed" | "timed_out" | "unsupported" | "truncated" | "not_attempted"
+    );
+    if !valid_outcome {
+        bail!("frr capture envelope command {key} has an unknown execution outcome")
+    }
+    validate_timing_pair(
+        &format!("frr capture envelope command {key}"),
+        command.started_at.as_deref(),
+        command.completed_at.as_deref(),
+        command.started_at_ns,
+        command.completed_at_ns,
+    )?;
+    if let Some(output) = command.output.as_ref() {
+        if output.len() > 4 * 1024 * 1024 {
+            bail!("frr interface capture exceeds helper bounds")
+        }
+        if command.output_bytes != Some(output.len())
+            || command.output_sha256.as_deref() != Some(sha256_text(output).as_str())
+        {
+            bail!("frr capture envelope command {key} output digest/count mismatch")
+        }
+    } else if command.output_bytes.is_some() || command.output_sha256.is_some() {
+        bail!("frr capture envelope command {key} has output metadata without output bytes")
+    }
+    match command.outcome.as_str() {
+        "complete" if command.output.is_none() => {
+            bail!("frr capture envelope command {key} is missing successful output")
+        }
+        "unsupported" | "not_attempted" if command.output.is_some() => {
+            bail!(
+                "frr capture envelope command {key} cannot carry output for its execution outcome"
+            )
+        }
+        "failed" | "timed_out"
+            if command
+                .output
+                .as_ref()
+                .is_some_and(|output| output.is_empty()) =>
+        {
+            bail!(
+                "frr capture envelope command {key} represents a failed capture through synthesized empty output"
+            )
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_capture_envelope(raw: &RawCaptureEnvelope, address: &str) -> Result<()> {
+    if raw.host != address
+        || raw.port != 22
+        || raw.transport != "verified_ssh_read_only_cli"
+        || raw.acquisition_batch.atomic_snapshot
+        || raw.acquisition_batch.deadline_seconds == 0
+        || raw.acquisition_batch.deadline_seconds > CAPTURE_DEADLINE_SECS
+    {
+        bail!("frr interface capture envelope identity/contract mismatch")
+    }
+    let expected_slots = ["version", "interfaces", "arpnd", "mac", "vlan"];
+    if let Some(missing) = expected_slots
+        .iter()
+        .find(|slot| !raw.commands.contains_key(**slot))
+    {
+        bail!("frr capture envelope is missing command slot {missing}")
+    }
+    if raw.commands.len() != expected_slots.len()
+        || raw
+            .commands
+            .keys()
+            .any(|key| !expected_slots.contains(&key.as_str()))
+    {
+        bail!("frr capture envelope does not contain exactly the approved command slots")
+    }
+    validate_timing_pair(
+        "frr acquisition batch",
+        Some(raw.acquisition_batch.started_at.as_str()),
+        Some(raw.acquisition_batch.completed_at.as_str()),
+        Some(raw.acquisition_batch.started_at_ns),
+        Some(raw.acquisition_batch.completed_at_ns),
+    )?;
+    for key in expected_slots {
+        validate_command_capture(raw, key)?;
+    }
+    let approved = &raw.acquisition_batch.approved_families;
+    let canonical_approved: Vec<_> = ["interfaces", "arpnd", "mac", "vlan"]
+        .into_iter()
+        .filter(|family| approved.iter().any(|item| item == family))
+        .collect();
+    if approved.is_empty()
+        || approved.len() != canonical_approved.len()
+        || approved
+            .iter()
+            .zip(&canonical_approved)
+            .any(|(a, b)| a != b)
+    {
+        bail!(
+            "frr capture envelope approved acquisition plan is missing, duplicated or outside the fixed feature families"
+        )
+    }
+    for family in ["interfaces", "arpnd", "mac", "vlan"] {
+        let command = raw.command(family).expect("validated command slot");
+        let admitted = approved.iter().any(|item| item == family);
+        if !admitted && (command.outcome != "not_attempted" || command.output.is_some()) {
+            bail!(
+                "frr capture envelope contains executed evidence for a family outside the approved acquisition plan"
+            )
+        }
+    }
+
+    let mut previous_completed = raw.acquisition_batch.started_at_ns;
+    for key in expected_slots {
+        let command = raw.command(key).expect("validated command slot");
+        let started = command.started_at_ns.expect("timing validated");
+        let completed = command.completed_at_ns.expect("timing validated");
+        if started < previous_completed
+            || started < raw.acquisition_batch.started_at_ns
+            || completed > raw.acquisition_batch.completed_at_ns
+        {
+            bail!(
+                "frr capture envelope command timing is outside the sequential acquisition batch interval"
+            )
+        }
+        previous_completed = completed;
+    }
+    // The production constructor runs immediately after helper completion;
+    // integration replay may carry historical times. Reject only timestamps
+    // that cannot plausibly represent this admitted acquisition, while allowing
+    // normal sub-second clock/assembly precision around process handoff.
+    let now = crate::graph::common::now_ns();
+    if raw.acquisition_batch.completed_at_ns > now + 2_000_000_000 {
+        bail!("frr capture envelope acquisition completion is future-dated")
+    }
+    let version = raw.command("version").expect("validated version slot");
+    if version.outcome != "complete" || version.output.as_ref().is_none_or(|o| o.trim().is_empty())
+    {
+        bail!("mandatory FRR version/release identity capture did not complete")
+    }
+    Ok(())
+}
+
+fn capture_outcome_for_execution(command: &RawCommandCaptureEnvelope) -> CaptureOutcome {
+    match command.outcome.as_str() {
+        "complete" => CaptureOutcome::Complete,
+        "timed_out" => CaptureOutcome::TimedOut,
+        "unsupported" => CaptureOutcome::Unsupported,
+        "truncated" => CaptureOutcome::Truncated,
+        "not_attempted" => CaptureOutcome::Unavailable,
+        _ => CaptureOutcome::Failed,
+    }
+}
+
+fn execution_metadata(command: &RawCommandCaptureEnvelope) -> CommandExecutionMetadata {
+    CommandExecutionMetadata {
+        command_key: command.command_key.clone(),
+        command: command.command.clone(),
+        outcome: command.outcome.clone(),
+        started_at: command.started_at.clone(),
+        completed_at: command.completed_at.clone(),
+        started_at_ns: command.started_at_ns,
+        completed_at_ns: command.completed_at_ns,
+        output_bytes: command.output_bytes,
+        output_sha256: command.output_sha256.clone(),
+        detail: command.detail.clone(),
+    }
+}
+
+fn family_context<'a>(
+    device_id: &'a str,
+    collector_id: &'a str,
+    capture_id: &'a str,
+    observed_at: &'a str,
+    session_epoch: u64,
+    sequence: u64,
+    namespace: &'a str,
+    release_raw: &'a str,
+    release_build: Option<&'a str>,
+) -> ObservationContext<'a> {
+    let mut context = ObservationContext::minimal(device_id, collector_id, capture_id, observed_at);
+    context.session_epoch = session_epoch;
+    context.sequence = sequence;
+    context.network_namespace = Some(namespace);
+    context.platform = Some("frr");
+    context.release_raw = Some(release_raw);
+    context.release_build = release_build;
+    context
+}
+
+fn validate_family_profile_boundary(
+    receipt: &crate::nos_features::SelectionReceipt,
+    feature: &str,
+    namespace: &str,
+    release: &SoftwareRelease,
+    expected_normalizer: &str,
+    expected_parser_revision: &str,
+    expected_mapping_revision: &str,
+    required_contract: &str,
+) -> Result<()> {
+    let crate::nos_features::Selection::Selected(profile) = receipt.selection() else {
+        bail!("feature {feature} has no executable selected NOS profile")
+    };
+    let errors = crate::nos_features::ProfileRegistry::validate_profile(profile);
+    if !errors.is_empty() {
+        bail!(
+            "feature {feature} profile is invalid: {}",
+            errors.join("; ")
+        )
+    }
+    let status = crate::nos_features::ProfileRegistry::feature_status_in_namespace(
+        profile, feature, namespace,
+    );
+    if status != crate::nos_features::FeatureStatus::Enabled {
+        bail!("feature {feature} is not applicable in namespace {namespace}: {status:?}")
+    }
+    let closure = crate::nos_features::ProfileRegistry::dependency_closure(profile, feature);
+    if let Err(errors) = crate::nos_features::ProfileRegistry::validate_feature_set_in_scope(
+        profile, &closure, namespace,
+    ) {
+        bail!(
+            "feature {feature} composition is invalid: {}",
+            errors.join("; ")
+        )
+    }
+    let flag = profile
+        .features
+        .get(feature)
+        .expect("feature status checked");
+    if flag.promotion != crate::nos_features::PromotionState::Shadow {
+        bail!("feature {feature} is not in the approved shadow promotion state")
+    }
+    let normalizer = flag
+        .normalizer
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("feature {feature} has no normalizer binding"))?;
+    if normalizer.id != expected_normalizer
+        || normalizer.revision != expected_parser_revision
+        || normalizer.mapping_revision.as_deref() != Some(expected_mapping_revision)
+    {
+        bail!("feature {feature} parser or mapping revision is not the registered implementation")
+    }
+    let contract_ok = flag.acquisition.iter().any(|contract| {
+        contract.kind == crate::nos_features::AcquisitionKind::CliObservation
+            && contract
+                .contracts
+                .iter()
+                .any(|item| item == required_contract)
+    });
+    if !contract_ok {
+        bail!("feature {feature} does not declare the required acquisition source contract")
+    }
+    if receipt.canonical_platform() != "frr" {
+        bail!("feature {feature} selection receipt is bound to a different canonical platform")
+    }
+    let constraint = profile.release_constraint.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("feature {feature} profile has no exact release constraint")
+    })?;
+    if constraint.is_empty()
+        || !constraint.matches(Some(release))
+        || profile.verification != "release_qualified"
+    {
+        bail!(
+            "feature {feature} actual release evidence does not satisfy the exact qualified artifact constraint"
+        )
+    }
+    if !profile.hardware_constraints.is_empty() {
+        // The narrow Linux/FRR profile currently has no hardware constraints.
+        // If one is introduced, this collector must implement the complete
+        // hardware binding rather than weakening it here.
+        bail!("feature {feature} has hardware constraints this collector does not implement")
+    }
+    Ok(())
+}
+
+fn planned_capture_families(release_build: &str) -> Result<Vec<&'static str>> {
+    let release = SoftwareRelease {
+        raw: "10.6.1_git".into(),
+        train: None,
+        build: Some(release_build.to_string()),
+        components: BTreeMap::new(),
+    };
+    let profiles = builtin_registry();
+    let receipt = profiles.select_receipt(&ProfileQuery {
+        platform: "frr".into(),
+        version: release.raw.clone(),
+        release: Some(release.clone()),
+        hardware: Some(HardwareScope {
+            namespace: Some("default".into()),
+            ..Default::default()
+        }),
+    });
+    let mut families = Vec::new();
+    for (family, feature, normalizer, parser, mapping, contract) in [
+        (
+            "interfaces",
+            FRR_INTERFACE_FEATURE,
+            "interface_frr_json_normalizer",
+            crate::frr_interface_json::FRR_JSON_PARSER_REVISION,
+            crate::frr_interface_json::FRR_JSON_MAPPING_REVISION,
+            FRR_JSON_ACQUISITION_CONTRACT,
+        ),
+        (
+            "arpnd",
+            FRR_ARPND_FEATURE,
+            "arpnd_linux_ip_neigh_normalizer",
+            crate::neighbor_normalizer::NEIGHBOR_PARSER_REVISION,
+            crate::neighbor_normalizer::NEIGHBOR_MAPPING_REVISION,
+            "linux_ip_neigh_show",
+        ),
+        (
+            "mac",
+            FRR_MAC_FEATURE,
+            "mac_linux_bridge_fdb_normalizer",
+            crate::neighbor_normalizer::NEIGHBOR_PARSER_REVISION,
+            crate::neighbor_normalizer::NEIGHBOR_MAPPING_REVISION,
+            "linux_bridge_fdb_show",
+        ),
+        (
+            "vlan",
+            FRR_VLAN_FEATURE,
+            "vlan_linux_bridge_vlan_normalizer",
+            crate::vlan_normalizer::VLAN_PARSER_REVISION,
+            crate::vlan_normalizer::VLAN_MAPPING_REVISION,
+            "linux_bridge_c_vlan_show",
+        ),
+    ] {
+        if validate_family_profile_boundary(
+            &receipt, feature, "default", &release, normalizer, parser, mapping, contract,
+        )
+        .is_ok()
+        {
+            families.push(family);
+        }
+    }
+    if families.is_empty() {
+        bail!("no approved FRR feature family is applicable for the qualified artifact")
+    }
+    Ok(families)
+}
+
+fn population_coverage_from_parts(
+    capture_outcome: CaptureOutcome,
+    positive_empty: bool,
+    malformed: usize,
+    omitted: usize,
+    rejected: usize,
+    refusal: bool,
+) -> ScopedPopulationCoverage {
+    if refusal
+        || capture_outcome == CaptureOutcome::Unknown
+        || capture_outcome == CaptureOutcome::Unavailable
+    {
+        ScopedPopulationCoverage::Unknown
+    } else if capture_outcome == CaptureOutcome::Complete
+        && malformed == 0
+        && omitted == 0
+        && rejected == 0
+    {
+        ScopedPopulationCoverage::Complete
+    } else if positive_empty && capture_outcome == CaptureOutcome::Complete {
+        ScopedPopulationCoverage::Complete
+    } else {
+        ScopedPopulationCoverage::Partial
+    }
+}
+
+fn non_interface_family_outcome(
+    capture_outcome: CaptureOutcome,
+    positive_empty: bool,
+    usable_entity_facts: usize,
+    malformed: usize,
+    omitted: usize,
+    rejected: usize,
+    refusal: Option<&str>,
+) -> &'static str {
+    if refusal.is_some() {
+        return if capture_outcome.usable() {
+            "invalid_input"
+        } else {
+            "capture_failed"
+        };
+    }
+    if positive_empty
+        && capture_outcome == CaptureOutcome::Complete
+        && malformed == 0
+        && omitted == 0
+        && rejected == 0
+    {
+        return "genuine_complete_empty";
+    }
+    if usable_entity_facts == 0 {
+        return if capture_outcome == CaptureOutcome::Complete {
+            "no_usable_records"
+        } else {
+            "capture_failed"
+        };
+    }
+    if capture_outcome != CaptureOutcome::Complete || malformed > 0 || omitted > 0 || rejected > 0 {
+        "partial_usable"
+    } else {
+        "complete_usable"
+    }
+}
+
+fn family_attempt_state(
+    command: &RawCommandCaptureEnvelope,
+    normalization_outcome: Option<&str>,
+    capture_id: &str,
+    session_epoch: u64,
+    sequence: u64,
+    facts_emitted: usize,
+    facts_validated: usize,
+    report: serde_json::Value,
+) -> FamilyAcquisitionAttemptState {
+    FamilyAcquisitionAttemptState {
+        outcome: command.outcome.clone(),
+        normalization_outcome: normalization_outcome.map(str::to_string),
+        command: Some(command.command.clone()),
+        started_at: command.started_at.clone(),
+        completed_at: command.completed_at.clone(),
+        started_at_ns: command.started_at_ns,
+        completed_at_ns: command.completed_at_ns,
+        output_bytes: command.output_bytes,
+        output_sha256: command.output_sha256.clone(),
+        capture_id: Some(capture_id.to_string()),
+        session_epoch: Some(session_epoch),
+        sequence: Some(sequence),
+        detail: command.detail.clone(),
+        facts_emitted,
+        facts_validated,
+        report: Some(report),
+    }
+}
+
+fn coverage_json_with_retention(
+    coverage: &ScopedCaptureCoverage,
+    emitted_population_facts: usize,
+    retained_population_facts: usize,
+) -> Result<serde_json::Value> {
+    // `population_coverage` remains source/acquisition completeness. Shadow
+    // retention is a separate consumer/storage bound carried on the family
+    // lifecycle (`retention_truncated` and `facts_omitted_by_retention`); it
+    // must not erase the distinction between a complete source table and a
+    // complete retained population.
+    if retained_population_facts > emitted_population_facts {
+        bail!("retained family population exceeds emitted family population")
+    }
+    Ok(serde_json::to_value(coverage)?)
+}
+
+fn retention_adjusted_outcome(outcome: &str, facts_omitted_by_retention: usize) -> String {
+    if facts_omitted_by_retention > 0 && outcome == "complete_usable" {
+        "partial_usable".into()
+    } else {
+        outcome.into()
+    }
+}
+
+fn family_retained_state(
+    command: &RawCommandCaptureEnvelope,
+    outcome: &str,
+    observed_at: &str,
+    capture_id: &str,
+    session_epoch: u64,
+    sequence: u64,
+    facts_emitted: usize,
+    facts_validated: usize,
+    facts_retained: usize,
+    facts_omitted_by_retention: usize,
+    positive_empty: bool,
+    coverage: serde_json::Value,
+    report: serde_json::Value,
+    raw_within_retention: bool,
+    raw_omitted_reason: Option<String>,
+) -> Option<FamilyRetainedEvidenceState> {
+    if !matches!(
+        outcome,
+        "complete_usable" | "partial_usable" | "genuine_complete_empty"
+    ) {
+        return None;
+    }
+    Some(FamilyRetainedEvidenceState {
+        evidence_state: if outcome == "partial_usable" {
+            "partial_current"
+        } else {
+            "current"
+        }
+        .into(),
+        capture_id: capture_id.to_string(),
+        session_epoch,
+        sequence,
+        observed_at: observed_at.to_string(),
+        output_bytes: command.output_bytes,
+        output_sha256: command.output_sha256.clone(),
+        raw_output_retained: raw_within_retention,
+        raw_output_omitted_reason: raw_omitted_reason,
+        facts_emitted,
+        facts_validated,
+        facts_retained,
+        facts_omitted_by_retention,
+        retention_truncated: facts_omitted_by_retention > 0,
+        positive_empty_population: positive_empty,
+        coverage: Some(coverage),
+        report: Some(report),
+    })
+}
+
+struct AssembledFamily {
+    state: StoredFeatureFamilyState,
+    retained_facts: Vec<crate::typed_facts::TypedFact>,
+}
+
+fn cap_family_facts(
+    facts: &[crate::typed_facts::TypedFact],
+) -> (Vec<crate::typed_facts::TypedFact>, usize) {
+    // Diagnostic status facts are useful normalization output, but retained
+    // family evidence is the bounded entity population. In particular, a
+    // genuine complete-empty population is represented by scoped coverage and
+    // zero retained entity facts, not by a synthetic empty entity row.
+    let population_facts: Vec<_> = facts
+        .iter()
+        .filter(|fact| fact.subject.entity.is_some() && fact.payload.fields.is_some())
+        .cloned()
+        .collect();
+    let retained: Vec<_> = population_facts
+        .iter()
+        .take(MAX_STORED_FACTS_PER_FAMILY)
+        .cloned()
+        .collect();
+    let omitted = population_facts.len().saturating_sub(retained.len());
+    (retained, omitted)
+}
+
+fn retained_coverage_bound(
+    coverage: &ScopedCaptureCoverage,
+    observation: &StoredFrrInterfaceShadowObservation,
+    retained: &FamilyRetainedEvidenceState,
+) -> Result<()> {
+    if coverage.device_id != observation.device_id
+        || coverage.collector_id != observation.collector_id
+        || coverage.network_namespace.as_deref() != Some(observation.network_namespace.as_str())
+        || coverage.capture_id != retained.capture_id
+        || coverage.source_generation != Some(retained.session_epoch)
+        || coverage.observation_time.as_deref() != Some(retained.observed_at.as_str())
+    {
+        bail!("native interface family coverage identity does not match retained evidence")
+    }
+    if let Some(digest) = retained.output_sha256.as_ref() {
+        if !coverage.evidence_refs.iter().any(|reference| {
+            reference.kind.starts_with("raw_output") && &reference.sha256 == digest
+        }) {
+            bail!("native interface family coverage is not bound to the retained raw-output digest")
+        }
+    }
+    Ok(())
+}
+
+/// Inputs needed to assemble the production capture envelope into the same
+/// shadow observation used by live SSH acquisition and hermetic replay tests.
+/// This is the single production envelope-to-observation constructor; tests
+/// must not hand-assemble a parallel multifamily observation shape.
+pub struct CaptureEnvelopeAssemblyInput {
+    pub device_id: String,
+    pub device_address: String,
+    pub collector_id: String,
+    pub release_build: Option<String>,
+    pub acquisition_started_at_ns: i64,
+    pub acquisition_classification: String,
+}
+
+fn unsupported_family(
+    feature: &'static str,
+    fact_kind: &'static str,
+    sequence: u64,
+    command: &RawCommandCaptureEnvelope,
+    capture_id: &str,
+    session_epoch: u64,
+    observed_at: &str,
+    device_id: &str,
+    collector_id: &str,
+    namespace: &str,
+    detail: String,
+) -> AssembledFamily {
+    let outcome = "unsupported_release_or_format";
+    let _coverage = ScopedCaptureCoverage {
+        device_id: device_id.to_string(),
+        scope: None,
+        network_namespace: Some(namespace.to_string()),
+        collector_id: collector_id.to_string(),
+        source_kind: "cli_text".into(),
+        capture_id: capture_id.to_string(),
+        source_generation: Some(session_epoch),
+        acquisition_scope: feature.to_string(),
+        covered_fact_kind: fact_kind.to_string(),
+        declared_scope: AcquisitionScopeContract::Unknown,
+        capture_outcome: if command.outcome == "not_attempted" {
+            CaptureOutcome::Unavailable
+        } else {
+            CaptureOutcome::Unsupported
+        },
+        population_coverage: ScopedPopulationCoverage::Unknown,
+        positive_empty_population: false,
+        observation_time: Some(observed_at.to_string()),
+        valid_until: None,
+        observed_interfaces: BTreeSet::new(),
+        observed_forwarding_domains: BTreeSet::new(),
+        observed_vlan_ids: BTreeSet::new(),
+        records_decoded: 0,
+        malformed_records: 0,
+        omitted_records: 0,
+        rejected_records: 0,
+        evidence_refs: command
+            .output_sha256
+            .as_ref()
+            .map(|sha256| {
+                vec![crate::typed_facts::EvidenceRef {
+                    kind: "raw_output".into(),
+                    sha256: sha256.clone(),
+                    locator: Some(command.command.clone()),
+                }]
+            })
+            .unwrap_or_default(),
+    };
+    let report = serde_json::json!({
+        "capture_outcome": command.outcome,
+        "records_decoded": 0,
+        "facts_emitted": 0,
+        "refusal_reason": detail,
+    });
+    let attempt = family_attempt_state(
+        command,
+        Some(outcome),
+        capture_id,
+        session_epoch,
+        sequence,
+        0,
+        0,
+        report.clone(),
+    );
+    AssembledFamily {
+        state: StoredFeatureFamilyState {
+            feature: feature.into(),
+            fact_kind: fact_kind.into(),
+            support_state: "unsupported".into(),
+            latest_attempt: attempt,
+            retained: None,
+        },
+        retained_facts: Vec::new(),
+    }
+}
+
+/// Production envelope-to-observation constructor. Live SSH acquisition,
+/// genuine capture replay and hermetic integration tests all use this exact
+/// function so multifamily assembly cannot diverge into a test-only parallel
+/// implementation.
+pub fn observation_from_capture_envelope(
+    raw: RawCaptureEnvelope,
+    input: CaptureEnvelopeAssemblyInput,
+) -> Result<StoredFrrInterfaceShadowObservation> {
+    validate_capture_envelope(&raw, &input.device_address)?;
+    let version_command = raw.command("version").expect("validated version").clone();
+    let version_output = version_command
+        .output
+        .clone()
+        .expect("validated version output");
+    if version_output.len() > 4 * 1024 * 1024 {
+        bail!("frr version capture exceeds helper bounds")
+    }
+    let version_json: serde_json::Value = serde_json::from_str(&version_output)
+        .context("mandatory FRR version output is not valid JSON")?;
+    let parsed_release = version_json
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("mandatory FRR version output lacks release identity")?;
+    let release_raw = raw
+        .release_raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .context("frr version evidence is unavailable")?
+        .to_string();
+    if parsed_release != release_raw {
+        bail!("mandatory FRR version JSON contradicts the envelope release identity")
+    }
+    if let (Some(reported), Some(envelope)) = (
+        version_json
+            .get("hostName")
+            .and_then(serde_json::Value::as_str),
+        raw.device_hostname.as_deref(),
+    ) && reported != envelope
+    {
+        bail!("mandatory FRR version JSON contradicts the envelope hostname evidence")
+    }
+    if input.release_build.as_deref() != Some(crate::nos_features::FRR_1061_STRUCTURED_ARTIFACT) {
+        bail!(
+            "declared immutable artifact metadata does not match the qualified FRR acquisition profile"
+        )
+    }
+    let namespace = "default";
+    let release = SoftwareRelease {
+        raw: release_raw.clone(),
+        train: None,
+        build: input.release_build.clone(),
+        components: BTreeMap::new(),
+    };
+    let profiles = builtin_registry();
+    let receipt = profiles.select_receipt(&ProfileQuery {
+        platform: "frr".into(),
+        version: release_raw.clone(),
+        release: Some(release.clone()),
+        hardware: Some(HardwareScope {
+            namespace: Some(namespace.into()),
+            ..Default::default()
+        }),
+    });
+    if input.acquisition_started_at_ns > raw.acquisition_batch.started_at_ns {
+        bail!("admitted acquisition ordering token is after the actual capture batch start")
+    }
+    let ingested_at_ns = crate::graph::common::now_ns();
+    let ingested_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    // Observation time is the actual source capture interval, never the
+    // ingestion/replay time. Replaying an old envelope therefore cannot renew
+    // evidence freshness.
+    let captured_at_ns = raw.acquisition_batch.completed_at_ns;
+    let captured_at = raw.acquisition_batch.completed_at.clone();
+    let capture_id = format!("frr-l2-capture-{}", raw.acquisition_batch.started_at_ns);
+    // The numeric generation is a monotonic acquisition-ordering token. It is
+    // deliberately not evidence that each command batch was a new transport
+    // session generation; that limitation is recorded in the report below.
+    let session_epoch = input.acquisition_started_at_ns as u64;
+    let device_id = input.device_id;
+    let collector_id = input.collector_id;
+
+    let interface_command = raw
+        .command("interfaces")
+        .expect("validated interface slot")
+        .clone();
+    let neighbor_command = raw.command("arpnd").expect("validated arp slot").clone();
+    let mac_command = raw.command("mac").expect("validated mac slot").clone();
+    let vlan_command = raw.command("vlan").expect("validated vlan slot").clone();
+
+    // Interface family: the existing qualified registry dispatch remains the
+    // authority for this feature. Per-command completion time, not one batch
+    // completion timestamp, is the observation time.
+    let iface_output = interface_command.output.clone().unwrap_or_default();
+    let iface_observed_at = interface_command
+        .completed_at
+        .clone()
+        .unwrap_or_else(|| captured_at.clone());
+    let iface_capture_outcome = capture_outcome_for_execution(&interface_command);
+    let iface_capture =
+        CommandCapture::new(&iface_output, iface_capture_outcome).captured_at(&iface_observed_at);
+    let iface_context = family_context(
+        &device_id,
+        &collector_id,
+        &capture_id,
+        &iface_observed_at,
+        session_epoch,
+        1,
+        namespace,
+        &release_raw,
+        input.release_build.as_deref(),
+    );
+    let interface_observation = FrrInterfaceJsonObservation {
+        capture: iface_capture,
+        context: iface_context,
+        acquisition_contract: FRR_JSON_ACQUISITION_CONTRACT,
+    };
+    let registry = NormalizerRegistry::builtin();
+    let run = registry
+        .dispatch_input(
+            &receipt,
+            FRR_INTERFACE_FEATURE,
+            InterfaceObservationInput::FrrJson(&interface_observation),
+        )
+        .map_err(|e| anyhow::anyhow!("frr interface shadow dispatch refused: {e:?}"))?;
+    let (interface_outcome, _, _, _) = classify_interpretation(&run.output);
+    let interface_entity_facts = run
+        .output
+        .facts
+        .iter()
+        .filter(|fact| fact.subject.entity.is_some() && fact.payload.fields.is_some())
+        .count();
+    let interface_positive_empty = interface_outcome == "genuine_complete_empty";
+    let interface_malformed = run.output.report.invalid_entities + run.output.report.unparsed_lines;
+    let interface_omitted =
+        run.output.report.entities_omitted + run.output.report.output_facts_omitted;
+    let interface_refused = run.output.report.context_error.is_some();
+    let interface_coverage = ScopedCaptureCoverage {
+        device_id: device_id.clone(),
+        scope: None,
+        network_namespace: Some(namespace.into()),
+        collector_id: collector_id.clone(),
+        source_kind: "cli_ssh_structured".into(),
+        capture_id: capture_id.clone(),
+        source_generation: Some(session_epoch),
+        acquisition_scope: "frr/show-interface-json".into(),
+        covered_fact_kind: "interface.state".into(),
+        declared_scope: AcquisitionScopeContract::CompleteScopedTable,
+        capture_outcome: iface_capture_outcome,
+        population_coverage: population_coverage_from_parts(
+            iface_capture_outcome,
+            interface_positive_empty,
+            interface_malformed,
+            interface_omitted,
+            run.output.report.facts_rejected,
+            interface_refused,
+        ),
+        positive_empty_population: interface_positive_empty,
+        observation_time: Some(iface_observed_at.clone()),
+        valid_until: None,
+        observed_interfaces: run
+            .output
+            .facts
+            .iter()
+            .filter_map(|fact| fact.subject.entity.clone())
+            .collect(),
+        observed_forwarding_domains: BTreeSet::new(),
+        observed_vlan_ids: BTreeSet::new(),
+        records_decoded: run
+            .output
+            .report
+            .records_decoded
+            .unwrap_or(run.output.report.interfaces_observed),
+        malformed_records: interface_malformed,
+        omitted_records: interface_omitted,
+        rejected_records: run.output.report.facts_rejected,
+        evidence_refs: interface_command
+            .output_sha256
+            .as_ref()
+            .map(|sha256| {
+                vec![crate::typed_facts::EvidenceRef {
+                    kind: "raw_output".into(),
+                    sha256: sha256.clone(),
+                    locator: Some("frr/show-interface-json".into()),
+                }]
+            })
+            .unwrap_or_default(),
+    };
+    let (interface_retained_facts, interface_retention_omitted) =
+        cap_family_facts(&run.output.facts);
+    let interface_effective_outcome =
+        retention_adjusted_outcome(interface_outcome, interface_retention_omitted);
+    let interface_retained_population = interface_retained_facts
+        .iter()
+        .filter(|fact| fact.subject.entity.is_some() && fact.payload.fields.is_some())
+        .count();
+    let interface_coverage_json = coverage_json_with_retention(
+        &interface_coverage,
+        interface_entity_facts,
+        interface_retained_population,
+    )?;
+    let interface_report_json = serde_json::to_value(&run.output.report)?;
+    let interface_raw_within = iface_output.len() <= MAX_STORED_RAW_BYTES;
+    let interface_retained = family_retained_state(
+        &interface_command,
+        &interface_effective_outcome,
+        &iface_observed_at,
+        &capture_id,
+        session_epoch,
+        1,
+        run.output.facts.len(),
+        run.output.facts.len(),
+        interface_retained_facts.len(),
+        interface_retention_omitted,
+        interface_positive_empty,
+        interface_coverage_json,
+        interface_report_json.clone(),
+        interface_raw_within,
+        (!interface_raw_within)
+            .then_some("raw interface output exceeds 1 MiB shadow retention bound".into()),
+    );
+    let interface_family = AssembledFamily {
+        state: StoredFeatureFamilyState {
+            feature: FRR_INTERFACE_FEATURE.into(),
+            fact_kind: "interface.state".into(),
+            support_state: "supported".into(),
+            latest_attempt: family_attempt_state(
+                &interface_command,
+                Some(&interface_effective_outcome),
+                &capture_id,
+                session_epoch,
+                1,
+                run.output.facts.len(),
+                run.output.facts.len(),
+                interface_report_json,
+            ),
+            retained: interface_retained,
+        },
+        retained_facts: interface_retained_facts,
+    };
+    let interface_identities = interface_identity_evidence(&run.output.facts);
+
+    // ARP/ND family. Applicability is independently enforced against the
+    // selected NOS feature receipt before normalization dispatch.
+    let arp_output = neighbor_command.output.clone().unwrap_or_default();
+    let arp_observed_at = neighbor_command
+        .completed_at
+        .clone()
+        .unwrap_or_else(|| captured_at.clone());
+    let arp_capture_outcome = capture_outcome_for_execution(&neighbor_command);
+    let arp_boundary = validate_family_profile_boundary(
+        &receipt,
+        FRR_ARPND_FEATURE,
+        namespace,
+        &release,
+        "arpnd_linux_ip_neigh_normalizer",
+        crate::neighbor_normalizer::NEIGHBOR_PARSER_REVISION,
+        crate::neighbor_normalizer::NEIGHBOR_MAPPING_REVISION,
+        "linux_ip_neigh_show",
+    );
+    let arp_family = if let Err(error) = arp_boundary {
+        unsupported_family(
+            FRR_ARPND_FEATURE,
+            "arpnd.neighbor",
+            2,
+            &neighbor_command,
+            &capture_id,
+            session_epoch,
+            &arp_observed_at,
+            &device_id,
+            &collector_id,
+            namespace,
+            error.to_string(),
+        )
+    } else {
+        let arp_capture =
+            CommandCapture::new(&arp_output, arp_capture_outcome).captured_at(&arp_observed_at);
+        let arp_context = family_context(
+            &device_id,
+            &collector_id,
+            &capture_id,
+            &arp_observed_at,
+            session_epoch,
+            2,
+            namespace,
+            &release_raw,
+            input.release_build.as_deref(),
+        );
+        let arp_run = normalize_arpnd(&ArpndObservation {
+            profile: ArpndSourceProfile::LinuxIpNeighShow,
+            capture: arp_capture,
+            context: arp_context,
+            interface_identities: Some(&interface_identities),
+        });
+        let arp_entities = arp_run
+            .facts
+            .iter()
+            .filter(|fact| fact.subject.entity.is_some() && fact.payload.fields.is_some())
+            .count();
+        let arp_omitted =
+            arp_run.report.input_records_omitted + arp_run.report.output_facts_omitted;
+        let arp_outcome = non_interface_family_outcome(
+            arp_capture_outcome,
+            arp_run.coverage.positive_empty_population,
+            arp_entities,
+            arp_run.report.malformed_records,
+            arp_omitted,
+            arp_run.report.facts_rejected,
+            arp_run.report.refusal_reason.as_deref(),
+        );
+        let (arp_retained_facts, arp_retention_omitted) = cap_family_facts(&arp_run.facts);
+        let arp_effective_outcome = retention_adjusted_outcome(arp_outcome, arp_retention_omitted);
+        let arp_retained_population = arp_retained_facts
+            .iter()
+            .filter(|fact| fact.subject.entity.is_some() && fact.payload.fields.is_some())
+            .count();
+        let arp_coverage_json =
+            coverage_json_with_retention(&arp_run.coverage, arp_entities, arp_retained_population)?;
+        let arp_report_json = serde_json::to_value(&arp_run.report)?;
+        let arp_raw_within = arp_output.len() <= MAX_STORED_RAW_BYTES;
+        let arp_retained = family_retained_state(
+            &neighbor_command,
+            &arp_effective_outcome,
+            &arp_observed_at,
+            &capture_id,
+            session_epoch,
+            2,
+            arp_run.facts.len(),
+            arp_run.facts.len(),
+            arp_retained_facts.len(),
+            arp_retention_omitted,
+            arp_run.coverage.positive_empty_population,
+            arp_coverage_json,
+            arp_report_json.clone(),
+            arp_raw_within,
+            (!arp_raw_within)
+                .then_some("raw neighbor output exceeds 1 MiB shadow retention bound".into()),
+        );
+        AssembledFamily {
+            state: StoredFeatureFamilyState {
+                feature: FRR_ARPND_FEATURE.into(),
+                fact_kind: "arpnd.neighbor".into(),
+                support_state: "supported".into(),
+                latest_attempt: family_attempt_state(
+                    &neighbor_command,
+                    Some(&arp_effective_outcome),
+                    &capture_id,
+                    session_epoch,
+                    2,
+                    arp_run.facts.len(),
+                    arp_run.facts.len(),
+                    arp_report_json,
+                ),
+                retained: arp_retained,
+            },
+            retained_facts: arp_retained_facts,
+        }
+    };
+
+    // MAC forwarding family.
+    let mac_output = mac_command.output.clone().unwrap_or_default();
+    let mac_observed_at = mac_command
+        .completed_at
+        .clone()
+        .unwrap_or_else(|| captured_at.clone());
+    let mac_capture_outcome = capture_outcome_for_execution(&mac_command);
+    let mac_boundary = validate_family_profile_boundary(
+        &receipt,
+        FRR_MAC_FEATURE,
+        namespace,
+        &release,
+        "mac_linux_bridge_fdb_normalizer",
+        crate::neighbor_normalizer::NEIGHBOR_PARSER_REVISION,
+        crate::neighbor_normalizer::NEIGHBOR_MAPPING_REVISION,
+        "linux_bridge_fdb_show",
+    );
+    let mac_family = if let Err(error) = mac_boundary {
+        unsupported_family(
+            FRR_MAC_FEATURE,
+            "mac.forwarding",
+            3,
+            &mac_command,
+            &capture_id,
+            session_epoch,
+            &mac_observed_at,
+            &device_id,
+            &collector_id,
+            namespace,
+            error.to_string(),
+        )
+    } else {
+        let mac_capture =
+            CommandCapture::new(&mac_output, mac_capture_outcome).captured_at(&mac_observed_at);
+        let mac_context = family_context(
+            &device_id,
+            &collector_id,
+            &capture_id,
+            &mac_observed_at,
+            session_epoch,
+            3,
+            namespace,
+            &release_raw,
+            input.release_build.as_deref(),
+        );
+        let mac_run = normalize_mac(&MacObservation {
+            profile: MacSourceProfile::LinuxBridgeFdbShow,
+            capture: mac_capture,
+            context: mac_context,
+            interface_identities: Some(&interface_identities),
+        });
+        let mac_entities = mac_run
+            .facts
+            .iter()
+            .filter(|fact| fact.subject.entity.is_some() && fact.payload.fields.is_some())
+            .count();
+        let mac_omitted =
+            mac_run.report.input_records_omitted + mac_run.report.output_facts_omitted;
+        let mac_outcome = non_interface_family_outcome(
+            mac_capture_outcome,
+            mac_run.coverage.positive_empty_population,
+            mac_entities,
+            mac_run.report.malformed_records,
+            mac_omitted,
+            mac_run.report.facts_rejected,
+            mac_run.report.refusal_reason.as_deref(),
+        );
+        let (mac_retained_facts, mac_retention_omitted) = cap_family_facts(&mac_run.facts);
+        let mac_effective_outcome = retention_adjusted_outcome(mac_outcome, mac_retention_omitted);
+        let mac_retained_population = mac_retained_facts
+            .iter()
+            .filter(|fact| fact.subject.entity.is_some() && fact.payload.fields.is_some())
+            .count();
+        let mac_coverage_json =
+            coverage_json_with_retention(&mac_run.coverage, mac_entities, mac_retained_population)?;
+        let mac_report_json = serde_json::to_value(&mac_run.report)?;
+        let mac_raw_within = mac_output.len() <= MAX_STORED_RAW_BYTES;
+        let mac_retained = family_retained_state(
+            &mac_command,
+            &mac_effective_outcome,
+            &mac_observed_at,
+            &capture_id,
+            session_epoch,
+            3,
+            mac_run.facts.len(),
+            mac_run.facts.len(),
+            mac_retained_facts.len(),
+            mac_retention_omitted,
+            mac_run.coverage.positive_empty_population,
+            mac_coverage_json,
+            mac_report_json.clone(),
+            mac_raw_within,
+            (!mac_raw_within)
+                .then_some("raw MAC output exceeds 1 MiB shadow retention bound".into()),
+        );
+        AssembledFamily {
+            state: StoredFeatureFamilyState {
+                feature: FRR_MAC_FEATURE.into(),
+                fact_kind: "mac.forwarding".into(),
+                support_state: "supported".into(),
+                latest_attempt: family_attempt_state(
+                    &mac_command,
+                    Some(&mac_effective_outcome),
+                    &capture_id,
+                    session_epoch,
+                    3,
+                    mac_run.facts.len(),
+                    mac_run.facts.len(),
+                    mac_report_json,
+                ),
+                retained: mac_retained,
+            },
+            retained_facts: mac_retained_facts,
+        }
+    };
+
+    // VLAN bridge-domain family.
+    let vlan_output = vlan_command.output.clone().unwrap_or_default();
+    let vlan_observed_at = vlan_command
+        .completed_at
+        .clone()
+        .unwrap_or_else(|| captured_at.clone());
+    let vlan_capture_outcome = capture_outcome_for_execution(&vlan_command);
+    let vlan_boundary = validate_family_profile_boundary(
+        &receipt,
+        FRR_VLAN_FEATURE,
+        namespace,
+        &release,
+        "vlan_linux_bridge_vlan_normalizer",
+        crate::vlan_normalizer::VLAN_PARSER_REVISION,
+        crate::vlan_normalizer::VLAN_MAPPING_REVISION,
+        "linux_bridge_c_vlan_show",
+    );
+    let vlan_family = if let Err(error) = vlan_boundary {
+        unsupported_family(
+            FRR_VLAN_FEATURE,
+            "vlan.bridge_domain",
+            4,
+            &vlan_command,
+            &capture_id,
+            session_epoch,
+            &vlan_observed_at,
+            &device_id,
+            &collector_id,
+            namespace,
+            error.to_string(),
+        )
+    } else {
+        let vlan_capture =
+            CommandCapture::new(&vlan_output, vlan_capture_outcome).captured_at(&vlan_observed_at);
+        let vlan_context = family_context(
+            &device_id,
+            &collector_id,
+            &capture_id,
+            &vlan_observed_at,
+            session_epoch,
+            4,
+            namespace,
+            &release_raw,
+            input.release_build.as_deref(),
+        );
+        let vlan_run = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::LinuxBridgeCVlanShow,
+            capture: vlan_capture,
+            context: vlan_context,
+        });
+        let vlan_entities = vlan_run
+            .facts
+            .iter()
+            .filter(|fact| fact.subject.entity.is_some() && fact.payload.fields.is_some())
+            .count();
+        let vlan_omitted =
+            vlan_run.report.input_records_omitted + vlan_run.report.output_facts_omitted;
+        let vlan_outcome = non_interface_family_outcome(
+            vlan_capture_outcome,
+            vlan_run.coverage.positive_empty_population,
+            vlan_entities,
+            vlan_run.report.malformed_records,
+            vlan_omitted,
+            vlan_run.report.facts_rejected,
+            vlan_run.report.refusal_reason.as_deref(),
+        );
+        let (vlan_retained_facts, vlan_retention_omitted) = cap_family_facts(&vlan_run.facts);
+        let vlan_effective_outcome =
+            retention_adjusted_outcome(vlan_outcome, vlan_retention_omitted);
+        let vlan_retained_population = vlan_retained_facts
+            .iter()
+            .filter(|fact| fact.subject.entity.is_some() && fact.payload.fields.is_some())
+            .count();
+        let vlan_coverage_json = coverage_json_with_retention(
+            &vlan_run.coverage,
+            vlan_entities,
+            vlan_retained_population,
+        )?;
+        let vlan_report_json = serde_json::to_value(&vlan_run.report)?;
+        let vlan_raw_within = vlan_output.len() <= MAX_STORED_RAW_BYTES;
+        let vlan_retained = family_retained_state(
+            &vlan_command,
+            &vlan_effective_outcome,
+            &vlan_observed_at,
+            &capture_id,
+            session_epoch,
+            4,
+            vlan_run.facts.len(),
+            vlan_run.facts.len(),
+            vlan_retained_facts.len(),
+            vlan_retention_omitted,
+            vlan_run.coverage.positive_empty_population,
+            vlan_coverage_json,
+            vlan_report_json.clone(),
+            vlan_raw_within,
+            (!vlan_raw_within)
+                .then_some("raw VLAN output exceeds 1 MiB shadow retention bound".into()),
+        );
+        AssembledFamily {
+            state: StoredFeatureFamilyState {
+                feature: FRR_VLAN_FEATURE.into(),
+                fact_kind: "vlan.bridge_domain".into(),
+                support_state: "supported".into(),
+                latest_attempt: family_attempt_state(
+                    &vlan_command,
+                    Some(&vlan_effective_outcome),
+                    &capture_id,
+                    session_epoch,
+                    4,
+                    vlan_run.facts.len(),
+                    vlan_run.facts.len(),
+                    vlan_report_json,
+                ),
+                retained: vlan_retained,
+            },
+            retained_facts: vlan_retained_facts,
+        }
+    };
+
+    let mut families = vec![interface_family, arp_family, mac_family, vlan_family];
+    for family in &mut families {
+        if family.state.retained.is_none() {
+            // Failed/unsupported family interpretation can emit bounded status
+            // facts for attempt diagnostics, but those facts are not retained
+            // family evidence and must not enter the usable aggregate union.
+            family.retained_facts.clear();
+        }
+    }
+    let mut typed_facts = Vec::new();
+    for family in &families {
+        typed_facts.extend(family.retained_facts.iter().cloned());
+    }
+    if !typed_facts.iter().all(|fact| fact.validate().is_ok()) {
+        bail!("frr native normalizers emitted an invalid typed fact")
+    }
+    let usable_family_count = families
+        .iter()
+        .filter(|family| family.state.retained.is_some())
+        .count();
+    let fresh_complete_count = families
+        .iter()
+        .filter(|family| {
+            matches!(
+                family.state.latest_attempt.normalization_outcome.as_deref(),
+                Some("complete_usable" | "genuine_complete_empty")
+            )
+        })
+        .count();
+    let _fresh_partial_count = families
+        .iter()
+        .filter(|family| {
+            matches!(
+                family.state.latest_attempt.normalization_outcome.as_deref(),
+                Some("partial_usable")
+            )
+        })
+        .count();
+    let interpretation_outcome = if usable_family_count == 0 {
+        "no_usable_records"
+    } else if fresh_complete_count == 4 {
+        "complete_usable"
+    } else {
+        "partial_usable"
+    };
+    let facts_emitted: usize = families
+        .iter()
+        .map(|family| family.state.latest_attempt.facts_emitted)
+        .sum();
+    let facts_validated: usize = families
+        .iter()
+        .map(|family| family.state.latest_attempt.facts_validated)
+        .sum();
+    let facts_retained = typed_facts.len();
+    let fact_retention_truncated = families.iter().any(|family| {
+        family
+            .state
+            .retained
+            .as_ref()
+            .is_some_and(|r| r.retention_truncated)
+    });
+    let mut facts = Vec::with_capacity(facts_retained.min(MAX_STORED_FACTS));
+    for fact in typed_facts.iter().take(MAX_STORED_FACTS) {
+        facts.push(serde_json::to_value(fact)?);
+    }
+    let diagnostics_retained = run.output.interfaces.len().min(MAX_STORED_DIAGNOSTICS);
+    let mut interface_diagnostics = Vec::with_capacity(diagnostics_retained);
+    for diagnostic in run.output.interfaces.iter().take(diagnostics_retained) {
+        interface_diagnostics.push(serde_json::to_value(diagnostic)?);
+    }
+    let interface_sha = interface_command.output_sha256.clone();
+    let interface_bytes = interface_command.output_bytes;
+    let neighbor_sha = neighbor_command.output_sha256.clone();
+    let neighbor_bytes = neighbor_command.output_bytes;
+    let mac_sha = mac_command.output_sha256.clone();
+    let mac_bytes = mac_command.output_bytes;
+    let vlan_sha = vlan_command.output_sha256.clone();
+    let vlan_bytes = vlan_command.output_bytes;
+    let raw_within_retention = interface_raw_within;
+    let neighbor_within_retention = arp_output.len() <= MAX_STORED_RAW_BYTES;
+    let mac_within_retention = mac_output.len() <= MAX_STORED_RAW_BYTES;
+    let vlan_within_retention = vlan_output.len() <= MAX_STORED_RAW_BYTES;
+    let family_states: Vec<_> = families.iter().map(|family| family.state.clone()).collect();
+    let feature_family_report: Vec<_> = family_states
+        .iter()
+        .map(|family| {
+            serde_json::json!({
+                "feature": family.feature,
+                "fact_kind": family.fact_kind,
+                "support_state": family.support_state,
+                "latest_attempt": family.latest_attempt,
+                "retained": family.retained,
+                "facts_emitted": family.latest_attempt.facts_emitted,
+                "facts_retained": family.retained.as_ref().map(|r| r.facts_retained).unwrap_or(0),
+                "facts_omitted_by_retention": family.retained.as_ref().map(|r| r.facts_omitted_by_retention).unwrap_or(0),
+                "coverage": family.retained.as_ref().and_then(|r| r.coverage.clone()),
+                "report": family.latest_attempt.report,
+            })
+        })
+        .collect();
+    let mut normalization_report = serde_json::to_value(&run.output.report)?;
+    normalization_report["feature_families"] = serde_json::Value::Array(feature_family_report);
+    normalization_report["acquisition_batch"] = serde_json::json!({
+        "atomic_snapshot": false,
+        "ordering_generation_semantics": "monotonic acquisition ordering only; not proof of a new transport session generation",
+        "started_at": raw.acquisition_batch.started_at,
+        "started_at_ns": raw.acquisition_batch.started_at_ns,
+        "completed_at": raw.acquisition_batch.completed_at,
+        "completed_at_ns": raw.acquisition_batch.completed_at_ns,
+        "approved_families": raw.acquisition_batch.approved_families.clone(),
+    });
+    normalization_report["command_execution"] = serde_json::to_value(
+        raw.commands
+            .values()
+            .map(execution_metadata)
+            .collect::<Vec<_>>(),
+    )?;
+    let usable_entity_facts = typed_facts
+        .iter()
+        .filter(|fact| fact.subject.entity.is_some() && fact.payload.fields.is_some())
+        .count();
+    let status_facts = typed_facts
+        .iter()
+        .filter(|fact| fact.subject.entity.is_none() && fact.payload.state.is_some())
+        .count();
+
+    Ok(StoredFrrInterfaceShadowObservation {
+        observation_id: observation_id(&device_id, namespace),
+        device_address: input.device_address,
+        device_id,
+        collector_id,
+        captured_at_ns,
+        capture_started_at_ns: input.acquisition_started_at_ns,
+        captured_at,
+        transport: raw.transport,
+        acquisition_contract: FRR_INTERFACE_CAPTURE_CONTRACT.into(),
+        interface_command: interface_command.command.clone(),
+        version_command: version_command.command.clone(),
+        neighbor_command: Some(neighbor_command.command.clone()),
+        mac_command: Some(mac_command.command.clone()),
+        vlan_command: Some(vlan_command.command.clone()),
+        host_key: raw.host_key,
+        platform: "frr".into(),
+        release_raw,
+        release_build: input.release_build,
+        network_namespace: namespace.into(),
+        network_namespace_evidence:
+            "fixed verified SSH session in device default network namespace; no namespace override"
+                .into(),
+        device_hostname_reported: raw.device_hostname,
+        interface_output_sha256: interface_sha,
+        interface_output_bytes: interface_bytes,
+        raw_interface_json: (interface_command.output.is_some() && raw_within_retention)
+            .then_some(iface_output),
+        raw_output_omitted_reason: if interface_command.output.is_none() {
+            Some("interface command did not produce captured output".into())
+        } else {
+            (!raw_within_retention)
+                .then_some("raw output exceeds 1 MiB shadow retention bound".into())
+        },
+        neighbor_output_sha256: neighbor_sha,
+        neighbor_output_bytes: neighbor_bytes,
+        raw_neighbor_output: (neighbor_command.output.is_some() && neighbor_within_retention)
+            .then_some(arp_output),
+        raw_neighbor_output_omitted_reason: if neighbor_command.output.is_none() {
+            Some("neighbor command did not produce captured output".into())
+        } else {
+            (!neighbor_within_retention)
+                .then_some("raw neighbor output exceeds 1 MiB shadow retention bound".into())
+        },
+        mac_output_sha256: mac_sha,
+        mac_output_bytes: mac_bytes,
+        raw_mac_output: (mac_command.output.is_some() && mac_within_retention)
+            .then_some(mac_output),
+        raw_mac_output_omitted_reason: if mac_command.output.is_none() {
+            Some("MAC command did not produce captured output".into())
+        } else {
+            (!mac_within_retention)
+                .then_some("raw MAC output exceeds 1 MiB shadow retention bound".into())
+        },
+        vlan_output_sha256: vlan_sha,
+        vlan_output_bytes: vlan_bytes,
+        raw_vlan_output: (vlan_command.output.is_some() && vlan_within_retention)
+            .then_some(vlan_output),
+        raw_vlan_output_omitted_reason: if vlan_command.output.is_none() {
+            Some("VLAN command did not produce captured output".into())
+        } else {
+            (!vlan_within_retention)
+                .then_some("raw VLAN output exceeds 1 MiB shadow retention bound".into())
+        },
+        profile_id: run.profile_id,
+        profile_fingerprint: run.profile_fingerprint,
+        normalizer_id: run.normalizer_id,
+        normalizer_revision: run.normalizer_revision,
+        mapping_revision: run.mapping_revision,
+        qualification: format!("{:?}", run.qualification),
+        shadow_only: run.shadow_only,
+        capture_id,
+        session_epoch,
+        sequence: 1,
+        facts_emitted,
+        facts_validated,
+        facts_retained,
+        fact_retention_truncated,
+        facts,
+        diagnostics_retained,
+        diagnostic_retention_truncated: diagnostics_retained != run.output.interfaces.len(),
+        interface_diagnostics,
+        ingested_at_ns: Some(ingested_at_ns),
+        ingested_at: Some(ingested_at),
+        command_execution: raw.commands.values().map(execution_metadata).collect(),
+        family_states,
+        normalization_report,
+        acquisition_classification: input.acquisition_classification,
+        interpretation_outcome: interpretation_outcome.into(),
+        usable_entity_facts,
+        status_facts,
+    })
 }
 
 /// Acquire, select, dispatch and validate one bounded shadow observation.
@@ -562,10 +2363,6 @@ pub async fn collect_normalize_frr_interfaces(
         .context("frr interface collection requires an inventory IP address")?;
     let known_hosts = known_hosts
         .context("pinned SSH host-key configuration is required for native interface collection")?;
-    // The only currently qualified structured interface profile is bound to
-    // one immutable artifact. Missing or different declared build metadata is
-    // knowable before network contact and must refuse at admission rather
-    // than use the device as an oracle for supportability.
     if target.software_build.as_deref() != Some(crate::nos_features::FRR_1061_STRUCTURED_ARTIFACT) {
         bail!(
             "frr interface shadow dispatch refused: exact qualified software build metadata is absent or does not match the supported artifact"
@@ -575,6 +2372,11 @@ pub async fn collect_normalize_frr_interfaces(
     if admission.device_key() != device_id {
         bail!("native interface acquisition admission identity mismatch")
     }
+    let release_build = target
+        .software_build
+        .clone()
+        .expect("exact artifact checked");
+    let families = planned_capture_families(&release_build)?;
     let started = crate::graph::common::now_ns();
     let python = std::env::var_os("BONSAI_PYTHON_BIN")
         .map(PathBuf::from)
@@ -593,6 +2395,8 @@ pub async fn collect_normalize_frr_interfaces(
         .arg(address)
         .arg("--username")
         .arg(&credentials.username)
+        .arg("--families")
+        .arg(families.join(","))
         .env("BONSAI_CAPTURE_PASSWORD", credentials.password.as_str())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -602,183 +2406,239 @@ pub async fn collect_normalize_frr_interfaces(
         std::time::Duration::from_secs(CAPTURE_DEADLINE_SECS),
     )
     .await?;
-    // Keep the admission permit through normalization and validation, not
-    // merely the SSH subprocess: large-but-in-budget structured input is CPU
-    // and memory work in this process and must count against the same bound.
     if !output.status.success() {
         bail!(
             "frr interface capture failed (helper stderr {} bytes); verify credentials and pinned SSH host keys",
             output.stderr_bytes
         )
     }
-    let raw: RawCaptureEnvelope =
-        serde_json::from_slice(&output.stdout).context("invalid frr interface capture envelope")?;
-    if raw.host != address
-        || raw.port != 22
-        || raw.transport != "verified_ssh_read_only_cli"
-        || raw.interface_command != FRR_INTERFACE_COMMAND
-        || raw.version_command != FRR_VERSION_COMMAND
-    {
-        bail!("frr interface capture envelope identity/contract mismatch")
-    }
     if output.stdout_bytes == 0 {
         bail!("frr interface capture helper produced no envelope")
     }
-    if raw.interface_output.len() > 4 * 1024 * 1024 || raw.version_output.len() > 4 * 1024 * 1024 {
-        bail!("frr interface capture exceeds helper bounds")
-    }
-    let release_raw = raw
-        .release_raw
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .context("frr version evidence is unavailable")?
-        .to_string();
-    let release_build = target.software_build.clone();
+    let raw: RawCaptureEnvelope =
+        serde_json::from_slice(&output.stdout).context("invalid frr interface capture envelope")?;
     let address_string = address.to_string();
     let collector_id = collector_id.to_string();
-    let RawCaptureEnvelope {
-        transport,
-        host_key,
-        version_command,
-        interface_command,
-        interface_output,
-        device_hostname,
-        ..
-    } = raw;
-
-    // JSON decoding, profile selection, native normalization, typed-fact
-    // validation and serialization are bounded CPU work. Keep them off the
-    // async request worker; the caller-owned admission object remains held by
-    // the detached acquisition operation while this blocking job executes.
-    tokio::task::spawn_blocking(move || -> Result<StoredFrrInterfaceShadowObservation> {
-        let release = SoftwareRelease {
-            raw: release_raw.clone(),
-            train: None,
-            build: release_build.clone(),
-            components: BTreeMap::new(),
-        };
-        let namespace = "default";
-        let profiles = builtin_registry();
-        let receipt = profiles.select_receipt(&ProfileQuery {
-            platform: "frr".into(),
-            version: release_raw.clone(),
-            release: Some(release),
-            hardware: Some(HardwareScope {
-                namespace: Some(namespace.into()),
-                ..Default::default()
-            }),
-        });
-        let captured_at_ns = crate::graph::common::now_ns();
-        let captured_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        let capture_id = format!("frr-interface-capture-{captured_at_ns}");
-        // Order observations by acquisition start, not processing completion.
-        // A slower older capture must not become current merely because it
-        // finished after a newer capture; replaying this same observation
-        // preserves rather than refreshes its original temporal position.
-        let session_epoch = started as u64;
-        let run = {
-            let mut context =
-                ObservationContext::minimal(&device_id, &collector_id, &capture_id, &captured_at);
-            context.session_epoch = session_epoch;
-            context.sequence = 1;
-            context.network_namespace = Some(namespace);
-            context.platform = Some("frr");
-            context.release_raw = Some(&release_raw);
-            context.release_build = release_build.as_deref();
-            let capture = CommandCapture::new(&interface_output, CaptureOutcome::Complete)
-                .captured_at(&captured_at);
-            let observation = FrrInterfaceJsonObservation {
-                capture,
-                context,
-                acquisition_contract: FRR_JSON_ACQUISITION_CONTRACT,
-            };
-            let registry = NormalizerRegistry::builtin();
-            registry
-                .dispatch_input(
-                    &receipt,
-                    FRR_INTERFACE_FEATURE,
-                    InterfaceObservationInput::FrrJson(&observation),
-                )
-                .map_err(|e| anyhow::anyhow!("frr interface shadow dispatch refused: {e:?}"))?
-        };
-        if !run.output.facts.iter().all(|fact| fact.validate().is_ok()) {
-            bail!("frr interface normalizer emitted an invalid typed fact")
-        }
-        let (mut interpretation_outcome, usable_observation, usable_entity_facts, status_facts) =
-            classify_interpretation(&run.output);
-        let facts_emitted = run.output.facts.len();
-        let facts_retained = facts_emitted.min(MAX_STORED_FACTS);
-        let fact_retention_truncated = facts_retained != facts_emitted;
-        if fact_retention_truncated && usable_observation {
-            interpretation_outcome = "partial_usable";
-        }
-        let mut facts = Vec::with_capacity(facts_retained);
-        for fact in run.output.facts.iter().take(facts_retained) {
-            facts.push(serde_json::to_value(fact)?);
-        }
-        let diagnostics_retained = run.output.interfaces.len().min(MAX_STORED_DIAGNOSTICS);
-        let mut interface_diagnostics = Vec::with_capacity(diagnostics_retained);
-        for diagnostic in run.output.interfaces.iter().take(diagnostics_retained) {
-            interface_diagnostics.push(serde_json::to_value(diagnostic)?);
-        }
-        let interface_sha = hex::encode(Sha256::digest(interface_output.as_bytes()));
-        let interface_output_bytes = interface_output.len();
-        let raw_within_retention = interface_output.len() <= MAX_STORED_RAW_BYTES;
-        let normalization_report = serde_json::to_value(&run.output.report)?;
-        Ok(StoredFrrInterfaceShadowObservation {
-            observation_id: observation_id(&device_id, namespace),
-            device_address: address_string,
-            device_id,
-            collector_id,
-            captured_at_ns,
-            capture_started_at_ns: started,
-            captured_at,
-            transport,
-            acquisition_contract: FRR_INTERFACE_CAPTURE_CONTRACT.into(),
-            interface_command,
-            version_command,
-            host_key,
-            platform: "frr".into(),
-            release_raw,
-            release_build,
-            network_namespace: namespace.into(),
-            network_namespace_evidence:
-                "fixed verified SSH session in device default network namespace; no namespace override"
-                    .into(),
-            device_hostname_reported: device_hostname,
-            interface_output_sha256: interface_sha,
-            interface_output_bytes,
-            raw_interface_json: raw_within_retention.then_some(interface_output),
-            raw_output_omitted_reason: (!raw_within_retention)
-                .then_some("raw output exceeds 1 MiB shadow retention bound".into()),
-            profile_id: run.profile_id,
-            profile_fingerprint: run.profile_fingerprint,
-            normalizer_id: run.normalizer_id,
-            normalizer_revision: run.normalizer_revision,
-            mapping_revision: run.mapping_revision,
-            qualification: format!("{:?}", run.qualification),
-            shadow_only: run.shadow_only,
-            capture_id,
-            session_epoch,
-            sequence: 1,
-            facts_emitted,
-            facts_validated: facts_emitted,
-            facts_retained,
-            fact_retention_truncated,
-            facts,
-            diagnostics_retained,
-            diagnostic_retention_truncated: diagnostics_retained != run.output.interfaces.len(),
-            interface_diagnostics,
-            normalization_report,
-            acquisition_classification: "live_authorized_ssh_readonly".into(),
-            interpretation_outcome: interpretation_outcome.into(),
-            usable_entity_facts,
-            status_facts,
-        })
+    tokio::task::spawn_blocking(move || {
+        observation_from_capture_envelope(
+            raw,
+            CaptureEnvelopeAssemblyInput {
+                device_id,
+                device_address: address_string,
+                collector_id,
+                release_build: Some(release_build),
+                acquisition_started_at_ns: started,
+                acquisition_classification: "live_authorized_ssh_readonly".into(),
+            },
+        )
     })
     .await
     .context("frr interface normalization worker failed")?
+}
+
+fn expected_family_contract(
+    fact_kind: &str,
+) -> Option<(
+    &'static str,
+    &'static str,
+    u64,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+)> {
+    match fact_kind {
+        "interface.state" => Some((
+            FRR_INTERFACE_FEATURE,
+            "interface",
+            1,
+            "frr/show-interface-json",
+            "cli_ssh_structured",
+            "native_frr_structured",
+            crate::frr_interface_json::FRR_JSON_PARSER_REVISION,
+            crate::frr_interface_json::FRR_JSON_MAPPING_REVISION,
+        )),
+        "arpnd.neighbor" => Some((
+            FRR_ARPND_FEATURE,
+            "interface",
+            2,
+            "linux/ip-neigh-show",
+            "cli_text",
+            "native_neighbor_normalizer",
+            crate::neighbor_normalizer::NEIGHBOR_PARSER_REVISION,
+            crate::neighbor_normalizer::NEIGHBOR_MAPPING_REVISION,
+        )),
+        "mac.forwarding" => Some((
+            FRR_MAC_FEATURE,
+            "interface",
+            3,
+            "linux/bridge-fdb-show",
+            "cli_text",
+            "native_neighbor_normalizer",
+            crate::neighbor_normalizer::NEIGHBOR_PARSER_REVISION,
+            crate::neighbor_normalizer::NEIGHBOR_MAPPING_REVISION,
+        )),
+        "vlan.bridge_domain" => Some((
+            FRR_VLAN_FEATURE,
+            "forwarding",
+            4,
+            "linux/bridge-c-vlan-show",
+            "cli_text",
+            "bonsai.vlan_normalizer",
+            crate::vlan_normalizer::VLAN_PARSER_REVISION,
+            crate::vlan_normalizer::VLAN_MAPPING_REVISION,
+        )),
+        _ => None,
+    }
+}
+
+fn raw_output_metadata<'a>(
+    observation: &'a StoredFrrInterfaceShadowObservation,
+    fact_kind: &str,
+) -> Result<(
+    Option<usize>,
+    Option<&'a str>,
+    &'a Option<String>,
+    &'a Option<String>,
+)> {
+    match fact_kind {
+        "interface.state" => Ok((
+            observation.interface_output_bytes,
+            observation.interface_output_sha256.as_deref(),
+            &observation.raw_interface_json,
+            &observation.raw_output_omitted_reason,
+        )),
+        "arpnd.neighbor" => Ok((
+            observation.neighbor_output_bytes,
+            observation.neighbor_output_sha256.as_deref(),
+            &observation.raw_neighbor_output,
+            &observation.raw_neighbor_output_omitted_reason,
+        )),
+        "mac.forwarding" => Ok((
+            observation.mac_output_bytes,
+            observation.mac_output_sha256.as_deref(),
+            &observation.raw_mac_output,
+            &observation.raw_mac_output_omitted_reason,
+        )),
+        "vlan.bridge_domain" => Ok((
+            observation.vlan_output_bytes,
+            observation.vlan_output_sha256.as_deref(),
+            &observation.raw_vlan_output,
+            &observation.raw_vlan_output_omitted_reason,
+        )),
+        _ => bail!("unsupported native interface family fact kind"),
+    }
+}
+
+/// Validate the stored multifamily observation using fact-kind-specific
+/// semantic contracts. This intentionally does not reduce every family to
+/// the interface namespace: interface/ARP/MAC facts are interface-namespace
+/// operational facts, while bridge-domain VLAN facts are forwarding-plane
+/// operational facts. Common canonical device, collector, scope, network
+/// namespace, capture-generation and bounded-retention checks apply to all.
+fn fact_json_text<'a>(fact: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
+    let mut current = fact;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_str()
+}
+
+fn same_rfc3339_instant(left: &str, right: &str) -> bool {
+    match (
+        crate::semantic_evidence::parse_time(left),
+        crate::semantic_evidence::parse_time(right),
+    ) {
+        (Some(a), Some(b)) => a.timestamp_nanos_opt() == b.timestamp_nanos_opt(),
+        _ => false,
+    }
+}
+
+fn attempt_order_key(attempt: &FamilyAcquisitionAttemptState) -> (i64, u64, u64) {
+    (
+        attempt.started_at_ns.unwrap_or(0),
+        attempt.session_epoch.unwrap_or(0),
+        attempt.sequence.unwrap_or(0),
+    )
+}
+
+fn retained_order_key(retained: &FamilyRetainedEvidenceState) -> (i64, u64, u64) {
+    (
+        crate::semantic_evidence::parse_time(&retained.observed_at)
+            .and_then(|time| time.timestamp_nanos_opt())
+            .unwrap_or(0),
+        retained.session_epoch,
+        retained.sequence,
+    )
+}
+
+fn usable_family_normalization(outcome: Option<&str>) -> bool {
+    matches!(
+        outcome,
+        Some("complete_usable" | "partial_usable" | "genuine_complete_empty")
+    )
+}
+
+fn retained_matches_latest_attempt(
+    retained: &FamilyRetainedEvidenceState,
+    attempt: &FamilyAcquisitionAttemptState,
+) -> bool {
+    attempt.capture_id.as_deref() == Some(retained.capture_id.as_str())
+        && attempt.session_epoch == Some(retained.session_epoch)
+        && attempt.sequence == Some(retained.sequence)
+}
+
+fn lifecycle_state_for_retained(
+    retained: &FamilyRetainedEvidenceState,
+    attempt: &FamilyAcquisitionAttemptState,
+) -> &'static str {
+    if retained_matches_latest_attempt(retained, attempt) {
+        match attempt.normalization_outcome.as_deref() {
+            Some("partial_usable") => "partial_current",
+            Some("complete_usable" | "genuine_complete_empty") => "current",
+            _ => "stale_last_usable",
+        }
+    } else {
+        "stale_last_usable"
+    }
+}
+
+fn rfc3339_from_epoch_ns(ns: i64) -> Option<String> {
+    let secs = ns.div_euclid(1_000_000_000);
+    let nanos = ns.rem_euclid(1_000_000_000) as u32;
+    chrono::DateTime::from_timestamp(secs, nanos).map(|time| time.to_rfc3339())
+}
+
+fn validate_single_rfc3339_time(label: &str, text: &str, ns: i64) -> Result<()> {
+    let parsed = crate::semantic_evidence::parse_time(text)
+        .ok_or_else(|| anyhow::anyhow!("{label} is not RFC-3339"))?;
+    let parsed_ns = parsed
+        .timestamp_nanos_opt()
+        .ok_or_else(|| anyhow::anyhow!("{label} is outside the representable range"))?;
+    let tolerance = rfc3339_precision_tolerance_ns(text)
+        .ok_or_else(|| anyhow::anyhow!("{label} precision is invalid"))?;
+    if (parsed_ns - ns).abs() > tolerance {
+        bail!("{label} RFC-3339 and epoch-nanosecond values disagree")
+    }
+    Ok(())
+}
+
+fn validate_attempt_timing(attempt: &FamilyAcquisitionAttemptState, fact_kind: &str) -> Result<()> {
+    if attempt.started_at.is_some()
+        || attempt.completed_at.is_some()
+        || attempt.started_at_ns.is_some()
+        || attempt.completed_at_ns.is_some()
+    {
+        validate_timing_pair(
+            &format!("native interface family latest attempt for {fact_kind}"),
+            attempt.started_at.as_deref(),
+            attempt.completed_at.as_deref(),
+            attempt.started_at_ns,
+            attempt.completed_at_ns,
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_stored_observation(observation: &StoredFrrInterfaceShadowObservation) -> Result<()> {
@@ -796,40 +2656,639 @@ fn validate_stored_observation(observation: &StoredFrrInterfaceShadowObservation
         bail!("native interface observation metadata is internally inconsistent")
     }
     if observation.collector_id.trim().is_empty() {
-        // Pre-correction shadow records did not duplicate collector_id at the
-        // top level. They are not migrated; new writes must carry it. Reading
-        // such a record is rejected rather than silently reattributing it.
         bail!("native interface observation predates canonical source identity")
     }
+    let legacy_interface_only = observation.acquisition_contract == FRR_JSON_ACQUISITION_CONTRACT;
+    if observation.transport != "verified_ssh_read_only_cli"
+        || (!legacy_interface_only && observation.acquisition_contract != FRR_L2_CAPTURE_CONTRACT)
+        || observation.platform != "frr"
+        || !observation.shadow_only
+    {
+        bail!("native interface observation acquisition/trust contract mismatch")
+    }
+    validate_single_rfc3339_time(
+        "native interface observation capture completion",
+        &observation.captured_at,
+        observation.captured_at_ns,
+    )?;
+    if observation.capture_started_at_ns > observation.captured_at_ns {
+        bail!("native interface observation acquisition interval is contradictory")
+    }
+    if let (Some(text), Some(ns)) = (&observation.ingested_at, observation.ingested_at_ns) {
+        validate_single_rfc3339_time("native interface ingestion time", text, ns)?;
+        if ns < observation.captured_at_ns {
+            bail!("native interface ingestion time precedes source capture completion")
+        }
+    }
+
+    let expected_families = [
+        "interface.state",
+        "arpnd.neighbor",
+        "mac.forwarding",
+        "vlan.bridge_domain",
+    ];
+    if observation.family_states.len() != expected_families.len() {
+        bail!(
+            "native interface observation does not carry the complete registered family lifecycle state"
+        )
+    }
+    let mut states_by_kind = BTreeMap::new();
+    for fact_kind in expected_families {
+        let Some((
+            feature,
+            _namespace,
+            expected_sequence,
+            _scope,
+            _source_kind,
+            _producer,
+            _parser,
+            _mapping,
+        )) = expected_family_contract(fact_kind)
+        else {
+            bail!("internal family contract missing for {fact_kind}")
+        };
+        let matches: Vec<_> = observation
+            .family_states
+            .iter()
+            .filter(|state| state.fact_kind == fact_kind)
+            .collect();
+        if matches.len() != 1 {
+            bail!(
+                "native interface family lifecycle state is missing or duplicated for {fact_kind}"
+            )
+        }
+        let state = matches[0];
+        if state.feature != feature
+            || !matches!(
+                state.support_state.as_str(),
+                "supported" | "unsupported" | "unknown"
+            )
+        {
+            bail!("native interface family feature/support identity mismatch for {fact_kind}")
+        }
+        let attempt = &state.latest_attempt;
+        if !matches!(
+            attempt.outcome.as_str(),
+            "complete" | "failed" | "timed_out" | "unsupported" | "truncated" | "not_attempted"
+        ) || attempt
+            .normalization_outcome
+            .as_deref()
+            .is_some_and(|outcome| {
+                !matches!(
+                    outcome,
+                    "complete_usable"
+                        | "partial_usable"
+                        | "genuine_complete_empty"
+                        | "invalid_input"
+                        | "no_usable_records"
+                        | "output_budget_exhausted"
+                        | "capture_failed"
+                        | "unsupported_release_or_format"
+                )
+            })
+        {
+            bail!("native interface family latest-attempt outcome is unknown for {fact_kind}")
+        }
+        validate_attempt_timing(attempt, fact_kind)?;
+        if attempt.capture_id.is_some()
+            && (attempt.session_epoch.is_none() || attempt.sequence.is_none())
+        {
+            bail!(
+                "native interface family latest-attempt capture identity is incomplete for {fact_kind}"
+            )
+        }
+        if let Some(sequence) = attempt.sequence
+            && sequence != expected_sequence
+        {
+            bail!("native interface family latest-attempt sequence is inconsistent for {fact_kind}")
+        }
+        if attempt.output_bytes.is_some() != attempt.output_sha256.is_some() {
+            bail!(
+                "native interface family latest-attempt output metadata is incomplete for {fact_kind}"
+            )
+        }
+        if matches!(attempt.outcome.as_str(), "not_attempted" | "unsupported")
+            && (attempt.output_bytes.is_some() || attempt.output_sha256.is_some())
+        {
+            bail!(
+                "native interface family attempt carries output metadata for a non-executed command"
+            )
+        }
+        states_by_kind.insert(fact_kind, state);
+    }
+
+    if legacy_interface_only {
+        if !observation.command_execution.is_empty()
+            || observation.neighbor_command.is_some()
+            || observation.mac_command.is_some()
+            || observation.vlan_command.is_some()
+        {
+            bail!("legacy interface-only observation carries contradictory multifamily metadata")
+        }
+        for (fact_kind, state) in &states_by_kind {
+            if *fact_kind == "interface.state" {
+                if state.retained.is_none() {
+                    bail!("legacy interface-only observation lacks retained interface evidence")
+                }
+            } else if state.retained.is_some()
+                || state.latest_attempt.outcome != "not_attempted"
+                || usable_family_normalization(
+                    state.latest_attempt.normalization_outcome.as_deref(),
+                )
+            {
+                bail!(
+                    "legacy interface-only observation cannot confirm newer family acquisition state"
+                )
+            }
+        }
+    } else {
+        if observation.neighbor_command.as_deref() != Some(FRR_NEIGHBOR_COMMAND)
+            || observation.mac_command.as_deref() != Some(FRR_MAC_COMMAND)
+            || observation.vlan_command.as_deref() != Some(FRR_VLAN_COMMAND)
+        {
+            bail!("native interface multifamily command contract mismatch")
+        }
+        let expected_slots = ["version", "interfaces", "arpnd", "mac", "vlan"];
+        if observation.command_execution.len() != expected_slots.len() {
+            bail!("native interface observation lacks exact command execution slots")
+        }
+        let mut previous_completed = observation.capture_started_at_ns;
+        for key in expected_slots {
+            let matches: Vec<_> = observation
+                .command_execution
+                .iter()
+                .filter(|command| command.command_key == key)
+                .collect();
+            if matches.len() != 1 {
+                bail!("native interface observation lacks command execution evidence for {key}")
+            }
+            let command = matches[0];
+            if command.command != expected_family_command(key) {
+                bail!("native interface command execution evidence is inconsistent for {key}")
+            }
+            let (started, completed) = validate_timing_pair(
+                &format!("native interface command execution evidence for {key}"),
+                command.started_at.as_deref(),
+                command.completed_at.as_deref(),
+                command.started_at_ns,
+                command.completed_at_ns,
+            )?;
+            if started < previous_completed
+                || started < observation.capture_started_at_ns
+                || completed > observation.captured_at_ns
+            {
+                bail!("native interface command timing is outside the stored acquisition interval")
+            }
+            previous_completed = completed;
+            if matches!(command.outcome.as_str(), "not_attempted" | "unsupported")
+                && (command.output_bytes.is_some() || command.output_sha256.is_some())
+            {
+                bail!("native interface command metadata implies output for a non-executed command")
+            }
+        }
+    }
+
+    let mut fact_counts: BTreeMap<String, usize> = BTreeMap::new();
     for fact in &observation.facts {
+        let fact_kind = fact_json_text(fact, &["fact_kind"])
+            .context("native interface typed fact lacks a decodable fact kind")?;
+        let Some((
+            feature,
+            expected_namespace,
+            expected_sequence,
+            _coverage_scope,
+            expected_source_kind,
+            expected_producer,
+            expected_parser,
+            expected_mapping,
+        )) = expected_family_contract(fact_kind)
+        else {
+            bail!(
+                "unsupported fact kind '{}' cannot enter the multifamily observation",
+                fact_kind
+            )
+        };
+        let state = states_by_kind
+            .get(fact_kind)
+            .copied()
+            .expect("family state validated");
+        if state.feature != feature {
+            bail!("native interface family feature binding mismatch")
+        }
+        let retained = state
+            .retained
+            .as_ref()
+            .context("typed fact exists without corresponding retained family evidence")?;
         let typed: crate::typed_facts::TypedFact = serde_json::from_value(fact.clone())
-            .context("native interface typed fact is undecodable")?;
+            .context("native interface typed fact is undecodable or semantically invalid")?;
         typed
             .validate()
             .map_err(|e| anyhow::anyhow!("native interface typed fact validation failed: {e:?}"))?;
         if typed.subject.device_id != observation.device_id
-            || typed.subject.namespace != "interface"
+            || typed.subject.scope.is_some()
+            || typed.subject.namespace != expected_namespace
+            || typed.subject.plane.as_deref() != Some("operational")
             || typed.subject.network_namespace.as_deref()
                 != Some(observation.network_namespace.as_str())
-            || typed.source.capture_id != observation.capture_id
-            || typed.source.session_epoch != observation.session_epoch
-            || typed.source.sequence != observation.sequence
+            || typed.source.capture_id != retained.capture_id
+            || typed.source.session_epoch != retained.session_epoch
+            || typed.source.sequence != retained.sequence
+            || typed.source.sequence != expected_sequence
             || typed.source.collector_id != observation.collector_id
+            || typed.source.source_kind != expected_source_kind
+            || typed.trust != crate::typed_facts::TrustClass::DeviceAsserted
+            || typed.lifecycle != crate::typed_facts::Lifecycle::Active
+            || typed.payload.produced_by != expected_producer
+            || typed.payload.parser_revision != expected_parser
+            || typed.payload.mapping_revision.as_deref() != Some(expected_mapping)
+            || !same_rfc3339_instant(&typed.observed_at, &retained.observed_at)
         {
-            bail!("native interface typed-fact subject/source identity mismatch")
+            bail!("native interface typed-fact subject/source/provenance identity mismatch")
+        }
+        if let Some(digest) = retained.output_sha256.as_ref() {
+            if !typed.evidence.iter().any(|reference| {
+                reference.kind.starts_with("raw_output") && &reference.sha256 == digest
+            }) {
+                bail!("native interface typed fact is not bound to the retained raw-output digest")
+            }
+        }
+        *fact_counts.entry(typed.fact_kind.clone()).or_insert(0) += 1;
+    }
+
+    for (fact_kind, state) in states_by_kind {
+        let Some((_, _, expected_sequence, expected_scope, expected_source_kind, _, _, _)) =
+            expected_family_contract(fact_kind)
+        else {
+            bail!("internal family contract missing for {fact_kind}")
+        };
+        let Some(retained) = state.retained.as_ref() else {
+            if fact_counts.get(fact_kind).copied().unwrap_or(0) != 0 {
+                bail!("native interface family facts exist without retained lifecycle evidence")
+            }
+            continue;
+        };
+        if retained.capture_id.trim().is_empty()
+            || retained.session_epoch == 0
+            || retained.sequence != expected_sequence
+            || retained.observed_at.trim().is_empty()
+            || crate::semantic_evidence::parse_time(&retained.observed_at).is_none()
+            || !matches!(
+                retained.evidence_state.as_str(),
+                "current" | "partial_current" | "stale_last_usable"
+            )
+        {
+            bail!("native interface retained family lifecycle state is incomplete for {fact_kind}")
+        }
+        let expected_lifecycle = lifecycle_state_for_retained(retained, &state.latest_attempt);
+        if retained.evidence_state != expected_lifecycle {
+            bail!(
+                "native interface retained family lifecycle does not reflect the latest attempt for {fact_kind}"
+            )
+        }
+        let (output_bytes, output_sha256, raw_output, raw_omitted_reason) =
+            raw_output_metadata(observation, fact_kind)?;
+        if retained.output_bytes != output_bytes
+            || retained.output_sha256.as_deref() != output_sha256
+            || output_bytes.is_none()
+            || output_sha256.is_none()
+        {
+            bail!("native interface retained family raw-output identity mismatch for {fact_kind}")
+        }
+        match raw_output {
+            Some(raw) => {
+                if Some(raw.len()) != output_bytes
+                    || output_sha256 != Some(sha256_text(raw).as_str())
+                {
+                    bail!("retained raw output digest/count mismatch for {fact_kind}")
+                }
+                if !retained.raw_output_retained {
+                    bail!("retained raw-output availability flag mismatch for {fact_kind}")
+                }
+            }
+            None => {
+                if retained.raw_output_retained
+                    || raw_omitted_reason.as_deref().is_none_or(str::is_empty)
+                {
+                    bail!("omitted raw output lacks explicit omission metadata for {fact_kind}")
+                }
+            }
+        }
+        let actual_count = fact_counts.get(fact_kind).copied().unwrap_or(0);
+        if actual_count != retained.facts_retained {
+            bail!("native interface retained family fact count mismatch for {fact_kind}")
+        }
+        if retained.facts_retained > retained.facts_validated
+            || retained.facts_validated > retained.facts_emitted
+            || retained.facts_retained + retained.facts_omitted_by_retention
+                > retained.facts_emitted
+        {
+            bail!(
+                "native interface emitted/validated/retained/omitted counters are inconsistent for {fact_kind}"
+            )
+        }
+        if (retained.facts_omitted_by_retention > 0) != retained.retention_truncated {
+            bail!("native interface retention accounting is inconsistent for {fact_kind}")
+        }
+        let coverage_value = retained
+            .coverage
+            .as_ref()
+            .context("retained family evidence lacks scoped capture coverage")?;
+        let coverage: ScopedCaptureCoverage = serde_json::from_value(coverage_value.clone())
+            .context("retained family scoped coverage is undecodable")?;
+        if coverage.covered_fact_kind != fact_kind
+            || coverage.acquisition_scope != expected_scope
+            || coverage.scope.is_some()
+            || coverage.source_kind != expected_source_kind
+            || coverage.declared_scope != AcquisitionScopeContract::CompleteScopedTable
+            || coverage.valid_until.is_some()
+        {
+            bail!(
+                "retained family coverage scope/source contract identity mismatch for {fact_kind}"
+            )
+        }
+        retained_coverage_bound(&coverage, observation, retained)?;
+        if coverage.records_decoded < coverage.malformed_records + coverage.rejected_records
+            || coverage.records_decoded < coverage.omitted_records
+        {
+            bail!("retained family coverage accounting is internally inconsistent for {fact_kind}")
+        }
+        if retained.positive_empty_population != coverage.positive_empty_population {
+            bail!(
+                "positive-empty state differs between retained evidence and coverage for {fact_kind}"
+            )
+        }
+        if retained.positive_empty_population
+            && (actual_count != 0
+                || coverage.capture_outcome != CaptureOutcome::Complete
+                || coverage.population_coverage != ScopedPopulationCoverage::Complete
+                || coverage.malformed_records != 0
+                || coverage.omitted_records != 0
+                || coverage.rejected_records != 0)
+        {
+            bail!(
+                "positive-empty family is not backed by complete eligible coverage for {fact_kind}"
+            )
+        }
+        if !retained.positive_empty_population
+            && actual_count == 0
+            && matches!(
+                retained.evidence_state.as_str(),
+                "current" | "partial_current"
+            )
+        {
+            bail!(
+                "non-empty retained family evidence is missing all retained facts for {fact_kind}"
+            )
         }
     }
-    let report_entities = observation
-        .normalization_report
-        .get("entities_accepted")
-        .and_then(serde_json::Value::as_u64)
-        .map(|v| v as usize);
-    if let Some(entities) = report_entities {
-        if entities != observation.usable_entity_facts {
-            bail!("native interface entity count does not match normalization report")
+
+    if !legacy_interface_only {
+        let authoritative =
+            serde_json::Value::Array(rebuild_feature_family_report(&observation.family_states));
+        if observation.normalization_report.get("feature_families") != Some(&authoritative) {
+            bail!(
+                "normalization report feature-family copy contradicts authoritative lifecycle state"
+            )
         }
     }
     Ok(())
+}
+
+fn legacy_interface_coverage(
+    observation: &StoredFrrInterfaceShadowObservation,
+) -> ScopedCaptureCoverage {
+    let report = &observation.normalization_report;
+    let malformed = report
+        .get("invalid_entities")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as usize;
+    let omitted = report
+        .get("entities_omitted")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as usize
+        + report
+            .get("output_facts_omitted")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as usize;
+    let rejected = report
+        .get("facts_rejected")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as usize;
+    let positive_empty = observation.interpretation_outcome == "genuine_complete_empty";
+    ScopedCaptureCoverage {
+        device_id: observation.device_id.clone(),
+        scope: None,
+        network_namespace: Some(observation.network_namespace.clone()),
+        collector_id: observation.collector_id.clone(),
+        source_kind: "cli_ssh_structured".into(),
+        capture_id: observation.capture_id.clone(),
+        source_generation: Some(observation.session_epoch),
+        acquisition_scope: "frr/show-interface-json".into(),
+        covered_fact_kind: "interface.state".into(),
+        declared_scope: AcquisitionScopeContract::CompleteScopedTable,
+        capture_outcome: CaptureOutcome::Complete,
+        population_coverage: if malformed == 0 && omitted == 0 && rejected == 0 {
+            ScopedPopulationCoverage::Complete
+        } else {
+            ScopedPopulationCoverage::Partial
+        },
+        positive_empty_population: positive_empty,
+        observation_time: Some(observation.captured_at.clone()),
+        valid_until: None,
+        observed_interfaces: observation
+            .facts
+            .iter()
+            .filter_map(|fact| {
+                fact.get("subject")
+                    .and_then(|subject| subject.get("entity"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect(),
+        observed_forwarding_domains: BTreeSet::new(),
+        observed_vlan_ids: BTreeSet::new(),
+        records_decoded: report
+            .get("records_decoded")
+            .and_then(serde_json::Value::as_u64)
+            .or_else(|| {
+                report
+                    .get("interfaces_observed")
+                    .and_then(serde_json::Value::as_u64)
+            })
+            .unwrap_or(observation.usable_entity_facts as u64) as usize,
+        malformed_records: malformed,
+        omitted_records: omitted,
+        rejected_records: rejected,
+        evidence_refs: observation
+            .interface_output_sha256
+            .as_ref()
+            .map(|sha256| {
+                vec![crate::typed_facts::EvidenceRef {
+                    kind: "raw_output".into(),
+                    sha256: sha256.clone(),
+                    locator: Some("frr/show-interface-json".into()),
+                }]
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// Upgrade the canonical PR-89 interface-only storage shape in memory. The
+/// legacy record remains the authority for interface evidence; newer families
+/// are explicitly `not_attempted`/unknown rather than confirmed empty. This is
+/// not applied to unsafe address-keyed legacy records.
+fn migrate_pr89_interface_only_observation(
+    observation: &StoredFrrInterfaceShadowObservation,
+) -> Result<Option<StoredFrrInterfaceShadowObservation>> {
+    if observation.acquisition_contract != FRR_JSON_ACQUISITION_CONTRACT
+        || !observation.family_states.is_empty()
+    {
+        return Ok(None);
+    }
+    if observation.device_id.trim().is_empty()
+        || observation.collector_id.trim().is_empty()
+        || observation.observation_id
+            != observation_id(&observation.device_id, &observation.network_namespace)
+        || observation.transport != "verified_ssh_read_only_cli"
+        || observation.platform != "frr"
+        || !observation.shadow_only
+    {
+        bail!("legacy interface-only observation is not safe canonical evidence")
+    }
+    let mut upgraded = observation.clone();
+    let interface_fact_count = upgraded
+        .facts
+        .iter()
+        .filter(|fact| {
+            fact.get("fact_kind").and_then(serde_json::Value::as_str) == Some("interface.state")
+        })
+        .count();
+    if interface_fact_count != upgraded.facts.len() {
+        bail!("legacy interface-only observation contains non-interface facts")
+    }
+    let coverage = legacy_interface_coverage(&upgraded);
+    let coverage_json = serde_json::to_value(coverage)?;
+    let report = upgraded.normalization_report.clone();
+    let normalization_outcome = (!upgraded.interpretation_outcome.is_empty())
+        .then_some(upgraded.interpretation_outcome.clone());
+    let positive_empty = upgraded.interpretation_outcome == "genuine_complete_empty";
+    let interface_attempt = FamilyAcquisitionAttemptState {
+        outcome: "complete".into(),
+        normalization_outcome: normalization_outcome.clone(),
+        command: Some(FRR_INTERFACE_COMMAND.into()),
+        started_at: None,
+        completed_at: None,
+        started_at_ns: None,
+        completed_at_ns: None,
+        output_bytes: upgraded.interface_output_bytes,
+        output_sha256: upgraded.interface_output_sha256.clone(),
+        capture_id: Some(upgraded.capture_id.clone()),
+        session_epoch: Some(upgraded.session_epoch),
+        sequence: Some(1),
+        detail: Some(
+            "migrated PR-89 interface-only record; exact per-command start time was not retained"
+                .into(),
+        ),
+        facts_emitted: upgraded.facts_emitted,
+        facts_validated: upgraded.facts_validated,
+        report: Some(report),
+    };
+    let interface_retained = FamilyRetainedEvidenceState {
+        evidence_state: if upgraded.interpretation_outcome == "partial_usable" {
+            "partial_current"
+        } else if usable_family_normalization(Some(upgraded.interpretation_outcome.as_str())) {
+            "current"
+        } else {
+            // Pre-correction interface records can predate the semantic
+            // interpretation field. Their evidence remains readable as
+            // historical last-good evidence; upgrade must not fabricate
+            // current analytical eligibility.
+            "stale_last_usable"
+        }
+        .into(),
+        capture_id: upgraded.capture_id.clone(),
+        session_epoch: upgraded.session_epoch,
+        sequence: 1,
+        observed_at: upgraded.captured_at.clone(),
+        output_bytes: upgraded.interface_output_bytes,
+        output_sha256: upgraded.interface_output_sha256.clone(),
+        raw_output_retained: upgraded.raw_interface_json.is_some(),
+        raw_output_omitted_reason: upgraded.raw_output_omitted_reason.clone(),
+        facts_emitted: upgraded.facts_emitted,
+        facts_validated: upgraded.facts_validated,
+        facts_retained: upgraded.facts_retained,
+        facts_omitted_by_retention: upgraded
+            .facts_emitted
+            .saturating_sub(upgraded.facts_retained),
+        retention_truncated: upgraded.fact_retention_truncated,
+        positive_empty_population: positive_empty,
+        coverage: Some(coverage_json),
+        report: Some(upgraded.normalization_report.clone()),
+    };
+    let mut states = vec![StoredFeatureFamilyState {
+        feature: FRR_INTERFACE_FEATURE.into(),
+        fact_kind: "interface.state".into(),
+        support_state: "supported".into(),
+        latest_attempt: interface_attempt,
+        retained: Some(interface_retained),
+    }];
+    for (feature, fact_kind, sequence, command) in [
+        (
+            FRR_ARPND_FEATURE,
+            "arpnd.neighbor",
+            2u64,
+            FRR_NEIGHBOR_COMMAND,
+        ),
+        (FRR_MAC_FEATURE, "mac.forwarding", 3u64, FRR_MAC_COMMAND),
+        (
+            FRR_VLAN_FEATURE,
+            "vlan.bridge_domain",
+            4u64,
+            FRR_VLAN_COMMAND,
+        ),
+    ] {
+        states.push(StoredFeatureFamilyState {
+            feature: feature.into(),
+            fact_kind: fact_kind.into(),
+            support_state: "unknown".into(),
+            latest_attempt: FamilyAcquisitionAttemptState {
+                outcome: "not_attempted".into(),
+                normalization_outcome: None,
+                command: Some(command.into()),
+                started_at: None,
+                completed_at: None,
+                started_at_ns: None,
+                completed_at_ns: None,
+                output_bytes: None,
+                output_sha256: None,
+                capture_id: None,
+                session_epoch: None,
+                sequence: Some(sequence),
+                detail: Some(
+                    "family absent from the PR-89 interface-only acquisition contract".into(),
+                ),
+                facts_emitted: 0,
+                facts_validated: 0,
+                report: None,
+            },
+            retained: None,
+        });
+    }
+    upgraded.family_states = states;
+    upgraded.normalization_report["feature_families"] =
+        serde_json::Value::Array(rebuild_feature_family_report(&upgraded.family_states));
+    validate_stored_observation(&upgraded)?;
+    Ok(Some(upgraded))
+}
+
+fn upgraded_stored_observation(
+    observation: StoredFrrInterfaceShadowObservation,
+) -> Result<StoredFrrInterfaceShadowObservation> {
+    if let Some(upgraded) = migrate_pr89_interface_only_observation(&observation)? {
+        return Ok(upgraded);
+    }
+    validate_stored_observation(&observation)?;
+    Ok(observation)
 }
 
 fn validate_state_identity(
@@ -960,13 +3419,14 @@ fn attempt_from_observation(
         normalizer_revision: Some(observation.normalizer_revision.clone()),
         mapping_revision: observation.mapping_revision.clone(),
         qualification: Some(observation.qualification.clone()),
-        interface_output_sha256: Some(observation.interface_output_sha256.clone()),
-        interface_output_bytes: Some(observation.interface_output_bytes),
+        interface_output_sha256: observation.interface_output_sha256.clone(),
+        interface_output_bytes: observation.interface_output_bytes,
         facts_emitted: observation.facts_emitted,
         facts_validated: observation.facts_validated,
         usable_entity_facts: observation.usable_entity_facts,
         status_facts: observation.status_facts,
         degraded_facts,
+        family_states: observation.family_states.clone(),
         normalization_report: Some(observation.normalization_report.clone()),
     }
 }
@@ -1007,6 +3467,42 @@ fn transport_failure_attempt(
         usable_entity_facts: 0,
         status_facts: 0,
         degraded_facts: Vec::new(),
+        family_states: [
+            (
+                FRR_INTERFACE_FEATURE,
+                "interface.state",
+                FRR_INTERFACE_COMMAND,
+            ),
+            (FRR_ARPND_FEATURE, "arpnd.neighbor", FRR_NEIGHBOR_COMMAND),
+            (FRR_MAC_FEATURE, "mac.forwarding", FRR_MAC_COMMAND),
+            (FRR_VLAN_FEATURE, "vlan.bridge_domain", FRR_VLAN_COMMAND),
+        ]
+        .into_iter()
+        .map(|(feature, fact_kind, command)| StoredFeatureFamilyState {
+            feature: feature.into(),
+            fact_kind: fact_kind.into(),
+            support_state: "unknown".into(),
+            latest_attempt: FamilyAcquisitionAttemptState {
+                outcome: "failed".into(),
+                normalization_outcome: Some("capture_failed".into()),
+                command: Some(command.into()),
+                started_at: rfc3339_from_epoch_ns(started_at_ns),
+                completed_at: rfc3339_from_epoch_ns(finished_at_ns),
+                started_at_ns: Some(started_at_ns),
+                completed_at_ns: Some(finished_at_ns),
+                output_bytes: None,
+                output_sha256: None,
+                capture_id: None,
+                session_epoch: None,
+                sequence: None,
+                detail: Some(failure_detail.into()),
+                facts_emitted: 0,
+                facts_validated: 0,
+                report: None,
+            },
+            retained: None,
+        })
+        .collect(),
         normalization_report: None,
     }
 }
@@ -1019,6 +3515,289 @@ fn failed_attempt(outcome: &str) -> bool {
 /// attempt_is_latest)`. An older usable observation may still refresh the
 /// last-usable evidence pointer when it is newer than the previously retained
 /// usable evidence, but it must never erase a newer latest-attempt failure.
+fn retained_replaces_prior(
+    candidate: &FamilyRetainedEvidenceState,
+    prior: Option<&FamilyRetainedEvidenceState>,
+) -> bool {
+    let Some(prior) = prior else { return true };
+    if retained_order_key(candidate) <= retained_order_key(prior) {
+        return false;
+    }
+    match candidate.evidence_state.as_str() {
+        // `current` includes both populated complete evidence and a genuine
+        // complete-empty capture; positive empty is a valid replacement within
+        // the same scoped population, not missing evidence.
+        "current" => true,
+        // Newer partial evidence may refine prior partial evidence, but it
+        // must not erase a more complete last-good population.
+        "partial_current" => prior.evidence_state == "partial_current",
+        _ => false,
+    }
+}
+
+fn merge_family_states(
+    prior: &[StoredFeatureFamilyState],
+    candidate: &[StoredFeatureFamilyState],
+) -> Vec<StoredFeatureFamilyState> {
+    let mut merged = Vec::new();
+    for (feature, fact_kind) in [
+        (FRR_INTERFACE_FEATURE, "interface.state"),
+        (FRR_ARPND_FEATURE, "arpnd.neighbor"),
+        (FRR_MAC_FEATURE, "mac.forwarding"),
+        (FRR_VLAN_FEATURE, "vlan.bridge_domain"),
+    ] {
+        let candidate_state = candidate
+            .iter()
+            .find(|state| state.feature == feature && state.fact_kind == fact_kind);
+        let prior_state = prior
+            .iter()
+            .find(|state| state.feature == feature && state.fact_kind == fact_kind);
+        let (Some(base_state), prior_state) = (candidate_state.or(prior_state), prior_state) else {
+            continue;
+        };
+        let mut state = base_state.clone();
+        if let Some(candidate_state) = candidate_state {
+            let candidate_newer = prior_state.is_none_or(|prior| {
+                attempt_order_key(&candidate_state.latest_attempt)
+                    >= attempt_order_key(&prior.latest_attempt)
+            });
+            state.latest_attempt = if candidate_newer {
+                candidate_state.latest_attempt.clone()
+            } else {
+                prior_state
+                    .expect("prior state checked")
+                    .latest_attempt
+                    .clone()
+            };
+            // A transport-wide failure does not rediscover platform support.
+            // Preserve an established support classification when the newer
+            // attempt carries only unknown applicability.
+            state.support_state = if candidate_state.support_state == "unknown"
+                && prior_state.is_some_and(|prior| prior.support_state != "unknown")
+            {
+                prior_state
+                    .expect("prior state checked")
+                    .support_state
+                    .clone()
+            } else {
+                candidate_state.support_state.clone()
+            };
+        }
+
+        let candidate_retained = candidate_state.and_then(|state| state.retained.as_ref());
+        let prior_retained = prior_state.and_then(|state| state.retained.as_ref());
+        let mut retained = if let Some(candidate_retained) = candidate_retained {
+            if retained_replaces_prior(candidate_retained, prior_retained) {
+                Some(candidate_retained.clone())
+            } else {
+                prior_retained.cloned()
+            }
+        } else {
+            prior_retained.cloned()
+        };
+        if let Some(retained) = retained.as_mut() {
+            retained.evidence_state =
+                lifecycle_state_for_retained(retained, &state.latest_attempt).into();
+        }
+        state.retained = retained;
+        merged.push(state);
+    }
+    merged
+}
+
+fn typed_fact_values_by_kind(
+    observation: &StoredFrrInterfaceShadowObservation,
+) -> Result<BTreeMap<String, Vec<serde_json::Value>>> {
+    let mut grouped: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    for value in &observation.facts {
+        let typed: crate::typed_facts::TypedFact = serde_json::from_value(value.clone())
+            .context("native interface typed fact is undecodable during family merge")?;
+        grouped
+            .entry(typed.fact_kind.clone())
+            .or_default()
+            .push(value.clone());
+    }
+    Ok(grouped)
+}
+
+fn family_uses_candidate_evidence(
+    merged: &StoredFeatureFamilyState,
+    candidate: &StoredFrrInterfaceShadowObservation,
+) -> bool {
+    let Some(retained) = merged.retained.as_ref() else {
+        return false;
+    };
+    candidate.family_states.iter().any(|state| {
+        state.feature == merged.feature
+            && state.fact_kind == merged.fact_kind
+            && state.retained.as_ref().is_some_and(|candidate_retained| {
+                candidate_retained.capture_id == retained.capture_id
+                    && candidate_retained.session_epoch == retained.session_epoch
+                    && candidate_retained.sequence == retained.sequence
+            })
+    })
+}
+
+fn rebuild_feature_family_report(
+    family_states: &[StoredFeatureFamilyState],
+) -> Vec<serde_json::Value> {
+    family_states
+        .iter()
+        .map(|family| {
+            serde_json::json!({
+                "feature": family.feature,
+                "fact_kind": family.fact_kind,
+                "support_state": family.support_state,
+                "latest_attempt": family.latest_attempt,
+                "retained": family.retained,
+                "facts_emitted": family.latest_attempt.facts_emitted,
+                "facts_retained": family.retained.as_ref().map(|r| r.facts_retained).unwrap_or(0),
+                "facts_omitted_by_retention": family.retained.as_ref().map(|r| r.facts_omitted_by_retention).unwrap_or(0),
+                "coverage": family.retained.as_ref().and_then(|r| r.coverage.clone()),
+                "report": family.latest_attempt.report,
+            })
+        })
+        .collect()
+}
+
+/// Merge a new aggregate acquisition batch with prior per-family retained
+/// evidence. The aggregate observation remains the single storage unit, but
+/// family lifecycle semantics are independent: failed or partial fresh family
+/// evidence cannot erase unrelated valid last-good evidence, while a genuine
+/// complete-empty capture can replace an older populated family.
+fn merge_multifamily_observation(
+    prior: &StoredFrrInterfaceShadowObservation,
+    candidate: &StoredFrrInterfaceShadowObservation,
+) -> Result<StoredFrrInterfaceShadowObservation> {
+    if prior.device_id != candidate.device_id
+        || prior.network_namespace != candidate.network_namespace
+        || prior.collector_id != candidate.collector_id
+    {
+        bail!("cannot merge native interface evidence across canonical device/source boundaries")
+    }
+    let mut merged = candidate.clone();
+    merged.family_states = merge_family_states(&prior.family_states, &candidate.family_states);
+    let prior_facts = typed_fact_values_by_kind(prior)?;
+    let candidate_facts = typed_fact_values_by_kind(candidate)?;
+    let mut facts = Vec::new();
+    let mut facts_retained = 0usize;
+    let mut retention_truncated = false;
+    for fact_kind in [
+        "interface.state",
+        "arpnd.neighbor",
+        "mac.forwarding",
+        "vlan.bridge_domain",
+    ] {
+        let Some(state) = merged
+            .family_states
+            .iter()
+            .find(|state| state.fact_kind == fact_kind)
+        else {
+            continue;
+        };
+        if state.retained.is_none() {
+            continue;
+        }
+        let use_candidate = family_uses_candidate_evidence(state, candidate);
+        let source = if use_candidate {
+            &candidate_facts
+        } else {
+            &prior_facts
+        };
+        if let Some(values) = source.get(fact_kind) {
+            facts.extend(values.iter().cloned());
+        }
+        if let Some(retained) = state.retained.as_ref() {
+            facts_retained = facts_retained.saturating_add(retained.facts_retained);
+            retention_truncated |= retained.retention_truncated;
+        }
+    }
+    merged.facts = facts.into_iter().take(MAX_STORED_FACTS).collect();
+    merged.facts_retained = merged.facts.len();
+    merged.fact_retention_truncated = retention_truncated || facts_retained > MAX_STORED_FACTS;
+    merged.usable_entity_facts = merged
+        .facts
+        .iter()
+        .filter(|fact| {
+            fact.get("subject").and_then(|s| s.get("entity")).is_some()
+                && fact.get("payload").and_then(|p| p.get("fields")).is_some()
+        })
+        .count();
+    merged.status_facts = merged
+        .facts
+        .iter()
+        .filter(|fact| {
+            fact.get("subject").and_then(|s| s.get("entity")).is_none()
+                && fact.get("payload").and_then(|p| p.get("state")).is_some()
+        })
+        .count();
+
+    // Family raw evidence must move with the selected family lifecycle. A
+    // retained prior ARP population cannot be accompanied by the newer failed
+    // command's digest merely because both live in one aggregate record.
+    for state in &merged.family_states {
+        if state.retained.is_none() || family_uses_candidate_evidence(state, candidate) {
+            continue;
+        }
+        match state.fact_kind.as_str() {
+            "interface.state" => {
+                merged.interface_output_sha256 = prior.interface_output_sha256.clone();
+                merged.interface_output_bytes = prior.interface_output_bytes;
+                merged.raw_interface_json = prior.raw_interface_json.clone();
+                merged.raw_output_omitted_reason = prior.raw_output_omitted_reason.clone();
+            }
+            "arpnd.neighbor" => {
+                merged.neighbor_output_sha256 = prior.neighbor_output_sha256.clone();
+                merged.neighbor_output_bytes = prior.neighbor_output_bytes;
+                merged.raw_neighbor_output = prior.raw_neighbor_output.clone();
+                merged.raw_neighbor_output_omitted_reason =
+                    prior.raw_neighbor_output_omitted_reason.clone();
+            }
+            "mac.forwarding" => {
+                merged.mac_output_sha256 = prior.mac_output_sha256.clone();
+                merged.mac_output_bytes = prior.mac_output_bytes;
+                merged.raw_mac_output = prior.raw_mac_output.clone();
+                merged.raw_mac_output_omitted_reason = prior.raw_mac_output_omitted_reason.clone();
+            }
+            "vlan.bridge_domain" => {
+                merged.vlan_output_sha256 = prior.vlan_output_sha256.clone();
+                merged.vlan_output_bytes = prior.vlan_output_bytes;
+                merged.raw_vlan_output = prior.raw_vlan_output.clone();
+                merged.raw_vlan_output_omitted_reason =
+                    prior.raw_vlan_output_omitted_reason.clone();
+            }
+            _ => {}
+        }
+    }
+
+    let fresh_complete = merged.family_states.iter().all(|family| {
+        matches!(
+            family.latest_attempt.normalization_outcome.as_deref(),
+            Some("complete_usable" | "genuine_complete_empty")
+        )
+    });
+    let any_retained = merged
+        .family_states
+        .iter()
+        .any(|family| family.retained.is_some());
+    merged.interpretation_outcome = if !any_retained {
+        "no_usable_records".into()
+    } else if fresh_complete {
+        "complete_usable".into()
+    } else {
+        "partial_usable".into()
+    };
+    if let Some(feature_families) = merged.normalization_report.get_mut("feature_families") {
+        *feature_families =
+            serde_json::Value::Array(rebuild_feature_family_report(&merged.family_states));
+    } else {
+        merged.normalization_report["feature_families"] =
+            serde_json::Value::Array(rebuild_feature_family_report(&merged.family_states));
+    }
+    validate_stored_observation(&merged)?;
+    Ok(merged)
+}
+
 fn merge_attempt_state(
     prior: Option<StoredFrrInterfaceAcquisitionState>,
     attempt: &StoredFrrInterfaceAcquisitionAttempt,
@@ -1040,6 +3819,7 @@ fn merge_attempt_state(
         last_successful_capture_started_at_ns: None,
         last_interpretation_outcome: None,
         last_attempt_evidence_id: None,
+        family_states: Vec::new(),
     });
     if state.device_id.is_empty() {
         state.device_id = attempt.device_id.clone();
@@ -1075,6 +3855,9 @@ fn merge_attempt_state(
             state.last_successful_capture_started_at_ns = Some(attempt.started_at_ns);
         }
     }
+    if !attempt.family_states.is_empty() {
+        state.family_states = merge_family_states(&state.family_states, &attempt.family_states);
+    }
     state.updated_at_ns = now;
     (state, attempt_is_latest)
 }
@@ -1088,24 +3871,13 @@ async fn persist_attempt_transaction(
         attempt.attempt_id.clone(),
         acquisition_state_id(&attempt.device_id, &attempt.network_namespace),
     ];
-    let observation_json = if let Some(observation) = observation.as_ref() {
-        if observation.observation_id
-            != observation_id(&observation.device_id, &observation.network_namespace)
-        {
+    let canonical_observation_id = observation_id(&attempt.device_id, &attempt.network_namespace);
+    if let Some(observation) = observation.as_ref() {
+        if observation.observation_id != canonical_observation_id {
             bail!("native interface observation identity does not match its storage key")
         }
-        ids.push(observation.observation_id.clone());
-        let content = serde_json::to_string(observation)?;
-        if content.len() > MAX_STORED_OBSERVATION_BYTES {
-            bail!(
-                "bounded native interface shadow observation exceeds {} bytes",
-                MAX_STORED_OBSERVATION_BYTES
-            )
-        }
-        Some(content)
-    } else {
-        None
-    };
+    }
+    ids.push(canonical_observation_id.clone());
     let attempt_key = attempt.attempt_id.clone();
     let state_key = acquisition_state_id(&attempt.device_id, &attempt.network_namespace);
     store
@@ -1118,16 +3890,19 @@ async fn persist_attempt_transaction(
             if let Some(prior) = prior_state.as_ref() {
                 validate_state_identity(prior, &attempt.device_id, &attempt.network_namespace)?;
             }
+            let mut observation_to_write: Option<StoredFrrInterfaceShadowObservation> = None;
+            let mut observation_content: Option<String> = None;
             if let Some(observation) = observation.as_ref() {
                 let existing_observation: Option<StoredFrrInterfaceShadowObservation> =
                     decode_enabled(
-                        existing.get(&observation.observation_id).cloned().flatten(),
+                        existing.get(&canonical_observation_id).cloned().flatten(),
                         FRR_INTERFACE_OBSERVATION_CLASS,
                         "native interface shadow evidence",
                     )?;
-                if let Some(existing) = existing_observation.as_ref() {
-                    validate_stored_observation(existing)?;
-                    let existing_position = (existing.session_epoch, existing.sequence);
+                let merged = if let Some(existing) = existing_observation.as_ref() {
+                    let upgraded_existing = upgraded_stored_observation(existing.clone())?;
+                    let existing_position =
+                        (upgraded_existing.session_epoch, upgraded_existing.sequence);
                     let candidate_position = (observation.session_epoch, observation.sequence);
                     if candidate_position <= existing_position {
                         bail!(
@@ -1136,9 +3911,67 @@ async fn persist_attempt_transaction(
                             observation.sequence
                         )
                     }
+                    merge_multifamily_observation(&upgraded_existing, observation)?
+                } else {
+                    observation.clone()
+                };
+                validate_stored_observation(&merged)?;
+                let content = serde_json::to_string(&merged)?;
+                if content.len() > MAX_STORED_OBSERVATION_BYTES {
+                    bail!(
+                        "bounded native interface shadow observation exceeds {} bytes",
+                        MAX_STORED_OBSERVATION_BYTES
+                    )
+                }
+                observation_content = Some(content);
+                observation_to_write = Some(merged);
+            } else if !attempt.family_states.is_empty() {
+                // Transport-wide and degraded failures do not create replacement
+                // evidence, but they are still newer per-family acquisition
+                // outcomes. Apply that lifecycle decision to the retained
+                // observation record without refreshing capture times or facts.
+                let existing_observation: Option<StoredFrrInterfaceShadowObservation> =
+                    decode_enabled(
+                        existing.get(&canonical_observation_id).cloned().flatten(),
+                        FRR_INTERFACE_OBSERVATION_CLASS,
+                        "native interface shadow evidence",
+                    )?;
+                if let Some(existing) = existing_observation {
+                    let mut updated = upgraded_stored_observation(existing)?;
+                    let updated_states =
+                        merge_family_states(&updated.family_states, &attempt.family_states);
+                    if updated_states != updated.family_states {
+                        updated.family_states = updated_states;
+                        updated.normalization_report["feature_families"] =
+                            serde_json::Value::Array(rebuild_feature_family_report(
+                                &updated.family_states,
+                            ));
+                        validate_stored_observation(&updated)?;
+                        let content = serde_json::to_string(&updated)?;
+                        if content.len() <= MAX_STORED_OBSERVATION_BYTES {
+                            observation_content = Some(content);
+                            observation_to_write = Some(updated);
+                        }
+                    }
                 }
             }
 
+            let mut attempt = attempt.clone();
+            if observation.is_some()
+                && let Some(merged) = observation_to_write.as_ref()
+            {
+                attempt.family_states = merged.family_states.clone();
+                attempt.interpretation_outcome = Some(merged.interpretation_outcome.clone());
+                attempt.observation_id = is_usable_interpretation(&merged.interpretation_outcome)
+                    .then_some(merged.observation_id.clone());
+            } else if observation.is_none()
+                && let Some(updated) = observation_to_write.as_ref()
+            {
+                // Reuse the same failure lifecycle decision in latest-attempt
+                // evidence, but do not turn the failure into a successful
+                // observation reference or reinterpretation outcome.
+                attempt.family_states = updated.family_states.clone();
+            }
             let prior_attempt: Option<StoredFrrInterfaceAcquisitionAttempt> = decode_enabled(
                 existing.get(&attempt_key).cloned().flatten(),
                 FRR_INTERFACE_ATTEMPT_CLASS,
@@ -1148,7 +3981,15 @@ async fn persist_attempt_transaction(
                 (attempt.session_epoch, attempt.sequence) > (prior.session_epoch, prior.sequence)
                     && attempt.started_at_ns > prior.started_at_ns
             });
-            let (state, attempt_is_latest) = merge_attempt_state(prior_state, &attempt);
+            let (mut state, attempt_is_latest) = merge_attempt_state(prior_state, &attempt);
+            if observation_to_write.is_some() && attempt_is_latest {
+                // Successful multifamily persistence has already selected the
+                // transactional family lifecycle while merging the stored
+                // observation. Reuse that exact decision in acquisition state
+                // and latest-attempt evidence rather than reinterpreting the
+                // merged families a second time.
+                state.family_states = attempt.family_states.clone();
+            }
             validate_state_identity(&state, &attempt.device_id, &attempt.network_namespace)?;
             let mut writes = Vec::new();
             if attempt_is_latest && attempt_is_newer_than_evidence {
@@ -1160,7 +4001,9 @@ async fn persist_attempt_transaction(
                     attempt.sequence
                 )
             }
-            if let (Some(observation), Some(content)) = (observation.as_ref(), observation_json) {
+            if let (Some(observation), Some(content)) =
+                (observation_to_write.as_ref(), observation_content)
+            {
                 writes.push(observation_config_item(observation, content));
             }
             writes.push(state_config_item(&state)?);
@@ -1290,7 +4133,10 @@ pub async fn latest_observation(
     if observation.device_id != device_id {
         bail!("native interface observation canonical device identity mismatch")
     }
-    validate_stored_observation(&observation)?;
+    let observation = upgraded_stored_observation(observation)?;
+    if observation.device_id != device_id {
+        bail!("native interface observation canonical device identity mismatch")
+    }
     Ok(observation)
 }
 
@@ -1378,10 +4224,176 @@ mod tests {
     #[test]
     fn fixed_commands_match_the_approved_contract() {
         assert_eq!(FRR_INTERFACE_COMMAND, "vtysh -c 'show interface json'");
+        assert_eq!(FRR_NEIGHBOR_COMMAND, "ip neigh show");
+        assert_eq!(FRR_MAC_COMMAND, "bridge fdb show");
+        assert_eq!(FRR_VLAN_COMMAND, "bridge -c vlan show");
         assert_eq!(
             FRR_INTERFACE_CAPTURE_CONTRACT,
-            "frr_vtysh_show_interface_json"
+            "frr_verified_ssh_l2_snapshot_v1"
         );
+    }
+
+    const TEST_BATCH_STARTED_NS: i64 = 1_795_737_600_000_000_000;
+    const TEST_VERSION_JSON: &str = r#"{"hostName":"frr2","version":"10.6.1_git"}"#;
+
+    fn test_rfc3339_ns(ns: i64) -> String {
+        chrono::DateTime::from_timestamp_nanos(ns)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    }
+
+    fn test_command(
+        key: &str,
+        command: &str,
+        output: &str,
+        started_ns: i64,
+    ) -> RawCommandCaptureEnvelope {
+        let started_ns = TEST_BATCH_STARTED_NS + started_ns;
+        RawCommandCaptureEnvelope {
+            command_key: key.into(),
+            command: command.into(),
+            outcome: "complete".into(),
+            started_at: Some(test_rfc3339_ns(started_ns)),
+            completed_at: Some(test_rfc3339_ns(started_ns + 1_000_000_000)),
+            started_at_ns: Some(started_ns),
+            completed_at_ns: Some(started_ns + 1_000_000_000),
+            output: Some(output.into()),
+            output_bytes: Some(output.len()),
+            output_sha256: Some(sha256_text(output)),
+            detail: None,
+            stderr_bytes: None,
+        }
+    }
+
+    fn valid_capture_envelope() -> RawCaptureEnvelope {
+        let mut commands = BTreeMap::new();
+        commands.insert(
+            "version".into(),
+            test_command("version", FRR_VERSION_COMMAND, TEST_VERSION_JSON, 0),
+        );
+        commands.insert(
+            "interfaces".into(),
+            test_command("interfaces", FRR_INTERFACE_COMMAND, "{}", 1_000_000_000),
+        );
+        commands.insert(
+            "arpnd".into(),
+            test_command("arpnd", FRR_NEIGHBOR_COMMAND, "", 2_000_000_000),
+        );
+        commands.insert(
+            "mac".into(),
+            test_command("mac", FRR_MAC_COMMAND, "", 3_000_000_000),
+        );
+        commands.insert(
+            "vlan".into(),
+            test_command("vlan", FRR_VLAN_COMMAND, "port\tvlan ids\n", 4_000_000_000),
+        );
+        RawCaptureEnvelope {
+            host: "192.0.2.1".into(),
+            port: 22,
+            transport: "verified_ssh_read_only_cli".into(),
+            host_key: VerifiedHostKey {
+                algorithm: "ssh-ed25519".into(),
+                sha256: "SHA256:test".into(),
+            },
+            acquisition_batch: RawAcquisitionBatchEnvelope {
+                started_at: "2026-11-27T00:00:00.000Z".into(),
+                started_at_ns: TEST_BATCH_STARTED_NS,
+                completed_at: "2026-11-27T00:00:06.000Z".into(),
+                completed_at_ns: TEST_BATCH_STARTED_NS + 6_000_000_000,
+                deadline_seconds: 40,
+                atomic_snapshot: false,
+                approved_families: vec![
+                    "interfaces".into(),
+                    "arpnd".into(),
+                    "mac".into(),
+                    "vlan".into(),
+                ],
+            },
+            commands,
+            release_raw: Some("10.6.1_git".into()),
+            device_hostname: Some("frr2".into()),
+        }
+    }
+
+    #[test]
+    fn capture_envelope_requires_the_exact_multifamily_fixed_command_contract() {
+        let raw = valid_capture_envelope();
+        validate_capture_envelope(&raw, "192.0.2.1").expect("exact fixed-command envelope");
+
+        let mut wrong_command = valid_capture_envelope();
+        wrong_command
+            .commands
+            .get_mut("vlan")
+            .expect("vlan command")
+            .command = "bridge vlan show".into();
+        let err = validate_capture_envelope(&wrong_command, "192.0.2.1")
+            .expect_err("substitute VLAN command must be refused");
+        assert!(err.to_string().contains("identity/contract mismatch"));
+
+        let err = validate_capture_envelope(&raw, "192.0.2.2")
+            .expect_err("envelope for another host must be refused");
+        assert!(err.to_string().contains("identity/contract mismatch"));
+    }
+
+    #[test]
+    fn capture_envelope_rejects_unapproved_executed_family_and_version_contradiction() {
+        let mut unapproved = valid_capture_envelope();
+        unapproved.acquisition_batch.approved_families = vec!["interfaces".into()];
+        let err = validate_capture_envelope(&unapproved, "192.0.2.1")
+            .expect_err("executed families outside the admitted plan must be refused");
+        assert!(
+            err.to_string()
+                .contains("outside the approved acquisition plan")
+        );
+
+        let mut contradictory = valid_capture_envelope();
+        contradictory.release_raw = Some("10.7".into());
+        let err = validate_capture_envelope(&contradictory, "192.0.2.1");
+        assert!(
+            err.is_ok(),
+            "envelope validation defers release cross-checking to production assembly"
+        );
+    }
+
+    #[test]
+    fn capture_envelope_rejects_contradictory_or_nonsequential_timing() {
+        let mut wrong_epoch = valid_capture_envelope();
+        wrong_epoch
+            .commands
+            .get_mut("interfaces")
+            .expect("interface command")
+            .started_at_ns = Some(TEST_BATCH_STARTED_NS + 2_500_000_000);
+        let err = validate_capture_envelope(&wrong_epoch, "192.0.2.1")
+            .expect_err("RFC/nanosecond disagreement must be refused");
+        assert!(err.to_string().contains("timing evidence disagree"));
+
+        let mut overlapping = valid_capture_envelope();
+        let arp = overlapping.commands.get_mut("arpnd").expect("arp command");
+        arp.started_at_ns = Some(TEST_BATCH_STARTED_NS + 1_500_000_000);
+        arp.started_at = Some("2026-11-27T00:00:01.500Z".into());
+        let err = validate_capture_envelope(&overlapping, "192.0.2.1")
+            .expect_err("commands must fit the sequential admitted batch interval");
+        assert!(
+            err.to_string()
+                .contains("outside the sequential acquisition batch")
+        );
+    }
+
+    #[test]
+    fn capture_envelope_missing_a_family_output_is_not_positive_empty_evidence() {
+        let mut missing_slot = valid_capture_envelope();
+        missing_slot.commands.remove("arpnd");
+        let err = validate_capture_envelope(&missing_slot, "192.0.2.1")
+            .expect_err("missing neighbor command slot must be explicit");
+        assert!(err.to_string().contains("missing command slot arpnd"));
+
+        let mut missing_output = valid_capture_envelope();
+        let arp = missing_output.commands.get_mut("arpnd").expect("arp slot");
+        arp.output = None;
+        arp.output_bytes = None;
+        arp.output_sha256 = None;
+        let err = validate_capture_envelope(&missing_output, "192.0.2.1")
+            .expect_err("successful command without bytes cannot become positive-empty evidence");
+        assert!(err.to_string().contains("missing successful output"));
     }
 
     #[tokio::test]
@@ -1560,9 +4572,26 @@ mod tests {
         assert_eq!(observation.network_namespace, "default");
         assert_eq!(observation.qualification, "Qualified");
         assert!(observation.shadow_only);
-        assert_eq!(observation.facts_emitted, 4);
-        assert_eq!(observation.facts_validated, 4);
-        assert_eq!(observation.facts_retained, 4);
+        assert_eq!(observation.facts_emitted, 6);
+        assert_eq!(observation.facts_validated, 6);
+        assert_eq!(observation.facts_retained, 6);
+        assert!(
+            observation
+                .facts
+                .iter()
+                .any(|fact| fact["fact_kind"] == "interface.state")
+        );
+        assert!(
+            observation
+                .facts
+                .iter()
+                .any(|fact| fact["fact_kind"] == "mac.forwarding")
+        );
+        assert!(
+            observation.normalization_report["feature_families"]
+                .as_array()
+                .is_some_and(|f| f.len() == 4)
+        );
         assert!(!observation.fact_retention_truncated);
         assert_eq!(observation.normalization_report["entities_accepted"], 4);
         assert_eq!(

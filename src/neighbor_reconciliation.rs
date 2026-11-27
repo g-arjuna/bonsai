@@ -462,6 +462,19 @@ fn assign_arp_domain(
             if routed_interface_match(&occurrence, ev) {
                 return true;
             }
+            // On Linux a neighbor can be observed directly on an interface
+            // that independent interface/VLAN evidence establishes as a bridge
+            // forwarding port. That exact forwarding attachment is stronger
+            // evidence than a bare routed-interface name; trunk VLAN filtering
+            // below still prevents cross-VLAN overreach.
+            if forwarding_interface_match(&occurrence, ev) {
+                if let (Some(ev_vlan), Some(neighbor_vlan)) = (ev.vlan_id, vlan)
+                    && ev_vlan != neighbor_vlan
+                {
+                    return false;
+                }
+                return true;
+            }
             // Compound neighbor evidence can independently expose the physical
             // forwarding attachment (EOS "Vlan10, Port-Channel3" or NXOS
             // phy-intf). That attachment can select the domain, but a trunk

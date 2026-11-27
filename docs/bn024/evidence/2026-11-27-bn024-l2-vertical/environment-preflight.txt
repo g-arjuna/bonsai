@@ -1,0 +1,76 @@
+## environment preflight / post-gate record
+2026-11-27T18:36:56+05:30
+### git status --short
+ M docs/merger/evidence/2026-10-11/a11-a12-scenario-benchmark-report.json
+ M docs/merger/evidence/2026-10-11/b17-b18-evidence-bundle/manifest.json
+ M docs/merger/evidence/2026-10-11/b17-b18-evidence-bundle/results.json
+ M docs/merger/evidence/2026-10-13-bn004/bn004-investigator-benchmark-report.json
+?? docs/bn024/evidence/2026-11-27-bn024-l2-vertical/environment-preflight.txt
+### git worktree list
+/home/arjuna/Desktop/bonsai                   19d85b2 [feat/bn022-auth-storage]
+/home/arjuna/Desktop/bonsai-bn024-03          b7ad6c5 [feat/bn024-frr-structured-interfaces]
+/home/arjuna/Desktop/bonsai-bn024-04          be277f9 [feat/bn025-xrd-native-interfaces]
+/home/arjuna/Desktop/bonsai-lldp-ops          2a3b6be [feat/lldp-operational-integration]
+/home/arjuna/Desktop/bonsai-native-bgp        2c002a3 [feat/native-bgp-afi-safi]
+/home/arjuna/Desktop/bonsai-netintel          829d2f8 [feat/bn024-lldp-adjacency]
+/home/arjuna/Desktop/bonsai-netintel-arpnd    9285de0 [feat/bn024-arpnd-mac]
+/home/arjuna/Desktop/bonsai-netintel-l2slice  2a3b6be [feat/bn024-l2-vertical]
+/home/arjuna/Desktop/bonsai-netintel-vlan     07d856c [feat/bn024-vlan-bridge]
+### df -h .
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  468G  282G  162G  64% /
+### rustc -Vv
+rustc 1.95.0 (59807616e 2026-04-14)
+binary: rustc
+commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860
+commit-date: 2026-04-14
+host: x86_64-unknown-linux-gnu
+release: 1.95.0
+LLVM version: 22.1.2
+### sccache --show-stats
+Compile requests                    3055
+Compile requests executed           2530
+Cache hits                          1441
+Cache hits (Assembler)               234
+Cache hits (C/C++)                   849
+Cache hits (Rust)                    358
+Cache misses                        1080
+Cache misses (C/C++)                 145
+Cache misses (Rust)                  935
+Cache hits rate                    57.16 %
+Cache hits rate (Assembler)       100.00 %
+Cache hits rate (C/C++)            85.41 %
+Cache hits rate (Rust)             27.69 %
+Cache timeouts                         0
+Cache read errors                      0
+Forced recaches                        0
+Cache write errors                     0
+Cache errors                           0
+Compilations                        1080
+Compilation failures                   9
+Non-cacheable compilations             0
+Non-cacheable calls                  515
+Non-compilation calls                 10
+Unsupported compiler calls             0
+Average cache write                0.001 s
+Average compiler                   6.104 s
+Average cache read hit             0.002 s
+Failed distributed compilations        0
+
+Non-cacheable reasons:
+crate-type                           475
+-                                     14
+missing input                         10
+-o                                     9
+incremental                            7
+
+Cache location                  Local disk: "/home/arjuna/.cache/sccache"
+Base directories                (none)
+Use direct/preprocessor mode?   yes
+Version (client)                0.15.0
+Cache size                            10 GiB
+Max cache size                        10 GiB
+### free -g
+               total        used        free      shared  buff/cache   available
+Mem:              46          10           7           0          29          36
+Swap:              7           0           7

@@ -41,6 +41,7 @@ pub enum VlanSourceProfile {
     EosShowVlanBriefJson,
     NxosShowVlanBriefJsonNative,
     CumulusBridgeCVlanShow,
+    LinuxBridgeCVlanShow,
 }
 
 impl VlanSourceProfile {
@@ -49,13 +50,14 @@ impl VlanSourceProfile {
             Self::EosShowVlanBriefJson => "eos/show-vlan-brief-json",
             Self::NxosShowVlanBriefJsonNative => "nxos/show-vlan-brief-json-native",
             Self::CumulusBridgeCVlanShow => "cumulus/bridge-c-vlan-show",
+            Self::LinuxBridgeCVlanShow => "linux/bridge-c-vlan-show",
         }
     }
 
     pub fn source_kind(self) -> &'static str {
         match self {
             Self::EosShowVlanBriefJson | Self::NxosShowVlanBriefJsonNative => "cli_json",
-            Self::CumulusBridgeCVlanShow => "cli_text",
+            Self::CumulusBridgeCVlanShow | Self::LinuxBridgeCVlanShow => "cli_text",
         }
     }
 }
@@ -552,7 +554,11 @@ fn parse_nxos_vlan(root: &Value, report: &mut VlanNormalizationReport) -> Vec<Vl
     out
 }
 
-fn parse_cumulus_vlan(input: &str, report: &mut VlanNormalizationReport) -> Vec<VlanBridgePayload> {
+fn parse_bridge_vlan_text(
+    input: &str,
+    report: &mut VlanNormalizationReport,
+    expected_header: &[&str],
+) -> Vec<VlanBridgePayload> {
     let mut out = Vec::new();
     let mut lines = input.lines();
     let Some(header) = lines.next() else {
@@ -567,7 +573,7 @@ fn parse_cumulus_vlan(input: &str, report: &mut VlanNormalizationReport) -> Vec<
         return out;
     };
     let header_parts: Vec<_> = header.split_whitespace().collect();
-    if header_parts != ["port", "vlan", "ids"] {
+    if header_parts != expected_header {
         report
             .collection_presence
             .insert("bridge-vlan-header".into(), "malformed".into());
@@ -758,9 +764,8 @@ fn declared_scope_contract(profile: VlanSourceProfile) -> AcquisitionScopeContra
     match profile {
         VlanSourceProfile::EosShowVlanBriefJson
         | VlanSourceProfile::NxosShowVlanBriefJsonNative
-        | VlanSourceProfile::CumulusBridgeCVlanShow => {
-            AcquisitionScopeContract::CompleteScopedTable
-        }
+        | VlanSourceProfile::CumulusBridgeCVlanShow
+        | VlanSourceProfile::LinuxBridgeCVlanShow => AcquisitionScopeContract::CompleteScopedTable,
     }
 }
 
@@ -888,7 +893,10 @@ pub fn normalize_vlan(obs: &VlanObservation<'_>) -> VlanNormalizationOutput {
             }
         }
         VlanSourceProfile::CumulusBridgeCVlanShow => {
-            parse_cumulus_vlan(obs.capture.output, &mut report)
+            parse_bridge_vlan_text(obs.capture.output, &mut report, &["port", "vlan", "ids"])
+        }
+        VlanSourceProfile::LinuxBridgeCVlanShow => {
+            parse_bridge_vlan_text(obs.capture.output, &mut report, &["port", "vlan-id"])
         }
     };
     report.empty_records = positive_empty_population(&report);
@@ -971,7 +979,7 @@ pub fn normalize_vlan(obs: &VlanObservation<'_>) -> VlanNormalizationOutput {
             &raw_sha256,
             obs.profile.label(),
             payload_completeness,
-            0,
+            obs.context.sequence,
         );
         if fact.validate().is_ok() {
             facts.push(fact);
@@ -1214,6 +1222,23 @@ mod tests {
                 payload.vlan_id < 10 || payload.vlan_id > 12
             }),
             "compressed range endpoints must not be invented"
+        );
+    }
+    #[test]
+    fn genuine_linux_frr_header_only_vlan_output_is_positive_empty() {
+        let out = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::LinuxBridgeCVlanShow,
+            capture: complete(include_str!(
+                "../tests/fixtures/bn024/l2-vertical/frr2-bridge-c-vlan-show.txt"
+            )),
+            context: ctx(),
+        });
+        assert!(out.facts.is_empty());
+        assert!(out.report.empty_records);
+        assert!(out.coverage.positive_empty_population);
+        assert_eq!(
+            out.coverage.population_coverage,
+            ScopedPopulationCoverage::Complete
         );
     }
 }

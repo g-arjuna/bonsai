@@ -13,6 +13,7 @@ const SHA256 = 'b61b12df7142a9fcfacb4718eb9fc2b3210cd91a68122a87254dd093855c489a
 function fact(name, index, oper, admin, addresses, notes = []) {
   return {
     fact_id: `${name}-fact-0123456789abcdef`,
+    fact_kind: 'interface.state',
     schema_id: 'interface_state/v1',
     subject: {
       device_id: 'containerlab:clab-bonsai-bn003-vrf-frr2',
@@ -43,6 +44,84 @@ function fact(name, index, oper, admin, addresses, notes = []) {
   };
 }
 
+
+function macFact() {
+  return {
+    fact_id: 'mac-fact-0123456789abcdef',
+    fact_kind: 'mac.forwarding',
+    schema_id: 'mac_forwarding/v1',
+    subject: {
+      device_id: 'containerlab:clab-bonsai-bn003-vrf-frr2',
+      entity: 'eth0',
+      namespace: 'interface',
+      network_namespace: 'default',
+    },
+    payload: {
+      fields: {
+        mac_address: '33:33:00:00:00:01',
+        vlan_id: { state: 'unknown' },
+        outgoing_interface: 'eth0',
+        entry_type: { state: 'known', value: 'permanent' },
+        flags: ['self', 'permanent'],
+        move_count: { state: 'unknown' },
+        last_move_epoch_seconds: { state: 'unknown' },
+        bridge_domain: { state: 'unknown' },
+        entry_contexts: ['self_table'],
+      },
+    },
+    quality: {
+      completeness: 'complete',
+      confidence: 'direct_observation',
+      freshness: 'current',
+      validation: 'validated',
+      notes: [],
+    },
+    lifecycle: 'active',
+    evidence: [],
+  };
+}
+
+function featureFamilies(withL2) {
+  const coverage = (kind, positiveEmpty) => ({
+    covered_fact_kind: kind,
+    population_coverage: 'complete',
+    positive_empty_population: positiveEmpty,
+    capture_outcome: 'complete',
+  });
+  const family = (feature, kind, emitted, positiveEmpty) => ({
+    feature,
+    fact_kind: kind,
+    support_state: 'supported',
+    facts_emitted: emitted,
+    facts_retained: emitted,
+    coverage: coverage(kind, positiveEmpty),
+    latest_attempt: {
+      outcome: 'complete',
+      normalization_outcome: positiveEmpty ? 'genuine_complete_empty' : 'complete_usable',
+      completed_at: new Date().toISOString(),
+      facts_emitted: emitted,
+      facts_validated: emitted,
+    },
+    retained: {
+      evidence_state: 'current',
+      observed_at: new Date().toISOString(),
+      facts_emitted: emitted,
+      facts_validated: emitted,
+      facts_retained: emitted,
+      facts_omitted_by_retention: 0,
+      retention_truncated: false,
+      positive_empty_population: positiveEmpty,
+      coverage: coverage(kind, positiveEmpty),
+    },
+  });
+  return [
+    family('interfaces.frr_json', 'interface.state', 4, false),
+    family('arpnd.linux_ip_neigh', 'arpnd.neighbor', 0, true),
+    family('mac.linux_bridge_fdb', 'mac.forwarding', withL2 ? 1 : 0, !withL2),
+    family('vlan.linux_bridge_vlan', 'vlan.bridge_domain', 0, true),
+  ];
+}
+
 function evidenceBody(state) {
   return {
     device_address: DEVICE_ADDR,
@@ -54,21 +133,21 @@ function evidenceBody(state) {
     freshness: state.ageSeconds > 3600 ? 'stale' : 'fresh',
     release_raw: '10.6.1_git',
     release_build: 'quay.io/frrouting/frr@sha256:813497af103e972600f6161012b3bf2a2a1c5ea10d09cd1eacd74f1dc510a57b',
-    acquisition_contract: 'frr_vtysh_show_interface_json',
+    acquisition_contract: 'frr_verified_ssh_l2_snapshot_v1',
     parser_revision: 'frr-iface-json-2026.11-r2',
     normalizer_revision: 'frr-iface-json-2026.11-r2',
     mapping_revision: 'bn024-iface-map-3',
     profile_id: 'frr-10.6.1-structured-interfaces',
-    normalization_report: { entities_accepted: 4, records_decoded: 4, expected_interface_total: null },
+    normalization_report: { entities_accepted: 4, records_decoded: 4, expected_interface_total: null, feature_families: featureFamilies(Boolean(state.withL2)) },
     transport: 'verified_ssh_read_only_cli',
     interface_command: "vtysh -c 'show interface json'",
     interface_output_bytes: 2796,
     interface_output_sha256: SHA256,
     host_key_verified: true,
-    facts_emitted: 4,
-    facts_validated: 4,
-    facts_retained: 4,
-    usable_entity_facts: 4,
+    facts_emitted: state.withL2 ? 5 : 4,
+    facts_validated: state.withL2 ? 5 : 4,
+    facts_retained: state.withL2 ? 5 : 4,
+    usable_entity_facts: state.withL2 ? 5 : 4,
     interpretation_outcome: 'complete_usable',
     fact_retention_truncated: false,
     records_decoded: 4,
@@ -81,6 +160,7 @@ function evidenceBody(state) {
       fact('eth1', 3, 'up', 'up', [], ['no IPv4 unicast addresses observed in ipv4UnicastList']),
       fact('eth2', 4, 'down', 'up', []),
       fact('lo', 1, 'up', 'up', ['127.0.0.1/8']),
+      ...(state.withL2 ? [macFact()] : []),
     ],
   };
 }
@@ -210,6 +290,19 @@ test('operator sees truthful native evidence identity, bounded facts, staleness,
   await expect(panel).toContainText('Capture success: 4/4 usable/validated facts');
   expect(state.collects).toBe(1);
   await expect(panel).not.toContainText('Evidence is stale');
+});
+
+
+test('operator sees per-family L2 coverage and retained MAC evidence without inventing empty neighbor rows', async ({ page }) => {
+  await installFixtures(page, { role: 'operator', ageSeconds: 120, withL2: true });
+  await openDrawer(page);
+  const panel = page.getByRole('region', { name: 'Native FRR interface evidence' });
+  await expect(panel).toContainText('arpnd.linux_ip_neigh');
+  await expect(panel).toContainText('positive empty population');
+  await expect(panel).toContainText('L2 neighbor/bridge evidence');
+  await expect(panel).toContainText('mac.forwarding');
+  await expect(panel).toContainText('33:33:00:00:00:01 on eth0');
+  await expect(panel).not.toContainText('No typed interface facts retained');
 });
 
 test('viewer receives an explicit denied affordance rather than a mutation action', async ({ page }) => {

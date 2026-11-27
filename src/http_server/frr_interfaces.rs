@@ -293,6 +293,9 @@ fn collection_success_json(
         "status_facts": observation.status_facts,
         "fact_retention_truncated": observation.fact_retention_truncated,
         "interface_output_sha256": observation.interface_output_sha256,
+        "neighbor_output_sha256": observation.neighbor_output_sha256,
+        "mac_output_sha256": observation.mac_output_sha256,
+        "vlan_output_sha256": observation.vlan_output_sha256,
         "normalization_report": observation.normalization_report,
         "authoritative_projection": "none"
     })
@@ -493,7 +496,22 @@ fn operator_observation_json(
         "device_hostname_reported": observation.device_hostname_reported,
         "interface_output_sha256": observation.interface_output_sha256,
         "interface_output_bytes": observation.interface_output_bytes,
+        "neighbor_command": observation.neighbor_command,
+        "mac_command": observation.mac_command,
+        "vlan_command": observation.vlan_command,
+        "neighbor_output_sha256": observation.neighbor_output_sha256,
+        "neighbor_output_bytes": observation.neighbor_output_bytes,
+        "mac_output_sha256": observation.mac_output_sha256,
+        "mac_output_bytes": observation.mac_output_bytes,
+        "vlan_output_sha256": observation.vlan_output_sha256,
+        "vlan_output_bytes": observation.vlan_output_bytes,
         "raw_output_retained": observation.raw_interface_json.is_some(),
+        "raw_neighbor_output_retained": observation.raw_neighbor_output.is_some(),
+        "raw_neighbor_output_omitted_reason": observation.raw_neighbor_output_omitted_reason,
+        "raw_mac_output_retained": observation.raw_mac_output.is_some(),
+        "raw_mac_output_omitted_reason": observation.raw_mac_output_omitted_reason,
+        "raw_vlan_output_retained": observation.raw_vlan_output.is_some(),
+        "raw_vlan_output_omitted_reason": observation.raw_vlan_output_omitted_reason,
         "profile_id": observation.profile_id,
         "profile_fingerprint": observation.profile_fingerprint,
         "normalizer_id": observation.normalizer_id,
@@ -512,10 +530,236 @@ fn operator_observation_json(
         "facts_retained": observation.facts_retained,
         "fact_retention_truncated": observation.fact_retention_truncated,
         "facts": observation.facts,
+        "command_execution": observation.command_execution,
+        "family_states": observation.family_states,
         "diagnostics_retained": observation.diagnostics_retained,
         "diagnostic_retention_truncated": observation.diagnostic_retention_truncated,
         "normalization_report": observation.normalization_report,
         "acquisition_classification": observation.acquisition_classification,
+    })
+}
+
+const OPERATIONAL_L2_MAX_OBSERVATION_AGE_SECONDS: u64 = 300;
+const OPERATIONAL_L2_CAPTURE_SKEW_SECONDS: u64 = 60;
+
+fn operational_l2_assessment(
+    observation: &crate::enrichment::frr_interfaces::StoredFrrInterfaceShadowObservation,
+    acquisition: Option<&crate::enrichment::frr_interfaces::StoredFrrInterfaceAcquisitionState>,
+) -> Value {
+    // Current operational analysis uses an explicit bounded observation-age
+    // policy because native CLI output normally has no source-established
+    // `valid_until`. This does not weaken the shared default: it is a local,
+    // documented consumer policy. Capture-to-capture compatibility remains a
+    // separate skew bound, and family lifecycle eligibility is applied before
+    // facts enter the analyzers.
+    let as_of = chrono::Utc::now().to_rfc3339();
+    let mut all_facts = Vec::new();
+    for value in &observation.facts {
+        match serde_json::from_value::<crate::typed_facts::TypedFact>(value.clone()) {
+            Ok(fact) => all_facts.push(fact),
+            Err(error) => {
+                return json!({
+                    "state": "unresolved_prerequisites",
+                    "analysis_mode": "current_operational",
+                    "reason": "retained typed facts are undecodable",
+                    "detail": error.to_string(),
+                });
+            }
+        }
+    }
+
+    let mut eligible_fact_kinds = Vec::new();
+    let mut coverage = Vec::new();
+    let mut excluded_families = Vec::new();
+    let mut missing_families = Vec::new();
+    for family in &observation.family_states {
+        // The observation record is retained evidence. Newer transport/family
+        // failures live in acquisition state; use that lifecycle decision when
+        // it is newer so stale last-good evidence cannot become current merely
+        // because the older observation payload remains within the age bound.
+        let lifecycle_family = acquisition
+            .and_then(|state| {
+                state
+                    .family_states
+                    .iter()
+                    .find(|candidate| candidate.fact_kind == family.fact_kind)
+            })
+            .filter(|candidate| {
+                candidate.latest_attempt.started_at_ns.unwrap_or(0)
+                    > family.latest_attempt.started_at_ns.unwrap_or(0)
+            })
+            .unwrap_or(family);
+        match lifecycle_family.retained.as_ref() {
+            Some(retained)
+                if matches!(
+                    retained.evidence_state.as_str(),
+                    "current" | "partial_current"
+                ) =>
+            {
+                eligible_fact_kinds.push(family.fact_kind.clone());
+                if let Some(coverage_value) = retained.coverage.as_ref() {
+                    match serde_json::from_value::<
+                        crate::semantic_evidence::ScopedCaptureCoverage,
+                    >(coverage_value.clone())
+                    {
+                        Ok(value) => coverage.push(value),
+                        Err(error) => {
+                            return json!({
+                                "state": "unresolved_prerequisites",
+                                "analysis_mode": "current_operational",
+                                "reason": "retained scoped capture coverage is undecodable",
+                                "detail": error.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+            Some(retained) => excluded_families.push(json!({
+                "fact_kind": family.fact_kind,
+                "evidence_state": retained.evidence_state,
+                "observed_at": retained.observed_at,
+                "latest_attempt_outcome": lifecycle_family.latest_attempt.outcome,
+                "latest_normalization_outcome": lifecycle_family.latest_attempt.normalization_outcome,
+                "reason": "stale last-good evidence is retained for inspection but excluded from definitive current operational analysis",
+            })),
+            None => missing_families.push(family.fact_kind.clone()),
+        }
+    }
+    let facts: Vec<_> = all_facts
+        .into_iter()
+        .filter(|fact| {
+            eligible_fact_kinds
+                .iter()
+                .any(|kind| kind == &fact.fact_kind)
+        })
+        .collect();
+    let lifecycle = json!({
+        "eligible_fact_kinds": eligible_fact_kinds,
+        "excluded_families": excluded_families,
+        "missing_families": missing_families,
+    });
+
+    let mut derivation_policy =
+        crate::forwarding_domain_derivation::ForwardingDomainDerivationPolicy::default();
+    derivation_policy.freshness = crate::semantic_evidence::FreshnessPolicy::observation_age(
+        OPERATIONAL_L2_MAX_OBSERVATION_AGE_SECONDS,
+    );
+    derivation_policy.max_capture_skew_seconds = OPERATIONAL_L2_CAPTURE_SKEW_SECONDS;
+    let derivation = match crate::forwarding_domain_derivation::derive_forwarding_domains(
+        &facts,
+        derivation_policy,
+        &as_of,
+    ) {
+        Ok(derivation) => derivation,
+        Err(error) => {
+            return json!({
+                "state": "unresolved_prerequisites",
+                "analysis_mode": "current_operational",
+                "reason": "forwarding-domain derivation prerequisites were not satisfied",
+                "detail": error,
+                "as_of": as_of,
+                "observation_captured_at": observation.captured_at,
+                "observation_age_policy_seconds": OPERATIONAL_L2_MAX_OBSERVATION_AGE_SECONDS,
+                "capture_skew_policy_seconds": OPERATIONAL_L2_CAPTURE_SKEW_SECONDS,
+                "family_lifecycle": lifecycle,
+                "authoritative_projection": "none",
+            });
+        }
+    };
+    let relationships = crate::interface_relationships::analyze_interface_relationships(&facts);
+    let arpnd_facts = facts
+        .iter()
+        .filter(|fact| fact.fact_kind == crate::neighbor_facts::FACT_KIND_ARPND_NEIGHBOR)
+        .count();
+    let mac_facts = facts
+        .iter()
+        .filter(|fact| fact.fact_kind == crate::neighbor_facts::FACT_KIND_MAC_FORWARDING)
+        .count();
+    let vlan_facts = facts
+        .iter()
+        .filter(|fact| fact.fact_kind == crate::vlan_facts::FACT_KIND_VLAN_BRIDGE_DOMAIN)
+        .count();
+    let derivation_report = derivation.report.clone();
+    let derived_domain_evidence = derivation.evidence.len();
+    if derived_domain_evidence == 0 || arpnd_facts == 0 || mac_facts == 0 {
+        return json!({
+            "state": "unresolved_prerequisites",
+            "analysis_mode": "current_operational",
+            "reason": "current eligible evidence does not establish the bridge-domain, ARP/ND and MAC prerequisites required for cross-table correlation",
+            "as_of": as_of,
+            "observation_captured_at": observation.captured_at,
+            "observation_age_policy_seconds": OPERATIONAL_L2_MAX_OBSERVATION_AGE_SECONDS,
+            "capture_skew_policy_seconds": OPERATIONAL_L2_CAPTURE_SKEW_SECONDS,
+            "input_facts": facts.len(),
+            "coverage_objects": coverage.len(),
+            "family_lifecycle": lifecycle,
+            "prerequisite_evidence": {
+                "arpnd_facts": arpnd_facts,
+                "mac_facts": mac_facts,
+                "vlan_facts": vlan_facts,
+                "derived_domain_evidence": derived_domain_evidence,
+            },
+            "forwarding_domain_derivation": {
+                "report": derivation_report,
+                "derived_domain_evidence": derived_domain_evidence,
+            },
+            "interface_relationships": relationships,
+            "authoritative_projection": "none",
+        });
+    }
+    let mut reconciliation_policy =
+        crate::neighbor_reconciliation::NeighborReconciliationPolicy::default();
+    reconciliation_policy.freshness = crate::semantic_evidence::FreshnessPolicy::observation_age(
+        OPERATIONAL_L2_MAX_OBSERVATION_AGE_SECONDS,
+    );
+    reconciliation_policy.max_capture_skew_seconds = OPERATIONAL_L2_CAPTURE_SKEW_SECONDS;
+    let reconciliation = match crate::neighbor_reconciliation::reconcile_neighbor_tables(
+        &facts,
+        &coverage,
+        &derivation.evidence,
+        &reconciliation_policy,
+        &as_of,
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            return json!({
+                "state": "unresolved_prerequisites",
+                "analysis_mode": "current_operational",
+                "reason": "neighbor reconciliation prerequisites were not satisfied",
+                "detail": error,
+                "as_of": as_of,
+                "observation_captured_at": observation.captured_at,
+                "observation_age_policy_seconds": OPERATIONAL_L2_MAX_OBSERVATION_AGE_SECONDS,
+                "capture_skew_policy_seconds": OPERATIONAL_L2_CAPTURE_SKEW_SECONDS,
+                "input_facts": facts.len(),
+                "coverage_objects": coverage.len(),
+                "family_lifecycle": lifecycle,
+                "forwarding_domain_derivation": {
+                    "report": derivation_report,
+                    "derived_domain_evidence": derived_domain_evidence,
+                },
+                "interface_relationships": relationships,
+                "authoritative_projection": "none",
+            });
+        }
+    };
+    json!({
+        "state": "available",
+        "analysis_mode": "current_operational",
+        "as_of": as_of,
+        "observation_captured_at": observation.captured_at,
+        "observation_age_policy_seconds": OPERATIONAL_L2_MAX_OBSERVATION_AGE_SECONDS,
+        "capture_skew_policy_seconds": OPERATIONAL_L2_CAPTURE_SKEW_SECONDS,
+        "input_facts": facts.len(),
+        "coverage_objects": coverage.len(),
+        "family_lifecycle": lifecycle,
+        "forwarding_domain_derivation": {
+            "report": derivation_report,
+            "derived_domain_evidence": derived_domain_evidence,
+        },
+        "neighbor_reconciliation": reconciliation,
+        "interface_relationships": relationships,
+        "authoritative_projection": "none",
     })
 }
 
@@ -558,9 +802,19 @@ pub(super) async fn latest(
                     "native interface latest-attempt evidence is undecodable or belongs to another identity",
                 )
             })?;
-    let observation = crate::enrichment::frr_interfaces::latest_observation(&state.store, &target)
-        .await
-        .ok();
+    let observation_result =
+        crate::enrichment::frr_interfaces::latest_observation(&state.store, &target).await;
+    let observation = match observation_result {
+        Ok(observation) => Some(observation),
+        Err(error) if error.to_string().contains("shadow evidence unavailable") => None,
+        Err(_) => {
+            return Err(api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "stored_shadow_observation_invalid",
+                "retained native interface shadow evidence is invalid or undecodable; acquisition state is preserved separately",
+            ));
+        }
+    };
     let Some(observation) = observation else {
         return if let Some(acquisition) = acquisition {
             Ok(Json(json!({
@@ -586,8 +840,36 @@ pub(super) async fn latest(
     let now = crate::graph::common::now_ns();
     let age_seconds = (now - observation.captured_at_ns).max(0) / 1_000_000_000;
     let freshness = if age_seconds > 3600 { "stale" } else { "fresh" };
+    let analysis_observation = observation.clone();
+    let analysis_acquisition = acquisition.clone();
+    let l2_assessment = tokio::task::spawn_blocking(move || {
+        operational_l2_assessment(&analysis_observation, analysis_acquisition.as_ref())
+    })
+    .await
+    .unwrap_or_else(|error| {
+        json!({
+            "state": "analysis_unavailable",
+            "analysis_mode": "current_operational",
+            "reason": "bounded operational analysis worker failed",
+            "detail": error.to_string(),
+        })
+    });
+    let analysis_state = l2_assessment
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("analysis_unavailable")
+        .to_string();
+    let surface_state = if analysis_state == "analysis_unavailable" {
+        "analysis_unavailable"
+    } else {
+        // The retained evidence surface is available even when current
+        // operational prerequisites are unresolved; the nested analysis state
+        // is authoritative for that distinction.
+        "available"
+    };
     Ok(Json(json!({
-        "state": "available",
+        "state": surface_state,
+        "analysis_state": analysis_state,
         "freshness": freshness,
         "age_seconds": age_seconds,
         "stale_after_seconds": 3600,
@@ -595,6 +877,7 @@ pub(super) async fn latest(
         "evidence": operator_observation_json(&observation),
         "acquisition": acquisition,
         "latest_attempt": latest_attempt,
+        "l2_assessment": l2_assessment,
         "authoritative_projection": "none",
         "promotion": "shadow_only"
     })))
