@@ -51,6 +51,13 @@ def digest_text(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def read_bounded(stream):
+    data = stream.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise ValueError("frr capture exceeds 4 MiB")
+    return data.decode("utf-8", errors="strict")
+
+
 def _append_bounded(retained, chunk, total):
     total += len(chunk)
     if len(retained) <= MAX_BYTES:
