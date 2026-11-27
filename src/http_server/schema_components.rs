@@ -211,9 +211,15 @@ pub(super) fn schema_components() -> serde_json::Value {
                     "local_if": { "type": "string" },
                     "system_name": { "type": "string" },
                     "port_id": { "type": "string" },
-                    "chassis_id": { "type": "string" }
+                    "chassis_id": { "type": "string" },
+                    "neighbor_key": { "type": "string" },
+                    "lifecycle": { "type": "string", "enum": ["active", "withdrawn", "superseded"] },
+                    "updated_at_ns": { "type": "integer" },
+                    "observed_at_ns": { "type": "integer" },
+                    "lifecycle_changed_at_ns": { "type": "integer" },
+                    "ordering_state": { "type": "string" }
                 },
-                "required": ["local_if", "system_name", "port_id", "chassis_id"]
+                "required": ["local_if", "system_name", "port_id", "chassis_id", "neighbor_key", "lifecycle", "updated_at_ns", "observed_at_ns", "lifecycle_changed_at_ns", "ordering_state"]
             },
             "StateChange": {
                 "type": "object",
@@ -239,6 +245,9 @@ pub(super) fn schema_components() -> serde_json::Value {
                     "interfaces": { "type": "array", "items": { "$ref": "#/components/schemas/InterfaceDetail" }},
                     "bgp_neighbors": { "type": "array", "items": { "$ref": "#/components/schemas/BgpSession" }},
                     "lldp_neighbors": { "type": "array", "items": { "$ref": "#/components/schemas/LldpNeighbor" }},
+                    "lldp_evidence_returned": { "type": "integer" },
+                    "lldp_evidence_omitted_by_limit": { "type": "boolean" },
+                    "lldp_evidence_contract": { "type": "string" },
                     "recent_state_changes": { "type": "array", "items": { "$ref": "#/components/schemas/StateChange" }},
                     "recent_detections": { "type": "array", "items": { "$ref": "#/components/schemas/DetectionEvent" }},
                     "selected_paths": { "type": "array", "items": { "type": "object", "additionalProperties": true }},
@@ -250,7 +259,7 @@ pub(super) fn schema_components() -> serde_json::Value {
                     "updated_by": { "type": "string" },
                     "last_operator_action": { "type": "string" }
                 },
-                "required": ["address", "hostname", "vendor", "role", "site", "enabled", "collector_id", "credential_alias", "health", "interfaces", "bgp_neighbors", "lldp_neighbors", "recent_state_changes", "recent_detections", "selected_paths", "subscription_statuses", "resolution_audit", "created_at_ns", "updated_at_ns", "created_by", "updated_by", "last_operator_action"]
+                "required": ["address", "hostname", "vendor", "role", "site", "enabled", "collector_id", "credential_alias", "health", "interfaces", "bgp_neighbors", "lldp_neighbors", "lldp_evidence_returned", "lldp_evidence_omitted_by_limit", "lldp_evidence_contract", "recent_state_changes", "recent_detections", "selected_paths", "subscription_statuses", "resolution_audit", "created_at_ns", "updated_at_ns", "created_by", "updated_by", "last_operator_action"]
             },
             "DeviceGnmiReadinessResponse": {
                 "type": "object",

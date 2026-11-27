@@ -38,6 +38,7 @@ pub mod investigation_runtime;
 pub mod investigation_trigger;
 pub mod lldp_facts;
 pub mod lldp_normalizer;
+pub mod lldp_operational;
 pub mod lldp_relationships;
 pub mod mcp_client;
 pub mod mcp_server;

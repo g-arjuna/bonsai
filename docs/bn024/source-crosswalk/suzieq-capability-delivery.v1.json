@@ -6468,21 +6468,26 @@
           "src/telemetry.rs (existing SR Linux/OpenConfig/XR-native LLDP event extraction; semantic corrections still incomplete)",
           "src/subscriber.rs (existing capability-driven LLDP subscription selection)",
           "src/graph/mod.rs and src/collector/graph.rs (legacy neighbor/topology writers; not authorized by typed facts)",
-          "tests/fixtures/bn024/lldp (genuine pinned upstream Cumulus/EOS capture slices)"
+          "tests/fixtures/bn024/lldp (genuine pinned upstream Cumulus/EOS capture slices)",
+          "src/lldp_operational.rs (identity-keyed operational projection entries)",
+          "src/graph/mod.rs and src/collector/graph.rs (multi-neighbor persistence, withdrawal lifecycle, supersession of legacy collapsed rows)",
+          "src/http_server/device.rs (authorized device-detail operational LLDP exposure)",
+          "tests/bn024_lldp_operational.rs (XR-shaped multi-neighbor and withdrawal regressions)"
         ],
         "actual_qualification_evidence": [
           "genuine pinned upstream Cumulus Linux 4.3.0 leaf02 net show lldp json slice sha256:2370a6e4119487393fd50976956baf7ef3bbc75636cd275b6e6172103912336b: exactly two neighbor-bearing interfaces normalized with independent expected values",
           "genuine pinned upstream EOS leaf02 show lldp neighbors detail slice sha256:0cc3d0b79e8cf2a2757dc8b261c0402d95ba324c85658962fef5e76a5464113b: seven interface keys, four neighbors and three positive empty interfaces; local EOS release unknown in upstream metadata",
           "parallel Ethernet5/Ethernet6 observations remain distinct; MAC, interface-name and ifindex subtype handling is explicit; unresolved locally assigned identifiers are not coerced",
-          "offline reconciliation classifies confirmed, one-sided coverage-unknown, missing reverse, stale, withdrawn, conflicting, duplicate, ambiguous and unresolved evidence at an explicit analysis time"
+          "offline reconciliation classifies confirmed, one-sided coverage-unknown, missing reverse, stale, withdrawn, conflicting, duplicate, ambiguous and unresolved evidence at an explicit analysis time",
+          "explicitly synthetic XR-shaped operational regression: two detail entries in one native envelope persist as distinct active rows, and path deletion withdraws both rows without erasing evidence (tests/bn024_lldp_operational.rs); this is write-path evidence, not genuine XRd fixture or live qualification"
         ],
         "missing_functionality": [
           "production/live acquisition qualification and authorized read path",
           "operator/API query exposure and denominator-aware fleet summary",
-          "complete correction of legacy incremental graph projection semantics",
-          "model-driven genuine fixture qualification (SR Linux/OpenConfig/XR) and XR multi-neighbor production write-path correction",
           "canonical interface entity adoption in live producers",
-          "generic current Cumulus, SONiC, EOS or IOS XR qualification beyond the pinned evidence"
+          "generic current Cumulus, SONiC, EOS or IOS XR qualification beyond the pinned evidence",
+          "positive-empty per-path population coverage in the operational graph projection",
+          "genuine model-driven SR Linux/OpenConfig/XR fixture qualification for the corrected operational writer"
         ],
         "beyond_upstream": [
           "registered typed payload validation with explicit subtype semantics and availability states",
@@ -6552,15 +6557,17 @@
       "known_upstream_defaults_and_limitations": "Pinned upstream often selects all-version commands, executes shell/TextFSM fallbacks, drops rows missing ifname or peerHostname, mutates peerIfname during query-time resolution, uses locally assigned numeric values as ifindexes without carrying resolver evidence, strips FQDNs heuristically, can merge CDP and LLDP into one table, and resolves bonds by replacement. Bonsai must not copy those silent defaults: unresolved subtype, resolver miss, protocol mixing, poll gaps and aggregate-versus-member layering must remain explicit.",
       "bonsai": {
         "disposition": "PORT_REQUIRED",
-        "implementation_source_locations": [],
+        "implementation_source_locations": [
+          "src/http_server/device.rs (bounded existing device-detail exposure of operational LLDP lifecycle rows; not a complete typed fleet filter API)"
+        ],
         "actual_qualification_evidence": [],
         "missing_functionality": [
-          "complete typed filter semantics",
           "coverage/error/unknown states",
-          "multi-NOS unified behavior"
+          "multi-NOS unified behavior",
+          "complete typed fleet filter semantics and denominator-aware summary remain unimplemented; current exposure is per-device detail only"
         ],
         "beyond_upstream": [],
-        "implementation_state": "not_implemented_port_required",
+        "implementation_state": "partially_implemented",
         "counts_as_completed_equivalent": false,
         "counts_as_planned_improvement": false
       },

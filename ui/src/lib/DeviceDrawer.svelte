@@ -850,17 +850,27 @@
           {#if device.lldp_neighbors.length > 0}
             <h4 class="section-head" style="margin-top:16px;">LLDP</h4>
             <table>
-              <thead><tr><th>Local port</th><th>Neighbor</th><th>Port ID</th></tr></thead>
+              <thead><tr><th>Local port</th><th>Neighbor</th><th>Port ID</th><th>Evidence</th></tr></thead>
               <tbody>
                 {#each device.lldp_neighbors as n}
                   <tr>
                     <td><code>{n.local_if}</code></td>
                     <td>{n.system_name || n.chassis_id || '—'}</td>
                     <td><code>{n.port_id || '—'}</code></td>
+                    <td>
+                      <span class="badge {(n.lifecycle || 'active') === 'active' ? 'healthy' : 'critical'}">{n.lifecycle || 'active'}</span>
+                      {#if n.ordering_state && n.ordering_state !== 'ordered'}
+                        <span class="badge warn" title="Lifecycle ordering uncertainty">ordering uncertain</span>
+                      {/if}
+                    </td>
                   </tr>
                 {/each}
               </tbody>
             </table>
+            <p class="muted" style="font-size:11px; margin-top:6px;">
+              Retained lifecycle evidence{#if device.lldp_evidence_omitted_by_limit}, bounded: additional rows omitted by the 500-row device drawer limit{/if}.
+              Withdrawn rows are historical evidence, not current adjacency proof.
+            </p>
           {/if}
         {/if}
 

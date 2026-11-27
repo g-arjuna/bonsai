@@ -686,13 +686,15 @@ pub fn link_host_endpoint_to_interface(
              MERGE (h)-[:CONNECTED_TO]->(i)",
         )
         .context("prepare CONNECTED_TO merge")?;
-    let _ = conn.execute(
+    if let Err(error) = conn.execute(
         &mut stmt,
         vec![
             ("hid", Value::String(host_ip.to_string())),
             ("iid", Value::String(interface_id.to_string())),
         ],
-    );
+    ) {
+        tracing::debug!(%error, host_ip, interface_id, "HostEndpoint CONNECTED_TO edge skipped");
+    }
     Ok(())
 }
 
