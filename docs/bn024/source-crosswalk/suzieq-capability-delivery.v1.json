@@ -8128,14 +8128,17 @@
         "disposition": "EXISTING_PARTIAL",
         "implementation_source_locations": [
           "src/http_server/mod.rs /api/path graph handler",
-          "src/native_routes.rs"
+          "src/native_routes.rs",
+          "src/enrichment/native_routes.rs",
+          "src/mcp_server.rs get_native_route_lookup"
         ],
         "actual_qualification_evidence": [
-          "tests/bn006_native_routes.rs (pure bounded recursive next-hop resolver controls; not yet path-API integration)"
+          "tests/bn006_native_routes.rs (pure bounded recursive next-hop resolver controls plus MCP route lookup integration over explicitly synthetic replay shadow evidence)"
         ],
         "missing_functionality": [
-          "integration of route-aware recursive LPM into the authorized path API",
-          "snapshot/VRF identity",
+          "integration of route-aware recursive LPM into the authorized /api/path graph API (initial MCP lookup integration only)",
+          "live verified-SSH route acquisition through Bonsai collection wiring",
+          "snapshot/as-of time semantics for retained route evidence",
           "evidence-backed verdicts",
           "MTU/overlay handling"
         ],

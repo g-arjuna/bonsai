@@ -13,6 +13,7 @@ pub mod factory;
 pub mod frr_interfaces;
 pub mod multi_source;
 pub mod native_bgp;
+pub mod native_routes;
 pub mod netbox;
 pub mod parser_chain_enricher;
 pub mod registry;
