@@ -49,8 +49,56 @@ async fn native_tool_reads_persisted_evidence_with_scope_and_truthful_freshness(
         raw_neighbors: raw.into(),
         raw_system_information: "{}".into(),
         capture,
+        inventory_identity: Some("registered-target:192.0.2.1".into()),
+        acquisition_profile: Some("nokia.srlinux.fixed-readonly-native-bgp-v1".into()),
     };
     persist_observation(&store, &observation).await.unwrap();
+    let bmp_now = bonsai::graph::common::now_ns();
+    let bmp_event = bonsai::streaming::bmp::BmpEvent {
+        timestamp_ns: bmp_now,
+        collector_peer: "192.0.2.99:11019".into(),
+        message_type: "peer_up".into(),
+        peer_type: 0,
+        peer_flags: 0,
+        router_distinguisher: 0,
+        router_address: "192.0.2.1".into(),
+        peer_address: "10.206.0.2".into(),
+        peer_as: 65002,
+        peer_bgp_id: "192.0.2.2".into(),
+        session_state: "established".into(),
+        route_entries: Vec::new(),
+        raw_len: 48,
+        peer_down_reason: None,
+        peer_down_reason_name: None,
+        stats: Vec::new(),
+        sys_name: None,
+        sys_descr: None,
+        termination_reason: None,
+        termination_reason_name: None,
+        rib_type: None,
+        peer_up_info: None,
+        init_admin_string: None,
+        termination_message: None,
+    };
+    store
+        .write(bonsai::telemetry::TelemetryUpdate {
+            plan_id: String::new(),
+            session_id: String::new(),
+            source_protocol: "bmp".into(),
+            gnmi_path: Vec::new(),
+            is_delete: false,
+            collector_id: String::new(),
+            timestamp_ns: bmp_now,
+            target: "192.0.2.1:57400".into(),
+            vendor: "nokia.srlinux".into(),
+            hostname: "srl-native".into(),
+            role: "pe".into(),
+            site: "lab".into(),
+            path: "streaming/bmp/peer-up".into(),
+            value: serde_json::to_value(&bmp_event).unwrap(),
+        })
+        .await
+        .unwrap();
     let context = ToolExecutionContext {
         role: Role::ApiReadonly,
         scope: Some(RoutingAccessScope {
@@ -70,6 +118,19 @@ async fn native_tool_reads_persisted_evidence_with_scope_and_truthful_freshness(
     assert_eq!(result["freshness"], "fresh");
     assert_eq!(result["capture"]["exporter_address"], "192.0.2.1");
     assert_eq!(
+        result["native_identity_status"],
+        "registered_inventory_target"
+    );
+    assert_eq!(result["reconciliation_status"], "transport_session_only");
+    assert_eq!(
+        result["bmp_reconciliation"]["corroborated_established"], 1,
+        "actual graph BMP row must reconcile through the MCP response: {result}"
+    );
+    assert_eq!(
+        result["bmp_reconciliation"]["corroboration_level"],
+        "transport_session_only_not_afi_safi"
+    );
+    assert_eq!(
         result["capture"]["neighbors"][0]["session_state"],
         "established"
     );
@@ -86,7 +147,14 @@ async fn native_tool_reads_persisted_evidence_with_scope_and_truthful_freshness(
         .contains("routing_scope_violation")
     );
     observation.captured_at_ns -= 120_000_000_000;
-    persist_observation(&store, &observation).await.unwrap();
+    let stale_write = persist_observation(&store, &observation).await;
+    assert!(
+        stale_write
+            .as_ref()
+            .err()
+            .is_some_and(|err| err.to_string().contains("stale native BGP observation")),
+        "delayed older collection must not overwrite newer evidence: {stale_write:?}"
+    );
     assert_eq!(
         call_tool_with_store_and_routing(
             &store,
@@ -94,6 +162,26 @@ async fn native_tool_reads_persisted_evidence_with_scope_and_truthful_freshness(
             "get_native_bgp_neighbors",
             &json!({}),
             &context
+        )
+        .await
+        .unwrap()["freshness"],
+        "fresh"
+    );
+
+    let mut old_observation = observation.clone();
+    old_observation.capture.exporter_address = "192.0.2.4".into();
+    old_observation.inventory_identity = Some("registered-target:192.0.2.4".into());
+    // 600 s exceeds the explicit 300 s freshness policy constant; 120 s
+    // would still be fresh under that contract and cannot prove staleness.
+    old_observation.captured_at_ns = bonsai::graph::common::now_ns() - 600_000_000_000;
+    persist_observation(&store, &old_observation).await.unwrap();
+    assert_eq!(
+        call_tool_with_store_and_routing(
+            &store,
+            None,
+            "get_native_bgp_neighbors",
+            &json!({"device_address":"192.0.2.4"}),
+            &ToolExecutionContext::global(Role::Viewer)
         )
         .await
         .unwrap()["freshness"],
@@ -126,6 +214,83 @@ async fn native_tool_reads_persisted_evidence_with_scope_and_truthful_freshness(
         .unwrap_err()
         .contains("native_bgp_evidence_unavailable")
     );
+}
+
+#[tokio::test]
+async fn native_persistence_exact_replay_and_equal_time_conflict_are_explicit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = GraphStore::open(
+        dir.path().join("graph").to_str().unwrap(),
+        256 * 1024 * 1024,
+    )
+    .unwrap();
+    let raw = include_str!("fixtures/bn006_srl_26_3_1/neighbors-established.json");
+    let capture =
+        parse_nokia_srl_native_bgp_neighbors(raw, "192.0.2.8", "v26.3.1", "ipv4-unicast").unwrap();
+    let observation = StoredNativeBgpObservation {
+        captured_at_ns: 1_769_000_000_000_000_000,
+        capture_started_at_ns: 1_769_000_000_000_000_000,
+        transport: "synthetic_fixture_replay".into(),
+        raw_neighbors: raw.into(),
+        raw_system_information: "{}".into(),
+        capture,
+        inventory_identity: Some("registered-target:192.0.2.8".into()),
+        acquisition_profile: Some("nokia.srlinux.fixed-readonly-native-bgp-v1".into()),
+    };
+    persist_observation(&store, &observation).await.unwrap();
+    persist_observation(&store, &observation)
+        .await
+        .expect("byte-identical exact replay must be idempotent");
+    let mut conflict = observation.clone();
+    conflict.transport = "synthetic_conflicting_transport".into();
+    let err = persist_observation(&store, &conflict)
+        .await
+        .expect_err("equal-time differing evidence must not silently overwrite");
+    assert!(err.to_string().contains("equal-time conflicting"));
+}
+
+#[tokio::test]
+async fn legacy_address_keyed_identity_is_not_definitively_reconciled() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        GraphStore::open(
+            dir.path().join("graph").to_str().unwrap(),
+            256 * 1024 * 1024,
+        )
+        .unwrap(),
+    );
+    let raw = include_str!("fixtures/bn006_srl_26_3_1/neighbors-established.json");
+    let capture =
+        parse_nokia_srl_native_bgp_neighbors(raw, "192.0.2.9", "v26.3.1", "ipv4-unicast").unwrap();
+    let observation = StoredNativeBgpObservation {
+        captured_at_ns: bonsai::graph::common::now_ns(),
+        capture_started_at_ns: bonsai::graph::common::now_ns(),
+        transport: "legacy_address_keyed_synthetic".into(),
+        raw_neighbors: raw.into(),
+        raw_system_information: "{}".into(),
+        capture,
+        inventory_identity: None,
+        acquisition_profile: None,
+    };
+    persist_observation(&store, &observation).await.unwrap();
+    let result = call_tool_with_store_and_routing(
+        &store,
+        None,
+        "get_native_bgp_neighbors",
+        &json!({"device_address":"192.0.2.9"}),
+        &ToolExecutionContext::global(Role::Viewer),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result["native_identity_status"],
+        "legacy_address_keyed_unverified"
+    );
+    assert_eq!(
+        result["reconciliation_status"],
+        "not_run_unverified_legacy_identity"
+    );
+    assert!(result["bmp_reconciliation"].is_null());
 }
 
 #[tokio::test]

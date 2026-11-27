@@ -163,20 +163,20 @@ fn device_capture_permit_key_present(key: &str) -> bool {
         .contains_key(key)
 }
 
-struct BoundedChildOutput {
-    status: std::process::ExitStatus,
-    stdout: Vec<u8>,
-    stdout_bytes: u64,
-    stderr_bytes: u64,
+pub(crate) struct BoundedChildOutput {
+    pub(crate) status: std::process::ExitStatus,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stdout_bytes: u64,
+    pub(crate) stderr_bytes: u64,
 }
 
-struct BoundedStreamOutput {
+pub(crate) struct BoundedStreamOutput {
     retained: Vec<u8>,
     total_bytes: u64,
     overflow: bool,
 }
 
-async fn read_bounded_stream<R>(
+pub(crate) async fn read_bounded_stream<R>(
     mut reader: R,
     max_bytes: usize,
 ) -> std::io::Result<BoundedStreamOutput>
@@ -215,7 +215,7 @@ where
     })
 }
 
-async fn terminate_capture_child(
+pub(crate) async fn terminate_capture_child(
     child: &mut tokio::process::Child,
     stdout_task: &mut tokio::task::JoinHandle<std::io::Result<BoundedStreamOutput>>,
     stderr_task: &mut tokio::task::JoinHandle<std::io::Result<BoundedStreamOutput>>,
@@ -232,21 +232,19 @@ async fn terminate_capture_child(
     stderr_task.abort();
 }
 
-async fn run_capture_helper_bounded(
+pub(crate) async fn run_capture_helper_bounded(
     cmd: &mut tokio::process::Command,
     deadline: std::time::Duration,
 ) -> Result<BoundedChildOutput> {
-    let mut child = cmd
-        .spawn()
-        .context("frr interface capture helper failed to start")?;
+    let mut child = cmd.spawn().context("capture helper failed to start")?;
     let stdout = child
         .stdout
         .take()
-        .context("frr interface capture helper stdout pipe unavailable")?;
+        .context("capture helper stdout pipe unavailable")?;
     let stderr = child
         .stderr
         .take()
-        .context("frr interface capture helper stderr pipe unavailable")?;
+        .context("capture helper stderr pipe unavailable")?;
     let mut stdout_task = tokio::spawn(read_bounded_stream(stdout, MAX_HELPER_STDOUT_BYTES));
     let mut stderr_task = tokio::spawn(read_bounded_stream(stderr, MAX_HELPER_STDERR_BYTES));
     let timeout = tokio::time::sleep(deadline);
@@ -261,29 +259,29 @@ async fn run_capture_helper_bounded(
         }
         tokio::select! {
             wait_status = child.wait(), if status.is_none() => {
-                status = Some(wait_status.context("frr interface capture helper wait failed")?);
+                status = Some(wait_status.context("capture helper wait failed")?);
             }
             out = &mut stdout_task, if stdout_done.is_none() => {
                 let out = out
-                    .context("frr interface capture stdout drain task failed")??;
+                    .context("capture stdout drain task failed")??;
                 if out.overflow {
                     terminate_capture_child(&mut child, &mut stdout_task, &mut stderr_task).await;
-                    bail!("frr interface capture helper stdout exceeds bounded retention limit")
+                    bail!("capture helper stdout exceeds bounded retention limit")
                 }
                 stdout_done = Some(out);
             }
             err = &mut stderr_task, if stderr_done.is_none() => {
                 let err = err
-                    .context("frr interface capture stderr drain task failed")??;
+                    .context("capture stderr drain task failed")??;
                 if err.overflow {
                     terminate_capture_child(&mut child, &mut stdout_task, &mut stderr_task).await;
-                    bail!("frr interface capture helper stderr exceeds bounded retention limit")
+                    bail!("capture helper stderr exceeds bounded retention limit")
                 }
                 stderr_done = Some(err);
             }
             _ = &mut timeout => {
                 terminate_capture_child(&mut child, &mut stdout_task, &mut stderr_task).await;
-                bail!("frr interface capture deadline exceeded; child terminated and reaped")
+                bail!("capture deadline exceeded; child terminated and reaped")
             }
         }
     }

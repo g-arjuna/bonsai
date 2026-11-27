@@ -746,6 +746,18 @@ impl GraphStore {
         alter_add_column(
             &conn,
             "BgpNeighbor",
+            "last_transition_at",
+            "INT64 DEFAULT 0",
+        )?;
+        alter_add_column(
+            &conn,
+            "BgpNeighbor",
+            "evidence_received_at",
+            "INT64 DEFAULT 0",
+        )?;
+        alter_add_column(
+            &conn,
+            "BgpNeighbor",
             "route_distinguisher",
             "STRING DEFAULT ''",
         )?;
@@ -5757,6 +5769,85 @@ impl GraphStore {
         .await
         .context("spawn_blocking panicked")?
     }
+
+    /// Read BMP-originated BGP peer-session evidence for one exporter. The
+    /// rows are evidence only; reconciliation callers decide freshness, VRF
+    /// compatibility and whether absence is missing visibility rather than a
+    /// down session.
+    pub async fn bmp_bgp_sessions_for_device(
+        &self,
+        device_address: &str,
+    ) -> Result<crate::bgp_reconciliation::BmpPeerEvidencePage> {
+        let db = Arc::clone(&self.db);
+        let device_address = device_address.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("bmp_bgp_sessions_for_device conn")?;
+            let mut count_stmt = conn
+                .prepare(
+                    "MATCH (n:BgpNeighbor) WHERE n.device_address = $device AND n.source = 'bmp' RETURN count(n)",
+                )
+                .context("prepare bmp_bgp_sessions_for_device count")?;
+            let total_matching_rows = conn
+                .execute(
+                    &mut count_stmt,
+                    vec![("device", Value::String(device_address.clone()))],
+                )
+                .context("execute bmp_bgp_sessions_for_device count")?
+                .next()
+                .and_then(|row| match row.get(0) {
+                    Some(Value::Int64(value)) if *value >= 0 => Some(*value as usize),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (n:BgpNeighbor)                      WHERE n.device_address = $device AND n.source = 'bmp'                      RETURN n.id, n.device_address, n.peer_address, n.peer_as,                             n.session_state, n.network_instance,                             n.route_distinguisher, n.peer_type, n.updated_at,                             n.evidence_received_at                      ORDER BY n.id                      LIMIT 1000",
+                )
+                .context("prepare bmp_bgp_sessions_for_device")?;
+            let rows: Vec<_> = conn
+                .execute(
+                    &mut stmt,
+                    vec![("device", Value::String(device_address))],
+                )
+                .context("execute bmp_bgp_sessions_for_device")?
+                .map(|row| {
+                    let peer_as = match row.get(3) {
+                        Some(Value::Int64(value)) if *value >= 0 && *value <= u32::MAX as i64 => {
+                            Some(*value as u32)
+                        }
+                        _ => None,
+                    };
+                    crate::bgp_reconciliation::BmpPeerEvidence {
+                        session_id: read_str(&row[0]),
+                        device_address: read_str(&row[1]),
+                        peer_address: read_str(&row[2]),
+                        peer_as,
+                        session_state: read_str(&row[4]),
+                        network_instance: read_str(&row[5]),
+                        route_distinguisher: read_str(&row[6]),
+                        peer_type: match row.get(7) {
+                            Some(Value::Int64(value)) if *value >= 0 && *value <= u8::MAX as i64 => Some(*value as u8),
+                            _ => None,
+                        },
+                        updated_at_ns: read_ts_ns(&row[8]),
+                        evidence_received_at_ns: match row.get(9) {
+                            Some(Value::Int64(value)) => *value,
+                            _ => 0,
+                        },
+                    }
+                })
+                .collect();
+            let returned_rows = rows.len();
+            Ok::<_, anyhow::Error>(crate::bgp_reconciliation::BmpPeerEvidencePage {
+                rows,
+                total_matching_rows,
+                returned_rows,
+                retrieval_omitted_rows: total_matching_rows.saturating_sub(returned_rows),
+            })
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
 }
 
 /// Candidate `BgpNeighbor` session nodes that could own a legacy
@@ -8914,10 +9005,12 @@ fn write_bmp_peer_state(
                    n.peer_as = $peer_as, n.session_state = $state, \
                    n.established_transitions = 0, n.updated_at = $ts, \
                    n.peer_type = $pt, n.route_distinguisher = $rd, \
-                   n.network_instance = '' \
+                   n.network_instance = '', n.last_transition_at = $transition_ts, \
+                   n.evidence_received_at = $received \
                  ON MATCH SET \
                    n.session_state = $state, n.updated_at = $ts, \
-                   n.peer_type = $pt, n.route_distinguisher = $rd",
+                   n.peer_type = $pt, n.route_distinguisher = $rd, \
+                   n.last_transition_at = $transition_ts, n.evidence_received_at = $received",
             )
             .context("prepare BgpNeighbor upsert (bmp)")?;
         conn.execute(
@@ -8929,6 +9022,8 @@ fn write_bmp_peer_state(
                 ("peer_as", Value::Int64(event.peer_as as i64)),
                 ("state", Value::String(event.session_state.clone())),
                 ("ts", ts(update.timestamp_ns)),
+                ("transition_ts", Value::Int64(update.timestamp_ns)),
+                ("received", Value::Int64(crate::graph::common::now_ns())),
                 ("pt", Value::Int64(event.peer_type as i64)),
                 ("rd", Value::String(event.router_distinguisher.to_string())),
             ],

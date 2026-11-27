@@ -5022,11 +5022,18 @@
           "crates/rbmp-core",
           "crates/rbmp-rib",
           "src/routing_service/mod.rs",
-          "src/enrichment/native_bgp.rs"
+          "src/enrichment/native_bgp.rs",
+          "src/remediation/nos_adapter.rs",
+          "src/bgp_reconciliation.rs"
         ],
-        "actual_qualification_evidence": [],
+        "actual_qualification_evidence": [
+          "tests/bn006_native_nos_adapter.rs (genuine SR Linux v26.3.1 fixture; genuine non-established FRR 10.6.1 fixture; synthetic negative controls explicitly labelled)",
+          "tests/bn006_collection_wiring.rs (actual graph/MCP integration using synthetic BMP control evidence)"
+        ],
         "missing_functionality": [
-          "device-polled cross-NOS BGP normalization",
+          "device-polled cross-NOS operational acquisition and normalization beyond genuine parser fixtures",
+          "AFI/SAFI-specific negotiation or route-family operational corroboration beyond BMP transport-session comparison",
+          "established-session multi-NOS live qualification",
           "BFD state",
           "configured-versus-observed comparison"
         ],
@@ -5090,11 +5097,19 @@
           "crates/rbmp-core",
           "crates/rbmp-rib",
           "src/routing_service/mod.rs",
-          "src/enrichment/native_bgp.rs"
+          "src/enrichment/native_bgp.rs",
+          "src/remediation/nos_adapter.rs",
+          "src/bgp_reconciliation.rs",
+          "src/mcp_server.rs"
         ],
-        "actual_qualification_evidence": [],
+        "actual_qualification_evidence": [
+          "tests/bn006_native_nos_adapter.rs (genuine SR Linux v26.3.1 fixture; genuine non-established FRR 10.6.1 fixture; synthetic negative controls explicitly labelled)",
+          "tests/bn006_collection_wiring.rs (actual graph/MCP integration using synthetic BMP control evidence)"
+        ],
         "missing_functionality": [
-          "device-polled cross-NOS BGP normalization",
+          "device-polled cross-NOS operational acquisition and normalization beyond genuine parser fixtures",
+          "AFI/SAFI-specific negotiation or route-family operational corroboration beyond BMP transport-session comparison",
+          "established-session multi-NOS live qualification",
           "BFD state",
           "configured-versus-observed comparison"
         ],
@@ -7120,13 +7135,15 @@
           "crates/rbmp-rib",
           "crates/rbmp-store",
           "src/routing_service/mod.rs",
-          "tests/r01_r04_routing_history_recovery.rs"
+          "src/native_routes.rs",
+          "tests/r01_r04_routing_history_recovery.rs",
+          "tests/bn006_native_routes.rs (initial genuine FRR route parser fixture plus explicitly synthetic recursion controls)"
         ],
         "actual_qualification_evidence": [
           "tests/r01_r04_routing_history_recovery.rs"
         ],
         "missing_functionality": [
-          "device FIB/RIB polling complement",
+          "operational device FIB/RIB acquisition complement beyond the initial genuine FRR parser fixture",
           "route preference semantics across NOS",
           "installed-versus-received distinction"
         ],
@@ -8110,11 +8127,14 @@
       "bonsai": {
         "disposition": "EXISTING_PARTIAL",
         "implementation_source_locations": [
-          "src/http_server/mod.rs /api/path graph handler"
+          "src/http_server/mod.rs /api/path graph handler",
+          "src/native_routes.rs"
         ],
-        "actual_qualification_evidence": [],
+        "actual_qualification_evidence": [
+          "tests/bn006_native_routes.rs (pure bounded recursive next-hop resolver controls; not yet path-API integration)"
+        ],
         "missing_functionality": [
-          "route-aware recursive LPM",
+          "integration of route-aware recursive LPM into the authorized path API",
           "snapshot/VRF identity",
           "evidence-backed verdicts",
           "MTU/overlay handling"
