@@ -1215,9 +1215,6 @@ fn family_retained_state(
 }
 
 struct AssembledFamily {
-    feature: &'static str,
-    fact_kind: &'static str,
-    sequence: u64,
     state: StoredFeatureFamilyState,
     retained_facts: Vec<crate::typed_facts::TypedFact>,
 }
@@ -1361,9 +1358,6 @@ fn unsupported_family(
         report.clone(),
     );
     AssembledFamily {
-        feature,
-        fact_kind,
-        sequence,
         state: StoredFeatureFamilyState {
             feature: feature.into(),
             fact_kind: fact_kind.into(),
@@ -1564,9 +1558,6 @@ pub fn observation_from_capture_envelope(
             .then_some("raw interface output exceeds 1 MiB shadow retention bound".into()),
     );
     let interface_family = AssembledFamily {
-        feature: FRR_INTERFACE_FEATURE,
-        fact_kind: "interface.state",
-        sequence: 1,
         state: StoredFeatureFamilyState {
             feature: FRR_INTERFACE_FEATURE.into(),
             fact_kind: "interface.state".into(),
@@ -1683,9 +1674,6 @@ pub fn observation_from_capture_envelope(
                 .then_some("raw neighbor output exceeds 1 MiB shadow retention bound".into()),
         );
         AssembledFamily {
-            feature: FRR_ARPND_FEATURE,
-            fact_kind: "arpnd.neighbor",
-            sequence: 2,
             state: StoredFeatureFamilyState {
                 feature: FRR_ARPND_FEATURE.into(),
                 fact_kind: "arpnd.neighbor".into(),
@@ -1801,9 +1789,6 @@ pub fn observation_from_capture_envelope(
                 .then_some("raw MAC output exceeds 1 MiB shadow retention bound".into()),
         );
         AssembledFamily {
-            feature: FRR_MAC_FEATURE,
-            fact_kind: "mac.forwarding",
-            sequence: 3,
             state: StoredFeatureFamilyState {
                 feature: FRR_MAC_FEATURE.into(),
                 fact_kind: "mac.forwarding".into(),
@@ -1921,9 +1906,6 @@ pub fn observation_from_capture_envelope(
                 .then_some("raw VLAN output exceeds 1 MiB shadow retention bound".into()),
         );
         AssembledFamily {
-            feature: FRR_VLAN_FEATURE,
-            fact_kind: "vlan.bridge_domain",
-            sequence: 4,
             state: StoredFeatureFamilyState {
                 feature: FRR_VLAN_FEATURE.into(),
                 fact_kind: "vlan.bridge_domain".into(),
