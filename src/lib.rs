@@ -6,6 +6,7 @@ pub mod archive;
 pub mod assignment;
 pub mod audit;
 pub mod auth_store;
+pub mod bgp_reconciliation;
 pub mod catalogue;
 pub mod change_detection;
 pub mod collector;

@@ -24,8 +24,13 @@ use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 
+use crate::bgp_reconciliation::{NativeBmpReconciliationPolicy, reconcile_native_bgp_with_bmp};
 use crate::graph::common::read_str;
 use crate::http_server::AppState;
+
+const NATIVE_BGP_MAX_OBSERVATION_AGE_SECONDS: u64 = 300;
+const NATIVE_BGP_MAX_OBSERVATION_AGE_NS: i64 =
+    NATIVE_BGP_MAX_OBSERVATION_AGE_SECONDS as i64 * 1_000_000_000;
 
 // ── Rule catalogue ────────────────────────────────────────────────────────────
 
@@ -1101,17 +1106,33 @@ async fn dispatch_authorized_tool(
             let age = now.saturating_sub(observation.captured_at_ns);
             let freshness = if observation.captured_at_ns > now {
                 "unknown"
-            } else if age > 60_000_000_000 {
+            } else if age > NATIVE_BGP_MAX_OBSERVATION_AGE_NS {
                 "stale"
             } else {
                 "fresh"
             };
             let total = observation.capture.neighbors.len();
+            let bmp_rows = store
+                .bmp_bgp_sessions_for_device(&observation.capture.exporter_address)
+                .await
+                .map_err(|e| e.to_string())?;
+            let policy = NativeBmpReconciliationPolicy {
+                max_observation_age_seconds: NATIVE_BGP_MAX_OBSERVATION_AGE_SECONDS,
+                max_capture_skew_seconds: 60,
+            };
+            let reconciliation = reconcile_native_bgp_with_bmp(
+                &observation.capture,
+                observation.captured_at_ns,
+                &bmp_rows,
+                now,
+                policy,
+            );
             observation.capture.neighbors.truncate(100);
             Ok(enforce_tool_output_bounds(
                 json!({"observation_id":crate::enrichment::native_bgp::observation_id(address,family),
                 "captured_at_ns":observation.captured_at_ns,"freshness":freshness,"age_ms":age/1_000_000,
-                "transport":observation.transport,"total_neighbors":total,"truncated":total>100,"capture":observation.capture}),
+                "transport":observation.transport,"total_neighbors":total,"truncated":total>100,"capture":observation.capture,
+                "bmp_reconciliation":reconciliation}),
             ))
         }
         "get_incident" => tool_get_incident(store, args)

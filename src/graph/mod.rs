@@ -5757,6 +5757,54 @@ impl GraphStore {
         .await
         .context("spawn_blocking panicked")?
     }
+
+    /// Read BMP-originated BGP peer-session evidence for one exporter. The
+    /// rows are evidence only; reconciliation callers decide freshness, VRF
+    /// compatibility and whether absence is missing visibility rather than a
+    /// down session.
+    pub async fn bmp_bgp_sessions_for_device(
+        &self,
+        device_address: &str,
+    ) -> Result<Vec<crate::bgp_reconciliation::BmpPeerEvidence>> {
+        let db = Arc::clone(&self.db);
+        let device_address = device_address.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::new(&db).context("bmp_bgp_sessions_for_device conn")?;
+            let mut stmt = conn
+                .prepare(
+                    "MATCH (n:BgpNeighbor)                      WHERE n.device_address = $device AND n.source = 'bmp'                      RETURN n.id, n.device_address, n.peer_address, n.peer_as,                             n.session_state, n.network_instance,                             n.route_distinguisher, n.updated_at                      ORDER BY n.id",
+                )
+                .context("prepare bmp_bgp_sessions_for_device")?;
+            let rows = conn
+                .execute(
+                    &mut stmt,
+                    vec![("device", Value::String(device_address))],
+                )
+                .context("execute bmp_bgp_sessions_for_device")?
+                .map(|row| {
+                    let peer_as = match row.get(3) {
+                        Some(Value::Int64(value)) if *value >= 0 && *value <= u32::MAX as i64 => {
+                            Some(*value as u32)
+                        }
+                        _ => None,
+                    };
+                    crate::bgp_reconciliation::BmpPeerEvidence {
+                        session_id: read_str(&row[0]),
+                        device_address: read_str(&row[1]),
+                        peer_address: read_str(&row[2]),
+                        peer_as,
+                        session_state: read_str(&row[4]),
+                        network_instance: read_str(&row[5]),
+                        route_distinguisher: read_str(&row[6]),
+                        updated_at_ns: read_ts_ns(&row[7]),
+                    }
+                })
+                .collect();
+            Ok::<_, anyhow::Error>(rows)
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
 }
 
 /// Candidate `BgpNeighbor` session nodes that could own a legacy
