@@ -938,6 +938,12 @@ fn validate_capture_envelope(raw: &RawCaptureEnvelope, address: &str) -> Result<
         bail!("frr interface capture envelope identity/contract mismatch")
     }
     let expected_slots = ["version", "interfaces", "arpnd", "mac", "vlan"];
+    if let Some(missing) = expected_slots
+        .iter()
+        .find(|slot| !raw.commands.contains_key(**slot))
+    {
+        bail!("frr capture envelope is missing command slot {missing}")
+    }
     if raw.commands.len() != expected_slots.len()
         || raw
             .commands
