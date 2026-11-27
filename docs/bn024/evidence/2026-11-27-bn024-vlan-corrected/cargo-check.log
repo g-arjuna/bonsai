@@ -1,0 +1,5 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo check -p bonsai --lib --offline
+    Checking bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel-vlan)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 17.28s

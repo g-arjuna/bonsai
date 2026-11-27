@@ -428,3 +428,82 @@ def test_mac_forwarding_payload_schema_rejects_bad_vlan_type_and_extra_fields(sc
 def test_neighbor_schema_extension_does_not_change_legacy_fact_compatibility(schema, fixture) -> None:
     assert fixture["fact_kind"] not in {"arpnd.neighbor", "mac.forwarding"}
     jsonschema.validate(fixture, schema)
+
+
+def vlan_bridge_fields() -> dict:
+    """Minimal schema-level valid vlan.bridge_domain typed-fields object."""
+
+    def known(value):
+        return {"state": "known", "value": value}
+
+    def unknown():
+        return {"state": "unknown"}
+
+    return {
+        "observation_shape": "vlan_database_entry",
+        "bridge_domain": known("bridge"),
+        "vlan_id": 30,
+        "vlan_name": known("prod"),
+        "operational_state": known("active"),
+        "admin_state": unknown(),
+        "dynamic": unknown(),
+        "membership_plane": known("operational"),
+        "membership_availability": "known_populated",
+        "members": [
+            {
+                "interface_name": "Port-Channel1",
+                "tagged": unknown(),
+                "untagged": unknown(),
+                "pvid": unknown(),
+                "mode": unknown(),
+                "attachment_kind": unknown(),
+            }
+        ],
+        "routed_interfaces": unknown(),
+        "vrf": unknown(),
+        "domain_entity_key": "vlan/30",
+    }
+
+
+@requires_jsonschema
+def test_vlan_bridge_payload_schema_accepts_valid_typed_fields(schema, fixture) -> None:
+    fact = copy.deepcopy(fixture)
+    fact["fact_kind"] = "vlan.bridge_domain"
+    fact["subject"]["namespace"] = "forwarding"
+    fact["subject"]["entity"] = "vlan/30"
+    fact["subject"]["plane"] = "operational"
+    fact["payload"]["fields"] = vlan_bridge_fields()
+    fact["payload"].pop("state", None)
+    jsonschema.validate(fact, schema)
+
+
+@requires_jsonschema
+def test_vlan_bridge_payload_schema_rejects_bad_membership_and_extra_fields(schema, fixture) -> None:
+    fact = copy.deepcopy(fixture)
+    fact["fact_kind"] = "vlan.bridge_domain"
+    fact["subject"]["namespace"] = "forwarding"
+    fact["subject"]["entity"] = "vlan/30"
+    fact["subject"]["plane"] = "operational"
+    fact["payload"]["fields"] = vlan_bridge_fields()
+    fact["payload"].pop("state", None)
+
+    bad = copy.deepcopy(fact)
+    bad["payload"]["fields"]["membership_availability"] = "mostly"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+    bad = copy.deepcopy(fact)
+    bad["payload"]["fields"]["vlan_id"] = 4096
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+    bad = copy.deepcopy(fact)
+    bad["payload"]["fields"]["members"][0]["silent_default"] = False
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+
+@requires_jsonschema
+def test_vlan_schema_extension_does_not_change_legacy_fact_compatibility(schema, fixture) -> None:
+    assert fixture["fact_kind"] != "vlan.bridge_domain"
+    jsonschema.validate(fixture, schema)

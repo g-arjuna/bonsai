@@ -345,18 +345,18 @@ struct BatchKey<'a> {
 }
 
 #[derive(Clone)]
-struct InterfaceRow<'a> {
-    key: InterfaceEntityKey,
-    entity: String,
-    native_name: Option<String>,
-    payload: InterfaceStatePayload,
-    fact: &'a TypedFact,
+pub(crate) struct InterfaceRow<'a> {
+    pub(crate) key: InterfaceEntityKey,
+    pub(crate) entity: String,
+    pub(crate) native_name: Option<String>,
+    pub(crate) payload: InterfaceStatePayload,
+    pub(crate) fact: &'a TypedFact,
 }
 
-struct EntityEvidence<'a> {
-    rows: Vec<InterfaceRow<'a>>,
-    representative: Option<usize>,
-    conflicting: bool,
+pub(crate) struct EntityEvidence<'a> {
+    pub(crate) rows: Vec<InterfaceRow<'a>>,
+    pub(crate) representative: Option<usize>,
+    pub(crate) conflicting: bool,
 }
 
 impl<'a> EntityEvidence<'a> {
@@ -473,7 +473,7 @@ fn is_expired_before_observation(fact: &TypedFact) -> bool {
     }
 }
 
-fn consolidate_rows<'a>(
+pub(crate) fn consolidate_rows<'a>(
     rows: Vec<InterfaceRow<'a>>,
 ) -> (
     BTreeMap<InterfaceEntityKey, EntityEvidence<'a>>,

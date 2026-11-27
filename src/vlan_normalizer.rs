@@ -23,9 +23,10 @@ use crate::typed_facts::{
     TrustClass, TypedFact,
 };
 use crate::vlan_facts::{
-    FACT_KIND_VLAN_BRIDGE_DOMAIN, MembershipPlane, VlanAdminState, VlanBridgePayload, VlanMember,
-    VlanObservationShape, VlanOperationalState, bridge_vlan_entity_key, port_membership_entity_key,
-    validate_vlan_typed, vlan_database_entity_key,
+    FACT_KIND_VLAN_BRIDGE_DOMAIN, MembershipAvailability, MembershipPlane, VlanAdminState,
+    VlanBridgePayload, VlanMember, VlanObservationShape, VlanOperationalState,
+    bridge_vlan_entity_key, port_membership_entity_key, validate_vlan_typed,
+    vlan_database_entity_key,
 };
 
 pub const VLAN_PARSER_REVISION: &str = "vlan-structured-2026.11.26";
@@ -77,6 +78,8 @@ pub struct VlanNormalizationReport {
     pub output_facts_omitted: usize,
     pub facts_rejected: usize,
     pub duplicate_records: usize,
+    pub conflicting_records: usize,
+    pub conflicting_pvid_records: usize,
     pub empty_records: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub collection_presence: BTreeMap<String, String>,
@@ -243,6 +246,7 @@ fn database_payload(
     admin_state: ObservedField<VlanAdminState>,
     dynamic: ObservedField<bool>,
     interfaces: Vec<String>,
+    membership_availability: MembershipAvailability,
 ) -> VlanBridgePayload {
     let domain = vlan_database_entity_key(vlan_id);
     VlanBridgePayload {
@@ -254,6 +258,7 @@ fn database_payload(
         admin_state,
         dynamic,
         membership_plane: known(MembershipPlane::SourceReported),
+        membership_availability,
         members: interfaces.iter().map(|name| member_unknown(name)).collect(),
         routed_interfaces: unknown("VLAN membership output does not expose routed/SVI attachment"),
         vrf: unknown("VLAN output does not expose VRF/network-instance attachment"),
@@ -317,13 +322,47 @@ fn parse_eos_vlan(root: &Value, report: &mut VlanNormalizationReport) -> Vec<Vla
             Some(value) => known(value),
             None => unknown("EOS dynamic flag absent"),
         };
-        let mut interfaces: Vec<String> = item
-            .get("interfaces")
-            .and_then(Value::as_object)
-            .map(|members| members.keys().cloned().collect())
-            .unwrap_or_default();
-        interfaces.sort();
-        interfaces.dedup();
+        let (interfaces, membership_availability) = match item.get("interfaces") {
+            Some(Value::Object(members)) => {
+                let mut interfaces: Vec<String> = members.keys().cloned().collect();
+                interfaces.sort();
+                interfaces.dedup();
+                report.collection_presence.insert(
+                    format!("vlans.{vlan_id}.interfaces"),
+                    if interfaces.is_empty() {
+                        "empty"
+                    } else {
+                        "populated"
+                    }
+                    .into(),
+                );
+                (
+                    interfaces.clone(),
+                    if interfaces.is_empty() {
+                        MembershipAvailability::KnownEmpty
+                    } else {
+                        MembershipAvailability::KnownPopulated
+                    },
+                )
+            }
+            Some(_) => {
+                report.malformed_records += 1;
+                sample(
+                    report,
+                    format!("EOS VLAN {vlan_id} interfaces collection malformed"),
+                );
+                report
+                    .collection_presence
+                    .insert(format!("vlans.{vlan_id}.interfaces"), "malformed".into());
+                (vec![], MembershipAvailability::Malformed)
+            }
+            None => {
+                report
+                    .collection_presence
+                    .insert(format!("vlans.{vlan_id}.interfaces"), "missing".into());
+                (vec![], MembershipAvailability::Missing)
+            }
+        };
         report.records_decoded += 1;
         out.push(database_payload(
             vlan_id,
@@ -332,6 +371,7 @@ fn parse_eos_vlan(root: &Value, report: &mut VlanNormalizationReport) -> Vec<Vla
             unknown("EOS VLAN output does not expose shutdown state"),
             dynamic,
             interfaces,
+            membership_availability,
         ));
     }
     out
@@ -428,7 +468,8 @@ fn parse_nxos_vlan(root: &Value, report: &mut VlanNormalizationReport) -> Vec<Vl
             None => unknown("NXOS VLAN shutdown state absent"),
         };
         let mut interfaces = Vec::new();
-        match item.get("vlanshowplist-ifidx") {
+        let mut invalid_members = 0usize;
+        let membership_availability = match item.get("vlanshowplist-ifidx") {
             Some(Value::String(raw)) => {
                 interfaces.extend(
                     raw.split(',')
@@ -436,15 +477,41 @@ fn parse_nxos_vlan(root: &Value, report: &mut VlanNormalizationReport) -> Vec<Vl
                         .filter(|v| !v.is_empty())
                         .map(str::to_string),
                 );
+                if interfaces.is_empty() {
+                    MembershipAvailability::KnownEmpty
+                } else {
+                    MembershipAvailability::KnownPopulated
+                }
             }
             Some(Value::Array(values)) => {
-                interfaces.extend(values.iter().filter_map(Value::as_str).flat_map(|raw| {
-                    raw.split(',')
-                        .map(str::trim)
-                        .filter(|v| !v.is_empty())
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                }));
+                for value in values {
+                    if let Some(raw) = value.as_str() {
+                        interfaces.extend(
+                            raw.split(',')
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .map(str::to_string),
+                        );
+                    } else {
+                        invalid_members += 1;
+                    }
+                }
+                if invalid_members > 0 {
+                    report.malformed_records += invalid_members;
+                    sample(
+                        report,
+                        format!("NXOS VLAN {vlan_id} interface array contains non-string elements"),
+                    );
+                    if interfaces.is_empty() {
+                        MembershipAvailability::Malformed
+                    } else {
+                        MembershipAvailability::Partial
+                    }
+                } else if interfaces.is_empty() {
+                    MembershipAvailability::KnownEmpty
+                } else {
+                    MembershipAvailability::KnownPopulated
+                }
             }
             Some(_) => {
                 report.malformed_records += 1;
@@ -452,10 +519,23 @@ fn parse_nxos_vlan(root: &Value, report: &mut VlanNormalizationReport) -> Vec<Vl
                     report,
                     format!("NXOS VLAN {vlan_id} interface list malformed"),
                 );
-                continue;
+                MembershipAvailability::Malformed
             }
-            None => {}
-        }
+            None => MembershipAvailability::Missing,
+        };
+        report.collection_presence.insert(
+            format!("vlans.{vlan_id}.interfaces"),
+            match membership_availability {
+                MembershipAvailability::KnownEmpty => "empty",
+                MembershipAvailability::KnownPopulated | MembershipAvailability::Partial => {
+                    "populated"
+                }
+                MembershipAvailability::Missing => "missing",
+                MembershipAvailability::Malformed => "malformed",
+                _ => "unknown",
+            }
+            .into(),
+        );
         interfaces.sort();
         interfaces.dedup();
         report.records_decoded += 1;
@@ -466,6 +546,7 @@ fn parse_nxos_vlan(root: &Value, report: &mut VlanNormalizationReport) -> Vec<Vl
             admin,
             unknown("NXOS VLAN output does not expose dynamic/static creation flag"),
             interfaces,
+            membership_availability,
         ));
     }
     out
@@ -473,17 +554,37 @@ fn parse_nxos_vlan(root: &Value, report: &mut VlanNormalizationReport) -> Vec<Vl
 
 fn parse_cumulus_vlan(input: &str, report: &mut VlanNormalizationReport) -> Vec<VlanBridgePayload> {
     let mut out = Vec::new();
-    if input.trim().is_empty() || input.lines().count() <= 1 {
+    let mut lines = input.lines();
+    let Some(header) = lines.next() else {
         report
             .collection_presence
-            .insert("bridge-vlan-lines".into(), "empty".into());
+            .insert("bridge-vlan-header".into(), "missing".into());
+        report.malformed_records += 1;
+        sample(
+            report,
+            "Cumulus bridge VLAN output is empty; expected 'port\\tvlan ids' header",
+        );
+        return out;
+    };
+    let header_parts: Vec<_> = header.split_whitespace().collect();
+    if header_parts != ["port", "vlan", "ids"] {
+        report
+            .collection_presence
+            .insert("bridge-vlan-header".into(), "malformed".into());
+        report.malformed_records += 1;
+        sample(
+            report,
+            format!("Cumulus bridge VLAN header malformed or diagnostic output received: {header}"),
+        );
         return out;
     }
     report
         .collection_presence
-        .insert("bridge-vlan-lines".into(), "populated".into());
+        .insert("bridge-vlan-header".into(), "populated".into());
+
+    let mut saw_row = false;
     let mut current_port: Option<String> = None;
-    for line in input.lines().skip(1) {
+    for line in lines {
         if line.trim().is_empty() {
             continue;
         }
@@ -492,24 +593,39 @@ fn parse_cumulus_vlan(input: &str, report: &mut VlanNormalizationReport) -> Vec<
             continue;
         }
         let continuation = line.chars().next().is_some_and(|c| c.is_whitespace());
-        let mut parts = line.split_whitespace();
-        let first = parts.next().unwrap_or_default();
-        let (port, vlan_token) = if continuation {
+        let parts: Vec<_> = line.split_whitespace().collect();
+        let (port, vlan_token, flag_start, valid_port_transition) = if continuation {
             let Some(port) = current_port.clone() else {
                 report.malformed_records += 1;
-                sample(report, "Cumulus VLAN continuation before port");
+                sample(
+                    report,
+                    "Cumulus VLAN continuation before any valid port row",
+                );
                 continue;
             };
-            (port, first)
+            (port, parts.first().copied().unwrap_or_default(), 1, true)
         } else {
-            let Some(vlan) = parts.next() else {
+            if parts.len() < 2 {
                 report.malformed_records += 1;
                 sample(report, format!("Cumulus VLAN row missing VLAN id: {line}"));
+                current_port = None;
                 continue;
-            };
-            current_port = Some(first.to_string());
-            (first.to_string(), vlan)
+            }
+            let port = parts[0].to_string();
+            current_port = Some(port.clone());
+            (port, parts[1], 2, true)
         };
+        if !valid_port_transition {
+            continue;
+        }
+        if vlan_token.contains('-') || vlan_token.contains(',') {
+            report.malformed_records += 1;
+            sample(
+                report,
+                format!("Cumulus compressed VLAN range/list token is unsupported: {vlan_token}"),
+            );
+            continue;
+        }
         let Ok(vlan_id) = vlan_token.parse::<u32>() else {
             report.malformed_records += 1;
             sample(report, format!("Cumulus invalid VLAN token {vlan_token}"));
@@ -520,13 +636,37 @@ fn parse_cumulus_vlan(input: &str, report: &mut VlanNormalizationReport) -> Vec<
             sample(report, format!("Cumulus VLAN id out of range {vlan_id}"));
             continue;
         }
-        let flags: Vec<_> = if continuation {
-            parts.collect()
-        } else {
-            line.split_whitespace().skip(2).collect()
-        };
+        let flags: Vec<_> = parts.iter().skip(flag_start).copied().collect();
+        let mut seen_flags = BTreeSet::new();
+        let mut flags_valid = true;
+        for flag in &flags {
+            if !matches!(*flag, "PVID" | "Egress" | "Untagged") || !seen_flags.insert(*flag) {
+                report.malformed_records += 1;
+                sample(
+                    report,
+                    format!(
+                        "Cumulus unsupported or duplicate VLAN flag {flag} on {port} vlan {vlan_id}"
+                    ),
+                );
+                flags_valid = false;
+            }
+        }
+        if !flags_valid {
+            continue;
+        }
         let untagged = flags.iter().any(|flag| *flag == "Untagged");
         let pvid = flags.iter().any(|flag| *flag == "PVID");
+        if untagged && !flags.iter().any(|flag| *flag == "Egress") {
+            report.malformed_records += 1;
+            sample(
+                report,
+                format!(
+                    "Cumulus unsupported flag combination on {port} vlan {vlan_id}: Untagged without Egress"
+                ),
+            );
+            continue;
+        }
+        saw_row = true;
         let interface = port;
         let key = port_membership_entity_key(&interface, vlan_id);
         report.records_decoded += 1;
@@ -541,6 +681,7 @@ fn parse_cumulus_vlan(input: &str, report: &mut VlanNormalizationReport) -> Vec<
             admin_state: unknown("bridge vlan output does not expose VLAN administrative state"),
             dynamic: unknown("bridge vlan output does not expose dynamic/static creation"),
             membership_plane: known(MembershipPlane::Operational),
+            membership_availability: MembershipAvailability::KnownPopulated,
             members: vec![VlanMember {
                 interface_name: interface,
                 interface_key: None,
@@ -557,6 +698,10 @@ fn parse_cumulus_vlan(input: &str, report: &mut VlanNormalizationReport) -> Vec<
             domain_entity_key: Some(key),
         });
     }
+    report.collection_presence.insert(
+        "bridge-vlan-lines".into(),
+        if saw_row { "populated" } else { "empty" }.into(),
+    );
     out
 }
 
@@ -760,8 +905,38 @@ pub fn normalize_vlan(obs: &VlanObservation<'_>) -> VlanNormalizationOutput {
         Completeness::Partial
     };
     let mut facts = Vec::new();
+    let mut entity_payloads: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut port_pvid_vlans: BTreeMap<String, BTreeMap<bool, BTreeSet<u32>>> = BTreeMap::new();
+    for payload in &payloads {
+        if let Some(entity) = &payload.domain_entity_key {
+            entity_payloads
+                .entry(entity.clone())
+                .or_default()
+                .insert(serde_json::to_string(payload).unwrap_or_default());
+        }
+        if payload.observation_shape == VlanObservationShape::PortMembership
+            && let Some(member) = payload.members.first()
+            && member.pvid.state == FieldAvailability::Known
+            && let Some(pvid) = member.pvid.value
+        {
+            port_pvid_vlans
+                .entry(member.interface_name.clone())
+                .or_default()
+                .entry(pvid)
+                .or_default()
+                .insert(payload.vlan_id);
+        }
+    }
+    report.conflicting_records = entity_payloads
+        .values()
+        .filter(|variants| variants.len() > 1)
+        .count();
+    report.conflicting_pvid_records = port_pvid_vlans
+        .values()
+        .filter(|by_value| by_value.get(&true).is_some_and(|v| v.len() > 1))
+        .count();
     let mut seen = BTreeSet::new();
-    for (index, payload) in payloads.into_iter().enumerate() {
+    for payload in payloads.into_iter() {
         if facts.len() >= MAX_OUTPUT_FACTS {
             report.output_facts_omitted += 1;
             continue;
@@ -774,10 +949,20 @@ pub fn normalize_vlan(obs: &VlanObservation<'_>) -> VlanNormalizationOutput {
             .domain_entity_key
             .clone()
             .unwrap_or_else(|| bridge_vlan_entity_key("unknown", payload.vlan_id));
-        if !seen.insert(entity.clone()) {
+        let payload_key = serde_json::to_string(&payload).unwrap_or_default();
+        if !seen.insert((entity.clone(), payload_key)) {
             report.duplicate_records += 1;
             continue;
         }
+        let payload_completeness = if comp == Completeness::Complete
+            && !matches!(
+                payload.membership_availability,
+                MembershipAvailability::KnownEmpty | MembershipAvailability::KnownPopulated
+            ) {
+            Completeness::Partial
+        } else {
+            comp
+        };
         let fact = fact_for_vlan_payload(
             &obs.context,
             obs.profile.source_kind(),
@@ -785,8 +970,8 @@ pub fn normalize_vlan(obs: &VlanObservation<'_>) -> VlanNormalizationOutput {
             payload,
             &raw_sha256,
             obs.profile.label(),
-            comp,
-            index as u64,
+            payload_completeness,
+            0,
         );
         if fact.validate().is_ok() {
             facts.push(fact);
@@ -914,6 +1099,121 @@ mod tests {
             peerlink13.bridge_domain.state,
             FieldAvailability::Unknown,
             "VLAN number alone must not manufacture a Linux bridge domain"
+        );
+    }
+
+    #[test]
+    fn eos_missing_interfaces_is_explicit_missing_not_empty_membership() {
+        let input = r#"{"vlans":{"10":{"name":"VLAN0010","status":"active","dynamic":false}}}"#;
+        let out = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::EosShowVlanBriefJson,
+            capture: complete(input),
+            context: ctx(),
+        });
+        assert_eq!(out.facts.len(), 1);
+        let payload: VlanBridgePayload =
+            serde_json::from_value(out.facts[0].payload.fields.clone().unwrap()).unwrap();
+        assert_eq!(
+            payload.membership_availability,
+            MembershipAvailability::Missing
+        );
+        assert!(payload.members.is_empty());
+        assert_eq!(
+            out.facts[0].quality.completeness,
+            crate::typed_facts::Completeness::Partial
+        );
+    }
+
+    #[test]
+    fn nxos_partially_malformed_member_array_preserves_valid_members_as_partial() {
+        let input = r#"{"TABLE_vlanbriefxbrief":{"ROW_vlanbriefxbrief":[
+            {"vlanshowbr-vlanid":20,"vlanshowbr-vlanname":"VLAN0020","vlanshowbr-vlanstate":"active","vlanshowbr-shutstate":"noshutdown","vlanshowplist-ifidx":["port-channel3",7]}
+        ]}}"#;
+        let out = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::NxosShowVlanBriefJsonNative,
+            capture: complete(input),
+            context: ctx(),
+        });
+        assert_eq!(out.facts.len(), 1);
+        let payload: VlanBridgePayload =
+            serde_json::from_value(out.facts[0].payload.fields.clone().unwrap()).unwrap();
+        assert_eq!(
+            payload.membership_availability,
+            MembershipAvailability::Partial
+        );
+        assert_eq!(payload.members.len(), 1);
+        assert_eq!(payload.members[0].interface_name, "port-channel3");
+    }
+
+    #[test]
+    fn cumulus_exact_duplicate_rows_dedup_but_conflicting_rows_are_counted() {
+        let input =
+            "port\tvlan ids\nbond01 13 PVID Egress Untagged\nbond01 13 PVID Egress Untagged\n";
+        let out = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::CumulusBridgeCVlanShow,
+            capture: complete(input),
+            context: ctx(),
+        });
+        assert_eq!(out.facts.len(), 1);
+        assert_eq!(out.report.duplicate_records, 1);
+
+        let conflicting = "port\tvlan ids\nbond01 13 PVID Egress Untagged\nbond01 13\n";
+        let out = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::CumulusBridgeCVlanShow,
+            capture: complete(conflicting),
+            context: ctx(),
+        });
+        assert_eq!(out.facts.len(), 2);
+        assert_eq!(out.report.conflicting_records, 1);
+    }
+
+    #[test]
+    fn cumulus_header_only_is_positive_empty_population() {
+        let input = "port\tvlan ids\n";
+        let out = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::CumulusBridgeCVlanShow,
+            capture: complete(input),
+            context: ctx(),
+        });
+        assert!(out.facts.is_empty());
+        assert!(out.report.empty_records);
+        assert_eq!(out.report.malformed_records, 0);
+    }
+
+    #[test]
+    fn cumulus_diagnostic_or_missing_header_is_rejected_without_facts() {
+        for input in [
+            "Error: permission denied\nport\tvlan ids\nbond01 13\n",
+            "bridge vlan output missing header\nbond01 13\n",
+            "",
+        ] {
+            let out = normalize_vlan(&VlanObservation {
+                profile: VlanSourceProfile::CumulusBridgeCVlanShow,
+                capture: complete(input),
+                context: ctx(),
+            });
+            assert!(out.facts.is_empty(), "input {input:?}");
+            assert!(out.report.malformed_records > 0, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn cumulus_compressed_ranges_and_bad_continuation_are_malformed_not_invented() {
+        let input = "port\tvlan ids\nbond01 10-12\n 13 PVID\norphan-continuation-bad\n";
+        let out = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::CumulusBridgeCVlanShow,
+            capture: complete(input),
+            context: ctx(),
+        });
+        assert!(out.facts.len() <= 1);
+        assert!(out.report.malformed_records >= 2);
+        assert!(
+            out.facts.iter().all(|fact| {
+                let payload: VlanBridgePayload =
+                    serde_json::from_value(fact.payload.fields.clone().unwrap()).unwrap();
+                payload.vlan_id < 10 || payload.vlan_id > 12
+            }),
+            "compressed range endpoints must not be invented"
         );
     }
 }

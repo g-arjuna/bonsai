@@ -13,14 +13,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::interface_facts::{
     FACT_KIND_INTERFACE_STATE, FieldAvailability, InterfaceStatePayload, MasterKind,
 };
-use crate::interface_relationships::InterfaceEntityKey;
+use crate::interface_relationships::{InterfaceEntityKey, InterfaceRow, consolidate_rows};
 use crate::neighbor_reconciliation::ForwardingDomainEvidence;
 use crate::semantic_evidence::{
-    CaptureTimeCompatibility, FreshnessPolicy, capture_time_compatibility, fact_freshness,
-    parse_time,
+    CaptureTimeCompatibility, FreshnessPolicy, capture_time_compatibility,
+    evidence_time_compatibility, fact_freshness, parse_time,
 };
 use crate::typed_facts::{EvidenceRef, Lifecycle, TrustClass, TypedFact};
-use crate::vlan_facts::{FACT_KIND_VLAN_BRIDGE_DOMAIN, VlanBridgePayload, VlanObservationShape};
+use crate::vlan_facts::{
+    FACT_KIND_VLAN_BRIDGE_DOMAIN, MembershipAvailability, VlanBridgePayload, VlanObservationShape,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ForwardingDomainDerivationPolicy {
@@ -77,10 +79,6 @@ fn known_string(field: &crate::interface_facts::ObservedField<String>) -> Option
         .flatten()
 }
 
-fn compatible(left: &TypedFact, right: &TypedFact, max_skew: u64) -> bool {
-    capture_time_compatibility(left, right, max_skew) == CaptureTimeCompatibility::Compatible
-}
-
 fn min_time(left: Option<&str>, right: Option<&str>) -> Option<String> {
     match (left.and_then(parse_time), right.and_then(parse_time)) {
         (Some(a), Some(b)) => Some(if a <= b { a } else { b }.to_rfc3339()),
@@ -108,9 +106,86 @@ fn composite_capture_id(parts: &[&str]) -> String {
 
 struct InterfaceEvidence<'a> {
     fact: &'a TypedFact,
-    payload: InterfaceStatePayload,
     key: Option<InterfaceEntityKey>,
     names: BTreeSet<String>,
+    rows: Vec<InterfaceRow<'a>>,
+}
+
+/// Structured interface keys participate only when the producer supplied the
+/// typed identity refinement. A non-empty legacy subject entity remains useful
+/// as a display/lookup name but is not promoted to canonical structured
+/// identity by this deriver.
+fn validated_interface_key(fact: &TypedFact) -> Option<InterfaceEntityKey> {
+    fact.subject.interface_identity.as_ref()?;
+    InterfaceEntityKey::from_fact(fact)
+}
+
+fn generation_compatible(left: &TypedFact, right: &TypedFact) -> bool {
+    left.source.session_epoch == right.source.session_epoch
+}
+
+fn compatible_with_fact<'a>(
+    interface: &InterfaceEvidence<'a>,
+    fact: &TypedFact,
+    max_skew: u64,
+) -> Option<InterfaceRow<'a>> {
+    let mut compatible_rows: Vec<_> = interface
+        .rows
+        .iter()
+        .filter(|row| {
+            generation_compatible(row.fact, fact)
+                && capture_time_compatibility(row.fact, fact, max_skew)
+                    == CaptureTimeCompatibility::Compatible
+        })
+        .cloned()
+        .collect();
+    compatible_rows.sort_by(|a, b| {
+        (
+            &b.fact.observed_at,
+            &b.fact.fact_id,
+            &b.fact.source.capture_id,
+        )
+            .cmp(&(
+                &a.fact.observed_at,
+                &a.fact.fact_id,
+                &a.fact.source.capture_id,
+            ))
+    });
+    compatible_rows.into_iter().next()
+}
+
+fn compatible_with_binding<'a>(
+    interface: &InterfaceEvidence<'a>,
+    binding: &ForwardingDomainEvidence,
+    max_skew: u64,
+) -> Option<InterfaceRow<'a>> {
+    let (generation, observed_at) = (
+        binding.source_generation?,
+        binding.observation_time.as_deref()?,
+    );
+    let mut compatible_rows: Vec<_> = interface
+        .rows
+        .iter()
+        .filter(|row| {
+            row.fact.source.session_epoch == generation
+                && evidence_time_compatibility(row.fact, Some(observed_at), max_skew)
+                    == CaptureTimeCompatibility::Compatible
+        })
+        .cloned()
+        .collect();
+    compatible_rows.sort_by(|a, b| {
+        (
+            &b.fact.observed_at,
+            &b.fact.fact_id,
+            &b.fact.source.capture_id,
+        )
+            .cmp(&(
+                &a.fact.observed_at,
+                &a.fact.fact_id,
+                &a.fact.source.capture_id,
+            ))
+    });
+    compatible_rows.into_iter().next()
 }
 
 /// Derive scoped forwarding-domain evidence at an explicit analysis time.
@@ -126,7 +201,7 @@ pub fn derive_forwarding_domains(
     let as_of = parse_time(as_of).ok_or_else(|| "as_of is not RFC-3339".to_string())?;
     let mut report = ForwardingDomainDerivationReport::default();
     let mut vlan_entries = Vec::new();
-    let mut interfaces = Vec::new();
+    let mut raw_interface_rows = Vec::new();
 
     for fact in facts {
         let freshness = fact_freshness(fact, as_of, policy.freshness);
@@ -170,23 +245,63 @@ pub fn derive_forwarding_domains(
                     report.invalid_interface_facts += 1;
                     continue;
                 };
-                let mut names = BTreeSet::new();
-                names.insert(payload.interface_name.clone());
-                if let Some(normalized) = &payload.normalized_name {
-                    names.insert(normalized.clone());
-                }
-                if let Some(entity) = &fact.subject.entity {
-                    names.insert(entity.clone());
-                }
-                interfaces.push(InterfaceEvidence {
-                    fact,
+                let Some(key) = InterfaceEntityKey::from_fact(fact) else {
+                    report.invalid_interface_facts += 1;
+                    continue;
+                };
+                let native_name = payload
+                    .normalized_name
+                    .as_ref()
+                    .filter(|normalized| **normalized != payload.interface_name)
+                    .cloned();
+                raw_interface_rows.push(InterfaceRow {
+                    key,
+                    entity: payload.interface_name.clone(),
+                    native_name,
                     payload,
-                    key: InterfaceEntityKey::from_fact(fact),
-                    names,
+                    fact,
                 });
             }
             _ => {}
         }
+    }
+
+    let (interface_entities, interface_input_issues, _interface_relationship_issues) =
+        consolidate_rows(raw_interface_rows);
+    report.invalid_interface_facts += interface_input_issues.len();
+    let mut interfaces = Vec::new();
+    for (entity_key, entity_evidence) in interface_entities {
+        if entity_evidence.conflicting {
+            // Conflicting same-key interface observations are never selected by
+            // input order. They remain unavailable to derivation and make any
+            // dependent port membership indeterminate.
+            continue;
+        }
+        let Some(row) = entity_evidence
+            .representative
+            .map(|index| &entity_evidence.rows[index])
+        else {
+            continue;
+        };
+        let mut names = BTreeSet::new();
+        for row in &entity_evidence.rows {
+            names.insert(row.entity.clone());
+            if let Some(native) = &row.native_name {
+                names.insert(native.clone());
+            }
+        }
+        names.insert(entity_key.canonical_interface.clone());
+        if let Some(identity) = &row.fact.subject.interface_identity
+            && let Some(native) = &identity.vendor_native_name
+        {
+            names.insert(native.clone());
+        }
+        interfaces.push(InterfaceEvidence {
+            fact: row.fact,
+            key: validated_interface_key(row.fact),
+            names,
+            rows: entity_evidence.rows,
+        });
     }
 
     let mut evidence = Vec::new();
@@ -200,10 +315,17 @@ pub fn derive_forwarding_domains(
                 };
                 let mut forwarding_interfaces = BTreeSet::new();
                 let mut forwarding_interface_keys = BTreeSet::new();
-                for member in &payload.members {
-                    forwarding_interfaces.insert(member.interface_name.clone());
-                    if let Some(key) = &member.interface_key {
-                        forwarding_interface_keys.insert(key.clone());
+                if matches!(
+                    payload.membership_availability,
+                    MembershipAvailability::KnownPopulated
+                        | MembershipAvailability::Partial
+                        | MembershipAvailability::KnownEmpty
+                ) {
+                    for member in &payload.members {
+                        forwarding_interfaces.insert(member.interface_name.clone());
+                        if let Some(key) = &member.interface_key {
+                            forwarding_interface_keys.insert(key.clone());
+                        }
                     }
                 }
                 let mut routed_interfaces = BTreeSet::new();
@@ -218,6 +340,8 @@ pub fn derive_forwarding_domains(
                     network_namespace: fact.subject.network_namespace.clone(),
                     domain_id: domain,
                     vlan_id: Some(payload.vlan_id),
+                    membership_availability: Some(payload.membership_availability),
+                    membership_plane: payload.membership_plane.value,
                     vrf: known_string(&payload.vrf),
                     routed_interfaces,
                     forwarding_interfaces,
@@ -244,20 +368,34 @@ pub fn derive_forwarding_domains(
     // Map exact interface evidence names to typed facts. Multiple representations
     // of one interface are aliases only because the same typed interface fact
     // carries them; no spelling inference is performed.
-    let mut interface_by_name: BTreeMap<(String, Option<String>, Option<String>, String), usize> =
-        BTreeMap::new();
+    let mut interface_by_name: BTreeMap<
+        (String, Option<String>, Option<String>, String),
+        Vec<usize>,
+    > = BTreeMap::new();
     for (index, interface) in interfaces.iter().enumerate() {
         for name in &interface.names {
-            interface_by_name.insert(
-                (
+            interface_by_name
+                .entry((
                     interface.fact.subject.device_id.clone(),
                     interface.fact.subject.scope.clone(),
                     interface.fact.subject.network_namespace.clone(),
                     name.clone(),
-                ),
-                index,
-            );
+                ))
+                .or_default()
+                .push(index);
         }
+    }
+    for indices in interface_by_name.values_mut() {
+        indices.sort_unstable();
+        indices.dedup();
+    }
+
+    fn unique_interface_index(
+        interface_by_name: &BTreeMap<(String, Option<String>, Option<String>, String), Vec<usize>>,
+        key: &(String, Option<String>, Option<String>, String),
+    ) -> Option<usize> {
+        let indices = interface_by_name.get(key)?;
+        (indices.len() == 1).then_some(indices[0])
     }
 
     // Enrich direct database bindings with independently established structured
@@ -276,8 +414,14 @@ pub fn derive_forwarding_domains(
                 binding.network_namespace.clone(),
                 name.clone(),
             );
-            if let Some(index) = interface_by_name.get(&key)
-                && let Some(interface_key) = &interfaces[*index].key
+            if let Some(index) = unique_interface_index(&interface_by_name, &key)
+                && compatible_with_binding(
+                    &interfaces[index],
+                    binding,
+                    policy.max_capture_skew_seconds,
+                )
+                .is_some()
+                && let Some(interface_key) = &interfaces[index].key
             {
                 if binding.forwarding_interfaces.contains(&name) {
                     binding
@@ -300,6 +444,7 @@ pub fn derive_forwarding_domains(
         u32,
         String,
         String,
+        u64,
     );
     let mut linux_groups: BTreeMap<LinuxKey, Vec<(&TypedFact, &VlanBridgePayload, usize)>> =
         BTreeMap::new();
@@ -314,16 +459,19 @@ pub fn derive_forwarding_domains(
             fact.subject.network_namespace.clone(),
             member.interface_name.clone(),
         );
-        let Some(interface_index) = interface_by_name.get(&interface_key).copied() else {
+        let Some(interface_index) = unique_interface_index(&interface_by_name, &interface_key)
+        else {
             report.indeterminate_port_memberships += 1;
             continue;
         };
         let interface = &interfaces[interface_index];
-        if !compatible(interface.fact, fact, policy.max_capture_skew_seconds) {
+        let Some(interface_row) =
+            compatible_with_fact(interface, fact, policy.max_capture_skew_seconds)
+        else {
             report.incompatible_interface_evidence += 1;
             continue;
-        }
-        let Some(master) = &interface.payload.master_relationship else {
+        };
+        let Some(master) = &interface_row.payload.master_relationship else {
             report.indeterminate_port_memberships += 1;
             continue;
         };
@@ -339,6 +487,7 @@ pub fn derive_forwarding_domains(
             payload.vlan_id,
             fact.source.collector_id.clone(),
             fact.source.capture_id.clone(),
+            fact.source.session_epoch,
         );
         linux_groups
             .entry(group_key)
@@ -346,14 +495,15 @@ pub fn derive_forwarding_domains(
             .push((fact, payload, interface_index));
     }
 
-    for ((device, scope, namespace, bridge, vlan, collector, capture), rows) in linux_groups {
+    for ((device, scope, namespace, bridge, vlan, collector, capture, generation), rows) in
+        linux_groups
+    {
         let mut forwarding_interfaces = BTreeSet::new();
         let mut forwarding_interface_keys = BTreeSet::new();
         let mut evidence_refs = Vec::new();
         let mut valid_from = None;
         let mut valid_until = None;
         let mut observation_time: Option<String> = None;
-        let mut generation = 0u64;
         let mut lifecycle = Lifecycle::Active;
         let mut source_parts = Vec::new();
         for (fact, payload, interface_index) in &rows {
@@ -362,9 +512,19 @@ pub fn derive_forwarding_domains(
             if let Some(key) = &interfaces[*interface_index].key {
                 forwarding_interface_keys.insert(key.clone());
             }
+            let Some(interface_row) = compatible_with_fact(
+                &interfaces[*interface_index],
+                fact,
+                policy.max_capture_skew_seconds,
+            ) else {
+                // Grouping already selected a compatible row; if input mutation or
+                // a future change makes that impossible, fail closed by omitting
+                // this row rather than mixing incompatible evidence.
+                continue;
+            };
             for reference in evidence_refs_with_fact(fact)
                 .into_iter()
-                .chain(evidence_refs_with_fact(interfaces[*interface_index].fact))
+                .chain(evidence_refs_with_fact(interface_row.fact))
             {
                 if !evidence_refs.contains(&reference) {
                     evidence_refs.push(reference);
@@ -373,27 +533,30 @@ pub fn derive_forwarding_domains(
             valid_from = max_time(valid_from.as_deref(), fact.valid_from.as_deref());
             valid_from = max_time(
                 valid_from.as_deref(),
-                interfaces[*interface_index].fact.valid_from.as_deref(),
+                interface_row.fact.valid_from.as_deref(),
             );
             valid_until = min_time(valid_until.as_deref(), fact.valid_until.as_deref());
             valid_until = min_time(
                 valid_until.as_deref(),
-                interfaces[*interface_index].fact.valid_until.as_deref(),
+                interface_row.fact.valid_until.as_deref(),
             );
             observation_time =
                 max_time(observation_time.as_deref(), Some(fact.observed_at.as_str()));
             observation_time = max_time(
                 observation_time.as_deref(),
-                Some(interfaces[*interface_index].fact.observed_at.as_str()),
+                Some(interface_row.fact.observed_at.as_str()),
             );
-            generation = generation.max(fact.source.session_epoch);
             if fact.lifecycle != Lifecycle::Active
-                || interfaces[*interface_index].fact.lifecycle != Lifecycle::Active
+                || interface_row.fact.lifecycle != Lifecycle::Active
             {
                 lifecycle = Lifecycle::Stale;
             }
             source_parts.push(fact.source.capture_id.as_str());
-            source_parts.push(interfaces[*interface_index].fact.source.capture_id.as_str());
+            source_parts.push(interface_row.fact.source.capture_id.as_str());
+        }
+        if forwarding_interfaces.is_empty() {
+            report.incompatible_interface_evidence += rows.len();
+            continue;
         }
         source_parts.sort_unstable();
         source_parts.dedup();
@@ -403,6 +566,12 @@ pub fn derive_forwarding_domains(
             network_namespace: namespace,
             domain_id: bridge,
             vlan_id: Some(vlan),
+            membership_availability: rows
+                .first()
+                .map(|(_, payload, _)| payload.membership_availability),
+            membership_plane: rows
+                .first()
+                .and_then(|(_, payload, _)| payload.membership_plane.value),
             vrf: None,
             routed_interfaces: BTreeSet::new(),
             forwarding_interfaces,
@@ -437,35 +606,41 @@ pub fn derive_forwarding_domains(
             {
                 continue;
             }
+            let Some(relationship_row) =
+                compatible_with_binding(interface, binding, policy.max_capture_skew_seconds)
+            else {
+                continue;
+            };
             let mut add_relation = |aggregate: &str, member: &str| {
                 if !binding.forwarding_interfaces.contains(aggregate)
                     && !binding.forwarding_interfaces.contains(member)
                 {
                     return;
                 }
+                let lookup_key = |name: &str| {
+                    let key = (
+                        binding.device_id.clone(),
+                        binding.scope.clone(),
+                        binding.network_namespace.clone(),
+                        name.to_string(),
+                    );
+                    unique_interface_index(&interface_by_name, &key).and_then(|index| {
+                        compatible_with_binding(
+                            &interfaces[index],
+                            binding,
+                            policy.max_capture_skew_seconds,
+                        )
+                        .and_then(|_| interfaces[index].key.clone())
+                    })
+                };
+                let agg_key = lookup_key(aggregate);
+                let member_key = lookup_key(member);
                 binding
                     .interface_equivalents
                     .entry(aggregate.to_string())
                     .or_default()
                     .insert(member.to_string());
-                if let (Some(agg_key), Some(member_key)) = (
-                    interface_by_name
-                        .get(&(
-                            binding.device_id.clone(),
-                            binding.scope.clone(),
-                            binding.network_namespace.clone(),
-                            aggregate.to_string(),
-                        ))
-                        .and_then(|index| interfaces[*index].key.clone()),
-                    interface_by_name
-                        .get(&(
-                            binding.device_id.clone(),
-                            binding.scope.clone(),
-                            binding.network_namespace.clone(),
-                            member.to_string(),
-                        ))
-                        .and_then(|index| interfaces[*index].key.clone()),
-                ) {
+                if let (Some(agg_key), Some(member_key)) = (agg_key, member_key) {
                     binding
                         .interface_equivalent_keys
                         .entry(agg_key)
@@ -474,12 +649,12 @@ pub fn derive_forwarding_domains(
                 }
                 report.lag_relationships_included += 1;
             };
-            if let Some(aggregate) = &interface.payload.member_of {
+            if let Some(aggregate) = &relationship_row.payload.member_of {
                 for member_name in &interface.names {
                     add_relation(aggregate, member_name);
                 }
             }
-            if let Some(lag_members) = &interface.payload.lag_members
+            if let Some(lag_members) = &relationship_row.payload.lag_members
                 && lag_members.state == FieldAvailability::Known
                 && let Some(members) = &lag_members.value
             {
@@ -651,11 +826,11 @@ mod tests {
                 "cumulus-leaf01",
                 "collector-test",
                 "cumulus-vlan-capture",
-                "2021-03-25T00:00:00+00:00",
+                "2021-03-25T02:14:29.693000+00:00",
             ),
         });
         let derivation =
-            derive_forwarding_domains(&out.facts, policy(), "2021-03-25T00:00:30+00:00").unwrap();
+            derive_forwarding_domains(&out.facts, policy(), "2021-03-25T02:15:00+00:00").unwrap();
         assert_eq!(derivation.evidence.len(), 0);
         assert_eq!(
             derivation.report.indeterminate_port_memberships,
@@ -675,7 +850,7 @@ mod tests {
                 "cumulus-leaf01",
                 "collector-test",
                 "cumulus-vlan-capture",
-                "2021-03-25T00:00:00+00:00",
+                "2021-03-25T02:14:29.693000+00:00",
             ),
         });
         // Independently typed interface evidence: peerlink is a bridge port.
@@ -685,11 +860,11 @@ mod tests {
             "peerlink",
             interface_payload("peerlink", Some(("bridge", MasterKind::Bridge)), None, None),
             "cumulus-iface-capture",
-            1,
-            "2021-03-25T00:00:02+00:00",
+            0,
+            "2021-03-25T02:14:30.000000+00:00",
         ));
         let derivation =
-            derive_forwarding_domains(&facts, policy(), "2021-03-25T00:00:30+00:00").unwrap();
+            derive_forwarding_domains(&facts, policy(), "2021-03-25T02:15:00+00:00").unwrap();
         assert!(
             !derivation.evidence.is_empty(),
             "bridge-mastered port must produce bindings"
@@ -724,7 +899,7 @@ mod tests {
                 "cumulus-leaf01",
                 "collector-test",
                 "cumulus-vlan-capture",
-                "2021-03-25T00:00:00+00:00",
+                "2021-03-25T02:14:29.693000+00:00",
             ),
         });
         let mut facts = vlan.facts.clone();
@@ -733,11 +908,11 @@ mod tests {
             "peerlink",
             interface_payload("peerlink", Some(("vrf-blue", MasterKind::Vrf)), None, None),
             "cumulus-iface-capture",
-            1,
-            "2021-03-25T00:00:02+00:00",
+            0,
+            "2021-03-25T02:14:30.000000+00:00",
         ));
         let derivation =
-            derive_forwarding_domains(&facts, policy(), "2021-03-25T00:00:30+00:00").unwrap();
+            derive_forwarding_domains(&facts, policy(), "2021-03-25T02:15:00+00:00").unwrap();
         assert_eq!(derivation.evidence.len(), 0);
         assert!(derivation.report.indeterminate_port_memberships > 0);
     }
@@ -753,7 +928,7 @@ mod tests {
                 "cumulus-leaf01",
                 "collector-test",
                 "cumulus-vlan-capture",
-                "2021-03-25T00:00:00+00:00",
+                "2021-03-25T02:14:29.693000+00:00",
             ),
         });
         let mut facts = vlan.facts.clone();
@@ -763,7 +938,7 @@ mod tests {
             "peerlink",
             interface_payload("peerlink", Some(("bridge", MasterKind::Bridge)), None, None),
             "cumulus-iface-capture",
-            1,
+            0,
             "2021-03-25T03:00:00+00:00",
         ));
         let derivation =
@@ -786,7 +961,7 @@ mod tests {
                 "cumulus-leaf01",
                 "collector-test",
                 "cumulus-vlan-capture",
-                "2021-03-25T00:00:00+00:00",
+                "2021-03-25T02:14:29.693000+00:00",
             ),
         });
         // swp1 rows in the fixture exist for several VLANs; give half the
@@ -813,8 +988,8 @@ mod tests {
                 None,
             ),
             "cumulus-iface-capture",
-            1,
-            "2021-03-25T00:00:02+00:00",
+            0,
+            "2021-03-25T02:14:30.000000+00:00",
         ));
         facts.push(interface_fact(
             "cumulus-leaf01",
@@ -826,12 +1001,12 @@ mod tests {
                 None,
             ),
             "cumulus-iface-capture",
-            1,
-            "2021-03-25T00:00:02+00:00",
+            0,
+            "2021-03-25T02:14:30.000000+00:00",
         ));
         if first_port != "peerlink" {
             let derivation =
-                derive_forwarding_domains(&facts, policy(), "2021-03-25T00:00:30+00:00").unwrap();
+                derive_forwarding_domains(&facts, policy(), "2021-03-25T02:15:00+00:00").unwrap();
             let domains: BTreeSet<_> = derivation
                 .evidence
                 .iter()
@@ -868,7 +1043,7 @@ mod tests {
                 "cumulus-leaf01",
                 "collector-test",
                 "cumulus-vlan-capture",
-                "2021-03-25T00:00:00+00:00",
+                "2021-03-25T02:14:29.693000+00:00",
             ),
         });
         let mut facts = vlan.facts.clone();
@@ -877,8 +1052,8 @@ mod tests {
             "peerlink",
             interface_payload("peerlink", Some(("bridge", MasterKind::Bridge)), None, None),
             "cumulus-iface-capture",
-            1,
-            "2021-03-25T00:00:02+00:00",
+            0,
+            "2021-03-25T02:14:30.000000+00:00",
         ));
         // bond0 is a LAG member of the bridge through the bridge master, and
         // its physical member swp1 is positively established.
@@ -892,11 +1067,11 @@ mod tests {
                 None,
             ),
             "cumulus-iface-capture",
-            1,
-            "2021-03-25T00:00:02+00:00",
+            0,
+            "2021-03-25T02:14:30.000000+00:00",
         ));
         let derivation =
-            derive_forwarding_domains(&facts, policy(), "2021-03-25T00:00:30+00:00").unwrap();
+            derive_forwarding_domains(&facts, policy(), "2021-03-25T02:15:00+00:00").unwrap();
         // peerlink rows produce bindings; swp1/bond0 equivalence only appears
         // if either is in the binding's forwarding population — here they are
         // not, so no unrestricted equivalence must leak in.
@@ -936,7 +1111,7 @@ mod tests {
                 "device-leaf02",
                 "collector-test",
                 "eos-vlan-capture",
-                "2021-06-07T00:00:05+00:00",
+                "2021-06-07T00:19:34.532000+00:00",
             ),
         });
         assert_eq!(vlan.report.malformed_records, 0);
@@ -944,14 +1119,14 @@ mod tests {
             "device-leaf02",
             "collector-test",
             "eos-arp-capture",
-            "2021-06-07T00:00:00+00:00",
+            "2021-06-07T00:19:37.307000+00:00",
         );
         arp_ctx.session_epoch = 7;
         let mut mac_ctx = ObservationContext::minimal(
             device_id_leaf02(),
             "collector-test",
             "eos-mac-capture",
-            "2021-06-07T00:00:20+00:00",
+            "2021-06-07T00:19:35.378000+00:00",
         );
         mac_ctx.session_epoch = 7;
         let arps = normalize_arpnd(&ArpndObservation {
@@ -967,7 +1142,7 @@ mod tests {
             interface_identities: None,
         });
         let derivation =
-            derive_forwarding_domains(&vlan.facts, policy(), "2021-06-07T00:00:30+00:00").unwrap();
+            derive_forwarding_domains(&vlan.facts, policy(), "2021-06-07T00:20:00+00:00").unwrap();
         assert!(
             derivation.evidence.len() >= 5,
             "expected one binding per EOS VLAN database entry"
@@ -988,7 +1163,7 @@ mod tests {
             &[],
             &derivation.evidence,
             &reconcile_policy,
-            "2021-06-07T00:00:30+00:00",
+            "2021-06-07T00:20:00+00:00",
         )
         .unwrap();
         assert_eq!(report.results.len(), 7);
@@ -1026,6 +1201,354 @@ mod tests {
                 CrossTableOutcome::IndeterminateMissingForwardingDomain,
                 "{ip}: routed/management ports absent from the VLAN database must remain indeterminate"
             );
+        }
+    }
+
+    #[test]
+    fn conflicting_interface_observations_are_never_selected_by_input_order() {
+        let input =
+            include_str!("../tests/fixtures/bn024/vlan/cumulus-leaf01-bridge-c-vlan-show.txt");
+        let vlan = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::CumulusBridgeCVlanShow,
+            capture: CommandCapture::new(input, CaptureOutcome::Complete),
+            context: ObservationContext::minimal(
+                "cumulus-leaf01",
+                "collector-test",
+                "cumulus-vlan-capture",
+                "2021-03-25T02:14:29.693000+00:00",
+            ),
+        });
+        let mut facts = vlan.facts.clone();
+        // Two contradictory same-key observations. Reversing input order must
+        // have no effect because neither observation is eligible.
+        for (target, kind) in [
+            ("bridge", MasterKind::Bridge),
+            ("vrf-blue", MasterKind::Vrf),
+        ] {
+            facts.push(interface_fact(
+                "cumulus-leaf01",
+                "peerlink",
+                interface_payload("peerlink", Some((target, kind)), None, None),
+                "cumulus-iface-capture",
+                0,
+                "2021-03-25T02:14:30.000000+00:00",
+            ));
+        }
+        let derivation =
+            derive_forwarding_domains(&facts, policy(), "2021-03-25T02:15:00+00:00").unwrap();
+        assert!(
+            derivation.evidence.is_empty(),
+            "conflicting interface evidence must fail closed: {:?}",
+            derivation.evidence
+        );
+        facts.reverse();
+        let reversed =
+            derive_forwarding_domains(&facts, policy(), "2021-03-25T02:15:00+00:00").unwrap();
+        assert_eq!(derivation.evidence, reversed.evidence);
+    }
+
+    #[test]
+    fn corroborating_interface_observations_remain_deterministic_and_usable() {
+        let input =
+            include_str!("../tests/fixtures/bn024/vlan/cumulus-leaf01-bridge-c-vlan-show.txt");
+        let vlan = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::CumulusBridgeCVlanShow,
+            capture: CommandCapture::new(input, CaptureOutcome::Complete),
+            context: ObservationContext::minimal(
+                "cumulus-leaf01",
+                "collector-test",
+                "cumulus-vlan-capture",
+                "2021-03-25T02:14:29.693000+00:00",
+            ),
+        });
+        let mut facts = vlan.facts.clone();
+        for capture in ["iface-a", "iface-b"] {
+            facts.push(interface_fact(
+                "cumulus-leaf01",
+                "peerlink",
+                interface_payload("peerlink", Some(("bridge", MasterKind::Bridge)), None, None),
+                capture,
+                0,
+                "2021-03-25T02:14:30.000000+00:00",
+            ));
+        }
+        let first =
+            derive_forwarding_domains(&facts, policy(), "2021-03-25T02:15:00+00:00").unwrap();
+        facts.reverse();
+        let reversed =
+            derive_forwarding_domains(&facts, policy(), "2021-03-25T02:15:00+00:00").unwrap();
+        assert!(!first.evidence.is_empty());
+        assert_eq!(first.evidence, reversed.evidence);
+    }
+
+    #[test]
+    fn different_capture_generations_never_combine_linux_vlan_and_interface_rows() {
+        let input =
+            include_str!("../tests/fixtures/bn024/vlan/cumulus-leaf01-bridge-c-vlan-show.txt");
+        let vlan = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::CumulusBridgeCVlanShow,
+            capture: CommandCapture::new(input, CaptureOutcome::Complete),
+            context: ObservationContext::minimal(
+                "cumulus-leaf01",
+                "collector-test",
+                "cumulus-vlan-capture",
+                "2021-03-25T02:14:29.693000+00:00",
+            ),
+        });
+        let mut facts = vlan.facts.clone();
+        facts.push(interface_fact(
+            "cumulus-leaf01",
+            "peerlink",
+            interface_payload("peerlink", Some(("bridge", MasterKind::Bridge)), None, None),
+            "cumulus-iface-capture",
+            1,
+            "2021-03-25T02:14:30.000000+00:00",
+        ));
+        let derivation =
+            derive_forwarding_domains(&facts, policy(), "2021-03-25T02:15:00+00:00").unwrap();
+        assert!(derivation.evidence.is_empty());
+        assert!(derivation.report.incompatible_interface_evidence > 0);
+    }
+
+    #[test]
+    fn legacy_unrefined_interface_entity_is_not_promoted_to_structured_key() {
+        let input =
+            include_str!("../tests/fixtures/bn024/vlan/cumulus-leaf01-bridge-c-vlan-show.txt");
+        let vlan = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::CumulusBridgeCVlanShow,
+            capture: CommandCapture::new(input, CaptureOutcome::Complete),
+            context: ObservationContext::minimal(
+                "cumulus-leaf01",
+                "collector-test",
+                "cumulus-vlan-capture",
+                "2021-03-25T02:14:29.693000+00:00",
+            ),
+        });
+        let mut facts = vlan.facts.clone();
+        facts.push(interface_fact(
+            "cumulus-leaf01",
+            "peerlink",
+            interface_payload("peerlink", Some(("bridge", MasterKind::Bridge)), None, None),
+            "cumulus-iface-capture",
+            0,
+            "2021-03-25T02:14:30.000000+00:00",
+        ));
+        let derivation =
+            derive_forwarding_domains(&facts, policy(), "2021-03-25T02:15:00+00:00").unwrap();
+        assert!(!derivation.evidence.is_empty());
+        assert!(
+            derivation
+                .evidence
+                .iter()
+                .all(|binding| binding.forwarding_interface_keys.is_empty()),
+            "legacy subject.entity strings are lookup evidence, not structured identity"
+        );
+    }
+
+    #[test]
+    fn missing_membership_availability_does_not_fabricate_empty_member_population() {
+        let input = r#"{"vlans":{"10":{"name":"VLAN0010","status":"active","dynamic":false}}}"#;
+        let vlan = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::EosShowVlanBriefJson,
+            capture: CommandCapture::new(input, CaptureOutcome::Complete),
+            context: ObservationContext::minimal(
+                "device-leaf02",
+                "collector-test",
+                "eos-vlan-capture",
+                "2021-06-07T00:19:34.532000+00:00",
+            ),
+        });
+        assert_eq!(vlan.facts.len(), 1);
+        let derivation =
+            derive_forwarding_domains(&vlan.facts, policy(), "2021-06-07T00:20:00+00:00").unwrap();
+        assert_eq!(derivation.evidence.len(), 1);
+        assert_eq!(
+            derivation.evidence[0].membership_availability,
+            Some(MembershipAvailability::Missing)
+        );
+        assert!(derivation.evidence[0].forwarding_interfaces.is_empty());
+    }
+
+    #[test]
+    fn lag_relationship_enrichment_respects_capture_skew_inside_freshness_window() {
+        let input = include_str!("../tests/fixtures/bn024/vlan/eos-leaf02-show-vlan-brief.json");
+        let vlan = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::EosShowVlanBriefJson,
+            capture: CommandCapture::new(input, CaptureOutcome::Complete),
+            context: ObservationContext::minimal(
+                "device-leaf02",
+                "collector-test",
+                "eos-vlan-capture",
+                "2021-06-07T00:19:34.532000+00:00",
+            ),
+        });
+        let mut compatible_facts = vlan.facts.clone();
+        compatible_facts.push(interface_fact(
+            "device-leaf02",
+            "Ethernet1",
+            interface_payload(
+                "Ethernet1",
+                Some(("Port-Channel1", MasterKind::Lag)),
+                Some("Port-Channel1"),
+                None,
+            ),
+            "eos-iface-capture",
+            0,
+            "2021-06-07T00:20:00+00:00",
+        ));
+        let compatible =
+            derive_forwarding_domains(&compatible_facts, policy(), "2021-06-07T00:20:30+00:00")
+                .unwrap();
+        assert!(
+            compatible.evidence.iter().any(|binding| binding
+                .interface_equivalents
+                .get("Port-Channel1")
+                .is_some_and(|members| members.contains("Ethernet1"))),
+            "temporally compatible positive LAG evidence should enrich the binding"
+        );
+
+        let mut skewed_facts = vlan.facts;
+        skewed_facts.push(interface_fact(
+            "device-leaf02",
+            "Ethernet1",
+            interface_payload(
+                "Ethernet1",
+                Some(("Port-Channel1", MasterKind::Lag)),
+                Some("Port-Channel1"),
+                None,
+            ),
+            "eos-iface-capture",
+            0,
+            "2021-06-07T00:20:59+00:00",
+        ));
+        let skewed =
+            derive_forwarding_domains(&skewed_facts, policy(), "2021-06-07T00:21:00+00:00")
+                .unwrap();
+        assert!(
+            skewed
+                .evidence
+                .iter()
+                .all(|binding| binding.interface_equivalents.is_empty()),
+            "evidence inside freshness but outside capture skew must not enrich relationships"
+        );
+    }
+
+    #[test]
+    fn genuine_nxos_derived_bindings_integrate_with_neighbor_reconciliation() {
+        // Genuine same-device NXOS captures: VLAN database membership supplies
+        // the domain bindings, ARP supplies logical+physical attachment, and
+        // the MAC table independently corroborates the physical attachment.
+        let vlan_input = include_str!(
+            "../tests/fixtures/bn024/vlan/nxos-leaf03-show-vlan-brief-json-native.json"
+        );
+        let arp_input = include_str!(
+            "../tests/fixtures/bn024/neighbor/nxos-leaf03-show-ip-arp-detail-vrf-all.json"
+        );
+        let mac_input = include_str!(
+            "../tests/fixtures/bn024/neighbor/nxos-leaf03-show-mac-address-table.json"
+        );
+        let mut vlan_ctx = ObservationContext::minimal(
+            "device-leaf03",
+            "collector-test",
+            "nxos-vlan-capture",
+            "2021-04-24T14:40:57.446000+00:00",
+        );
+        vlan_ctx.session_epoch = 11;
+        let vlan = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::NxosShowVlanBriefJsonNative,
+            capture: CommandCapture::new(vlan_input, CaptureOutcome::Complete),
+            context: vlan_ctx,
+        });
+        assert_eq!(vlan.report.malformed_records, 0);
+        let mut arp_ctx = ObservationContext::minimal(
+            "device-leaf03",
+            "collector-test",
+            "nxos-arp-capture",
+            "2021-04-24T14:41:03.495000+00:00",
+        );
+        arp_ctx.session_epoch = 11;
+        let mut mac_ctx = ObservationContext::minimal(
+            "device-leaf03",
+            "collector-test",
+            "nxos-mac-capture",
+            "2021-04-24T14:40:57.018000+00:00",
+        );
+        mac_ctx.session_epoch = 11;
+        let arps = normalize_arpnd(&ArpndObservation {
+            profile: ArpndSourceProfile::NxosShowIpArpDetailJsonNative,
+            capture: CommandCapture::new(arp_input, CaptureOutcome::Complete),
+            context: arp_ctx,
+            interface_identities: None,
+        });
+        let macs = normalize_mac(&MacObservation {
+            profile: MacSourceProfile::NxosShowMacAddressTableJsonNative,
+            capture: CommandCapture::new(mac_input, CaptureOutcome::Complete),
+            context: mac_ctx,
+            interface_identities: None,
+        });
+        let derivation =
+            derive_forwarding_domains(&vlan.facts, policy(), "2021-04-24T14:41:10+00:00").unwrap();
+        assert_eq!(derivation.evidence.len(), 4);
+        let neighbor_facts: Vec<_> = arps
+            .facts
+            .iter()
+            .chain(macs.facts.iter())
+            .cloned()
+            .collect();
+        let reconcile_policy = NeighborReconciliationPolicy {
+            freshness: FreshnessPolicy::observation_age(120),
+            max_capture_skew_seconds: 60,
+            max_candidate_evaluations: MAX_CANDIDATE_EVALUATIONS,
+        };
+        let report = reconcile_neighbor_tables(
+            &neighbor_facts,
+            &[],
+            &derivation.evidence,
+            &reconcile_policy,
+            "2021-04-24T14:41:10+00:00",
+        )
+        .unwrap();
+        assert_eq!(report.results.len(), 6);
+        for (ip, vlan_id, interface) in [
+            ("172.16.2.201", 20, "port-channel3"),
+            ("172.16.3.202", 30, "port-channel4"),
+        ] {
+            let result = report
+                .results
+                .iter()
+                .find(|r| r.ip_address == ip)
+                .unwrap_or_else(|| panic!("missing result for {ip}"));
+            assert!(
+                matches!(
+                    result.outcome,
+                    CrossTableOutcome::Consistent
+                        | CrossTableOutcome::ScopedCorrelationInterfaceNotComparable
+                ),
+                "{ip}: expected positive scoped correlation, got {:?}: {}",
+                result.outcome,
+                result.reason
+            );
+            assert_eq!(result.vlan_id, Some(vlan_id), "{ip}");
+            assert_eq!(result.mac_fact_ids.len(), 1, "{ip}");
+            assert!(
+                result.reason.contains(interface)
+                    || result.outcome == CrossTableOutcome::Consistent,
+                "{ip}: expected physical attachment evidence for {interface}: {}",
+                result.reason
+            );
+        }
+        for result in &report.results {
+            if !matches!(result.ip_address.as_str(), "172.16.2.201" | "172.16.3.202") {
+                assert!(
+                    !matches!(
+                        result.outcome,
+                        CrossTableOutcome::Consistent
+                            | CrossTableOutcome::ScopedCorrelationInterfaceNotComparable
+                    ),
+                    "{}: non-member/routed evidence must not become a positive L2 correlation",
+                    result.ip_address
+                );
+            }
         }
     }
 

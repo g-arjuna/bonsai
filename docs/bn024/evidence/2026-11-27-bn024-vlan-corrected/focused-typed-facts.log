@@ -1,0 +1,54 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline typed_facts
+    Finished `ci` profile [optimized] target(s) in 0.47s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 44 tests
+test typed_facts::tests::authority_eligibility_boundary ... ok
+test typed_facts::tests::authoritative_trust_rejects_unstructured_payload ... ok
+test typed_facts::tests::committed_fixture_is_valid ... ok
+test typed_facts::tests::emit_fixture_artifact ... ignored, artifact generator; run explicitly to regenerate fixture
+test typed_facts::tests::emit_state_fixtures ... ignored, artifact generator; run explicitly to regenerate state fixtures
+test typed_facts::tests::degraded_payload_cannot_be_authority_eligible ... ok
+test typed_facts::tests::degraded_state_cannot_claim_complete_coverage ... ok
+test typed_facts::tests::consistent_grant_and_fact_mutation_still_fails ... ok
+test typed_facts::tests::fact_id_binds_schema_version_and_producer ... ok
+test typed_facts::tests::deserialized_grant_loses_attestation ... ok
+test typed_facts::tests::fact_id_changes_with_payload ... ok
+test typed_facts::tests::forged_trust_claim_is_not_authority ... ok
+test typed_facts::tests::grant_rejects_resolution_from_unrelated_source ... ok
+test typed_facts::tests::committed_state_fixtures_cover_every_payload_state ... ok
+test typed_facts::tests::grant_does_not_transfer_across_subjects ... ok
+test typed_facts::tests::grant_requires_resolver_attested_resolution ... ok
+test typed_facts::tests::lifecycle_and_temporal_fields_do_not_change_fact_id ... ok
+test typed_facts::tests::lifecycle_transitions_are_terminal ... ok
+test typed_facts::tests::malformed_timestamps_and_windows_rejected ... ok
+test typed_facts::tests::identical_interface_names_across_asic_namespaces_differ ... ok
+test typed_facts::tests::payload_state_required_when_fields_absent ... ok
+test typed_facts::tests::interface_state_payload_is_typed ... ok
+test typed_facts::tests::mutated_resolution_cannot_mint_grant ... ok
+test typed_facts::tests::identity_dimensions_are_independent ... ok
+test typed_facts::tests::payload_or_evidence_mutation_breaks_grant ... ok
+test typed_facts::tests::reordered_json_keys_do_not_change_identity ... ok
+test typed_facts::tests::public_mutation_after_grant_breaks_eligibility ... ok
+test typed_facts::tests::roundtrip_preserves_all_fields ... ok
+test typed_facts::tests::scalar_payload_rejected ... ok
+test typed_facts::tests::post_seal_mutation_is_detected ... ok
+test typed_facts::tests::schema_version_gate_rejects_future_versions ... ok
+test typed_facts::tests::payload_states_without_fields_have_distinct_identities ... ok
+test typed_facts::tests::replayed_state_confers_no_authority ... ok
+test typed_facts::tests::seal_produces_stable_fact_id ... ok
+test typed_facts::tests::state_and_fields_are_mutually_exclusive ... ok
+test typed_facts::tests::unknown_completeness_is_explicit ... ok
+test typed_facts::tests::supersede_requires_target_and_timestamp ... ok
+test typed_facts::tests::withdraw_requires_reason_timestamp_and_active_lifecycle ... ok
+test typed_facts::tests::seal_roundtrip_stable_across_payload_shapes ... ok
+test typed_facts::tests::serialized_structured_identity_roundtrips_but_authority_does_not_reattest ... ok
+test typed_facts::tests::withdrawn_without_reason_fails_validation ... ok
+test typed_facts::tests::structured_interface_identity_validation_rejects_inconsistent_axes ... ok
+test typed_facts::tests::structured_interface_identity_is_additive_and_collision_safe ... ok
+test typed_facts::tests::structured_interface_identity_is_bound_into_authority ... ok
+
+test result: ok. 42 passed; 0 failed; 2 ignored; 0 measured; 830 filtered out; finished in 0.01s
+

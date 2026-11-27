@@ -38,6 +38,8 @@ pub enum DomainAttachment {
 pub struct InterfaceDomainMembership {
     pub domain_id: String,
     pub vlan_id: Option<u32>,
+    pub membership_availability: Option<crate::vlan_facts::MembershipAvailability>,
+    pub membership_plane: Option<crate::vlan_facts::MembershipPlane>,
     pub vrf: Option<String>,
     pub attachment: DomainAttachment,
     pub matched_via_structured_key: bool,
@@ -82,17 +84,43 @@ fn interface_matches(
     } else if structured_hit(&ev.routed_interface_keys) {
         out.push((DomainAttachment::Routed, true));
     }
-    // Explicitly established equivalence evidence can resolve an alias, but
-    // equivalence is directional attachment evidence, not identity collapse:
-    // the alias itself must have been positively established in the binding.
-    for (canonical, aliases) in &ev.interface_equivalents {
-        if aliases.contains(interface) && ev.forwarding_interfaces.contains(canonical) {
-            out.push((DomainAttachment::Forwarding, false));
-        }
-    }
+    // Equivalence evidence is retained for provenance, but an alias must be
+    // positively established in the binding itself; equivalence never creates
+    // an additional attachment by implication.
     out.sort();
     out.dedup();
     out
+}
+
+fn evidence_order<'a>(
+    evidence: &'a [ForwardingDomainEvidence],
+) -> Vec<&'a ForwardingDomainEvidence> {
+    let mut ordered: Vec<_> = evidence.iter().collect();
+    ordered.sort_by(|a, b| {
+        (
+            &a.device_id,
+            &a.scope,
+            &a.network_namespace,
+            &a.domain_id,
+            a.vlan_id,
+            &a.vrf,
+            &a.capture_id,
+            &a.source_generation,
+            &a.observation_time,
+        )
+            .cmp(&(
+                &b.device_id,
+                &b.scope,
+                &b.network_namespace,
+                &b.domain_id,
+                b.vlan_id,
+                &b.vrf,
+                &b.capture_id,
+                &b.source_generation,
+                &b.observation_time,
+            ))
+    });
+    ordered
 }
 
 /// Which forwarding domains attach one interface at an explicit analysis
@@ -105,7 +133,8 @@ pub fn domains_for_interface(
 ) -> Result<InterfaceDomainAnswer, String> {
     let as_of = parse_time(query.as_of).ok_or_else(|| "as_of is not RFC-3339".to_string())?;
     let mut answer = InterfaceDomainAnswer::default();
-    for ev in evidence {
+    let mut memberships = Vec::new();
+    for ev in evidence_order(evidence) {
         if !same_scope(query, ev) {
             continue;
         }
@@ -118,13 +147,11 @@ pub fn domains_for_interface(
             continue;
         }
         for (attachment, via_key) in attachments {
-            if answer.memberships.len() >= MAX_QUERY_RESULTS {
-                answer.results_omitted += 1;
-                continue;
-            }
-            answer.memberships.push(InterfaceDomainMembership {
+            memberships.push(InterfaceDomainMembership {
                 domain_id: ev.domain_id.clone(),
                 vlan_id: ev.vlan_id,
+                membership_availability: ev.membership_availability,
+                membership_plane: ev.membership_plane,
                 vrf: ev.vrf.clone(),
                 attachment,
                 matched_via_structured_key: via_key,
@@ -134,7 +161,7 @@ pub fn domains_for_interface(
             });
         }
     }
-    answer.memberships.sort_by(|a, b| {
+    memberships.sort_by(|a, b| {
         (&a.domain_id, a.vlan_id, a.attachment, &a.capture_id).cmp(&(
             &b.domain_id,
             b.vlan_id,
@@ -142,12 +169,15 @@ pub fn domains_for_interface(
             &b.capture_id,
         ))
     });
-    answer.memberships.dedup_by(|a, b| {
+    memberships.dedup_by(|a, b| {
         a.domain_id == b.domain_id
             && a.vlan_id == b.vlan_id
             && a.attachment == b.attachment
             && a.capture_id == b.capture_id
     });
+    answer.results_omitted = memberships.len().saturating_sub(MAX_QUERY_RESULTS);
+    memberships.truncate(MAX_QUERY_RESULTS);
+    answer.memberships = memberships;
     Ok(answer)
 }
 
@@ -155,6 +185,8 @@ pub fn domains_for_interface(
 pub struct DomainBindingView {
     pub domain_id: String,
     pub vlan_id: Option<u32>,
+    pub membership_availability: Option<crate::vlan_facts::MembershipAvailability>,
+    pub membership_plane: Option<crate::vlan_facts::MembershipPlane>,
     pub vrf: Option<String>,
     pub forwarding_interfaces: Vec<String>,
     pub routed_interfaces: Vec<String>,
@@ -184,7 +216,8 @@ pub fn bindings_for_domain(
 ) -> Result<DomainBindingsAnswer, String> {
     let as_of = parse_time(query.as_of).ok_or_else(|| "as_of is not RFC-3339".to_string())?;
     let mut answer = DomainBindingsAnswer::default();
-    for ev in evidence {
+    let mut bindings = Vec::new();
+    for ev in evidence_order(evidence) {
         if !same_scope(query, ev) || ev.domain_id != domain_id {
             continue;
         }
@@ -197,13 +230,11 @@ pub fn bindings_for_domain(
             answer.ineligible_evidence += 1;
             continue;
         }
-        if answer.bindings.len() >= MAX_QUERY_RESULTS {
-            answer.results_omitted += 1;
-            continue;
-        }
-        answer.bindings.push(DomainBindingView {
+        bindings.push(DomainBindingView {
             domain_id: ev.domain_id.clone(),
             vlan_id: ev.vlan_id,
+            membership_availability: ev.membership_availability,
+            membership_plane: ev.membership_plane,
             vrf: ev.vrf.clone(),
             forwarding_interfaces: ev.forwarding_interfaces.iter().cloned().collect(),
             routed_interfaces: ev.routed_interfaces.iter().cloned().collect(),
@@ -212,9 +243,15 @@ pub fn bindings_for_domain(
             evidence_refs: ev.evidence_refs.clone(),
         });
     }
-    answer.bindings.sort_by(|a, b| {
+    bindings.sort_by(|a, b| {
         (&a.domain_id, a.vlan_id, &a.capture_id).cmp(&(&b.domain_id, b.vlan_id, &b.capture_id))
     });
+    bindings.dedup_by(|a, b| {
+        a.domain_id == b.domain_id && a.vlan_id == b.vlan_id && a.capture_id == b.capture_id
+    });
+    answer.results_omitted = bindings.len().saturating_sub(MAX_QUERY_RESULTS);
+    bindings.truncate(MAX_QUERY_RESULTS);
+    answer.bindings = bindings;
     Ok(answer)
 }
 
@@ -230,7 +267,7 @@ mod tests {
             device_id: "device-leaf02",
             scope: None,
             network_namespace: None,
-            as_of: "2021-06-07T00:00:30+00:00",
+            as_of: "2021-06-07T00:20:00+00:00",
             freshness: FreshnessPolicy::observation_age(120),
         }
     }
@@ -244,7 +281,7 @@ mod tests {
                 "device-leaf02",
                 "collector-test",
                 "eos-vlan-capture",
-                "2021-06-07T00:00:05+00:00",
+                "2021-06-07T00:19:34.532000+00:00",
             ),
         });
         crate::forwarding_domain_derivation::derive_forwarding_domains(
@@ -253,7 +290,7 @@ mod tests {
                 freshness: FreshnessPolicy::observation_age(120),
                 max_capture_skew_seconds: 60,
             },
-            "2021-06-07T00:00:30+00:00",
+            "2021-06-07T00:20:00+00:00",
         )
         .unwrap()
         .evidence
@@ -320,6 +357,30 @@ mod tests {
         q.scope = Some("other-tenant");
         let answer = domains_for_interface(&bindings, &q, "Port-Channel3").unwrap();
         assert!(answer.memberships.is_empty());
+    }
+
+    #[test]
+    fn input_order_never_changes_query_results() {
+        let mut bindings = eos_bindings();
+        let forward = domains_for_interface(&bindings, &query(), "Port-Channel1").unwrap();
+        bindings.reverse();
+        let reverse = domains_for_interface(&bindings, &query(), "Port-Channel1").unwrap();
+        assert_eq!(forward, reverse);
+    }
+
+    #[test]
+    fn membership_availability_is_preserved_in_query_evidence() {
+        let bindings = eos_bindings();
+        let answer = domains_for_interface(&bindings, &query(), "Port-Channel3").unwrap();
+        assert_eq!(answer.memberships.len(), 1);
+        assert_eq!(
+            answer.memberships[0].membership_availability,
+            Some(crate::vlan_facts::MembershipAvailability::KnownPopulated)
+        );
+        assert_eq!(
+            answer.memberships[0].membership_plane,
+            Some(crate::vlan_facts::MembershipPlane::SourceReported)
+        );
     }
 
     #[test]

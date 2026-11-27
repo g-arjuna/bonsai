@@ -95,7 +95,31 @@ pub enum VlanAttachmentKind {
     Svi,
     Routed,
     Tunnel,
+    CpuSpecial,
     Other,
+}
+
+/// Explicit availability of the membership collection itself. This is
+/// independent of the per-member tagging/type axes: a syntactically valid
+/// VLAN row can still lack authoritative membership evidence.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum MembershipAvailability {
+    /// Source explicitly reported an empty membership collection.
+    KnownEmpty,
+    /// Source reported a complete non-empty membership collection.
+    KnownPopulated,
+    /// Some valid members were recovered, but part of the collection was absent/malformed.
+    Partial,
+    /// The membership field was absent where the qualified source shape exposes it.
+    Missing,
+    /// The membership field was present but not usable.
+    Malformed,
+    /// This source/profile does not expose membership.
+    Unsupported,
+    /// Legacy or externally supplied facts did not establish availability.
+    #[default]
+    Unknown,
 }
 
 /// One interface membership in a scoped VLAN/bridge domain. Tagging axes are
@@ -131,11 +155,14 @@ pub struct VlanBridgePayload {
     pub admin_state: ObservedField<VlanAdminState>,
     pub dynamic: ObservedField<bool>,
     pub membership_plane: ObservedField<MembershipPlane>,
-    /// VLAN-centric member population for database entries. `Known` empty
+    /// Availability of the member collection itself. The member vector is
+    /// interpreted only through this axis; an empty vector alone never means
+    /// a confirmed empty population.
+    #[serde(default)]
+    pub membership_availability: MembershipAvailability,
+    /// VLAN-centric member population for database entries. `KnownEmpty`
     /// membership is represented by an empty Vec in a database-entry shape;
-    /// port-membership facts normally contain one member. Unsupported or
-    /// partial acquisition is conveyed by fact quality/coverage, never by
-    /// silently deleting members.
+    /// port-membership facts normally contain one member.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<VlanMember>,
     /// Routed/SVI attachments when independently exposed. This is an
@@ -222,6 +249,28 @@ pub fn validate_vlan_typed(payload: &VlanBridgePayload) -> Result<(), FactError>
                 "members cannot be both tagged and untagged for one VLAN",
             ));
         }
+    }
+    match payload.membership_availability {
+        MembershipAvailability::KnownEmpty if !payload.members.is_empty() => {
+            return Err(FactError::InvalidField(
+                "known-empty membership cannot carry members",
+            ));
+        }
+        MembershipAvailability::KnownPopulated | MembershipAvailability::Partial
+            if payload.members.is_empty() =>
+        {
+            return Err(FactError::InvalidField(
+                "populated/partial membership requires recovered members",
+            ));
+        }
+        MembershipAvailability::Missing | MembershipAvailability::Malformed
+            if !payload.members.is_empty() =>
+        {
+            return Err(FactError::InvalidField(
+                "missing/malformed membership cannot silently carry a complete member vector",
+            ));
+        }
+        _ => {}
     }
     match payload.observation_shape {
         VlanObservationShape::VlanDatabaseEntry => {

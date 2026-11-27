@@ -1,6 +1,6 @@
 {
   "ledger_version": "suzieq-capability-delivery.v1",
-  "generated_at": "2026-11-26T00:00:00Z",
+  "generated_at": "2026-11-27T04:00:13Z",
   "upstream": {
     "repository": "https://github.com/netenglabs/suzieq",
     "revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
@@ -23,10 +23,10 @@
   "summary_counts": {
     "by_disposition": {
       "EXISTING_EQUIVALENT": 1,
-      "EXISTING_PARTIAL": 23,
+      "EXISTING_PARTIAL": 25,
       "IMPROVE_UPON_UPSTREAM": 1,
       "NATIVE_PORT_IMPLEMENTED": 1,
-      "PORT_REQUIRED": 40
+      "PORT_REQUIRED": 38
     },
     "by_domain": {
       "Neighbor intelligence": {
@@ -128,8 +128,8 @@
         "native_port_implemented": 0,
         "completed_improvement": 0,
         "planned_improvement": 0,
-        "partial": 2,
-        "missing": 9,
+        "partial": 4,
+        "missing": 7,
         "unassessed": 0,
         "deliberately_excluded": 0
       },
@@ -190,9 +190,9 @@
       "completed_existing_equivalent": 1,
       "completed_native_port_implemented": 1,
       "completed_improvement": 0,
-      "partially_implemented": 23,
+      "partially_implemented": 25,
       "planned_improvement_not_completed": 1,
-      "not_implemented_port_required": 40
+      "not_implemented_port_required": 38
     }
   },
   "nos_service_depth": {
@@ -7499,16 +7499,29 @@
       "historical_lifecycle_requirements": "explicit active/withdrawn/stale/gap lifecycle; observation time distinct from validity",
       "known_upstream_defaults_and_limitations": "Exact commands, version selectors, cleaner functions and schema defaults are inventoried in nos_service_depth and suzieq-upstream-inventory.v1.json; upstream commonly uses all-version selectors and normalize-time defaults.",
       "bonsai": {
-        "disposition": "PORT_REQUIRED",
-        "implementation_source_locations": [],
-        "actual_qualification_evidence": [],
-        "missing_functionality": [
-          "VLAN service normalizer",
-          "bridge-domain identity",
-          "interface membership reconciliation"
+        "disposition": "EXISTING_PARTIAL",
+        "implementation_source_locations": [
+          "src/vlan_facts.rs",
+          "src/vlan_normalizer.rs",
+          "src/forwarding_domain_derivation.rs",
+          "tests/fixtures/bn024/vlan/PROVENANCE.md",
+          "docs/bn024/provenance/upstream-sources.json"
         ],
-        "beyond_upstream": [],
-        "implementation_state": "not_implemented_port_required",
+        "actual_qualification_evidence": [
+          "offline genuine EOS/NXOS/Cumulus fixture normalization unit tests in src/vlan_normalizer.rs",
+          "same-device EOS and NXOS VLAN→forwarding-domain→neighbor reconciliation tests in src/forwarding_domain_derivation.rs",
+          "canonical provenance validator: python3 scripts/bn024/upstream_provenance.py validate docs/bn024/provenance/upstream-sources.json"
+        ],
+        "missing_functionality": [
+          "live acquisition transport integration and durable collection pipeline",
+          "broader NOS/version coverage beyond the qualified offline fixture shapes",
+          "complete routed/SVI/VRF attachment acquisition for all supported sources"
+        ],
+        "beyond_upstream": [
+          "explicit membership availability axis separates missing/malformed/partial membership from positive empty populations",
+          "generation-aware temporal compatibility is enforced before combining VLAN and interface evidence"
+        ],
+        "implementation_state": "partially_implemented",
         "counts_as_completed_equivalent": false,
         "counts_as_planned_improvement": false
       },
@@ -7560,16 +7573,25 @@
       "historical_lifecycle_requirements": "as-of/latest/all time semantics without silently mixing snapshots",
       "known_upstream_defaults_and_limitations": "Pandas-style flexible filtering exists upstream but is not an authorization or canonical-identity boundary.",
       "bonsai": {
-        "disposition": "PORT_REQUIRED",
-        "implementation_source_locations": [],
-        "actual_qualification_evidence": [],
-        "missing_functionality": [
-          "complete typed filter semantics",
-          "coverage/error/unknown states",
-          "multi-NOS unified behavior"
+        "disposition": "EXISTING_PARTIAL",
+        "implementation_source_locations": [
+          "src/forwarding_domain_queries.rs",
+          "src/forwarding_domain_derivation.rs",
+          "src/neighbor_reconciliation.rs"
         ],
-        "beyond_upstream": [],
-        "implementation_state": "not_implemented_port_required",
+        "actual_qualification_evidence": [
+          "bounded deterministic interface→domain and domain→binding unit tests in src/forwarding_domain_queries.rs",
+          "stale/ineligible evidence and scope isolation tests in src/forwarding_domain_queries.rs"
+        ],
+        "missing_functionality": [
+          "authorized operator/API surface and scoped persistence-backed query path",
+          "complete VLAN attribute filters, historical/as-of storage semantics and summarize parity",
+          "multi-NOS unified operational query coverage"
+        ],
+        "beyond_upstream": [
+          "conflicting or multiple bindings remain explicit per evidence object rather than being collapsed into consensus"
+        ],
+        "implementation_state": "partially_implemented",
         "counts_as_completed_equivalent": false,
         "counts_as_planned_improvement": false
       },
