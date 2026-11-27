@@ -13,7 +13,7 @@ use std::{
     process::Stdio,
 };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredNativeBgpObservation {
     pub captured_at_ns: i64,
     pub capture_started_at_ns: i64,
@@ -21,6 +21,12 @@ pub struct StoredNativeBgpObservation {
     pub raw_neighbors: String,
     pub raw_system_information: String,
     pub capture: NativeNosBgpCapture,
+    /// Positive inventory/acquisition identity established at collection time.
+    /// Legacy address-keyed rows predate this field and must remain unverified.
+    #[serde(default)]
+    pub inventory_identity: Option<String>,
+    #[serde(default)]
+    pub acquisition_profile: Option<String>,
 }
 
 pub fn observation_id(address: &str, family: &str) -> String {
@@ -77,12 +83,17 @@ pub async fn collect_native_bgp(
     if let Some(path) = known_hosts {
         cmd.arg("--known-hosts").arg(path);
     }
-    let output = tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output())
-        .await
-        .context("native capture timed out")?
-        .context("native capture helper failed to start")?;
+    let output = crate::enrichment::frr_interfaces::run_capture_helper_bounded(
+        &mut cmd,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .context("native capture bounded helper execution failed")?;
     if !output.status.success() {
-        bail!("native capture failed; check inventory credentials and pinned SSH host keys")
+        bail!(
+            "native capture failed (helper stderr {} bytes); check inventory credentials and pinned SSH host keys",
+            output.stderr_bytes
+        )
     }
     #[derive(Deserialize)]
     struct Raw {
@@ -108,6 +119,8 @@ pub async fn collect_native_bgp(
         raw_neighbors: raw.neighbors,
         raw_system_information: raw.system_information,
         capture,
+        inventory_identity: Some(format!("registered-target:{address}")),
+        acquisition_profile: Some("nokia.srlinux.fixed-readonly-native-bgp-v1".into()),
     })
 }
 
@@ -119,16 +132,41 @@ pub async fn persist_observation(
         &observation.capture.exporter_address,
         &observation.capture.afi_safi,
     );
+    let content_json = serde_json::to_string(observation)?;
+    let captured_at_ns = observation.captured_at_ns;
+    let exporter = observation.capture.exporter_address.clone();
+    let write_id = id.clone();
     store
-        .upsert_config_item(ConfigItemRecord {
-            id: id.clone(),
-            config_class: "native_bgp_observation".into(),
-            vendor: "nokia.srlinux".into(),
-            name: observation.capture.exporter_address.clone(),
-            version: "1".into(),
-            content_json: serde_json::to_string(observation)?,
-            enabled: true,
-            created_by: "native-bgp-collector".into(),
+        .compare_write_config_items(vec![id.clone()], move |existing| {
+            if let Some(Some(prior)) = existing.get(&write_id) {
+                let prior_obs: StoredNativeBgpObservation =
+                    serde_json::from_str(&prior.content_json)
+                        .context("invalid prior native BGP observation")?;
+                if prior_obs.captured_at_ns > captured_at_ns {
+                    bail!("stale native BGP observation rejected by monotonic persistence fence");
+                }
+                if prior_obs.captured_at_ns == captured_at_ns
+                    && prior.content_json != content_json.as_str()
+                {
+                    bail!("equal-time conflicting native BGP observation rejected");
+                }
+                if prior.content_json == content_json {
+                    return Ok((Vec::new(), ()));
+                }
+            }
+            Ok((
+                vec![ConfigItemRecord {
+                    id: write_id.clone(),
+                    config_class: "native_bgp_observation".into(),
+                    vendor: "nokia.srlinux".into(),
+                    name: exporter,
+                    version: "1".into(),
+                    content_json,
+                    enabled: true,
+                    created_by: "native-bgp-collector".into(),
+                }],
+                (),
+            ))
         })
         .await?;
     Ok(id)
@@ -142,10 +180,9 @@ pub async fn latest_observation(
     validate_family(family)?;
     let id = observation_id(address, family);
     let item = store
-        .list_config_items(Some("native_bgp_observation".into()))
+        .get_config_item(&id)
         .await?
-        .into_iter()
-        .find(|i| i.id == id && i.enabled)
+        .filter(|i| i.enabled)
         .context("native_bgp_evidence_unavailable: collect registered device state first")?;
     let obs: StoredNativeBgpObservation = serde_json::from_str(&item.content_json)?;
     if obs.capture.exporter_address != address || obs.capture.afi_safi != family {

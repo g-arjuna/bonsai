@@ -24,8 +24,13 @@ use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 
+use crate::bgp_reconciliation::{NativeBmpReconciliationPolicy, reconcile_native_bgp_with_bmp};
 use crate::graph::common::read_str;
 use crate::http_server::AppState;
+
+const NATIVE_BGP_MAX_OBSERVATION_AGE_SECONDS: u64 = 300;
+const NATIVE_BGP_MAX_OBSERVATION_AGE_NS: i64 =
+    NATIVE_BGP_MAX_OBSERVATION_AGE_SECONDS as i64 * 1_000_000_000;
 
 // ── Rule catalogue ────────────────────────────────────────────────────────────
 
@@ -1101,17 +1106,51 @@ async fn dispatch_authorized_tool(
             let age = now.saturating_sub(observation.captured_at_ns);
             let freshness = if observation.captured_at_ns > now {
                 "unknown"
-            } else if age > 60_000_000_000 {
+            } else if age > NATIVE_BGP_MAX_OBSERVATION_AGE_NS {
                 "stale"
             } else {
                 "fresh"
             };
             let total = observation.capture.neighbors.len();
+            let bmp_page = store
+                .bmp_bgp_sessions_for_device(&observation.capture.exporter_address)
+                .await
+                .map_err(|e| e.to_string())?;
+            let bmp_rows = &bmp_page.rows;
+            let policy = NativeBmpReconciliationPolicy {
+                max_observation_age_seconds: NATIVE_BGP_MAX_OBSERVATION_AGE_SECONDS,
+                max_capture_skew_seconds: 60,
+            };
+            // Reconciliation is internally input/index/output bounded and keeps
+            // total-versus-assessed denominators truthful.
+            let reconciliation_capture = observation.capture.clone();
+            let identity_verified = observation.inventory_identity.is_some()
+                && observation.acquisition_profile.as_deref()
+                    == Some("nokia.srlinux.fixed-readonly-native-bgp-v1");
+            let reconciliation = if identity_verified {
+                serde_json::to_value(reconcile_native_bgp_with_bmp(
+                    &reconciliation_capture,
+                    observation.captured_at_ns,
+                    bmp_rows,
+                    now,
+                    policy,
+                ))
+                .map_err(|e| e.to_string())?
+            } else {
+                serde_json::Value::Null
+            };
             observation.capture.neighbors.truncate(100);
             Ok(enforce_tool_output_bounds(
                 json!({"observation_id":crate::enrichment::native_bgp::observation_id(address,family),
                 "captured_at_ns":observation.captured_at_ns,"freshness":freshness,"age_ms":age/1_000_000,
-                "transport":observation.transport,"total_neighbors":total,"truncated":total>100,"capture":observation.capture}),
+                "transport":observation.transport,"total_neighbors":total,"truncated":total>100,"capture":observation.capture,
+                "native_identity_status":if identity_verified {"registered_inventory_target"} else {"legacy_address_keyed_unverified"},
+                "reconciliation_status":if identity_verified {"transport_session_only"} else {"not_run_unverified_legacy_identity"},
+                "bmp_rows_considered":bmp_rows.len(),
+                "bmp_rows_total_matching":bmp_page.total_matching_rows,
+                "bmp_rows_returned":bmp_page.returned_rows,
+                "bmp_rows_retrieval_omitted":bmp_page.retrieval_omitted_rows,
+                "bmp_reconciliation":reconciliation}),
             ))
         }
         "get_incident" => tool_get_incident(store, args)
