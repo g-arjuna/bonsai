@@ -33,3 +33,31 @@ An intermediate forwarding-domain test run failed closed because a newly added
 LAG test payload itself violated the typed member/master consistency
 validator. The fixture was corrected to use the same explicit LAG master target;
 the implementation was not weakened, and the final run above passed.
+
+## Canonical L0-L3 result
+
+Frozen tested implementation candidate: `3d5aaf28d1d9289a94be3084a67996d6668f2987`.
+Integration base: `91240469a16106fe183e27ef03d9cf8afc00364b`.
+
+Command:
+
+```text
+scripts/ci/build-lane.sh --dir ~/.cache/bonsai-ci/build-lane   --lbug-native ~/.cache/bonsai-ci/lbug-native --   env CARGO_BUILD_JOBS=2 PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome   GATE_BASE=91240469a16106fe183e27ef03d9cf8afc00364b   scripts/ci/gates.sh l0 l1 l2 l3
+```
+
+Result recorded in `canonical-l0-l3-3d5aaf2.log`:
+
+```text
+l0 PASS / l1 PASS / l2 PASS / l3 PASS — ALL REQUESTED GATES PASSED
+```
+
+- Full bonsai library: 874 tests executed in L2.
+- Root Python suite: 77 passed.
+- SDK Python suite: 318 passed, 1 skipped, 1 deselected.
+- Wall time: 1,831 seconds (04:06:30Z-04:37:01Z).
+- L4: NOT_EXECUTED — this offline/normalization slice has no lab acceptance
+  boundary and L4 is never inferred from L0-L3.
+
+During the browser/workflow portions, historical benchmark JSON artifacts were
+regenerated as test side effects. They were restored byte-for-byte from `HEAD`
+before publication and are not part of this evidence change.
