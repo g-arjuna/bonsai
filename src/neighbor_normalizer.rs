@@ -1268,9 +1268,11 @@ fn declared_scope_contract(profile: &str) -> AcquisitionScopeContract {
         "eos/show-arp-vrf-all-json"
         | "nxos/show-ip-arp-detail-vrf-all-json-native"
         | "cumulus/ip-neigh-show"
+        | "linux/ip-neigh-show"
         | "eos/show-mac-address-table-unicast-json"
         | "nxos/show-mac-address-table-json-native"
-        | "cumulus/bridge-fdb-show" => AcquisitionScopeContract::CompleteScopedTable,
+        | "cumulus/bridge-fdb-show"
+        | "linux/bridge-fdb-show" => AcquisitionScopeContract::CompleteScopedTable,
         _ => AcquisitionScopeContract::Unknown,
     }
 }
@@ -2283,6 +2285,10 @@ mod tests {
             neigh.coverage.population_coverage,
             ScopedPopulationCoverage::Complete
         );
+        assert_eq!(
+            neigh.coverage.declared_scope,
+            AcquisitionScopeContract::CompleteScopedTable
+        );
 
         let mac = normalize_mac(&MacObservation {
             profile: MacSourceProfile::LinuxBridgeFdbShow,
@@ -2297,6 +2303,10 @@ mod tests {
         assert_eq!(
             mac.coverage.population_coverage,
             ScopedPopulationCoverage::Complete
+        );
+        assert_eq!(
+            mac.coverage.declared_scope,
+            AcquisitionScopeContract::CompleteScopedTable
         );
     }
 }

@@ -342,6 +342,7 @@ def main():
                         "completed_at_ns": batch_completed_at_ns,
                         "deadline_seconds": BATCH_DEADLINE_SECS,
                         "atomic_snapshot": False,
+                        "approved_families": families,
                     },
                     "commands": commands,
                     "release_raw": version.get("version"),

@@ -219,9 +219,9 @@
     const retained = family?.retained || null;
     const latest = family?.latest_attempt || {};
     if (family?.support_state === 'unsupported') return 'unsupported';
+    if (retained?.evidence_state === 'stale_last_usable') return 'stale last usable';
     if (retained?.positive_empty_population) return 'positive empty';
     if (retained?.retention_truncated) return 'retention truncated';
-    if (retained?.evidence_state === 'stale_last_usable') return 'stale last usable';
     if (retained?.evidence_state === 'partial_current' || latest.normalization_outcome === 'partial_usable') return 'partial';
     if (retained?.evidence_state === 'current') return 'current';
     if (latest.outcome === 'not_attempted') return 'not acquired';
@@ -230,7 +230,11 @@
   }
 
   function nativeFamilyTime(family) {
-    return family?.retained?.observed_at || family?.latest_attempt?.completed_at || 'unknown time';
+    return family?.retained?.observed_at || 'no retained observation';
+  }
+
+  function nativeFamilyAttemptTime(family) {
+    return family?.latest_attempt?.completed_at || 'no completed attempt';
   }
 
   function ifaceField(fact, key) {
@@ -767,7 +771,7 @@
               {#if nativeFeatureFamilies().length > 0}
                 <div class="audit-grid" style="margin:0 0 10px;">
                   {#each nativeFeatureFamilies() as family}
-                    <span class="muted"><code>{family.feature}</code></span><span><strong>{nativeFamilyStatus(family)}</strong> · {family.facts_emitted ?? family.latest_attempt?.facts_emitted ?? 0} emitted / {family.facts_retained ?? family.retained?.facts_retained ?? 0} retained · coverage {family.coverage?.population_coverage || family.retained?.coverage?.population_coverage || 'unknown'}{family.coverage?.positive_empty_population || family.retained?.positive_empty_population ? ' · positive empty population' : ''} · <time title={nativeFamilyTime(family)}>{nativeFamilyTime(family)}</time></span>
+                    <span class="muted"><code>{family.feature}</code></span><span><strong>{nativeFamilyStatus(family)}</strong> · {family.facts_emitted ?? family.latest_attempt?.facts_emitted ?? 0} emitted / {family.facts_retained ?? family.retained?.facts_retained ?? 0} retained · coverage {family.coverage?.population_coverage || family.retained?.coverage?.population_coverage || 'unknown'}{family.coverage?.positive_empty_population || family.retained?.positive_empty_population ? ' · positive empty population' : ''} · retained <time title={nativeFamilyTime(family)}>{nativeFamilyTime(family)}</time> · latest attempt {family.latest_attempt?.outcome || 'not attempted'} <time title={nativeFamilyAttemptTime(family)}>{nativeFamilyAttemptTime(family)}</time></span>
                   {/each}
                 </div>
               {/if}
