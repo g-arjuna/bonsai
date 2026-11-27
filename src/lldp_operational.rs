@@ -475,8 +475,8 @@ mod tests {
         let neighbors: Vec<_> = (0..80)
             .map(|i| serde_json::json!({"chassis-id":format!("chassis-{i}"),"port-id":format!("eth{i}")}))
             .collect();
-        let population =
-            decompose_projection_entries("path", &serde_json::json!({"neighbors":neighbors}));
+        let envelope = serde_json::json!({"neighbors":neighbors});
+        let population = decompose_projection_entries("path", &envelope);
         assert_eq!(
             population.entries.len(),
             super::MAX_OPERATIONAL_NEIGHBORS_PER_EVENT
