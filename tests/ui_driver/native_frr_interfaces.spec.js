@@ -88,11 +88,37 @@ function featureFamilies(withL2) {
     positive_empty_population: positiveEmpty,
     capture_outcome: 'complete',
   });
+  const family = (feature, kind, emitted, positiveEmpty) => ({
+    feature,
+    fact_kind: kind,
+    support_state: 'supported',
+    facts_emitted: emitted,
+    facts_retained: emitted,
+    coverage: coverage(kind, positiveEmpty),
+    latest_attempt: {
+      outcome: 'complete',
+      normalization_outcome: positiveEmpty ? 'genuine_complete_empty' : 'complete_usable',
+      completed_at: new Date().toISOString(),
+      facts_emitted: emitted,
+      facts_validated: emitted,
+    },
+    retained: {
+      evidence_state: 'current',
+      observed_at: new Date().toISOString(),
+      facts_emitted: emitted,
+      facts_validated: emitted,
+      facts_retained: emitted,
+      facts_omitted_by_retention: 0,
+      retention_truncated: false,
+      positive_empty_population: positiveEmpty,
+      coverage: coverage(kind, positiveEmpty),
+    },
+  });
   return [
-    { feature: 'interfaces.frr_json', facts_emitted: 4, coverage: coverage('interface.state', false) },
-    { feature: 'arpnd.linux_ip_neigh', facts_emitted: 0, coverage: coverage('arpnd.neighbor', true) },
-    { feature: 'mac.linux_bridge_fdb', facts_emitted: withL2 ? 1 : 0, coverage: coverage('mac.forwarding', !withL2) },
-    { feature: 'vlan.linux_bridge_vlan', facts_emitted: 0, coverage: coverage('vlan.bridge_domain', true) },
+    family('interfaces.frr_json', 'interface.state', 4, false),
+    family('arpnd.linux_ip_neigh', 'arpnd.neighbor', 0, true),
+    family('mac.linux_bridge_fdb', 'mac.forwarding', withL2 ? 1 : 0, !withL2),
+    family('vlan.linux_bridge_vlan', 'vlan.bridge_domain', 0, true),
   ];
 }
 

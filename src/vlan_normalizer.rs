@@ -979,7 +979,7 @@ pub fn normalize_vlan(obs: &VlanObservation<'_>) -> VlanNormalizationOutput {
             &raw_sha256,
             obs.profile.label(),
             payload_completeness,
-            0,
+            obs.context.sequence,
         );
         if fact.validate().is_ok() {
             facts.push(fact);

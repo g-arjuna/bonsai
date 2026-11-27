@@ -22,6 +22,28 @@ in `docs/merger/evidence/2026-11-25-bn024-04-native-acquisition/`. L4 remains NO
 BN-024-04 is therefore a partial capture slice, not completion of the broader capture epic;
 BN-024-08 SONiC and BN-024-08A Cumulus structured intelligence remain outstanding.
 
+BN-024 multifamily Linux/FRR Layer-2 operational vertical slice — **REVIEW_READY focused-verification
+candidate** on `feat/bn024-l2-vertical`: the existing exact-artifact standalone FRR 10.6.1
+shadow-acquisition path is extended from interfaces only to independently acquired
+`arpnd.linux_ip_neigh`, `mac.linux_bridge_fdb` and `vlan.linux_bridge_vlan` feature families. The
+candidate uses fixed read-only commands, per-command timing/digests/outcomes, fail-closed release and
+feature-profile qualification, fact-kind-aware persistence validation, per-family latest-attempt/
+retained/positive-empty/stale-last-usable lifecycle state, bounded per-family retention, scoped
+coverage bound to raw evidence, authorized API/operator presentation and a bounded read-only
+assessment through the existing forwarding-domain/interface-relationship/neighbor-reconciliation
+analyzers. Focused verification passed on the implementation code: native API integration 16 passed
+/ 0 failed / 1 explicitly ignored live-gated test; acquisition units 9 passed / 1 ignored live-gated
+test; NOS feature units 16/16; VLAN normalizer 10/10; neighbor/MAC normalizer 21/21; capture-helper
+Python 6/6; typed-fact/provenance Python 40/40; browser acceptance 6/6; UI production build passed.
+Genuine replay evidence remains narrow: interfaces populated, ARP/ND and VLAN positive-empty, and MAC
+limited to permanent multicast/self entries from the authorized lab fixture. Populated Linux VLAN rows
+in integration are explicitly synthetic input, not live device evidence. Multifamily verified-SSH live
+acquisition is NOT_EXECUTED because the prior task-local ephemeral lab credential was rotated and is
+unavailable; no credential reset or device modification was performed. All families remain
+`shadow_only` with no authoritative graph projection. Canonical L0–L3 and L4 are NOT_EXECUTED for
+this corrected candidate and remain pending independent review/final gate authorization. REVIEW_READY
+is not MERGE_READY.
+
 BN-024 XRd model-driven interface normalization — **MERGED PR #90** (merge commit
 `4c100ba56a06dfe57a5aed65c3920eb5c894757e`; final production head
 `be277f97be8500d43fa724e0352d207ea26746ff`). Genuine XRd 24.4.2 read-only gNMI

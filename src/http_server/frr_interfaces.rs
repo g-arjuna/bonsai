@@ -530,10 +530,135 @@ fn operator_observation_json(
         "facts_retained": observation.facts_retained,
         "fact_retention_truncated": observation.fact_retention_truncated,
         "facts": observation.facts,
+        "command_execution": observation.command_execution,
+        "family_states": observation.family_states,
         "diagnostics_retained": observation.diagnostics_retained,
         "diagnostic_retention_truncated": observation.diagnostic_retention_truncated,
         "normalization_report": observation.normalization_report,
         "acquisition_classification": observation.acquisition_classification,
+    })
+}
+
+fn operational_l2_assessment(
+    observation: &crate::enrichment::frr_interfaces::StoredFrrInterfaceShadowObservation,
+) -> Value {
+    let mut facts = Vec::new();
+    for value in &observation.facts {
+        match serde_json::from_value::<crate::typed_facts::TypedFact>(value.clone()) {
+            Ok(fact) => facts.push(fact),
+            Err(error) => {
+                return json!({
+                    "state": "unresolved_prerequisites",
+                    "reason": "retained typed facts are undecodable",
+                    "detail": error.to_string(),
+                });
+            }
+        }
+    }
+    let mut coverage = Vec::new();
+    for family in &observation.family_states {
+        if let Some(coverage_value) = family.retained.as_ref().and_then(|r| r.coverage.as_ref()) {
+            match serde_json::from_value::<crate::semantic_evidence::ScopedCaptureCoverage>(
+                coverage_value.clone(),
+            ) {
+                Ok(value) => coverage.push(value),
+                Err(error) => {
+                    return json!({
+                        "state": "unresolved_prerequisites",
+                        "reason": "retained scoped capture coverage is undecodable",
+                        "detail": error.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    let as_of = observation.captured_at.clone();
+    let mut derivation_policy =
+        crate::forwarding_domain_derivation::ForwardingDomainDerivationPolicy::default();
+    derivation_policy.max_capture_skew_seconds = 60;
+    let derivation = match crate::forwarding_domain_derivation::derive_forwarding_domains(
+        &facts,
+        derivation_policy,
+        &as_of,
+    ) {
+        Ok(derivation) => derivation,
+        Err(error) => {
+            return json!({
+                "state": "unresolved_prerequisites",
+                "reason": "forwarding-domain derivation prerequisites were not satisfied",
+                "detail": error,
+            });
+        }
+    };
+    let relationships = crate::interface_relationships::analyze_interface_relationships(&facts);
+    let arpnd_facts = facts
+        .iter()
+        .filter(|fact| fact.fact_kind == crate::neighbor_facts::FACT_KIND_ARPND_NEIGHBOR)
+        .count();
+    let mac_facts = facts
+        .iter()
+        .filter(|fact| fact.fact_kind == crate::neighbor_facts::FACT_KIND_MAC_FORWARDING)
+        .count();
+    let vlan_facts = facts
+        .iter()
+        .filter(|fact| fact.fact_kind == crate::vlan_facts::FACT_KIND_VLAN_BRIDGE_DOMAIN)
+        .count();
+    let derivation_report = derivation.report.clone();
+    let derived_domain_evidence = derivation.evidence.len();
+    if derived_domain_evidence == 0 || arpnd_facts == 0 || mac_facts == 0 {
+        return json!({
+            "state": "unresolved_prerequisites",
+            "reason": "persisted evidence does not establish the bridge-domain, ARP/ND and MAC prerequisites required for cross-table correlation",
+            "as_of": as_of,
+            "capture_skew_policy_seconds": 60,
+            "input_facts": facts.len(),
+            "coverage_objects": coverage.len(),
+            "prerequisite_evidence": {
+                "arpnd_facts": arpnd_facts,
+                "mac_facts": mac_facts,
+                "vlan_facts": vlan_facts,
+                "derived_domain_evidence": derived_domain_evidence,
+            },
+            "forwarding_domain_derivation": {
+                "report": derivation_report,
+                "derived_domain_evidence": derived_domain_evidence,
+            },
+            "interface_relationships": relationships,
+            "authoritative_projection": "none",
+        });
+    }
+    let mut reconciliation_policy =
+        crate::neighbor_reconciliation::NeighborReconciliationPolicy::default();
+    reconciliation_policy.max_capture_skew_seconds = 60;
+    let reconciliation = match crate::neighbor_reconciliation::reconcile_neighbor_tables(
+        &facts,
+        &coverage,
+        &derivation.evidence,
+        &reconciliation_policy,
+        &as_of,
+    ) {
+        Ok(report) => {
+            serde_json::to_value(report).unwrap_or_else(|_| json!({"serialization":"failed"}))
+        }
+        Err(error) => json!({
+            "state": "unresolved_prerequisites",
+            "reason": "neighbor reconciliation prerequisites were not satisfied",
+            "detail": error,
+        }),
+    };
+    json!({
+        "state": "available",
+        "as_of": as_of,
+        "capture_skew_policy_seconds": 60,
+        "input_facts": facts.len(),
+        "coverage_objects": coverage.len(),
+        "forwarding_domain_derivation": {
+            "report": derivation_report,
+            "derived_domain_evidence": derived_domain_evidence,
+        },
+        "neighbor_reconciliation": reconciliation,
+        "interface_relationships": relationships,
+        "authoritative_projection": "none",
     })
 }
 
@@ -576,9 +701,19 @@ pub(super) async fn latest(
                     "native interface latest-attempt evidence is undecodable or belongs to another identity",
                 )
             })?;
-    let observation = crate::enrichment::frr_interfaces::latest_observation(&state.store, &target)
-        .await
-        .ok();
+    let observation_result =
+        crate::enrichment::frr_interfaces::latest_observation(&state.store, &target).await;
+    let observation = match observation_result {
+        Ok(observation) => Some(observation),
+        Err(error) if error.to_string().contains("shadow evidence unavailable") => None,
+        Err(_) => {
+            return Err(api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "stored_shadow_observation_invalid",
+                "retained native interface shadow evidence is invalid or undecodable; acquisition state is preserved separately",
+            ));
+        }
+    };
     let Some(observation) = observation else {
         return if let Some(acquisition) = acquisition {
             Ok(Json(json!({
@@ -611,6 +746,7 @@ pub(super) async fn latest(
         "stale_after_seconds": 3600,
         "interpretation_outcome": observation.interpretation_outcome,
         "evidence": operator_observation_json(&observation),
+        "l2_assessment": operational_l2_assessment(&observation),
         "acquisition": acquisition,
         "latest_attempt": latest_attempt,
         "authoritative_projection": "none",
