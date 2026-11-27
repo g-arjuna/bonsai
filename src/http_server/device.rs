@@ -53,6 +53,9 @@ pub(super) struct DeviceDetailResponse {
     interfaces: Vec<InterfaceDetailJson>,
     bgp_neighbors: Vec<BgpJson>,
     lldp_neighbors: Vec<LldpNeighborJson>,
+    lldp_evidence_returned: usize,
+    lldp_evidence_omitted_by_limit: bool,
+    lldp_evidence_contract: String,
     recent_state_changes: Vec<StateChangeJson>,
     recent_detections: Vec<DetectionRow>,
     selected_paths: Vec<SelectedSubscriptionPath>,
@@ -119,7 +122,11 @@ pub(super) struct LldpNeighborJson {
     chassis_id: String,
     neighbor_key: String,
     lifecycle: String,
+    /// Original positive observation time. Withdrawal time never replaces it.
     updated_at_ns: i64,
+    observed_at_ns: i64,
+    lifecycle_changed_at_ns: i64,
+    ordering_state: String,
 }
 #[derive(Serialize)]
 pub(super) struct StateChangeJson {
@@ -252,7 +259,7 @@ pub(super) async fn device_detail_handler(
     // Graph Device nodes are keyed by bare IP — strip any gNMI port from the path param.
     let addr_clone = crate::registry::strip_port(&address).to_string();
 
-    let (ifaces, bgp, lldp, state_changes, detections) = tokio::task::spawn_blocking(move || {
+    let (ifaces, bgp, lldp, lldp_omitted, state_changes, detections) = tokio::task::spawn_blocking(move || {
         let conn = Connection::new(&db).map_err(|e| e.to_string())?;
 
         let mut stmt = conn
@@ -309,15 +316,18 @@ pub(super) async fn device_detail_handler(
         let mut stmt = conn
             .prepare(
                 "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr \
+                       AND NOT (n.lifecycle = 'withdrawn' AND n.chassis_id = '' AND n.system_name = '' AND n.port_id = '') \
                      RETURN n.local_if, n.system_name, n.port_id, n.chassis_id, \
-                            n.neighbor_key, n.lifecycle, n.updated_at \
-                     ORDER BY n.local_if",
+                            n.neighbor_key, n.lifecycle, n.updated_at, n.observed_at, \
+                            n.lifecycle_changed_at, n.ordering_state \
+                     ORDER BY n.local_if, n.neighbor_key \
+                     LIMIT 501",
             )
             .map_err(|e| e.to_string())?;
         let lldp_rows = conn
             .execute(&mut stmt, vec![("addr", Value::String(addr_clone.clone()))])
             .map_err(|e| e.to_string())?;
-        let lldp: Vec<LldpNeighborJson> = lldp_rows
+        let mut lldp: Vec<LldpNeighborJson> = lldp_rows
             .map(|row| LldpNeighborJson {
                 local_if: read_str(&row[0]),
                 system_name: read_str(&row[1]),
@@ -333,8 +343,16 @@ pub(super) async fn device_detail_handler(
                     }
                 },
                 updated_at_ns: read_ts_ns(&row[6]),
+                observed_at_ns: read_ts_ns(&row[7]),
+                lifecycle_changed_at_ns: read_ts_ns(&row[8]),
+                ordering_state: {
+                    let state = read_str(&row[9]);
+                    if state.is_empty() { "ordered".into() } else { state }
+                },
             })
             .collect();
+        let lldp_omitted = lldp.len() > 500;
+        lldp.truncate(500);
 
         let mut stmt = conn
             .prepare(
@@ -387,7 +405,7 @@ pub(super) async fn device_detail_handler(
             }
         }
 
-        Ok::<_, String>((ifaces, bgp, lldp, state_changes, detections))
+        Ok::<_, String>((ifaces, bgp, lldp, lldp_omitted, state_changes, detections))
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -411,6 +429,9 @@ pub(super) async fn device_detail_handler(
         health,
         interfaces: ifaces,
         bgp_neighbors: bgp,
+        lldp_evidence_returned: lldp.len(),
+        lldp_evidence_omitted_by_limit: lldp_omitted,
+        lldp_evidence_contract: "retained lifecycle evidence, bounded to 500 rows; positive-empty collection coverage is not established".into(),
         lldp_neighbors: lldp,
         recent_state_changes: state_changes,
         recent_detections: detections,

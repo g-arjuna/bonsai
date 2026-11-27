@@ -849,8 +849,44 @@ impl GraphStore {
             "STRING DEFAULT 'active'",
         )?;
         alter_add_column(&conn, "LldpNeighbor", "withdrawn_at", "TIMESTAMP_NS")?;
+        for (column, definition) in [
+            ("identity_scope", "STRING DEFAULT ''"),
+            ("network_namespace", "STRING DEFAULT ''"),
+            ("source_occurrence_id", "STRING DEFAULT ''"),
+            ("acquisition_stream", "STRING DEFAULT ''"),
+            ("chassis_id_subtype", "STRING DEFAULT 'unknown'"),
+            ("port_id_subtype", "STRING DEFAULT 'unknown'"),
+            ("protocol_identity", "STRING DEFAULT ''"),
+            ("identity_uncertainty", "STRING DEFAULT ''"),
+            ("source_session_id", "STRING DEFAULT ''"),
+            ("source_plan_id", "STRING DEFAULT ''"),
+            ("collector_id", "STRING DEFAULT ''"),
+            (
+                "ordering_contract",
+                "STRING DEFAULT 'legacy_timestamp_only'",
+            ),
+            ("ordering_state", "STRING DEFAULT 'ordered'"),
+            ("ordering_detail", "STRING DEFAULT ''"),
+            ("population_entries_encountered", "INT64 DEFAULT -1"),
+            ("population_entries_accepted", "INT64 DEFAULT -1"),
+            ("population_exact_duplicates", "INT64 DEFAULT -1"),
+            ("population_conflicting_entries", "INT64 DEFAULT -1"),
+            ("population_malformed_entries", "INT64 DEFAULT -1"),
+            ("population_entries_omitted", "INT64 DEFAULT -1"),
+            ("observed_at", "TIMESTAMP_NS"),
+            ("lifecycle_changed_at", "TIMESTAMP_NS"),
+        ] {
+            alter_add_column(&conn, "LldpNeighbor", column, definition)?;
+        }
         alter_add_column(&conn, "LLDP_NEIGHBOR", "neighbor_id", "STRING DEFAULT ''")?;
         alter_add_column(&conn, "LLDP_NEIGHBOR", "neighbor_key", "STRING DEFAULT ''")?;
+        alter_add_column(&conn, "LLDP_NEIGHBOR", "evidence_id", "STRING DEFAULT ''")?;
+        alter_add_column(
+            &conn,
+            "LLDP_NEIGHBOR",
+            "lifecycle",
+            "STRING DEFAULT 'active'",
+        )?;
 
         // EntityIdentity: canonical identity record linking a device's hostname,
         // chassis-id, and management IP. Prevents duplicate Device nodes when the
@@ -906,6 +942,10 @@ impl GraphStore {
 
         conn.query("CREATE REL TABLE IF NOT EXISTS MGMT_LINK(FROM Interface TO Interface)")
             .context("create MGMT_LINK rel")?;
+        for table in ["CONNECTED_TO", "MGMT_LINK"] {
+            alter_add_column(&conn, table, "projection_owner", "STRING DEFAULT ''")?;
+            alter_add_column(&conn, table, "lldp_supporting_ids", "STRING DEFAULT ''")?;
+        }
 
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS DetectionEvent(\
@@ -5791,7 +5831,7 @@ impl GraphStore {
             let conn = Connection::new(&db).context("lldp_neighbors_for_device conn")?;
             let mut stmt = conn
                 .prepare(
-                    "MATCH (n:LldpNeighbor)                      WHERE n.device_address = $device                      RETURN n.id, n.local_if, n.neighbor_id, n.neighbor_key,                             n.chassis_id, n.system_name, n.port_id, n.lifecycle, n.updated_at                      ORDER BY n.local_if, n.neighbor_key",
+                    "MATCH (n:LldpNeighbor)                      WHERE n.device_address = $device                        AND NOT (n.lifecycle = 'withdrawn' AND n.chassis_id = '' AND n.system_name = '' AND n.port_id = '')                      RETURN n.id, n.local_if, n.neighbor_id, n.neighbor_key,                             n.chassis_id, n.system_name, n.port_id, n.lifecycle, n.updated_at,                             n.observed_at, n.lifecycle_changed_at, n.ordering_state, n.ordering_detail                      ORDER BY n.local_if, n.neighbor_key, n.id                      LIMIT 500",
                 )
                 .context("prepare lldp_neighbors_for_device")?;
             let rows = conn
@@ -5816,6 +5856,13 @@ impl GraphStore {
                             lifecycle
                         },
                         updated_at_ns: read_ts_ns(&row[8]),
+                        observed_at_ns: read_ts_ns(&row[9]),
+                        lifecycle_changed_at_ns: read_ts_ns(&row[10]),
+                        ordering_state: {
+                            let state = read_str(&row[11]);
+                            if state.is_empty() { "ordered".into() } else { state }
+                        },
+                        ordering_detail: read_str(&row[12]),
                     }
                 })
                 .collect();
@@ -6067,6 +6114,7 @@ fn write_blocking(
             &local_if,
             &neighbor_id,
             state_value.as_ref().unwrap_or(&update.value),
+            true,
         ),
         TelemetryEvent::InterfaceOperStatus {
             if_name,
@@ -7131,7 +7179,7 @@ fn write_interface_summary(
     // Distributed collectors forward counter summaries instead of every raw
     // counter update. Those summaries still create Interface nodes, so they
     // must trigger the same LLDP backfill as the raw interface writer.
-    let _ = backfill_connected_to(conn, &u.target, if_name);
+    let _ = backfill_connected_to(conn, bare, if_name);
 
     Ok(())
 }
@@ -7425,7 +7473,7 @@ fn write_interface(conn: &Connection<'_>, u: &TelemetryUpdate, if_name: &str) ->
 
     // Retroactively build CONNECTED_TO for any LldpNeighbor rows that arrived
     // before this Interface node was written (LLDP typically precedes stats).
-    let _ = backfill_connected_to(conn, &u.target, if_name);
+    let _ = backfill_connected_to(conn, bare, if_name);
 
     debug!(target = %u.target, interface = %if_name, "interface written");
     Ok(())
@@ -9947,57 +9995,355 @@ fn get_sr_policy_status(conn: &Connection<'_>, id: &str) -> Result<Option<String
     }))
 }
 
-fn delete_lldp_interface_projection(
+#[derive(Clone, Debug)]
+struct ExistingLldpLifecycleRow {
+    lifecycle: String,
+    updated_at_ns: i64,
+    lifecycle_changed_at_ns: i64,
+    chassis_id: String,
+    system_name: String,
+    port_id: String,
+}
+
+impl ExistingLldpLifecycleRow {
+    fn order(&self) -> crate::lldp_operational::ExistingLifecycleOrder {
+        crate::lldp_operational::ExistingLifecycleOrder {
+            lifecycle_active: self.lifecycle == "active",
+            lifecycle_withdrawn: self.lifecycle == "withdrawn",
+            lifecycle_superseded: self.lifecycle == "superseded",
+            latest_observation_ns: self.updated_at_ns,
+            lifecycle_changed_at_ns: self.lifecycle_changed_at_ns,
+        }
+    }
+
+    fn reference_ns(&self) -> i64 {
+        self.updated_at_ns.max(self.lifecycle_changed_at_ns)
+    }
+
+    fn as_partial_json(&self) -> JsonValue {
+        let mut out = serde_json::Map::new();
+        if !self.chassis_id.is_empty() {
+            out.insert("chassis-id".into(), self.chassis_id.clone().into());
+        }
+        if !self.system_name.is_empty() {
+            out.insert("system-name".into(), self.system_name.clone().into());
+        }
+        if !self.port_id.is_empty() {
+            out.insert("port-id".into(), self.port_id.clone().into());
+        }
+        JsonValue::Object(out)
+    }
+}
+
+fn query_lldp_lifecycle_row(
     conn: &Connection<'_>,
-    local_addr: &str,
-    local_if: &str,
-    remote_system_name: &str,
-    remote_port_id: &str,
+    id: &str,
+) -> Result<Option<ExistingLldpLifecycleRow>> {
+    let mut stmt = conn
+        .prepare(
+            "MATCH (n:LldpNeighbor {id: $id}) RETURN n.lifecycle, n.updated_at, \
+             n.lifecycle_changed_at, n.chassis_id, n.system_name, n.port_id",
+        )
+        .context("prepare LLDP lifecycle lookup")?;
+    let mut rows = conn
+        .execute(&mut stmt, vec![("id", Value::String(id.to_string()))])
+        .context("execute LLDP lifecycle lookup")?;
+    Ok(rows.next().map(|row| {
+        let lifecycle = read_str(&row[0]);
+        ExistingLldpLifecycleRow {
+            lifecycle: if lifecycle.is_empty() {
+                "active".into()
+            } else {
+                lifecycle
+            },
+            updated_at_ns: read_ts_ns(&row[1]),
+            lifecycle_changed_at_ns: read_ts_ns(&row[2]),
+            chassis_id: read_str(&row[3]),
+            system_name: read_str(&row[4]),
+            port_id: read_str(&row[5]),
+        }
+    }))
+}
+
+fn ordering_decision_for_rows(
+    rows: &[ExistingLldpLifecycleRow],
+    incoming_ns: i64,
+    kind: crate::lldp_operational::LifecycleEventKind,
+    incoming_value: Option<&JsonValue>,
+) -> crate::lldp_operational::LifecycleOrderDecision {
+    use crate::lldp_operational::{LifecycleOrderDecision as Decision, decide_lifecycle_order};
+    if rows.is_empty() {
+        return Decision::Apply;
+    }
+    let mut saw_apply = false;
+    let mut saw_compatible = false;
+    let mut saw_exact = false;
+    let mut saw_conflict = false;
+    for row in rows {
+        let compatible = incoming_value.is_none_or(|incoming| {
+            crate::lldp_operational::compatible_partial_observation(
+                incoming,
+                &row.as_partial_json(),
+            )
+        });
+        match decide_lifecycle_order(row.order(), incoming_ns, kind, compatible) {
+            Decision::RejectStale => return Decision::RejectStale,
+            Decision::EqualTimeConflict => saw_conflict = true,
+            Decision::Apply => saw_apply = true,
+            Decision::CompatibleReplay => saw_compatible = true,
+            Decision::ExactReplay => saw_exact = true,
+        }
+    }
+    if saw_conflict {
+        Decision::EqualTimeConflict
+    } else if saw_apply {
+        Decision::Apply
+    } else if saw_compatible {
+        Decision::CompatibleReplay
+    } else if saw_exact {
+        Decision::ExactReplay
+    } else {
+        Decision::RejectStale
+    }
+}
+
+fn mark_lldp_ordering_conflict(
+    conn: &Connection<'_>,
+    id: &str,
+    incoming_ns: i64,
+    kind: crate::lldp_operational::LifecycleEventKind,
 ) -> Result<()> {
-    if remote_system_name.is_empty() || remote_port_id.is_empty() {
-        return Ok(());
-    }
-    let mut find_stmt = conn
-        .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address")
-        .context("prepare remote device lookup for LLDP withdrawal")?;
-    let mut result = conn
-        .execute(
-            &mut find_stmt,
-            vec![("hn", Value::String(remote_system_name.to_string()))],
+    let detail = format!(
+        "equal-time or unauthenticated ordering conflict for {:?} at {}ns; no newer source generation/sequence evidence is available",
+        kind, incoming_ns
+    );
+    let mut stmt = conn
+        .prepare(
+            "MATCH (n:LldpNeighbor {id: $id}) \
+             SET n.ordering_state = 'conflicting', n.ordering_detail = $detail",
         )
-        .context("execute remote device lookup for LLDP withdrawal")?;
-    let Some(row) = result.next() else {
-        return Ok(());
-    };
-    let remote_addr = read_str(&row[0]);
-    if remote_addr.is_empty() {
-        return Ok(());
-    }
-    let local_if_id = format!("{local_addr}:{local_if}");
-    let remote_if_id = format!("{remote_addr}:{remote_port_id}");
-    for cypher in [
-        "MATCH (li:Interface {id: $lid})-[r:CONNECTED_TO]->(ri:Interface {id: $rid}) DELETE r",
-        "MATCH (li:Interface {id: $lid})-[r:MGMT_LINK]->(ri:Interface {id: $rid}) DELETE r",
-    ] {
+        .context("prepare LLDP ordering conflict marker")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.to_string())),
+            ("detail", Value::String(detail)),
+        ],
+    )
+    .context("execute LLDP ordering conflict marker")?;
+    remove_lldp_projection_for_evidence(conn, id)?;
+    Ok(())
+}
+
+fn lldp_scope_from_path(path: &str) -> (Option<String>, Option<String>) {
+    // XR node-name is an acquisition/source occurrence scope. It is not
+    // treated as positive network-namespace evidence because the flattened
+    // source contract does not establish that equivalence.
+    let node = extract_bracketed(path, "node[node-name=");
+    (node, None)
+}
+
+fn legacy_lldp_row_id(bare: &str, local_if: &str, record_key: &str) -> String {
+    format!("{bare}:{local_if}:{record_key}")
+}
+
+fn operational_lldp_id(bare: &str, path: &str, local_if: &str, record_key: &str) -> String {
+    let (scope, namespace) = lldp_scope_from_path(path);
+    crate::lldp_operational::operational_lldp_node_id(
+        bare,
+        scope.as_deref(),
+        namespace.as_deref(),
+        local_if,
+        record_key,
+    )
+}
+
+fn remove_lldp_d2d_projection(
+    conn: &Connection<'_>,
+    device_address: &str,
+    evidence_id: &str,
+) -> Result<()> {
+    let mut stmt = conn
+        .prepare(
+            "MATCH (a:Device {address: $addr})-[r:LLDP_NEIGHBOR]->(:Device) \
+             WHERE r.evidence_id = $eid DELETE r",
+        )
+        .context("prepare source-owned LLDP_NEIGHBOR withdrawal")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("addr", Value::String(device_address.to_string())),
+            ("eid", Value::String(evidence_id.to_string())),
+        ],
+    )
+    .context("execute source-owned LLDP_NEIGHBOR withdrawal")?;
+    Ok(())
+}
+
+fn decode_support_ids(raw: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(raw).unwrap_or_default()
+}
+
+fn encode_support_ids(ids: &[String]) -> String {
+    serde_json::to_string(ids).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn remove_interface_projection_support_for_evidence(
+    conn: &Connection<'_>,
+    local_if_id: &str,
+    evidence_id: &str,
+) -> Result<()> {
+    for rel in ["CONNECTED_TO", "MGMT_LINK"] {
+        let query = format!(
+            "MATCH (li:Interface {{id: $lid}})-[r:{rel}]->(ri:Interface) \
+             RETURN ri.id, r.projection_owner, r.lldp_supporting_ids"
+        );
         let mut stmt = conn
-            .prepare(cypher)
-            .context("prepare interface LLDP withdrawal")?;
-        conn.execute(
-            &mut stmt,
-            vec![
-                ("lid", Value::String(local_if_id.clone())),
-                ("rid", Value::String(remote_if_id.clone())),
-            ],
-        )
-        .context("execute interface LLDP withdrawal")?;
+            .prepare(&query)
+            .context("prepare LLDP interface support lookup")?;
+        let rows: Vec<(String, String, String)> = conn
+            .execute(
+                &mut stmt,
+                vec![("lid", Value::String(local_if_id.to_string()))],
+            )
+            .context("execute LLDP interface support lookup")?
+            .map(|row| (read_str(&row[0]), read_str(&row[1]), read_str(&row[2])))
+            .collect();
+        for (remote_id, owner, support_raw) in rows {
+            if owner != "lldp_operational" {
+                continue;
+            }
+            let mut support = decode_support_ids(&support_raw);
+            if !support.iter().any(|id| id == evidence_id) {
+                continue;
+            }
+            support.retain(|id| id != evidence_id);
+            if support.is_empty() {
+                let delete = format!(
+                    "MATCH (li:Interface {{id: $lid}})-[r:{rel}]->(ri:Interface {{id: $rid}}) DELETE r"
+                );
+                let mut delete_stmt = conn
+                    .prepare(&delete)
+                    .context("prepare final LLDP interface support withdrawal")?;
+                conn.execute(
+                    &mut delete_stmt,
+                    vec![
+                        ("lid", Value::String(local_if_id.to_string())),
+                        ("rid", Value::String(remote_id)),
+                    ],
+                )
+                .context("execute final LLDP interface support withdrawal")?;
+            } else {
+                let update = format!(
+                    "MATCH (li:Interface {{id: $lid}})-[r:{rel}]->(ri:Interface {{id: $rid}}) \
+                     SET r.lldp_supporting_ids = $support"
+                );
+                let mut update_stmt = conn
+                    .prepare(&update)
+                    .context("prepare LLDP interface support removal")?;
+                conn.execute(
+                    &mut update_stmt,
+                    vec![
+                        ("lid", Value::String(local_if_id.to_string())),
+                        ("rid", Value::String(remote_id)),
+                        ("support", Value::String(encode_support_ids(&support))),
+                    ],
+                )
+                .context("execute LLDP interface support removal")?;
+            }
+        }
     }
     Ok(())
 }
 
-/// Withdraw every evidence record belonging to the deleted source path and
-/// remove the adjacency projection derived from those records. The evidence
-/// nodes remain queryable history with `lifecycle = withdrawn`; they are not
-/// deleted or rewritten into a fresh observation.
+fn remove_lldp_projection_for_evidence(conn: &Connection<'_>, evidence_id: &str) -> Result<()> {
+    let mut find = conn
+        .prepare("MATCH (n:LldpNeighbor {id: $id}) RETURN n.device_address, n.local_if")
+        .context("prepare LLDP evidence projection lookup")?;
+    let mut rows = conn
+        .execute(
+            &mut find,
+            vec![("id", Value::String(evidence_id.to_string()))],
+        )
+        .context("execute LLDP evidence projection lookup")?;
+    let Some(row) = rows.next() else {
+        return Ok(());
+    };
+    let device = read_str(&row[0]);
+    let local_if = read_str(&row[1]);
+    remove_lldp_d2d_projection(conn, &device, evidence_id)?;
+    if !device.is_empty() && !local_if.is_empty() {
+        remove_interface_projection_support_for_evidence(
+            conn,
+            &format!("{device}:{local_if}"),
+            evidence_id,
+        )?;
+    }
+    Ok(())
+}
+
+fn mark_lldp_withdrawn(
+    conn: &Connection<'_>,
+    u: &TelemetryUpdate,
+    local_if: &str,
+    neighbor_id: &str,
+    record_key: &str,
+    evidence_id: &str,
+) -> Result<()> {
+    let bare = crate::registry::strip_port(&u.target);
+    let now = ts(u.timestamp_ns);
+    let (scope, namespace) = lldp_scope_from_path(&u.path);
+    let mut stmt = conn
+        .prepare(
+            "MERGE (n:LldpNeighbor {id: $id}) \
+             ON CREATE SET \
+               n.device_address = $addr, n.local_if = $local_if, n.neighbor_id = $nid, \
+               n.neighbor_key = $record_key, n.lifecycle = 'withdrawn', \
+               n.chassis_id = '', n.system_name = '', n.port_id = '', \
+               n.updated_at = $zero, n.observed_at = $zero, \
+               n.withdrawn_at = $ts, n.lifecycle_changed_at = $ts, \
+               n.identity_scope = $scope, n.network_namespace = $namespace, \
+               n.source_occurrence_id = $nid, n.acquisition_stream = $stream, \
+               n.source_session_id = $session, n.source_plan_id = $plan, n.collector_id = $collector, \
+               n.ordering_contract = $contract, n.ordering_state = 'ordered', n.ordering_detail = '' \
+             ON MATCH SET \
+               n.lifecycle = 'withdrawn', n.withdrawn_at = $ts, n.lifecycle_changed_at = $ts, \
+               n.source_session_id = $session, n.source_plan_id = $plan, n.collector_id = $collector, \
+               n.ordering_contract = $contract, n.ordering_state = 'ordered', n.ordering_detail = ''",
+        )
+        .context("prepare LLDP evidence withdrawal")?;
+    let contract = if u.session_id.is_empty() {
+        "legacy_timestamp_only"
+    } else {
+        "session_plus_gnmi_timestamp_no_sequence"
+    };
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(evidence_id.to_string())),
+            ("addr", Value::String(bare.to_string())),
+            ("local_if", Value::String(local_if.to_string())),
+            ("nid", Value::String(neighbor_id.to_string())),
+            ("record_key", Value::String(record_key.to_string())),
+            ("zero", ts(0)),
+            ("ts", now),
+            ("scope", Value::String(scope.unwrap_or_default())),
+            ("namespace", Value::String(namespace.unwrap_or_default())),
+            ("stream", Value::String(u.source_protocol.clone())),
+            ("session", Value::String(u.session_id.clone())),
+            ("plan", Value::String(u.plan_id.clone())),
+            ("collector", Value::String(u.collector_id.clone())),
+            ("contract", Value::String(contract.to_string())),
+        ],
+    )
+    .context("execute LLDP evidence withdrawal")?;
+    remove_lldp_projection_for_evidence(conn, evidence_id)?;
+    Ok(())
+}
+
+/// Withdraw evidence belonging to one exact keyed neighbor occurrence.
+/// Optional leaf deletes, partial notifications and unknown-scope deletes do
+/// not reach this function; they are explicitly not population withdrawal.
 fn withdraw_lldp_neighbors(
     conn: &Connection<'_>,
     u: &TelemetryUpdate,
@@ -10005,13 +10351,12 @@ fn withdraw_lldp_neighbors(
     neighbor_id: &str,
 ) -> Result<()> {
     let bare = crate::registry::strip_port(&u.target);
-    let now = ts(u.timestamp_ns);
     let mut rows_stmt = conn
         .prepare(
-            "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr AND n.local_if = $lif AND n.neighbor_id = $nid RETURN n.system_name, n.port_id, n.neighbor_key",
+            "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr AND n.local_if = $lif AND n.neighbor_id = $nid RETURN n.id",
         )
         .context("prepare LLDP withdrawal rows")?;
-    let rows: Vec<(String, String, String)> = conn
+    let ids: Vec<String> = conn
         .execute(
             &mut rows_stmt,
             vec![
@@ -10021,74 +10366,113 @@ fn withdraw_lldp_neighbors(
             ],
         )
         .context("execute LLDP withdrawal rows")?
-        .map(|row| (read_str(&row[0]), read_str(&row[1]), read_str(&row[2])))
+        .map(|row| read_str(&row[0]))
+        .filter(|id| !id.is_empty())
         .collect();
 
-    for (system_name, port_id, record_key) in &rows {
-        let mut delete_d2d = conn
-            .prepare(
-                "MATCH (a:Device {address: $addr})-[r:LLDP_NEIGHBOR]->(:Device) WHERE r.local_if = $lif AND (r.neighbor_id = $nid OR r.neighbor_key = $record_key OR (coalesce(r.neighbor_key, '') = '' AND r.remote_if = $remote_if)) DELETE r",
-            )
-            .context("prepare LLDP_NEIGHBOR withdrawal")?;
-        conn.execute(
-            &mut delete_d2d,
-            vec![
-                ("addr", Value::String(bare.to_string())),
-                ("lif", Value::String(local_if.to_string())),
-                ("nid", Value::String(neighbor_id.to_string())),
-                ("record_key", Value::String(record_key.clone())),
-                ("remote_if", Value::String(port_id.clone())),
-            ],
-        )
-        .context("execute LLDP_NEIGHBOR withdrawal")?;
-        delete_lldp_interface_projection(conn, bare, local_if, system_name, port_id)?;
+    let parent_id = operational_lldp_id(bare, &u.path, local_if, neighbor_id);
+    let mut saw_newer_reference = false;
+    for id in &ids {
+        let Some(row) = query_lldp_lifecycle_row(conn, id)? else {
+            continue;
+        };
+        if row.reference_ns() > u.timestamp_ns {
+            saw_newer_reference = true;
+        }
+        match ordering_decision_for_rows(
+            &[row],
+            u.timestamp_ns,
+            crate::lldp_operational::LifecycleEventKind::Withdrawal,
+            None,
+        ) {
+            crate::lldp_operational::LifecycleOrderDecision::Apply => {
+                let mut key_stmt = conn
+                    .prepare("MATCH (n:LldpNeighbor {id: $id}) RETURN n.neighbor_key")
+                    .context("prepare LLDP withdrawal key lookup")?;
+                let mut key_rows = conn
+                    .execute(&mut key_stmt, vec![("id", Value::String(id.clone()))])
+                    .context("execute LLDP withdrawal key lookup")?;
+                let record_key = key_rows
+                    .next()
+                    .map(|row| read_str(&row[0]))
+                    .unwrap_or_else(|| neighbor_id.to_string());
+                mark_lldp_withdrawn(conn, u, local_if, neighbor_id, &record_key, id)?;
+            }
+            crate::lldp_operational::LifecycleOrderDecision::EqualTimeConflict => {
+                mark_lldp_ordering_conflict(
+                    conn,
+                    id,
+                    u.timestamp_ns,
+                    crate::lldp_operational::LifecycleEventKind::Withdrawal,
+                )?;
+            }
+            crate::lldp_operational::LifecycleOrderDecision::ExactReplay
+            | crate::lldp_operational::LifecycleOrderDecision::CompatibleReplay
+            | crate::lldp_operational::LifecycleOrderDecision::RejectStale => {}
+        }
     }
 
-    let mut withdraw = conn
-        .prepare(
-            "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr AND n.local_if = $lif AND n.neighbor_id = $nid SET n.lifecycle = 'withdrawn', n.withdrawn_at = $ts, n.updated_at = $ts",
-        )
-        .context("prepare LLDP evidence withdrawal")?;
-    conn.execute(
-        &mut withdraw,
-        vec![
-            ("addr", Value::String(bare.to_string())),
-            ("lif", Value::String(local_if.to_string())),
-            ("nid", Value::String(neighbor_id.to_string())),
-            ("ts", now),
-        ],
-    )
-    .context("execute LLDP evidence withdrawal")?;
+    // Multi-entry occurrences have one identity-keyed row per neighbor plus a
+    // path-level tombstone. The tombstone is what fences a delayed older
+    // multi-entry replay even when that exact protocol identity was not yet
+    // present in durable storage. Do not create it when visible evidence
+    // establishes that the deletion itself is stale.
+    if !ids.iter().any(|id| id == &parent_id) && !saw_newer_reference {
+        let parent_row = query_lldp_lifecycle_row(conn, &parent_id)?;
+        let rows = parent_row.into_iter().collect::<Vec<_>>();
+        match ordering_decision_for_rows(
+            &rows,
+            u.timestamp_ns,
+            crate::lldp_operational::LifecycleEventKind::Withdrawal,
+            None,
+        ) {
+            crate::lldp_operational::LifecycleOrderDecision::Apply => {
+                mark_lldp_withdrawn(conn, u, local_if, neighbor_id, neighbor_id, &parent_id)?;
+            }
+            crate::lldp_operational::LifecycleOrderDecision::EqualTimeConflict => {
+                mark_lldp_ordering_conflict(
+                    conn,
+                    &parent_id,
+                    u.timestamp_ns,
+                    crate::lldp_operational::LifecycleEventKind::Withdrawal,
+                )?;
+            }
+            crate::lldp_operational::LifecycleOrderDecision::ExactReplay
+            | crate::lldp_operational::LifecycleOrderDecision::CompatibleReplay
+            | crate::lldp_operational::LifecycleOrderDecision::RejectStale => {}
+        }
+    }
     Ok(())
 }
 
 fn supersede_legacy_collapsed_lldp_record(
     conn: &Connection<'_>,
-    bare: &str,
-    local_if: &str,
-    neighbor_id: &str,
+    legacy_id: &str,
     now: Value,
 ) -> Result<()> {
-    let legacy_id = format!("{bare}:{local_if}:{neighbor_id}");
     let mut stmt = conn
         .prepare(
-            "MATCH (n:LldpNeighbor {id: $id}) SET n.lifecycle = 'superseded', n.updated_at = $ts",
+            "MATCH (n:LldpNeighbor {id: $id}) \
+             SET n.lifecycle = 'superseded', n.lifecycle_changed_at = $ts, \
+                 n.ordering_state = 'ordered', n.ordering_detail = 'superseded by structured operational identity'",
         )
         .context("prepare legacy collapsed LLDP supersession")?;
     conn.execute(
         &mut stmt,
-        vec![("id", Value::String(legacy_id)), ("ts", now)],
+        vec![("id", Value::String(legacy_id.to_string())), ("ts", now)],
     )
     .context("execute legacy collapsed LLDP supersession")?;
+    remove_lldp_projection_for_evidence(conn, legacy_id)?;
     Ok(())
 }
 
-fn write_lldp_neighbor(
+pub(crate) fn write_lldp_neighbor(
     conn: &Connection<'_>,
     u: &TelemetryUpdate,
     local_if: &str,
     neighbor_id: &str,
     val: &serde_json::Value,
+    project_topology: bool,
 ) -> Result<()> {
     let bare = crate::registry::strip_port(&u.target);
     upsert_device(
@@ -10101,59 +10485,117 @@ fn write_lldp_neighbor(
         ts(u.timestamp_ns),
     )?;
     if u.is_delete {
-        return withdraw_lldp_neighbors(conn, u, local_if, neighbor_id);
+        match crate::lldp_operational::deletion_scope(&u.path, true) {
+            crate::lldp_operational::LldpDeletionScope::NeighborOccurrence => {
+                return withdraw_lldp_neighbors(conn, u, local_if, neighbor_id);
+            }
+            scope => {
+                debug!(
+                    target = %u.target,
+                    path = %u.path,
+                    ?scope,
+                    "LLDP delete is not exact neighbor-occurrence withdrawal; evidence left unchanged"
+                );
+                return Ok(());
+            }
+        }
     }
-    let entries = crate::lldp_operational::projection_entries(neighbor_id, val);
-    if entries.is_empty() {
+    let population = crate::lldp_operational::decompose_projection_entries(neighbor_id, val);
+    if population.entries.is_empty() {
         debug!(
             target = %u.target,
             local_if,
             neighbor_id,
+            accounting = ?population.accounting,
             "LLDP event had no persistable protocol identity"
         );
         return Ok(());
     }
-    let multi_entry_envelope = entries.iter().any(|entry| entry.multi_entry_envelope);
-    if multi_entry_envelope {
-        // The pre-correction writer collapsed every native detail entry into
-        // one path-keyed record. Retain that row as history but exclude it
-        // from active projection once identity-keyed replacement evidence is
-        // being written.
-        supersede_legacy_collapsed_lldp_record(
-            conn,
-            bare,
+    if population.accounting.conflicting_entries > 0
+        || population.accounting.malformed_entries > 0
+        || population.accounting.entries_omitted > 0
+    {
+        debug!(
+            target = %u.target,
             local_if,
             neighbor_id,
-            ts(u.timestamp_ns),
-        )?;
+            accounting = ?population.accounting,
+            "LLDP neighbor population was partial or conflicting"
+        );
     }
-    for entry in entries {
+    let multi_entry_envelope = population
+        .entries
+        .iter()
+        .any(|entry| entry.multi_entry_envelope);
+    if multi_entry_envelope {
+        let legacy_id = legacy_lldp_row_id(bare, local_if, neighbor_id);
+        if query_lldp_lifecycle_row(conn, &legacy_id)?.is_some() {
+            supersede_legacy_collapsed_lldp_record(conn, &legacy_id, ts(u.timestamp_ns))?;
+        }
+    }
+    for entry in population.entries {
         write_one_lldp_neighbor(
             conn,
             u,
             local_if,
             neighbor_id,
-            &entry.record_key,
-            entry.value,
+            &entry,
+            &population.accounting,
+            project_topology,
         )?;
     }
     Ok(())
 }
 
-fn write_one_lldp_neighbor(
+fn upsert_accepted_lldp_evidence(
     conn: &Connection<'_>,
     u: &TelemetryUpdate,
     local_if: &str,
     neighbor_id: &str,
-    record_key: &str,
-    val: &serde_json::Value,
+    entry: &crate::lldp_operational::OperationalLldpEntry<'_>,
+    accounting: &crate::lldp_operational::OperationalLldpPopulationAccounting,
+    id: &str,
+    fallback: Option<&ExistingLldpLifecycleRow>,
 ) -> Result<()> {
     let bare = crate::registry::strip_port(&u.target);
-    let id = format!("{}:{}:{}", bare, local_if, record_key);
     let now = ts(u.timestamp_ns);
-
-    // cEOS sends chassis-id and system-name/port-id in separate notifications.
-    // Use CASE WHEN to preserve existing non-empty values on partial updates.
+    let (scope, namespace) = lldp_scope_from_path(&u.path);
+    let incoming_chassis = json_str(entry.value, "chassis-id").to_string();
+    let incoming_system = json_str(entry.value, "system-name").to_string();
+    let incoming_port = json_str(entry.value, "port-id").to_string();
+    let chassis = if incoming_chassis.is_empty() {
+        fallback
+            .map(|row| row.chassis_id.clone())
+            .unwrap_or_default()
+    } else {
+        incoming_chassis
+    };
+    let system = if incoming_system.is_empty() {
+        fallback
+            .map(|row| row.system_name.clone())
+            .unwrap_or_default()
+    } else {
+        incoming_system
+    };
+    let port = if incoming_port.is_empty() {
+        fallback.map(|row| row.port_id.clone()).unwrap_or_default()
+    } else {
+        incoming_port
+    };
+    let identity_uncertainty = if entry.chassis_id_subtype == "unknown"
+        || entry.port_id_subtype == "unknown"
+    {
+        entry.identity_uncertainty.clone().unwrap_or_else(|| {
+            "model-driven extraction does not positively establish LLDP identity subtypes".into()
+        })
+    } else {
+        String::new()
+    };
+    let contract = if u.session_id.is_empty() {
+        "legacy_timestamp_only"
+    } else {
+        "session_plus_gnmi_timestamp_no_sequence"
+    };
     let mut stmt = conn
         .prepare(
             "MERGE (n:LldpNeighbor {id: $id}) \
@@ -10161,37 +10603,97 @@ fn write_one_lldp_neighbor(
                n.device_address = $addr, n.local_if = $local_if, n.neighbor_id = $nid, \
                n.neighbor_key = $record_key, n.lifecycle = 'active', \
                n.chassis_id = $chassis, n.system_name = $sysname, n.port_id = $port, \
-               n.updated_at = $ts \
+               n.updated_at = $ts, n.observed_at = $ts, n.lifecycle_changed_at = $ts, \
+               n.identity_scope = $scope, n.network_namespace = $namespace, \
+               n.source_occurrence_id = $nid, n.acquisition_stream = $stream, \
+               n.chassis_id_subtype = $chassis_subtype, n.port_id_subtype = $port_subtype, \
+               n.protocol_identity = $protocol_identity, n.identity_uncertainty = $identity_uncertainty, \
+               n.source_session_id = $session, n.source_plan_id = $plan, n.collector_id = $collector, \
+               n.population_entries_encountered = $pop_encountered, \
+               n.population_entries_accepted = $pop_accepted, \
+               n.population_exact_duplicates = $pop_exact, \
+               n.population_conflicting_entries = $pop_conflicting, \
+               n.population_malformed_entries = $pop_malformed, \
+               n.population_entries_omitted = $pop_omitted, \
+               n.ordering_contract = $contract, n.ordering_state = 'ordered', n.ordering_detail = '' \
              ON MATCH SET \
                n.neighbor_key = $record_key, n.lifecycle = 'active', \
                n.chassis_id  = CASE WHEN $chassis  <> '' THEN $chassis  ELSE n.chassis_id  END, \
                n.system_name = CASE WHEN $sysname  <> '' THEN $sysname  ELSE n.system_name END, \
                n.port_id     = CASE WHEN $port     <> '' THEN $port     ELSE n.port_id     END, \
-               n.updated_at  = $ts",
+               n.chassis_id_subtype = CASE WHEN $chassis_subtype <> 'unknown' THEN $chassis_subtype ELSE n.chassis_id_subtype END, \
+               n.port_id_subtype = CASE WHEN $port_subtype <> 'unknown' THEN $port_subtype ELSE n.port_id_subtype END, \
+               n.protocol_identity = CASE WHEN $protocol_identity <> '' THEN $protocol_identity ELSE n.protocol_identity END, \
+               n.identity_uncertainty = $identity_uncertainty, \
+               n.updated_at = $ts, n.observed_at = $ts, \
+               n.lifecycle_changed_at = CASE WHEN n.lifecycle = 'active' THEN n.lifecycle_changed_at ELSE $ts END, \
+               n.source_session_id = $session, n.source_plan_id = $plan, n.collector_id = $collector, \
+               n.population_entries_encountered = $pop_encountered, \
+               n.population_entries_accepted = $pop_accepted, \
+               n.population_exact_duplicates = $pop_exact, \
+               n.population_conflicting_entries = $pop_conflicting, \
+               n.population_malformed_entries = $pop_malformed, \
+               n.population_entries_omitted = $pop_omitted, \
+               n.ordering_contract = $contract, n.ordering_state = 'ordered', n.ordering_detail = ''",
         )
-        .context("prepare LldpNeighbor upsert")?;
+        .context("prepare LldpNeighbor fenced upsert")?;
 
     conn.execute(
         &mut stmt,
         vec![
-            ("id", Value::String(id.clone())),
+            ("id", Value::String(id.to_string())),
             ("addr", Value::String(bare.to_string())),
             ("local_if", Value::String(local_if.to_string())),
             ("nid", Value::String(neighbor_id.to_string())),
-            ("record_key", Value::String(record_key.to_string())),
+            ("record_key", Value::String(entry.record_key.clone())),
+            ("chassis", Value::String(chassis)),
+            ("sysname", Value::String(system)),
+            ("port", Value::String(port)),
+            ("ts", now),
+            ("scope", Value::String(scope.unwrap_or_default())),
+            ("namespace", Value::String(namespace.unwrap_or_default())),
+            ("stream", Value::String(u.source_protocol.clone())),
             (
-                "chassis",
-                Value::String(json_str(val, "chassis-id").to_string()),
+                "chassis_subtype",
+                Value::String(entry.chassis_id_subtype.clone()),
+            ),
+            ("port_subtype", Value::String(entry.port_id_subtype.clone())),
+            (
+                "protocol_identity",
+                Value::String(entry.protocol_identity.clone()),
+            ),
+            ("identity_uncertainty", Value::String(identity_uncertainty)),
+            ("session", Value::String(u.session_id.clone())),
+            ("plan", Value::String(u.plan_id.clone())),
+            ("collector", Value::String(u.collector_id.clone())),
+            (
+                "pop_encountered",
+                Value::Int64(accounting.entries_encountered as i64),
             ),
             (
-                "sysname",
-                Value::String(json_str(val, "system-name").to_string()),
+                "pop_accepted",
+                Value::Int64(accounting.entries_accepted as i64),
             ),
-            ("port", Value::String(json_str(val, "port-id").to_string())),
-            ("ts", now.clone()),
+            (
+                "pop_exact",
+                Value::Int64(accounting.exact_duplicates as i64),
+            ),
+            (
+                "pop_conflicting",
+                Value::Int64(accounting.conflicting_entries as i64),
+            ),
+            (
+                "pop_malformed",
+                Value::Int64(accounting.malformed_entries as i64),
+            ),
+            (
+                "pop_omitted",
+                Value::Int64(accounting.entries_omitted as i64),
+            ),
+            ("contract", Value::String(contract.to_string())),
         ],
     )
-    .context("execute LldpNeighbor upsert")?;
+    .context("execute LldpNeighbor fenced upsert")?;
 
     let mut edge_stmt = conn
         .prepare(
@@ -10204,16 +10706,160 @@ fn write_one_lldp_neighbor(
         &mut edge_stmt,
         vec![
             ("addr", Value::String(bare.to_string())),
-            ("id", Value::String(id)),
+            ("id", Value::String(id.to_string())),
         ],
     )
     .context("execute HAS_LLDP_NEIGHBOR merge")?;
+    Ok(())
+}
 
-    // Best-effort: link the local Interface to the remote Interface via LLDP data.
-    let system_name = json_str(val, "system-name").to_string();
-    let port_id = json_str(val, "port-id").to_string();
-    let chassis_id = json_str(val, "chassis-id").to_string();
-    if !system_name.is_empty()
+fn merge_compatible_lldp_replay(
+    conn: &Connection<'_>,
+    id: &str,
+    entry: &crate::lldp_operational::OperationalLldpEntry<'_>,
+) -> Result<()> {
+    let mut stmt = conn
+        .prepare(
+            "MATCH (n:LldpNeighbor {id: $id}) \
+             SET n.chassis_id = CASE WHEN n.chassis_id = '' THEN $chassis ELSE n.chassis_id END, \
+                 n.system_name = CASE WHEN n.system_name = '' THEN $sysname ELSE n.system_name END, \
+                 n.port_id = CASE WHEN n.port_id = '' THEN $port ELSE n.port_id END, \
+                 n.chassis_id_subtype = CASE WHEN n.chassis_id_subtype IN ['', 'unknown'] THEN $chassis_subtype ELSE n.chassis_id_subtype END, \
+                 n.port_id_subtype = CASE WHEN n.port_id_subtype IN ['', 'unknown'] THEN $port_subtype ELSE n.port_id_subtype END",
+        )
+        .context("prepare compatible LLDP replay merge")?;
+    conn.execute(
+        &mut stmt,
+        vec![
+            ("id", Value::String(id.to_string())),
+            (
+                "chassis",
+                Value::String(json_str(entry.value, "chassis-id").to_string()),
+            ),
+            (
+                "sysname",
+                Value::String(json_str(entry.value, "system-name").to_string()),
+            ),
+            (
+                "port",
+                Value::String(json_str(entry.value, "port-id").to_string()),
+            ),
+            (
+                "chassis_subtype",
+                Value::String(entry.chassis_id_subtype.clone()),
+            ),
+            ("port_subtype", Value::String(entry.port_id_subtype.clone())),
+        ],
+    )
+    .context("execute compatible LLDP replay merge")?;
+    Ok(())
+}
+
+fn write_one_lldp_neighbor(
+    conn: &Connection<'_>,
+    u: &TelemetryUpdate,
+    local_if: &str,
+    neighbor_id: &str,
+    entry: &crate::lldp_operational::OperationalLldpEntry<'_>,
+    accounting: &crate::lldp_operational::OperationalLldpPopulationAccounting,
+    project_topology: bool,
+) -> Result<()> {
+    let bare = crate::registry::strip_port(&u.target);
+    let id = operational_lldp_id(bare, &u.path, local_if, &entry.record_key);
+    let parent_id = operational_lldp_id(bare, &u.path, local_if, neighbor_id);
+    let legacy_id = legacy_lldp_row_id(bare, local_if, &entry.record_key);
+
+    let mut rows = Vec::new();
+    let existing = query_lldp_lifecycle_row(conn, &id)?;
+    if let Some(row) = &existing {
+        rows.push(row.clone());
+    }
+    let legacy = if legacy_id != id {
+        query_lldp_lifecycle_row(conn, &legacy_id)?
+    } else {
+        None
+    };
+    if let Some(row) = &legacy
+        && row.lifecycle != "superseded"
+    {
+        rows.push(row.clone());
+    }
+    if parent_id != id
+        && let Some(row) = query_lldp_lifecycle_row(conn, &parent_id)?
+    {
+        rows.push(row);
+    }
+
+    let decision = ordering_decision_for_rows(
+        &rows,
+        u.timestamp_ns,
+        crate::lldp_operational::LifecycleEventKind::Observation,
+        Some(entry.value),
+    );
+    match decision {
+        crate::lldp_operational::LifecycleOrderDecision::RejectStale
+        | crate::lldp_operational::LifecycleOrderDecision::ExactReplay => return Ok(()),
+        crate::lldp_operational::LifecycleOrderDecision::EqualTimeConflict => {
+            let conflict_id = if existing.is_some() {
+                &id
+            } else if legacy.is_some() {
+                &legacy_id
+            } else {
+                &parent_id
+            };
+            mark_lldp_ordering_conflict(
+                conn,
+                conflict_id,
+                u.timestamp_ns,
+                crate::lldp_operational::LifecycleEventKind::Observation,
+            )?;
+            return Ok(());
+        }
+        crate::lldp_operational::LifecycleOrderDecision::CompatibleReplay => {
+            if existing.is_some() {
+                merge_compatible_lldp_replay(conn, &id, entry)?;
+            } else {
+                upsert_accepted_lldp_evidence(
+                    conn,
+                    u,
+                    local_if,
+                    neighbor_id,
+                    entry,
+                    accounting,
+                    &id,
+                    legacy.as_ref(),
+                )?;
+            }
+        }
+        crate::lldp_operational::LifecycleOrderDecision::Apply => {
+            upsert_accepted_lldp_evidence(
+                conn,
+                u,
+                local_if,
+                neighbor_id,
+                entry,
+                accounting,
+                &id,
+                legacy.as_ref().or(existing.as_ref()),
+            )?;
+        }
+    }
+
+    if let Some(row) = &legacy
+        && row.lifecycle != "superseded"
+    {
+        supersede_legacy_collapsed_lldp_record(conn, &legacy_id, ts(u.timestamp_ns))?;
+    }
+
+    // Best-effort projection. Interface projection is attempted only when the
+    // port-ID subtype positively establishes interface-name semantics; the
+    // supporting evidence id is recorded on newly owned relationships so a
+    // withdrawal can revoke exactly that support and no more.
+    let system_name = json_str(entry.value, "system-name").to_string();
+    let port_id = json_str(entry.value, "port-id").to_string();
+    let chassis_id = json_str(entry.value, "chassis-id").to_string();
+    if project_topology
+        && !system_name.is_empty()
         && !port_id.is_empty()
         && let Err(e) = try_connect_interfaces(
             conn,
@@ -10222,63 +10868,32 @@ fn write_one_lldp_neighbor(
             &system_name,
             &port_id,
             is_mgmt_interface(local_if),
+            &id,
+            &entry.port_id_subtype,
         )
     {
         debug!(error = %e, local_if, system_name, port_id, "interface link skipped");
     }
 
-    // Track B4: HostEndpoint fallback.
-    // If the LLDP peer does not match any Device (by hostname or address), create a
-    // HostEndpoint so the endpoint is at least visible in the graph topology.
-    // This is arch-agnostic: works for campus workstations, printers, phones, etc.
-    // A HostEndpoint with kind="unknown" is a placeholder that NetBox enrichment or
-    // operator data can promote to a richer record later.
-    if !chassis_id.is_empty() {
-        // Register chassis_id as a DeviceAddress candidate (Cisco/Junos put mgmt IP here;
-        // even when it's a MAC it's harmless — resolve_peer_to_device will reject non-IPs).
-        if let Err(error) =
-            crate::graph::common::upsert_device_address(conn, &chassis_id, "lldp", now.clone())
-        {
+    if project_topology && !chassis_id.is_empty() {
+        if let Err(error) = crate::graph::common::upsert_device_address(
+            conn,
+            &chassis_id,
+            "lldp",
+            ts(u.timestamp_ns),
+        ) {
             debug!(%error, chassis_id, "LLDP DeviceAddress upsert skipped");
         }
 
-        // Resolve the peer to a known Device using the 3-tier lookup:
-        //   1. Device.address exact match (chassis_id == mgmt IP — Cisco IOS-XR, Arista)
-        //   2. DeviceAddress.ip (loopback registered as extra_ip)
-        //   3. EntityIdentity.mgmt_ip
-        // Also try by hostname in case chassis_id is a MAC but system_name matches Device.hostname.
-        let peer_device_addr: Option<String> =
-            resolve_peer_to_device(conn, &chassis_id).or_else(|| {
-                // Hostname fallback — Nokia SRL, Arista, FRR all set system-name = hostname
-                if system_name.is_empty() {
-                    return None;
-                }
-                let mut chk = conn
-                    .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address LIMIT 1")
-                    .ok()?;
-                let mut rows = conn
-                    .execute(&mut chk, vec![("hn", Value::String(system_name.clone()))])
-                    .ok()?;
-                if let Some(row) = rows.next() {
-                    if let Value::String(addr) = &row[0] {
-                        if !addr.is_empty() {
-                            return Some(addr.clone());
-                        }
-                    }
-                }
-                None
-            });
+        let peer_device_addr: Option<String> = resolve_peer_to_device(conn, &chassis_id)
+            .or_else(|| unique_device_address_for_hostname(conn, &system_name).unwrap_or(None));
 
-        let peer_is_known_device = peer_device_addr.is_some();
-
-        // When peer is a known Device, create a direct LLDP_NEIGHBOR(Device→Device) edge
-        // so the topology view can render L2 adjacencies without relying on Interface nodes.
         if let Some(ref peer_addr) = peer_device_addr {
             let mut lldp_d2d = conn
                 .prepare(
                     "MATCH (a:Device {address: $src}), (b:Device {address: $dst}) \
                      MERGE (a)-[r:LLDP_NEIGHBOR {local_if: $lif, source: 'lldp', neighbor_key: $nkey}]->(b) \
-                     SET r.remote_if = $rif, r.neighbor_id = $nid",
+                     SET r.remote_if = $rif, r.neighbor_id = $nid, r.evidence_id = $eid, r.lifecycle = 'active'",
                 )
                 .context("prepare LLDP_NEIGHBOR merge")?;
             let _ = conn.execute(
@@ -10289,13 +10904,12 @@ fn write_one_lldp_neighbor(
                     ("lif", Value::String(local_if.to_string())),
                     ("rif", Value::String(port_id.clone())),
                     ("nid", Value::String(neighbor_id.to_string())),
-                    ("nkey", Value::String(record_key.to_string())),
+                    ("nkey", Value::String(entry.record_key.clone())),
+                    ("eid", Value::String(id.clone())),
                 ],
             );
             debug!(src = %bare, dst = %peer_addr, local_if, "LLDP_NEIGHBOR D2D resolved");
-        }
-
-        if !peer_is_known_device {
+        } else {
             let now_ns = u.timestamp_ns;
             if let Err(e) = upsert_host_endpoint(
                 conn,
@@ -10311,7 +10925,6 @@ fn write_one_lldp_neighbor(
             ) {
                 debug!(error = %e, chassis_id, "HostEndpoint upsert from LLDP skipped");
             } else {
-                // Wire CONNECTED_TO: HostEndpoint → local Interface of the observing device
                 let local_iface_id = format!("{}:{local_if}", bare);
                 if let Err(error) =
                     link_host_endpoint_to_interface(conn, &chassis_id, &local_iface_id)
@@ -10323,12 +10936,7 @@ fn write_one_lldp_neighbor(
         }
     }
 
-    // EntityIdentity: update the identity record for the LLDP peer using chassis_id.
-    // If the peer is already a known Device (same hostname in Device table), the
-    // HAS_IDENTITY edge will link the existing Device to this identity record.
-    if !chassis_id.is_empty() || !system_name.is_empty() {
-        // Use system_name as the key when available (matches Device.hostname).
-        // device_address here is the LLDP peer's address (chassis_id as proxy).
+    if project_topology && (!chassis_id.is_empty() || !system_name.is_empty()) {
         let peer_addr = if !chassis_id.is_empty() {
             &chassis_id
         } else {
@@ -10357,18 +10965,40 @@ fn write_one_lldp_neighbor(
     Ok(())
 }
 
+fn unique_device_address_for_hostname(
+    conn: &Connection<'_>,
+    hostname: &str,
+) -> Result<Option<String>> {
+    if hostname.is_empty() {
+        return Ok(None);
+    }
+    let mut chk = conn
+        .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address LIMIT 2")
+        .context("prepare unique hostname lookup")?;
+    let rows: Vec<String> = conn
+        .execute(&mut chk, vec![("hn", Value::String(hostname.to_string()))])
+        .context("execute unique hostname lookup")?
+        .map(|row| read_str(&row[0]))
+        .filter(|addr| !addr.is_empty())
+        .collect();
+    if rows.len() == 1 {
+        Ok(rows.into_iter().next())
+    } else {
+        Ok(None)
+    }
+}
+
 /// After writing an Interface node, check if any LldpNeighbor rows already exist
 /// that reference this device+port from another node, and wire up CONNECTED_TO edges.
 /// Called from write_interface so edges get built even when LLDP arrived first.
 fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str) -> Result<()> {
-    // Case 1: This node has an LldpNeighbor entry for this interface — link outbound.
     let mut find = conn
         .prepare(
             "MATCH (n:LldpNeighbor) \
          WHERE n.device_address = $addr AND n.local_if = $lif \
-           AND coalesce(n.lifecycle, 'active') <> 'withdrawn' \
-           AND coalesce(n.lifecycle, 'active') <> 'superseded' \
-         RETURN n.system_name, n.port_id",
+           AND coalesce(n.lifecycle, 'active') = 'active' \
+           AND coalesce(n.ordering_state, 'ordered') <> 'conflicting' \
+         RETURN n.system_name, n.port_id, n.id, n.port_id_subtype",
         )
         .context("prepare lldp lookup for backfill")?;
     let rows = conn
@@ -10382,15 +11012,11 @@ fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str
         .context("execute lldp lookup for backfill")?;
 
     for row in rows {
-        let system_name = match &row[0] {
-            Value::String(s) => s.clone(),
-            _ => continue,
-        };
-        let port_id = match &row[1] {
-            Value::String(s) => s.clone(),
-            _ => continue,
-        };
-        if !system_name.is_empty() && !port_id.is_empty() {
+        let system_name = read_str(&row[0]);
+        let port_id = read_str(&row[1]);
+        let evidence_id = read_str(&row[2]);
+        let subtype = read_str(&row[3]);
+        if !system_name.is_empty() && !port_id.is_empty() && !evidence_id.is_empty() {
             let _ = try_connect_interfaces(
                 conn,
                 local_addr,
@@ -10398,18 +11024,19 @@ fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str
                 &system_name,
                 &port_id,
                 is_mgmt_interface(local_if),
+                &evidence_id,
+                &subtype,
             );
         }
     }
 
-    // Case 2: Another node's LldpNeighbor points TO this interface as port_id — link inbound.
     let mut find2 = conn
         .prepare(
             "MATCH (n:LldpNeighbor) \
          WHERE n.port_id = $lif \
-           AND coalesce(n.lifecycle, 'active') <> 'withdrawn' \
-           AND coalesce(n.lifecycle, 'active') <> 'superseded' \
-         RETURN n.device_address, n.local_if, n.system_name",
+           AND coalesce(n.lifecycle, 'active') = 'active' \
+           AND coalesce(n.ordering_state, 'ordered') <> 'conflicting' \
+         RETURN n.device_address, n.local_if, n.system_name, n.id, n.port_id_subtype",
         )
         .context("prepare reverse lldp lookup")?;
     let rows2 = conn
@@ -10420,20 +11047,12 @@ fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str
         .context("execute reverse lldp lookup")?;
 
     for row in rows2 {
-        let remote_addr = match &row[0] {
-            Value::String(s) => s.clone(),
-            _ => continue,
-        };
-        let remote_if = match &row[1] {
-            Value::String(s) => s.clone(),
-            _ => continue,
-        };
-        let system_name = match &row[2] {
-            Value::String(s) => s.clone(),
-            _ => continue,
-        };
-        // Verify this LldpNeighbor's system_name matches our hostname.
-        if system_name.is_empty() {
+        let remote_addr = read_str(&row[0]);
+        let remote_if = read_str(&row[1]);
+        let system_name = read_str(&row[2]);
+        let evidence_id = read_str(&row[3]);
+        let subtype = read_str(&row[4]);
+        if system_name.is_empty() || evidence_id.is_empty() {
             continue;
         }
         let _ = try_connect_interfaces(
@@ -10443,6 +11062,8 @@ fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str
             &system_name,
             local_if,
             is_mgmt_interface(&remote_if),
+            &evidence_id,
+            &subtype,
         );
     }
 
@@ -10453,17 +11074,98 @@ fn backfill_connected_to(conn: &Connection<'_>, local_addr: &str, local_if: &str
 /// MGMT_LINK edges instead of fabric CONNECTED_TO edges.
 fn is_mgmt_interface(if_name: &str) -> bool {
     let lo = if_name.to_lowercase();
-    lo.starts_with("mgmt")          // Nokia SR Linux mgmt0, Cisco Mgmt0/...
-        || lo.starts_with("management") // Arista Management1, Juniper
-        || lo == "eth0"                 // FRR / generic Linux
-        || lo.starts_with("fxp0")       // Juniper fxp0
-        || lo.starts_with("me0")        // Juniper me0
-        || lo.starts_with("em0") // Juniper em0
+    lo.starts_with("mgmt")
+        || lo.starts_with("management")
+        || lo == "eth0"
+        || lo.starts_with("fxp0")
+        || lo.starts_with("me0")
+        || lo.starts_with("em0")
 }
 
-/// Resolve the remote Interface by hostname+port_id and MERGE either a CONNECTED_TO
-/// (fabric) or MGMT_LINK (management-plane) edge depending on `is_mgmt`.
-/// Returns Ok(()) if the remote is not yet in the graph — caller treats that as a no-op.
+fn add_interface_projection_support(
+    conn: &Connection<'_>,
+    rel: &str,
+    local_if_id: &str,
+    remote_if_id: &str,
+    evidence_id: &str,
+) -> Result<()> {
+    let lookup = format!(
+        "MATCH (li:Interface {{id: $lid}})-[r:{rel}]->(ri:Interface {{id: $rid}}) \
+         RETURN r.projection_owner, r.lldp_supporting_ids"
+    );
+    let mut stmt = conn
+        .prepare(&lookup)
+        .context("prepare interface projection lookup")?;
+    let rows: Vec<(String, String)> = conn
+        .execute(
+            &mut stmt,
+            vec![
+                ("lid", Value::String(local_if_id.to_string())),
+                ("rid", Value::String(remote_if_id.to_string())),
+            ],
+        )
+        .context("execute interface projection lookup")?
+        .map(|row| (read_str(&row[0]), read_str(&row[1])))
+        .collect();
+    if rows.len() > 1 {
+        return Ok(());
+    }
+    if rows.is_empty() {
+        let create = format!(
+            "MATCH (li:Interface {{id: $lid}}), (ri:Interface {{id: $rid}}) \
+             CREATE (li)-[:{rel} {{projection_owner: 'lldp_operational', lldp_supporting_ids: $support}}]->(ri)"
+        );
+        let mut create_stmt = conn
+            .prepare(&create)
+            .context("prepare LLDP-owned interface projection create")?;
+        conn.execute(
+            &mut create_stmt,
+            vec![
+                ("lid", Value::String(local_if_id.to_string())),
+                ("rid", Value::String(remote_if_id.to_string())),
+                (
+                    "support",
+                    Value::String(encode_support_ids(&[evidence_id.to_string()])),
+                ),
+            ],
+        )
+        .context("execute LLDP-owned interface projection create")?;
+        return Ok(());
+    }
+
+    let (owner, support_raw) = &rows[0];
+    if owner != "lldp_operational" {
+        return Ok(());
+    }
+    let mut support = decode_support_ids(support_raw);
+    if !support.iter().any(|id| id == evidence_id) {
+        support.push(evidence_id.to_string());
+        support.sort();
+        support.dedup();
+        let update = format!(
+            "MATCH (li:Interface {{id: $lid}})-[r:{rel}]->(ri:Interface {{id: $rid}}) \
+             SET r.lldp_supporting_ids = $support"
+        );
+        let mut update_stmt = conn
+            .prepare(&update)
+            .context("prepare LLDP interface support add")?;
+        conn.execute(
+            &mut update_stmt,
+            vec![
+                ("lid", Value::String(local_if_id.to_string())),
+                ("rid", Value::String(remote_if_id.to_string())),
+                ("support", Value::String(encode_support_ids(&support))),
+            ],
+        )
+        .context("execute LLDP interface support add")?;
+    }
+    Ok(())
+}
+
+/// Resolve the remote Interface by a unique hostname+port_id and add exactly
+/// this evidence id as support for a new LLDP-owned projection. Existing
+/// relationships with unknown or non-LLDP ownership are never adopted or
+/// deleted by LLDP lifecycle processing.
 fn try_connect_interfaces(
     conn: &Connection<'_>,
     local_addr: &str,
@@ -10471,50 +11173,24 @@ fn try_connect_interfaces(
     remote_hostname: &str,
     remote_port_id: &str,
     is_mgmt: bool,
+    evidence_id: &str,
+    port_id_subtype: &str,
 ) -> Result<()> {
-    // Find the remote device's address via its configured hostname.
-    let mut find_stmt = conn
-        .prepare("MATCH (d:Device {hostname: $hn}) RETURN d.address")
-        .context("prepare remote device lookup")?;
-    let mut result = conn
-        .execute(
-            &mut find_stmt,
-            vec![("hn", Value::String(remote_hostname.to_string()))],
-        )
-        .context("execute remote device lookup")?;
-
-    let remote_addr = match result.next() {
-        Some(row) => match &row[0] {
-            Value::String(s) if !s.is_empty() => s.clone(),
-            _ => return Ok(()),
-        },
-        None => return Ok(()),
+    if !crate::lldp_operational::port_subtype_is_interface_name(port_id_subtype) {
+        return Ok(());
+    }
+    let Some(remote_addr) = unique_device_address_for_hostname(conn, remote_hostname)? else {
+        return Ok(());
     };
-
     let local_if_id = format!("{}:{}", local_addr, local_if);
     let remote_if_id = format!("{}:{}", remote_addr, remote_port_id);
-
-    let cypher = if is_mgmt {
-        "MATCH (li:Interface {id: $lid}), (ri:Interface {id: $rid}) \
-         MERGE (li)-[:MGMT_LINK]->(ri)"
-    } else {
-        "MATCH (li:Interface {id: $lid}), (ri:Interface {id: $rid}) \
-         MERGE (li)-[:CONNECTED_TO]->(ri)"
-    };
-
-    let mut edge_stmt = conn
-        .prepare(cypher)
-        .context("prepare interface link merge")?;
-    conn.execute(
-        &mut edge_stmt,
-        vec![
-            ("lid", Value::String(local_if_id)),
-            ("rid", Value::String(remote_if_id)),
-        ],
+    add_interface_projection_support(
+        conn,
+        if is_mgmt { "MGMT_LINK" } else { "CONNECTED_TO" },
+        &local_if_id,
+        &remote_if_id,
+        evidence_id,
     )
-    .context("execute interface link merge")?;
-
-    Ok(())
 }
 
 const VALID_ARCHETYPES: &[&str] = &[

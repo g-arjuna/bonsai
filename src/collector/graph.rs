@@ -49,6 +49,14 @@ impl CollectorGraphStore {
         )
         .context("create Device table")?;
 
+        for (column, definition) in [
+            ("gnmi_endpoint", "STRING DEFAULT ''"),
+            ("role", "STRING DEFAULT ''"),
+            ("site", "STRING DEFAULT ''"),
+        ] {
+            let _ = conn.query(&format!("ALTER TABLE Device ADD {column} {definition}"));
+        }
+
         conn.query(
             "CREATE NODE TABLE IF NOT EXISTS Interface(\
                 id                  STRING,\
@@ -122,6 +130,47 @@ impl CollectorGraphStore {
         let _ = conn.query("ALTER TABLE LldpNeighbor ADD neighbor_key STRING DEFAULT ''");
         let _ = conn.query("ALTER TABLE LldpNeighbor ADD lifecycle STRING DEFAULT 'active'");
         let _ = conn.query("ALTER TABLE LldpNeighbor ADD withdrawn_at TIMESTAMP_NS");
+        for (column, definition) in [
+            ("identity_scope", "STRING DEFAULT ''"),
+            ("network_namespace", "STRING DEFAULT ''"),
+            ("source_occurrence_id", "STRING DEFAULT ''"),
+            ("acquisition_stream", "STRING DEFAULT ''"),
+            ("chassis_id_subtype", "STRING DEFAULT 'unknown'"),
+            ("port_id_subtype", "STRING DEFAULT 'unknown'"),
+            ("protocol_identity", "STRING DEFAULT ''"),
+            ("identity_uncertainty", "STRING DEFAULT ''"),
+            ("source_session_id", "STRING DEFAULT ''"),
+            ("source_plan_id", "STRING DEFAULT ''"),
+            ("collector_id", "STRING DEFAULT ''"),
+            (
+                "ordering_contract",
+                "STRING DEFAULT 'legacy_timestamp_only'",
+            ),
+            ("ordering_state", "STRING DEFAULT 'ordered'"),
+            ("ordering_detail", "STRING DEFAULT ''"),
+            ("population_entries_encountered", "INT64 DEFAULT -1"),
+            ("population_entries_accepted", "INT64 DEFAULT -1"),
+            ("population_exact_duplicates", "INT64 DEFAULT -1"),
+            ("population_conflicting_entries", "INT64 DEFAULT -1"),
+            ("population_malformed_entries", "INT64 DEFAULT -1"),
+            ("population_entries_omitted", "INT64 DEFAULT -1"),
+            ("observed_at", "TIMESTAMP_NS"),
+            ("lifecycle_changed_at", "TIMESTAMP_NS"),
+        ] {
+            let _ = conn.query(&format!(
+                "ALTER TABLE LldpNeighbor ADD {column} {definition}"
+            ));
+        }
+        conn.query("CREATE REL TABLE IF NOT EXISTS LLDP_NEIGHBOR(FROM Device TO Device, local_if STRING, remote_if STRING, source STRING, neighbor_id STRING, neighbor_key STRING, evidence_id STRING, lifecycle STRING)")?;
+        conn.query("CREATE REL TABLE IF NOT EXISTS MGMT_LINK(FROM Interface TO Interface)")?;
+        for table in ["CONNECTED_TO", "MGMT_LINK"] {
+            let _ = conn.query(&format!(
+                "ALTER TABLE {table} ADD projection_owner STRING DEFAULT ''"
+            ));
+            let _ = conn.query(&format!(
+                "ALTER TABLE {table} ADD lldp_supporting_ids STRING DEFAULT ''"
+            ));
+        }
 
         // Collector still tracks state changes locally to trigger rules
         conn.query(
@@ -137,6 +186,14 @@ impl CollectorGraphStore {
 
         conn.query("CREATE REL TABLE IF NOT EXISTS REPORTED_BY(FROM Device TO StateChangeEvent)")?;
         conn.query("CREATE REL TABLE IF NOT EXISTS CONNECTED_TO(FROM Interface TO Interface)")?;
+        for table in ["CONNECTED_TO", "MGMT_LINK"] {
+            let _ = conn.query(&format!(
+                "ALTER TABLE {table} ADD projection_owner STRING DEFAULT ''"
+            ));
+            let _ = conn.query(&format!(
+                "ALTER TABLE {table} ADD lldp_supporting_ids STRING DEFAULT ''"
+            ));
+        }
 
         info!("collector graph schema initialised");
         Ok(())
@@ -366,12 +423,13 @@ fn write_blocking(conn: &Connection<'_>, update: &TelemetryUpdate) -> Result<()>
             local_if,
             neighbor_id,
             state_value,
-        } => write_lldp_neighbor(
+        } => crate::graph::write_lldp_neighbor(
             conn,
             update,
             &local_if,
             &neighbor_id,
             state_value.as_ref().unwrap_or(&update.value),
+            false,
         ),
         _ => Ok(()),
     }
@@ -579,103 +637,6 @@ fn write_bfd_session(
     )?;
 
     let mut edge_stmt = conn.prepare("MATCH (d:Device {address: $addr}), (b:BfdSession {id: $id}) MERGE (d)-[:HAS_BFD_SESSION]->(b)")?;
-    conn.execute(
-        &mut edge_stmt,
-        vec![
-            ("addr", Value::String(bare.to_string())),
-            ("id", Value::String(id)),
-        ],
-    )?;
-    Ok(())
-}
-
-fn write_lldp_neighbor(
-    conn: &Connection<'_>,
-    u: &TelemetryUpdate,
-    local_if: &str,
-    neighbor_id: &str,
-    val: &serde_json::Value,
-) -> Result<()> {
-    let bare = crate::registry::strip_port(&u.target);
-    let now = ts(u.timestamp_ns);
-    upsert_device(conn, &u.target, &u.vendor, &u.hostname, "", "", now.clone())?;
-    if u.is_delete {
-        let mut withdraw = conn.prepare(
-            "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr AND n.local_if = $lif AND n.neighbor_id = $nid SET n.lifecycle = 'withdrawn', n.withdrawn_at = $ts, n.updated_at = $ts",
-        )?;
-        conn.execute(
-            &mut withdraw,
-            vec![
-                ("addr", Value::String(bare.to_string())),
-                ("lif", Value::String(local_if.to_string())),
-                ("nid", Value::String(neighbor_id.to_string())),
-                ("ts", now),
-            ],
-        )?;
-        return Ok(());
-    }
-    let entries = crate::lldp_operational::projection_entries(neighbor_id, val);
-    if entries.iter().any(|entry| entry.multi_entry_envelope) {
-        let legacy_id = format!("{}:{}:{}", bare, local_if, neighbor_id);
-        let mut supersede = conn.prepare(
-            "MATCH (n:LldpNeighbor {id: $id}) SET n.lifecycle = 'superseded', n.updated_at = $ts",
-        )?;
-        conn.execute(
-            &mut supersede,
-            vec![("id", Value::String(legacy_id)), ("ts", now.clone())],
-        )?;
-    }
-    for entry in entries {
-        write_one_lldp_neighbor(
-            conn,
-            u,
-            local_if,
-            neighbor_id,
-            &entry.record_key,
-            entry.value,
-        )?;
-    }
-    Ok(())
-}
-
-fn write_one_lldp_neighbor(
-    conn: &Connection<'_>,
-    u: &TelemetryUpdate,
-    local_if: &str,
-    neighbor_id: &str,
-    record_key: &str,
-    val: &serde_json::Value,
-) -> Result<()> {
-    let bare = crate::registry::strip_port(&u.target);
-    let id = format!("{}:{}:{}", bare, local_if, record_key);
-    let now = ts(u.timestamp_ns);
-
-    let mut stmt = conn.prepare(
-        "MERGE (n:LldpNeighbor {id: $id})          ON CREATE SET            n.device_address = $addr, n.local_if = $local_if, n.neighbor_id = $nid,            n.neighbor_key = $record_key, n.lifecycle = 'active',            n.chassis_id = $chassis, n.system_name = $sysname, n.port_id = $port,            n.updated_at = $ts          ON MATCH SET            n.neighbor_key = $record_key, n.lifecycle = 'active',            n.chassis_id  = CASE WHEN $chassis  <> '' THEN $chassis  ELSE n.chassis_id  END,            n.system_name = CASE WHEN $sysname  <> '' THEN $sysname  ELSE n.system_name END,            n.port_id     = CASE WHEN $port     <> '' THEN $port     ELSE n.port_id     END,            n.updated_at  = $ts",
-    )?;
-
-    conn.execute(
-        &mut stmt,
-        vec![
-            ("id", Value::String(id.clone())),
-            ("addr", Value::String(bare.to_string())),
-            ("local_if", Value::String(local_if.to_string())),
-            ("nid", Value::String(neighbor_id.to_string())),
-            ("record_key", Value::String(record_key.to_string())),
-            (
-                "chassis",
-                Value::String(json_str(val, "chassis-id").to_string()),
-            ),
-            (
-                "sysname",
-                Value::String(json_str(val, "system-name").to_string()),
-            ),
-            ("port", Value::String(json_str(val, "port-id").to_string())),
-            ("ts", now),
-        ],
-    )?;
-
-    let mut edge_stmt = conn.prepare("MATCH (d:Device {address: $addr}), (n:LldpNeighbor {id: $id}) MERGE (d)-[:HAS_LLDP_NEIGHBOR]->(n)")?;
     conn.execute(
         &mut edge_stmt,
         vec![
