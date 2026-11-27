@@ -13,9 +13,14 @@ use crate::{
     interface_normalizer::{
         CaptureOutcome, CommandCapture, NormalizationOutput, ObservationContext,
     },
+    neighbor_normalizer::{
+        ArpndObservation, ArpndSourceProfile, InterfaceIdentityEvidence, MacObservation,
+        MacSourceProfile, normalize_arpnd, normalize_mac,
+    },
     normalizer_registry::{InterfaceObservationInput, NormalizerRegistry},
     nos_features::{HardwareScope, ProfileQuery, SoftwareRelease, builtin_registry},
     typed_facts::PayloadState,
+    vlan_normalizer::{VlanObservation, VlanSourceProfile, normalize_vlan},
 };
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -33,14 +38,18 @@ use tokio::{
 
 pub const FRR_INTERFACE_COMMAND: &str = "vtysh -c 'show interface json'";
 pub const FRR_VERSION_COMMAND: &str = "vtysh -c 'show version json'";
+pub const FRR_NEIGHBOR_COMMAND: &str = "ip neigh show";
+pub const FRR_MAC_COMMAND: &str = "bridge fdb show";
+pub const FRR_VLAN_COMMAND: &str = "bridge -c vlan show";
 pub const FRR_INTERFACE_FEATURE: &str = "interfaces.frr_json";
-pub const FRR_INTERFACE_CAPTURE_CONTRACT: &str = FRR_JSON_ACQUISITION_CONTRACT;
+pub const FRR_L2_CAPTURE_CONTRACT: &str = "frr_verified_ssh_l2_snapshot_v1";
+pub const FRR_INTERFACE_CAPTURE_CONTRACT: &str = FRR_L2_CAPTURE_CONTRACT;
 const CAPTURE_DEADLINE_SECS: u64 = 45;
 const MAX_CONCURRENT_CAPTURES: usize = 2;
 const MAX_STORED_FACTS: usize = 256;
 const MAX_STORED_DIAGNOSTICS: usize = 128;
 const MAX_STORED_RAW_BYTES: usize = 1024 * 1024;
-const MAX_STORED_OBSERVATION_BYTES: usize = 2 * 1024 * 1024;
+const MAX_STORED_OBSERVATION_BYTES: usize = 6 * 1024 * 1024;
 const MAX_HELPER_STDOUT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_HELPER_STDERR_BYTES: usize = 64 * 1024;
 
@@ -302,6 +311,12 @@ pub struct StoredFrrInterfaceShadowObservation {
     pub acquisition_contract: String,
     pub interface_command: String,
     pub version_command: String,
+    #[serde(default)]
+    pub neighbor_command: Option<String>,
+    #[serde(default)]
+    pub mac_command: Option<String>,
+    #[serde(default)]
+    pub vlan_command: Option<String>,
     pub host_key: VerifiedHostKey,
     pub platform: String,
     pub release_raw: String,
@@ -321,6 +336,30 @@ pub struct StoredFrrInterfaceShadowObservation {
     /// remain evidence-addressed by digest and are marked omitted.
     pub raw_interface_json: Option<String>,
     pub raw_output_omitted_reason: Option<String>,
+    #[serde(default)]
+    pub neighbor_output_sha256: Option<String>,
+    #[serde(default)]
+    pub neighbor_output_bytes: Option<usize>,
+    #[serde(default)]
+    pub raw_neighbor_output: Option<String>,
+    #[serde(default)]
+    pub raw_neighbor_output_omitted_reason: Option<String>,
+    #[serde(default)]
+    pub mac_output_sha256: Option<String>,
+    #[serde(default)]
+    pub mac_output_bytes: Option<usize>,
+    #[serde(default)]
+    pub raw_mac_output: Option<String>,
+    #[serde(default)]
+    pub raw_mac_output_omitted_reason: Option<String>,
+    #[serde(default)]
+    pub vlan_output_sha256: Option<String>,
+    #[serde(default)]
+    pub vlan_output_bytes: Option<usize>,
+    #[serde(default)]
+    pub raw_vlan_output: Option<String>,
+    #[serde(default)]
+    pub raw_vlan_output_omitted_reason: Option<String>,
     pub profile_id: String,
     pub profile_fingerprint: Option<String>,
     pub normalizer_id: String,
@@ -528,7 +567,7 @@ fn classify_interpretation(output: &NormalizationOutput) -> (&'static str, bool,
     (outcome, usable, entity_facts, status_facts)
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCaptureEnvelope {
     host: String,
@@ -539,8 +578,55 @@ struct RawCaptureEnvelope {
     interface_command: String,
     version_output: String,
     interface_output: String,
+    neighbor_command: String,
+    mac_command: String,
+    vlan_command: String,
+    neighbor_output: String,
+    mac_output: String,
+    vlan_output: String,
     release_raw: Option<String>,
     device_hostname: Option<String>,
+}
+
+fn interface_identity_evidence(
+    facts: &[crate::typed_facts::TypedFact],
+) -> InterfaceIdentityEvidence {
+    let mut by_native_name = BTreeMap::new();
+    for fact in facts {
+        let Some(identity) = fact.subject.interface_identity.clone() else {
+            continue;
+        };
+        // Only the exact source-native display name may key this corroboration
+        // map. For subinterfaces the canonical subject entity is deliberately
+        // the parent/base interface, so using that entity as a key would
+        // misattribute parent-interface neighbor/FDB evidence to the child.
+        if let Some(native_name) = identity
+            .vendor_native_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            by_native_name
+                .entry(native_name.to_string())
+                .or_insert(identity);
+        }
+    }
+    InterfaceIdentityEvidence { by_native_name }
+}
+
+fn validate_capture_envelope(raw: &RawCaptureEnvelope, address: &str) -> Result<()> {
+    if raw.host != address
+        || raw.port != 22
+        || raw.transport != "verified_ssh_read_only_cli"
+        || raw.interface_command != FRR_INTERFACE_COMMAND
+        || raw.neighbor_command != FRR_NEIGHBOR_COMMAND
+        || raw.mac_command != FRR_MAC_COMMAND
+        || raw.vlan_command != FRR_VLAN_COMMAND
+        || raw.version_command != FRR_VERSION_COMMAND
+    {
+        bail!("frr interface capture envelope identity/contract mismatch")
+    }
+    Ok(())
 }
 
 /// Acquire, select, dispatch and validate one bounded shadow observation.
@@ -613,18 +699,16 @@ pub async fn collect_normalize_frr_interfaces(
     }
     let raw: RawCaptureEnvelope =
         serde_json::from_slice(&output.stdout).context("invalid frr interface capture envelope")?;
-    if raw.host != address
-        || raw.port != 22
-        || raw.transport != "verified_ssh_read_only_cli"
-        || raw.interface_command != FRR_INTERFACE_COMMAND
-        || raw.version_command != FRR_VERSION_COMMAND
-    {
-        bail!("frr interface capture envelope identity/contract mismatch")
-    }
+    validate_capture_envelope(&raw, address)?;
     if output.stdout_bytes == 0 {
         bail!("frr interface capture helper produced no envelope")
     }
-    if raw.interface_output.len() > 4 * 1024 * 1024 || raw.version_output.len() > 4 * 1024 * 1024 {
+    if raw.interface_output.len() > 4 * 1024 * 1024
+        || raw.version_output.len() > 4 * 1024 * 1024
+        || raw.neighbor_output.len() > 4 * 1024 * 1024
+        || raw.mac_output.len() > 4 * 1024 * 1024
+        || raw.vlan_output.len() > 4 * 1024 * 1024
+    {
         bail!("frr interface capture exceeds helper bounds")
     }
     let release_raw = raw
@@ -642,7 +726,13 @@ pub async fn collect_normalize_frr_interfaces(
         host_key,
         version_command,
         interface_command,
+        neighbor_command,
+        mac_command,
+        vlan_command,
         interface_output,
+        neighbor_output,
+        mac_output,
+        vlan_output,
         device_hostname,
         ..
     } = raw;
@@ -702,19 +792,90 @@ pub async fn collect_normalize_frr_interfaces(
                 )
                 .map_err(|e| anyhow::anyhow!("frr interface shadow dispatch refused: {e:?}"))?
         };
-        if !run.output.facts.iter().all(|fact| fact.validate().is_ok()) {
-            bail!("frr interface normalizer emitted an invalid typed fact")
+        let interface_identities = interface_identity_evidence(&run.output.facts);
+        let mut neighbor_context =
+            ObservationContext::minimal(&device_id, &collector_id, &capture_id, &captured_at);
+        neighbor_context.session_epoch = session_epoch;
+        neighbor_context.sequence = 1;
+        neighbor_context.network_namespace = Some(namespace);
+        neighbor_context.platform = Some("frr");
+        neighbor_context.release_raw = Some(&release_raw);
+        neighbor_context.release_build = release_build.as_deref();
+        let neighbor_run = normalize_arpnd(&ArpndObservation {
+            profile: ArpndSourceProfile::LinuxIpNeighShow,
+            capture: CommandCapture::new(&neighbor_output, CaptureOutcome::Complete)
+                .captured_at(&captured_at),
+            context: neighbor_context,
+            interface_identities: Some(&interface_identities),
+        });
+        let mut mac_context =
+            ObservationContext::minimal(&device_id, &collector_id, &capture_id, &captured_at);
+        mac_context.session_epoch = session_epoch;
+        mac_context.sequence = 1;
+        mac_context.network_namespace = Some(namespace);
+        mac_context.platform = Some("frr");
+        mac_context.release_raw = Some(&release_raw);
+        mac_context.release_build = release_build.as_deref();
+        let mac_run = normalize_mac(&MacObservation {
+            profile: MacSourceProfile::LinuxBridgeFdbShow,
+            capture: CommandCapture::new(&mac_output, CaptureOutcome::Complete)
+                .captured_at(&captured_at),
+            context: mac_context,
+            interface_identities: Some(&interface_identities),
+        });
+        let mut vlan_context =
+            ObservationContext::minimal(&device_id, &collector_id, &capture_id, &captured_at);
+        vlan_context.session_epoch = session_epoch;
+        vlan_context.sequence = 1;
+        vlan_context.network_namespace = Some(namespace);
+        vlan_context.platform = Some("frr");
+        vlan_context.release_raw = Some(&release_raw);
+        vlan_context.release_build = release_build.as_deref();
+        let vlan_run = normalize_vlan(&VlanObservation {
+            profile: VlanSourceProfile::LinuxBridgeCVlanShow,
+            capture: CommandCapture::new(&vlan_output, CaptureOutcome::Complete)
+                .captured_at(&captured_at),
+            context: vlan_context,
+        });
+        let typed_facts: Vec<_> = run
+            .output
+            .facts
+            .iter()
+            .chain(neighbor_run.facts.iter())
+            .chain(mac_run.facts.iter())
+            .chain(vlan_run.facts.iter())
+            .collect();
+        if !typed_facts.iter().all(|fact| fact.validate().is_ok()) {
+            bail!("frr native normalizers emitted an invalid typed fact")
         }
-        let (mut interpretation_outcome, usable_observation, usable_entity_facts, status_facts) =
+        let (mut interpretation_outcome, usable_observation, _interface_entity_facts, _interface_status_facts) =
             classify_interpretation(&run.output);
-        let facts_emitted = run.output.facts.len();
+        let family_degraded = [
+            (&neighbor_run.report.refusal_reason, neighbor_run.report.malformed_records + neighbor_run.report.facts_rejected + neighbor_run.report.output_facts_omitted),
+            (&mac_run.report.refusal_reason, mac_run.report.malformed_records + mac_run.report.facts_rejected + mac_run.report.output_facts_omitted),
+            (&vlan_run.report.refusal_reason, vlan_run.report.malformed_records + vlan_run.report.facts_rejected + vlan_run.report.output_facts_omitted),
+        ]
+        .iter()
+        .any(|(refusal, bad)| refusal.is_some() || *bad > 0);
+        if family_degraded && usable_observation {
+            interpretation_outcome = "partial_usable";
+        }
+        let usable_entity_facts = typed_facts
+            .iter()
+            .filter(|fact| fact.subject.entity.is_some() && fact.payload.fields.is_some())
+            .count();
+        let status_facts = typed_facts
+            .iter()
+            .filter(|fact| fact.subject.entity.is_none() && fact.payload.state.is_some())
+            .count();
+        let facts_emitted = typed_facts.len();
         let facts_retained = facts_emitted.min(MAX_STORED_FACTS);
         let fact_retention_truncated = facts_retained != facts_emitted;
         if fact_retention_truncated && usable_observation {
             interpretation_outcome = "partial_usable";
         }
         let mut facts = Vec::with_capacity(facts_retained);
-        for fact in run.output.facts.iter().take(facts_retained) {
+        for fact in typed_facts.iter().take(facts_retained) {
             facts.push(serde_json::to_value(fact)?);
         }
         let diagnostics_retained = run.output.interfaces.len().min(MAX_STORED_DIAGNOSTICS);
@@ -725,7 +886,19 @@ pub async fn collect_normalize_frr_interfaces(
         let interface_sha = hex::encode(Sha256::digest(interface_output.as_bytes()));
         let interface_output_bytes = interface_output.len();
         let raw_within_retention = interface_output.len() <= MAX_STORED_RAW_BYTES;
-        let normalization_report = serde_json::to_value(&run.output.report)?;
+        let neighbor_sha = hex::encode(Sha256::digest(neighbor_output.as_bytes()));
+        let mac_sha = hex::encode(Sha256::digest(mac_output.as_bytes()));
+        let vlan_sha = hex::encode(Sha256::digest(vlan_output.as_bytes()));
+        let neighbor_within_retention = neighbor_output.len() <= MAX_STORED_RAW_BYTES;
+        let mac_within_retention = mac_output.len() <= MAX_STORED_RAW_BYTES;
+        let vlan_within_retention = vlan_output.len() <= MAX_STORED_RAW_BYTES;
+        let mut normalization_report = serde_json::to_value(&run.output.report)?;
+        normalization_report["feature_families"] = serde_json::json!([
+            {"feature":"interfaces.frr_json","facts_emitted":run.output.facts.len(),"report":serde_json::to_value(&run.output.report)?},
+            {"feature":"arpnd.linux_ip_neigh","facts_emitted":neighbor_run.facts.len(),"output_sha256":neighbor_sha,"output_bytes":neighbor_output.len(),"report":serde_json::to_value(&neighbor_run.report)?,"coverage":serde_json::to_value(&neighbor_run.coverage)?},
+            {"feature":"mac.linux_bridge_fdb","facts_emitted":mac_run.facts.len(),"output_sha256":mac_sha,"output_bytes":mac_output.len(),"report":serde_json::to_value(&mac_run.report)?,"coverage":serde_json::to_value(&mac_run.coverage)?},
+            {"feature":"vlan.linux_bridge_vlan","facts_emitted":vlan_run.facts.len(),"output_sha256":vlan_sha,"output_bytes":vlan_output.len(),"report":serde_json::to_value(&vlan_run.report)?,"coverage":serde_json::to_value(&vlan_run.coverage)?}
+        ]);
         Ok(StoredFrrInterfaceShadowObservation {
             observation_id: observation_id(&device_id, namespace),
             device_address: address_string,
@@ -738,6 +911,9 @@ pub async fn collect_normalize_frr_interfaces(
             acquisition_contract: FRR_INTERFACE_CAPTURE_CONTRACT.into(),
             interface_command,
             version_command,
+            neighbor_command: Some(neighbor_command),
+            mac_command: Some(mac_command),
+            vlan_command: Some(vlan_command),
             host_key,
             platform: "frr".into(),
             release_raw,
@@ -752,6 +928,21 @@ pub async fn collect_normalize_frr_interfaces(
             raw_interface_json: raw_within_retention.then_some(interface_output),
             raw_output_omitted_reason: (!raw_within_retention)
                 .then_some("raw output exceeds 1 MiB shadow retention bound".into()),
+            neighbor_output_sha256: Some(neighbor_sha),
+            neighbor_output_bytes: Some(neighbor_output.len()),
+            raw_neighbor_output: neighbor_within_retention.then_some(neighbor_output),
+            raw_neighbor_output_omitted_reason: (!neighbor_within_retention)
+                .then_some("raw neighbor output exceeds 1 MiB shadow retention bound".into()),
+            mac_output_sha256: Some(mac_sha),
+            mac_output_bytes: Some(mac_output.len()),
+            raw_mac_output: mac_within_retention.then_some(mac_output),
+            raw_mac_output_omitted_reason: (!mac_within_retention)
+                .then_some("raw MAC output exceeds 1 MiB shadow retention bound".into()),
+            vlan_output_sha256: Some(vlan_sha),
+            vlan_output_bytes: Some(vlan_output.len()),
+            raw_vlan_output: vlan_within_retention.then_some(vlan_output),
+            raw_vlan_output_omitted_reason: (!vlan_within_retention)
+                .then_some("raw VLAN output exceeds 1 MiB shadow retention bound".into()),
             profile_id: run.profile_id,
             profile_fingerprint: run.profile_fingerprint,
             normalizer_id: run.normalizer_id,
@@ -801,12 +992,16 @@ fn validate_stored_observation(observation: &StoredFrrInterfaceShadowObservation
         // such a record is rejected rather than silently reattributing it.
         bail!("native interface observation predates canonical source identity")
     }
+    let mut interface_entity_facts = 0usize;
     for fact in &observation.facts {
         let typed: crate::typed_facts::TypedFact = serde_json::from_value(fact.clone())
             .context("native interface typed fact is undecodable")?;
         typed
             .validate()
             .map_err(|e| anyhow::anyhow!("native interface typed fact validation failed: {e:?}"))?;
+        if typed.fact_kind == "interface.state" && typed.subject.entity.is_some() {
+            interface_entity_facts += 1;
+        }
         if typed.subject.device_id != observation.device_id
             || typed.subject.namespace != "interface"
             || typed.subject.network_namespace.as_deref()
@@ -825,7 +1020,7 @@ fn validate_stored_observation(observation: &StoredFrrInterfaceShadowObservation
         .and_then(serde_json::Value::as_u64)
         .map(|v| v as usize);
     if let Some(entities) = report_entities {
-        if entities != observation.usable_entity_facts {
+        if entities != interface_entity_facts {
             bail!("native interface entity count does not match normalization report")
         }
     }
@@ -1378,10 +1573,67 @@ mod tests {
     #[test]
     fn fixed_commands_match_the_approved_contract() {
         assert_eq!(FRR_INTERFACE_COMMAND, "vtysh -c 'show interface json'");
+        assert_eq!(FRR_NEIGHBOR_COMMAND, "ip neigh show");
+        assert_eq!(FRR_MAC_COMMAND, "bridge fdb show");
+        assert_eq!(FRR_VLAN_COMMAND, "bridge -c vlan show");
         assert_eq!(
             FRR_INTERFACE_CAPTURE_CONTRACT,
-            "frr_vtysh_show_interface_json"
+            "frr_verified_ssh_l2_snapshot_v1"
         );
+    }
+
+    fn valid_capture_envelope() -> RawCaptureEnvelope {
+        RawCaptureEnvelope {
+            host: "192.0.2.1".into(),
+            port: 22,
+            transport: "verified_ssh_read_only_cli".into(),
+            host_key: VerifiedHostKey {
+                algorithm: "ssh-ed25519".into(),
+                sha256: "SHA256:test".into(),
+            },
+            version_command: FRR_VERSION_COMMAND.into(),
+            interface_command: FRR_INTERFACE_COMMAND.into(),
+            version_output: "{}".into(),
+            interface_output: "{}".into(),
+            neighbor_command: FRR_NEIGHBOR_COMMAND.into(),
+            mac_command: FRR_MAC_COMMAND.into(),
+            vlan_command: FRR_VLAN_COMMAND.into(),
+            neighbor_output: String::new(),
+            mac_output: String::new(),
+            vlan_output: String::new(),
+            release_raw: Some("10.6.1_git".into()),
+            device_hostname: Some("frr2".into()),
+        }
+    }
+
+    #[test]
+    fn capture_envelope_requires_the_exact_multifamily_fixed_command_contract() {
+        let raw = valid_capture_envelope();
+        validate_capture_envelope(&raw, "192.0.2.1").expect("exact fixed-command envelope");
+
+        let mut wrong_command = valid_capture_envelope();
+        wrong_command.vlan_command = "bridge vlan show".into();
+        let err = validate_capture_envelope(&wrong_command, "192.0.2.1")
+            .expect_err("substitute VLAN command must be refused");
+        assert!(err.to_string().contains("identity/contract mismatch"));
+
+        let err = validate_capture_envelope(&raw, "192.0.2.2")
+            .expect_err("envelope for another host must be refused");
+        assert!(err.to_string().contains("identity/contract mismatch"));
+    }
+
+    #[test]
+    fn capture_envelope_missing_a_family_output_is_not_positive_empty_evidence() {
+        let mut value = serde_json::to_value(valid_capture_envelope()).expect("envelope json");
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("neighbor_output");
+        let err = match serde_json::from_value::<RawCaptureEnvelope>(value) {
+            Err(err) => err,
+            Ok(_) => panic!("missing neighbor output must fail envelope decoding"),
+        };
+        assert!(err.to_string().contains("neighbor_output"));
     }
 
     #[tokio::test]
@@ -1560,9 +1812,26 @@ mod tests {
         assert_eq!(observation.network_namespace, "default");
         assert_eq!(observation.qualification, "Qualified");
         assert!(observation.shadow_only);
-        assert_eq!(observation.facts_emitted, 4);
-        assert_eq!(observation.facts_validated, 4);
-        assert_eq!(observation.facts_retained, 4);
+        assert_eq!(observation.facts_emitted, 6);
+        assert_eq!(observation.facts_validated, 6);
+        assert_eq!(observation.facts_retained, 6);
+        assert!(
+            observation
+                .facts
+                .iter()
+                .any(|fact| fact["fact_kind"] == "interface.state")
+        );
+        assert!(
+            observation
+                .facts
+                .iter()
+                .any(|fact| fact["fact_kind"] == "mac.forwarding")
+        );
+        assert!(
+            observation.normalization_report["feature_families"]
+                .as_array()
+                .is_some_and(|f| f.len() == 4)
+        );
         assert!(!observation.fact_retention_truncated);
         assert_eq!(observation.normalization_report["entities_accepted"], 4);
         assert_eq!(

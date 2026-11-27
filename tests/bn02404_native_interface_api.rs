@@ -16,6 +16,11 @@ use bonsai::{
     graph::{ConfigItemRecord, GraphStore},
     http_server::{AppState, mint_jwt, router_from_state},
     interface_normalizer::{CaptureOutcome, CommandCapture, NormalizerLimits, ObservationContext},
+    neighbor_normalizer::{
+        ArpndObservation, ArpndSourceProfile, MacObservation, MacSourceProfile, normalize_arpnd,
+        normalize_mac,
+    },
+    vlan_normalizer::{VlanObservation, VlanSourceProfile, normalize_vlan},
 };
 use serde_json::Value;
 use sha2::Digest;
@@ -169,6 +174,144 @@ fn fresh_evidence() -> StoredFrrInterfaceShadowObservation {
     observation.session_epoch = observation.capture_started_at_ns as u64;
     observation.sequence = 1;
     rewrite_fact_provenance(&mut observation);
+    observation
+}
+
+fn family_context<'a>(
+    observation: &'a StoredFrrInterfaceShadowObservation,
+    sequence: u64,
+) -> ObservationContext<'a> {
+    let mut context = ObservationContext::minimal(
+        &observation.device_id,
+        &observation.collector_id,
+        &observation.capture_id,
+        &observation.captured_at,
+    );
+    context.session_epoch = observation.session_epoch;
+    context.sequence = sequence;
+    context.network_namespace = Some(&observation.network_namespace);
+    context.platform = Some("frr");
+    context.release_raw = Some(&observation.release_raw);
+    context.release_build = observation.release_build.as_deref();
+    context
+}
+
+fn sha256_text(text: &str) -> String {
+    hex::encode(sha2::Sha256::digest(text.as_bytes()))
+}
+
+/// Offline vertical-slice evidence shape built by running the real native
+/// normalizers over the genuine captured Linux command outputs in
+/// `tests/fixtures/bn024/l2-vertical`. The interface facts come from the
+/// committed authorized-lab observation; the added family facts are generated
+/// here rather than hand-written so schema validation and provenance remain
+/// executable.
+fn l2_vertical_evidence() -> StoredFrrInterfaceShadowObservation {
+    let mut observation = fresh_evidence();
+    let neighbor_output = include_str!("fixtures/bn024/l2-vertical/frr2-ip-neigh-show.txt");
+    let mac_output = include_str!("fixtures/bn024/l2-vertical/frr2-bridge-fdb-show.txt");
+    let vlan_output = include_str!("fixtures/bn024/l2-vertical/frr2-bridge-c-vlan-show.txt");
+
+    let neighbor_run = normalize_arpnd(&ArpndObservation {
+        profile: ArpndSourceProfile::LinuxIpNeighShow,
+        capture: CommandCapture::new(neighbor_output, CaptureOutcome::Complete)
+            .captured_at(&observation.captured_at),
+        context: family_context(&observation, 1),
+        interface_identities: None,
+    });
+    let mac_run = normalize_mac(&MacObservation {
+        profile: MacSourceProfile::LinuxBridgeFdbShow,
+        capture: CommandCapture::new(mac_output, CaptureOutcome::Complete)
+            .captured_at(&observation.captured_at),
+        context: family_context(&observation, 1),
+        interface_identities: None,
+    });
+    let vlan_run = normalize_vlan(&VlanObservation {
+        profile: VlanSourceProfile::LinuxBridgeCVlanShow,
+        capture: CommandCapture::new(vlan_output, CaptureOutcome::Complete)
+            .captured_at(&observation.captured_at),
+        context: family_context(&observation, 1),
+    });
+
+    assert!(neighbor_run.facts.is_empty());
+    assert!(neighbor_run.coverage.positive_empty_population);
+    assert_eq!(mac_run.facts.len(), 2);
+    assert!(vlan_run.facts.is_empty());
+    assert!(vlan_run.coverage.positive_empty_population);
+    for fact in mac_run.facts.iter() {
+        fact.validate().expect("generated mac typed fact validates");
+        observation
+            .facts
+            .push(serde_json::to_value(fact).expect("serialize mac fact"));
+    }
+
+    observation.facts_emitted = observation.facts.len();
+    observation.facts_validated = observation.facts.len();
+    observation.facts_retained = observation.facts.len();
+    observation.usable_entity_facts = observation
+        .facts
+        .iter()
+        .filter(|fact| {
+            fact.get("subject")
+                .and_then(|subject| subject.get("entity"))
+                .is_some()
+                && fact
+                    .get("payload")
+                    .and_then(|payload| payload.get("fields"))
+                    .is_some()
+        })
+        .count();
+    observation.status_facts = observation
+        .facts
+        .iter()
+        .filter(|fact| {
+            fact.get("subject")
+                .and_then(|subject| subject.get("entity"))
+                .is_none()
+        })
+        .count();
+    observation.acquisition_contract =
+        bonsai::enrichment::frr_interfaces::FRR_INTERFACE_CAPTURE_CONTRACT.into();
+    observation.neighbor_output_sha256 = Some(sha256_text(neighbor_output));
+    observation.neighbor_output_bytes = Some(neighbor_output.len());
+    observation.raw_neighbor_output = Some(neighbor_output.into());
+    observation.mac_output_sha256 = Some(sha256_text(mac_output));
+    observation.mac_output_bytes = Some(mac_output.len());
+    observation.raw_mac_output = Some(mac_output.into());
+    observation.vlan_output_sha256 = Some(sha256_text(vlan_output));
+    observation.vlan_output_bytes = Some(vlan_output.len());
+    observation.raw_vlan_output = Some(vlan_output.into());
+    observation.normalization_report["feature_families"] = serde_json::json!([
+        {
+            "feature": "interfaces.frr_json",
+            "facts_emitted": 4,
+            "report": observation.normalization_report.clone(),
+        },
+        {
+            "feature": "arpnd.linux_ip_neigh",
+            "facts_emitted": neighbor_run.facts.len(),
+            "output_sha256": sha256_text(neighbor_output),
+            "output_bytes": neighbor_output.len(),
+            "report": serde_json::to_value(&neighbor_run.report).expect("neighbor report"),
+            "coverage": serde_json::to_value(&neighbor_run.coverage).expect("neighbor coverage"),
+        },
+        {
+            "feature": "mac.linux_bridge_fdb",
+            "facts_emitted": mac_run.facts.len(),
+            "output_sha256": sha256_text(mac_output),
+            "output_bytes": mac_output.len(),
+            "report": serde_json::to_value(&mac_run.report).expect("mac report"),
+            "coverage": serde_json::to_value(&mac_run.coverage).expect("mac coverage"),
+        },
+        {
+            "feature": "vlan.linux_bridge_vlan",
+            "facts_emitted": vlan_run.facts.len(),
+            "output_sha256": sha256_text(vlan_output),
+            "output_bytes": vlan_output.len(),
+            "report": serde_json::to_value(&vlan_run.report).expect("vlan report"),
+            "coverage": serde_json::to_value(&vlan_run.coverage).expect("vlan coverage"),
+        }
+    ]);
     observation
 }
 
@@ -437,6 +580,72 @@ async fn scoped_authorization_and_failed_attempt_visibility_are_enforced() {
         body["acquisition"]["last_failure_class"],
         "capture_deadline"
     );
+}
+
+#[tokio::test]
+async fn operator_surface_exposes_multifamily_coverage_and_bounded_l2_evidence() {
+    let h = harness().await;
+    let observation = l2_vertical_evidence();
+    let address = observation.device_address.clone();
+    h.registry
+        .add_device_with_audit(target(&address, None, None), "bn02404-test", "test_add")
+        .expect("register target");
+    persist_observation(&h.store, &observation)
+        .await
+        .expect("persist multi-family evidence");
+    let viewer = token(&h.store, "bn024-viewer", "viewer").await;
+    let uri = format!("/api/devices/{address}/native-interfaces/frr");
+    let (status, body) = request(&h.router, "GET", &uri, Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    assert_eq!(body["evidence"]["facts_emitted"], 6);
+    assert_eq!(body["evidence"]["facts_validated"], 6);
+    assert!(body["evidence"]["neighbor_output_sha256"].is_string());
+    assert!(body["evidence"]["mac_output_sha256"].is_string());
+    assert!(body["evidence"]["vlan_output_sha256"].is_string());
+    assert_eq!(body["evidence"]["raw_neighbor_output_retained"], true);
+    assert_eq!(body["evidence"]["raw_mac_output_retained"], true);
+    assert_eq!(body["evidence"]["raw_vlan_output_retained"], true);
+    assert!(body["evidence"].get("raw_neighbor_output").is_none());
+    assert!(body["evidence"].get("raw_mac_output").is_none());
+    assert!(body["evidence"].get("raw_vlan_output").is_none());
+
+    let families = body["evidence"]["normalization_report"]["feature_families"]
+        .as_array()
+        .expect("feature-family coverage array");
+    assert_eq!(families.len(), 4);
+    let family = |name: &str| {
+        families
+            .iter()
+            .find(|entry| entry["feature"] == name)
+            .unwrap_or_else(|| panic!("missing feature family {name}"))
+    };
+    let arp = family("arpnd.linux_ip_neigh");
+    assert_eq!(arp["facts_emitted"], 0);
+    assert_eq!(arp["coverage"]["covered_fact_kind"], "arpnd.neighbor");
+    assert_eq!(arp["coverage"]["positive_empty_population"], true);
+    assert_eq!(arp["coverage"]["population_coverage"], "complete");
+    let mac = family("mac.linux_bridge_fdb");
+    assert_eq!(mac["facts_emitted"], 2);
+    assert_eq!(mac["coverage"]["covered_fact_kind"], "mac.forwarding");
+    assert_eq!(mac["coverage"]["positive_empty_population"], false);
+    let vlan = family("vlan.linux_bridge_vlan");
+    assert_eq!(vlan["facts_emitted"], 0);
+    assert_eq!(vlan["coverage"]["covered_fact_kind"], "vlan.bridge_domain");
+    assert_eq!(vlan["coverage"]["positive_empty_population"], true);
+
+    let fact_kinds: Vec<_> = body["evidence"]["facts"]
+        .as_array()
+        .expect("facts array")
+        .iter()
+        .filter_map(|fact| fact["fact_kind"].as_str())
+        .collect();
+    assert!(fact_kinds.contains(&"interface.state"));
+    assert!(fact_kinds.contains(&"mac.forwarding"));
+    // Positive-empty ARP/VLAN populations are explicit coverage, not fabricated
+    // empty entity rows and not evidence about each other's tables.
+    assert!(!fact_kinds.contains(&"arpnd.neighbor"));
+    assert!(!fact_kinds.contains(&"vlan.bridge_domain"));
 }
 
 #[tokio::test]
@@ -856,9 +1065,9 @@ async fn operator_collects_live_frr_shadow_evidence_through_production_api() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["qualification"], "Qualified");
     assert_eq!(body["shadow_only"], true);
-    assert_eq!(body["result"]["facts_emitted"], 4);
-    assert_eq!(body["result"]["facts_validated"], 4);
-    assert_eq!(body["result"]["usable_entity_facts"], 4);
+    assert_eq!(body["result"]["facts_emitted"], 6);
+    assert_eq!(body["result"]["facts_validated"], 6);
+    assert_eq!(body["result"]["usable_entity_facts"], 6);
     assert_eq!(body["result"]["interpretation_outcome"], "complete_usable");
     assert_eq!(
         body["result"]["interface_command"],
@@ -873,7 +1082,7 @@ async fn operator_collects_live_frr_shadow_evidence_through_production_api() {
     let (status, body) = request(&h.router, "GET", &base, Some(&viewer), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["promotion"], "shadow_only");
-    assert_eq!(body["evidence"]["facts_validated"], 4);
+    assert_eq!(body["evidence"]["facts_validated"], 6);
     assert_eq!(body["evidence"]["network_namespace"], "default");
     assert_eq!(
         body["evidence"]["network_namespace_evidence"],

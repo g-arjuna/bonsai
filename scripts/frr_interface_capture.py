@@ -18,6 +18,9 @@ import paramiko
 MAX_BYTES = 4 * 1024 * 1024
 VERSION_COMMAND = "vtysh -c 'show version json'"
 INTERFACE_COMMAND = "vtysh -c 'show interface json'"
+NEIGHBOR_COMMAND = "ip neigh show"
+MAC_COMMAND = "bridge fdb show"
+VLAN_COMMAND = "bridge -c vlan show"
 
 
 def read_bounded(stream):
@@ -141,6 +144,9 @@ def main():
         }
         version_raw = run_command(client, VERSION_COMMAND)
         interface_raw = run_command(client, INTERFACE_COMMAND)
+        neighbor_raw = run_command(client, NEIGHBOR_COMMAND)
+        mac_raw = run_command(client, MAC_COMMAND)
+        vlan_raw = run_command(client, VLAN_COMMAND)
         version = json.loads(version_raw)
         # Parse the interface response only to prove the structured contract;
         # the raw bytes are preserved verbatim for the Rust normalizer.
@@ -154,8 +160,14 @@ def main():
                     "host_key": host_key,
                     "version_command": VERSION_COMMAND,
                     "interface_command": INTERFACE_COMMAND,
+                    "neighbor_command": NEIGHBOR_COMMAND,
+                    "mac_command": MAC_COMMAND,
+                    "vlan_command": VLAN_COMMAND,
                     "version_output": version_raw,
                     "interface_output": interface_raw,
+                    "neighbor_output": neighbor_raw,
+                    "mac_output": mac_raw,
+                    "vlan_output": vlan_raw,
                     "release_raw": version.get("version"),
                     "device_hostname": version.get("hostName"),
                 }

@@ -20,6 +20,8 @@ use crate::frr_interface_json::{FRR_JSON_MAPPING_REVISION, FRR_JSON_PARSER_REVIS
 pub const FRR_1061_STRUCTURED_ARTIFACT: &str =
     "quay.io/frrouting/frr@sha256:813497af103e972600f6161012b3bf2a2a1c5ea10d09cd1eacd74f1dc510a57b";
 use crate::interface_normalizer::{INTERFACE_CLI_MAPPING_REVISION, INTERFACE_CLI_PARSER_REVISION};
+use crate::neighbor_normalizer::{NEIGHBOR_MAPPING_REVISION, NEIGHBOR_PARSER_REVISION};
+use crate::vlan_normalizer::{VLAN_MAPPING_REVISION, VLAN_PARSER_REVISION};
 use crate::xrd_openconfig_interfaces::{XRD_OC_MAPPING_REVISION, XRD_OC_PARSER_REVISION};
 use sha2::{Digest, Sha256};
 
@@ -1434,7 +1436,8 @@ pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
                 max_entities: Some(4096),
                 max_output_facts: Some(8192),
             },
-            features: BTreeMap::from([(
+            features: BTreeMap::from([
+            (
                 "interfaces.frr_json".into(),
                 FeatureFlag {
                     enabled: true,
@@ -1469,7 +1472,116 @@ pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
                     }),
                     promotion: PromotionState::Shadow,
                 },
-            )]),
+            ),
+            (
+                "arpnd.linux_ip_neigh".into(),
+                FeatureFlag {
+                    enabled: true,
+                    parsers: vec!["native_rust_linux_iproute2_text".into()],
+                    scope_notes: vec![
+                        "Linux iproute2 neighbor observation inside the exact qualified FRR container artifact".into(),
+                        "bounded authorized shadow acquisition; no authoritative graph projection".into(),
+                    ],
+                    requires: vec![],
+                    conflicts: vec![],
+                    support: SupportState::Supported,
+                    evidence: vec![ApplicabilityEvidence {
+                        kind: "observed_capture".into(),
+                        source: "clab-bonsai-bn003-vrf-frr2 ip neigh show".into(),
+                        revision: Some("10.6.1_git".into()),
+                        scope: Some(
+                            "platform=frr namespace=default feature=arpnd.linux_ip_neigh".into(),
+                        ),
+                        claim: SupportState::Supported,
+                    }],
+                    acquisition: vec![AcquisitionContract {
+                        kind: AcquisitionKind::CliObservation,
+                        contracts: vec![
+                            "frr_verified_ssh_l2_snapshot_v1".into(),
+                            "linux_ip_neigh_show".into(),
+                        ],
+                    }],
+                    normalizer: Some(NormalizerRef {
+                        id: "arpnd_linux_ip_neigh_normalizer".into(),
+                        revision: NEIGHBOR_PARSER_REVISION.into(),
+                        mapping_revision: Some(NEIGHBOR_MAPPING_REVISION.into()),
+                    }),
+                    promotion: PromotionState::Shadow,
+                },
+            ),
+            (
+                "mac.linux_bridge_fdb".into(),
+                FeatureFlag {
+                    enabled: true,
+                    parsers: vec!["native_rust_linux_bridge_text".into()],
+                    scope_notes: vec![
+                        "Linux bridge FDB observation inside the exact qualified FRR container artifact".into(),
+                        "bounded authorized shadow acquisition; no authoritative graph projection".into(),
+                    ],
+                    requires: vec![],
+                    conflicts: vec![],
+                    support: SupportState::Supported,
+                    evidence: vec![ApplicabilityEvidence {
+                        kind: "observed_capture".into(),
+                        source: "clab-bonsai-bn003-vrf-frr2 bridge fdb show".into(),
+                        revision: Some("10.6.1_git".into()),
+                        scope: Some(
+                            "platform=frr namespace=default feature=mac.linux_bridge_fdb".into(),
+                        ),
+                        claim: SupportState::Supported,
+                    }],
+                    acquisition: vec![AcquisitionContract {
+                        kind: AcquisitionKind::CliObservation,
+                        contracts: vec![
+                            "frr_verified_ssh_l2_snapshot_v1".into(),
+                            "linux_bridge_fdb_show".into(),
+                        ],
+                    }],
+                    normalizer: Some(NormalizerRef {
+                        id: "mac_linux_bridge_fdb_normalizer".into(),
+                        revision: NEIGHBOR_PARSER_REVISION.into(),
+                        mapping_revision: Some(NEIGHBOR_MAPPING_REVISION.into()),
+                    }),
+                    promotion: PromotionState::Shadow,
+                },
+            ),
+            (
+                "vlan.linux_bridge_vlan".into(),
+                FeatureFlag {
+                    enabled: true,
+                    parsers: vec!["native_rust_linux_bridge_text".into()],
+                    scope_notes: vec![
+                        "Linux bridge VLAN observation inside the exact qualified FRR container artifact".into(),
+                        "bounded authorized shadow acquisition; no authoritative graph projection".into(),
+                    ],
+                    requires: vec![],
+                    conflicts: vec![],
+                    support: SupportState::Supported,
+                    evidence: vec![ApplicabilityEvidence {
+                        kind: "observed_capture".into(),
+                        source: "clab-bonsai-bn003-vrf-frr2 bridge -c vlan show".into(),
+                        revision: Some("10.6.1_git".into()),
+                        scope: Some(
+                            "platform=frr namespace=default feature=vlan.linux_bridge_vlan".into(),
+                        ),
+                        claim: SupportState::Supported,
+                    }],
+                    acquisition: vec![AcquisitionContract {
+                        kind: AcquisitionKind::CliObservation,
+                        contracts: vec![
+                            "frr_verified_ssh_l2_snapshot_v1".into(),
+                            "linux_bridge_c_vlan_show".into(),
+                        ],
+                    }],
+                    normalizer: Some(NormalizerRef {
+                        id: "vlan_linux_bridge_vlan_normalizer".into(),
+                        revision: VLAN_PARSER_REVISION.into(),
+                        mapping_revision: Some(VLAN_MAPPING_REVISION.into()),
+                    }),
+                    promotion: PromotionState::Shadow,
+                },
+            ),
+        ]),
             verification: "release_qualified".into(),
         },
         NosFeatureProfile {

@@ -45,6 +45,7 @@ pub enum ArpndSourceProfile {
     EosShowArpVrfAllJson,
     NxosShowIpArpDetailJsonNative,
     CumulusIpNeighShow,
+    LinuxIpNeighShow,
 }
 
 impl ArpndSourceProfile {
@@ -53,6 +54,7 @@ impl ArpndSourceProfile {
             Self::EosShowArpVrfAllJson => "eos/show-arp-vrf-all-json",
             Self::NxosShowIpArpDetailJsonNative => "nxos/show-ip-arp-detail-vrf-all-json-native",
             Self::CumulusIpNeighShow => "cumulus/ip-neigh-show",
+            Self::LinuxIpNeighShow => "linux/ip-neigh-show",
         }
     }
     fn source_kind(self) -> &'static str {
@@ -60,7 +62,7 @@ impl ArpndSourceProfile {
             Self::EosShowArpVrfAllJson | Self::NxosShowIpArpDetailJsonNative => {
                 "structured_cli_json"
             }
-            Self::CumulusIpNeighShow => "cli_text",
+            Self::CumulusIpNeighShow | Self::LinuxIpNeighShow => "cli_text",
         }
     }
 }
@@ -70,6 +72,7 @@ pub enum MacSourceProfile {
     EosShowMacAddressTableUnicastJson,
     NxosShowMacAddressTableJsonNative,
     CumulusBridgeFdbShow,
+    LinuxBridgeFdbShow,
 }
 
 impl MacSourceProfile {
@@ -78,6 +81,7 @@ impl MacSourceProfile {
             Self::EosShowMacAddressTableUnicastJson => "eos/show-mac-address-table-unicast-json",
             Self::NxosShowMacAddressTableJsonNative => "nxos/show-mac-address-table-json-native",
             Self::CumulusBridgeFdbShow => "cumulus/bridge-fdb-show",
+            Self::LinuxBridgeFdbShow => "linux/bridge-fdb-show",
         }
     }
     fn source_kind(self) -> &'static str {
@@ -85,7 +89,7 @@ impl MacSourceProfile {
             Self::EosShowMacAddressTableUnicastJson | Self::NxosShowMacAddressTableJsonNative => {
                 "structured_cli_json"
             }
-            Self::CumulusBridgeFdbShow => "cli_text",
+            Self::CumulusBridgeFdbShow | Self::LinuxBridgeFdbShow => "cli_text",
         }
     }
 }
@@ -1458,7 +1462,7 @@ pub fn normalize_arpnd(obs: &ArpndObservation<'_>) -> NeighborNormalizationOutpu
                 }
             }
         }
-        ArpndSourceProfile::CumulusIpNeighShow => {
+        ArpndSourceProfile::CumulusIpNeighShow | ArpndSourceProfile::LinuxIpNeighShow => {
             parse_cumulus_arp(obs.capture.output, &mut report)
         }
     };
@@ -1630,7 +1634,7 @@ pub fn normalize_mac(obs: &MacObservation<'_>) -> NeighborNormalizationOutput {
                 }
             }
         }
-        MacSourceProfile::CumulusBridgeFdbShow => {
+        MacSourceProfile::CumulusBridgeFdbShow | MacSourceProfile::LinuxBridgeFdbShow => {
             parse_cumulus_mac(obs.capture.output, &mut report)
         }
     };
@@ -2261,6 +2265,38 @@ mod tests {
             elapsed.as_secs_f64() * 1000.0,
             elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64,
             iterations as f64 / elapsed.as_secs_f64().max(f64::EPSILON)
+        );
+    }
+    #[test]
+    fn genuine_linux_frr_neighbor_and_fdb_shapes_are_explicit() {
+        let neigh = normalize_arpnd(&ArpndObservation {
+            profile: ArpndSourceProfile::LinuxIpNeighShow,
+            capture: complete(include_str!(
+                "../tests/fixtures/bn024/l2-vertical/frr2-ip-neigh-show.txt"
+            )),
+            context: ctx(),
+            interface_identities: None,
+        });
+        assert!(neigh.facts.is_empty());
+        assert!(neigh.coverage.positive_empty_population);
+        assert_eq!(
+            neigh.coverage.population_coverage,
+            ScopedPopulationCoverage::Complete
+        );
+
+        let mac = normalize_mac(&MacObservation {
+            profile: MacSourceProfile::LinuxBridgeFdbShow,
+            capture: complete(include_str!(
+                "../tests/fixtures/bn024/l2-vertical/frr2-bridge-fdb-show.txt"
+            )),
+            context: ctx(),
+            interface_identities: None,
+        });
+        assert_eq!(mac.report.malformed_records, 0);
+        assert_eq!(mac.facts.len(), 2);
+        assert_eq!(
+            mac.coverage.population_coverage,
+            ScopedPopulationCoverage::Complete
         );
     }
 }

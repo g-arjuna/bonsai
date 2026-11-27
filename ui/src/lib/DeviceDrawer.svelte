@@ -187,6 +187,33 @@
     return nativeIfaceEvidence?.facts || [];
   }
 
+  function nativeFactsByKind(kind) {
+    return nativeIfaceFacts().filter(f => f.fact_kind === kind);
+  }
+
+  function nativeFeatureFamilies() {
+    return nativeIfaceEvidence?.normalization_report?.feature_families || [];
+  }
+
+  function nativeL2Facts() {
+    return nativeIfaceFacts().filter(f => ['arpnd.neighbor', 'mac.forwarding', 'vlan.bridge_domain'].includes(f.fact_kind));
+  }
+
+  function l2FactSummary(fact) {
+    const fields = fact?.payload?.fields || {};
+    if (fact?.fact_kind === 'arpnd.neighbor') {
+      return `${observedText(fields.ip_address)} → ${observedText(fields.mac_address)} on ${observedText(fields.outgoing_interface)}`;
+    }
+    if (fact?.fact_kind === 'mac.forwarding') {
+      return `${observedText(fields.mac_address)} on ${observedText(fields.outgoing_interface)} vlan ${observedText(fields.vlan_id)}`;
+    }
+    if (fact?.fact_kind === 'vlan.bridge_domain') {
+      const members = Array.isArray(fields.members) ? fields.members.length : 0;
+      return `vlan ${observedText(fields.vlan_id)} in ${observedText(fields.bridge_domain)} · ${members} source-reported members`;
+    }
+    return fact?.payload?.state || 'typed evidence';
+  }
+
   function ifaceField(fact, key) {
     return fact?.payload?.fields?.[key];
   }
@@ -718,13 +745,20 @@
                 <span class="muted">Output digest</span><span><code>{nativeIfaceEvidence.interface_output_sha256?.slice(0, 16)}…</code> ({nativeIfaceEvidence.interface_output_bytes} bytes)</span>
                 <span class="muted">SSH host key</span><span>{nativeIfaceEvidence.host_key_verified ? 'verified against pinned known-hosts policy' : 'verification state unknown'}</span>
               </div>
+              {#if nativeFeatureFamilies().length > 0}
+                <div class="audit-grid" style="margin:0 0 10px;">
+                  {#each nativeFeatureFamilies() as family}
+                    <span class="muted"><code>{family.feature}</code></span><span>{family.facts_emitted} facts · coverage {family.coverage?.population_coverage || 'unknown'}{family.coverage?.positive_empty_population ? ' · positive empty population' : ''}</span>
+                  {/each}
+                </div>
+              {/if}
               {#if nativeIfaceFacts().length === 0}
                 <div class="empty">No typed interface facts retained. This is explicit evidence absence, not an empty interface table.</div>
               {:else}
                 <table>
                   <thead><tr><th>Interface</th><th>State</th><th>Type</th><th>Addresses</th><th>Evidence</th></tr></thead>
                   <tbody>
-                    {#each nativeIfaceFacts() as fact}
+                    {#each nativeFactsByKind('interface.state') as fact}
                       {@const fields = fact.payload?.fields || {}}
                       <tr>
                         <td><code>{ifaceDisplayName(fact)}</code><div class="muted" style="font-size:10px;">{fact.subject?.network_namespace || 'default'}</div></td>
@@ -736,9 +770,29 @@
                     {/each}
                   </tbody>
                 </table>
-                {#each nativeIfaceFacts().filter(f => f.quality?.notes?.length).slice(0, 4) as fact}
+                {#each nativeFactsByKind('interface.state').filter(f => f.quality?.notes?.length).slice(0, 4) as fact}
                   <div class="muted" style="font-size:11px; margin-top:4px;"><code>{ifaceDisplayName(fact)}</code>: {fact.quality.notes.join('; ')}</div>
                 {/each}
+                {@const l2facts = nativeL2Facts()}
+                {#if l2facts.length > 0}
+                  <h4 class="section-head" style="margin-top:12px;">L2 neighbor/bridge evidence</h4>
+                  <table>
+                    <thead><tr><th>Family</th><th>Entity</th><th>Observed evidence</th><th>Evidence</th></tr></thead>
+                    <tbody>
+                      {#each l2facts.slice(0, 24) as fact}
+                        <tr>
+                          <td><code>{fact.fact_kind}</code></td>
+                          <td><code>{fact.subject?.entity || fact.payload?.state || 'population'}</code></td>
+                          <td style="max-width:220px; overflow-wrap:anywhere;">{l2FactSummary(fact)}</td>
+                          <td title={fact.fact_id}><code>{String(fact.fact_id || '').slice(0, 12)}…</code><div class="muted" style="font-size:10px;">{fact.quality?.completeness || 'unknown'} · {fact.lifecycle || 'active'}</div></td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                  {#if l2facts.length > 24}
+                    <div class="native-note warn">L2 fact display is bounded to 24 of {l2facts.length} retained neighbor/bridge facts.</div>
+                  {/if}
+                {/if}
                 {#if nativeIfaceEvidence.fact_retention_truncated}
                   <div class="native-note warn">Fact display is retention-bounded: {nativeIfaceEvidence.facts_retained}/{nativeIfaceEvidence.facts_emitted} retained.</div>
                 {/if}

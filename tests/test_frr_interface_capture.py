@@ -23,7 +23,13 @@ class FakeClient:
         self.channel = channel
 
     def exec_command(self, command, timeout=15):
-        assert command in {capture.VERSION_COMMAND, capture.INTERFACE_COMMAND}
+        assert command in {
+            capture.VERSION_COMMAND,
+            capture.INTERFACE_COMMAND,
+            capture.NEIGHBOR_COMMAND,
+            capture.MAC_COMMAND,
+            capture.VLAN_COMMAND,
+        }
         return None, FakeStdout(self.channel), None
 
 
@@ -108,3 +114,73 @@ def test_continuously_ready_stdout_cannot_starve_absolute_deadline(monkeypatch):
     with pytest.raises(ValueError, match="deadline exceeded"):
         run_with_channel(channel)
     assert channel.close_calls == 1
+
+
+class MainFakeKey:
+    def get_name(self):
+        return "ssh-ed25519"
+
+    def asbytes(self):
+        return b"test-host-key"
+
+
+class MainFakeTransport:
+    def get_remote_server_key(self):
+        return MainFakeKey()
+
+
+class MainFakeClient:
+    def __init__(self):
+        self.commands = []
+
+    def load_host_keys(self, path):
+        self.known_hosts = path
+
+    def set_missing_host_key_policy(self, policy):
+        self.policy = policy
+
+    def connect(self, **kwargs):
+        self.connect_kwargs = kwargs
+
+    def get_transport(self):
+        return MainFakeTransport()
+
+    def exec_command(self, command, timeout=15):
+        self.commands.append(command)
+        output = {
+            capture.VERSION_COMMAND: b'{"version":"10.6.1_git","hostName":"frr2"}',
+            capture.INTERFACE_COMMAND: b"{}",
+            capture.NEIGHBOR_COMMAND: b"",
+            capture.MAC_COMMAND: b"",
+            capture.VLAN_COMMAND: b"port              vlan-id  \n",
+        }[command]
+        return None, FakeStdout(FakeChannel([output], exit_ready=True)), None
+
+    def close(self):
+        pass
+
+
+def test_main_executes_exact_fixed_multifamily_commands_and_emits_envelope(monkeypatch, capsys):
+    client = MainFakeClient()
+    monkeypatch.setattr(capture.paramiko, "SSHClient", lambda: client)
+    monkeypatch.setenv("BONSAI_CAPTURE_PASSWORD", "test-password")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["frr_interface_capture.py", "--host", "192.0.2.1", "--username", "obs", "--known-hosts", "/tmp/pins"],
+    )
+    assert capture.main() == 0
+    assert client.commands == [
+        capture.VERSION_COMMAND,
+        capture.INTERFACE_COMMAND,
+        capture.NEIGHBOR_COMMAND,
+        capture.MAC_COMMAND,
+        capture.VLAN_COMMAND,
+    ]
+    envelope = __import__("json").loads(capsys.readouterr().out)
+    assert envelope["neighbor_command"] == capture.NEIGHBOR_COMMAND
+    assert envelope["mac_command"] == capture.MAC_COMMAND
+    assert envelope["vlan_command"] == capture.VLAN_COMMAND
+    assert envelope["neighbor_output"] == ""
+    assert envelope["mac_output"] == ""
+    assert envelope["vlan_output"].startswith("port")
