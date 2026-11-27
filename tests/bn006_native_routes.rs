@@ -575,3 +575,235 @@ fn input_route_and_nexthop_reordering_does_not_change_resolution_outcome() {
         "same_vrf_selected_route_evidence_only_not_rib_or_forwarding_database"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Operational route-query integration: retained shadow evidence is persisted
+// monotonically and consumed through the real MCP tool path with explicit
+// authorization, freshness and unresolved-branch semantics. These are
+// synthetic replay controls — not live acquisition or verified forwarding.
+// ---------------------------------------------------------------------------
+
+mod mcp_integration {
+    use super::*;
+    use bonsai::enrichment::native_routes::{StoredNativeRouteObservation, persist_observation};
+    use bonsai::graph::GraphStore;
+    use bonsai::http_server::auth::{Role, RoutingAccessScope};
+    use bonsai::mcp_server::{ToolExecutionContext, call_tool_with_store_and_routing};
+    use serde_json::json;
+
+    fn capture(
+        address: &str,
+        routes: Vec<NativeRouteEntry>,
+    ) -> bonsai::native_routes::NativeRouteCapture {
+        bonsai::native_routes::NativeRouteCapture {
+            exporter_address: address.into(),
+            parser_id: "frr-native-ip-route".into(),
+            parser_version: "0.1.0".into(),
+            raw_sample_sha256: "synthetic-control".into(),
+            routes,
+            missing_or_invalid_fields: Vec::new(),
+            unparsed_fields: Vec::new(),
+        }
+    }
+
+    fn observation(address: &str, captured_at_ns: i64) -> StoredNativeRouteObservation {
+        StoredNativeRouteObservation {
+            captured_at_ns,
+            capture_started_at_ns: captured_at_ns,
+            transport: "synthetic_fixture_replay".into(),
+            raw_routes: "{}".into(),
+            capture: capture(address, selected_fixture_routes()),
+            afi_safi: "ipv4-unicast".into(),
+            inventory_identity: Some(format!("registered-target:{address}")),
+            acquisition_profile: Some("frr.fixed-readonly-native-routes-v1".into()),
+        }
+    }
+
+    fn scoped_context(speaker: &str) -> ToolExecutionContext {
+        ToolExecutionContext {
+            role: Role::ApiReadonly,
+            scope: Some(RoutingAccessScope {
+                speaker: Some(speaker.into()),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_route_lookup_resolves_through_persisted_shadow_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            GraphStore::open(
+                dir.path().join("graph").to_str().unwrap(),
+                256 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+        let now = bonsai::graph::common::now_ns();
+        persist_observation(&store, &observation("192.0.2.1", now))
+            .await
+            .unwrap();
+
+        let result = call_tool_with_store_and_routing(
+            &store,
+            None,
+            "get_native_route_lookup",
+            &json!({"target": "10.0.0.9"}),
+            &scoped_context("192.0.2.1"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["freshness"], "fresh");
+        assert_eq!(result["evidence_class"], "retained_shadow_or_replay");
+        assert_eq!(result["transport"], "synthetic_fixture_replay");
+        assert_eq!(result["total_retained_routes"], 3);
+        assert_eq!(result["resolution"]["resolution_state"], "resolved");
+        assert_eq!(
+            result["resolution"]["terminal_interfaces"],
+            json!(["eth0", "eth1"])
+        );
+        assert_eq!(
+            result["resolution"]["forwarding_verification"],
+            "not_established_by_native_route_evidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_route_lookup_preserves_unresolved_branches_explicitly() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            GraphStore::open(
+                dir.path().join("graph").to_str().unwrap(),
+                256 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+        let now = bonsai::graph::common::now_ns();
+        persist_observation(&store, &observation("192.0.2.1", now))
+            .await
+            .unwrap();
+
+        // No route covers 203.0.113.9: the lookup must be explicitly
+        // unresolved rather than fabricating a path.
+        let result = call_tool_with_store_and_routing(
+            &store,
+            None,
+            "get_native_route_lookup",
+            &json!({"target": "203.0.113.9"}),
+            &scoped_context("192.0.2.1"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["resolution"]["resolution_state"], "unresolved");
+        assert!(
+            result["resolution"]["unresolved_reason"]
+                .as_str()
+                .is_some_and(|reason| !reason.is_empty()),
+            "unresolved lookups require an explicit reason: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_route_lookup_enforces_speaker_scope_and_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            GraphStore::open(
+                dir.path().join("graph").to_str().unwrap(),
+                256 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+        let now = bonsai::graph::common::now_ns();
+        persist_observation(&store, &observation("192.0.2.1", now))
+            .await
+            .unwrap();
+
+        let err = call_tool_with_store_and_routing(
+            &store,
+            None,
+            "get_native_route_lookup",
+            &json!({"device_address": "192.0.2.2", "target": "10.0.0.9"}),
+            &scoped_context("192.0.2.1"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("routing_scope_violation"), "{err}");
+
+        let err = call_tool_with_store_and_routing(
+            &store,
+            None,
+            "get_native_route_lookup",
+            &json!({"target": "10.0.0.9"}),
+            &scoped_context("192.0.2.9"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("native_route_evidence_unavailable"), "{err}");
+
+        let err = call_tool_with_store_and_routing(
+            &store,
+            None,
+            "get_native_route_lookup",
+            &json!({"target": "10.0.0.9", "afi_safi": "ipv6-unicast"}),
+            &scoped_context("192.0.2.1"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("afi_safi"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn native_route_persistence_is_monotonic_and_truthful_about_freshness() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            GraphStore::open(
+                dir.path().join("graph").to_str().unwrap(),
+                256 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+        let now = bonsai::graph::common::now_ns();
+        let obs = observation("192.0.2.1", now);
+        persist_observation(&store, &obs).await.unwrap();
+        // Exact replay is idempotent.
+        persist_observation(&store, &obs).await.unwrap();
+
+        // Older observations never overwrite newer evidence.
+        let mut older = obs.clone();
+        older.captured_at_ns = now - 1_000_000_000;
+        let stale = persist_observation(&store, &older).await;
+        assert!(
+            stale
+                .as_ref()
+                .err()
+                .is_some_and(|err| err.to_string().contains("stale native route observation")),
+            "{stale:?}"
+        );
+
+        // Equal-time conflicting evidence fails explicitly.
+        let mut conflict = obs.clone();
+        conflict.raw_routes = "{\"different\":true}".into();
+        let conflicted = persist_observation(&store, &conflict).await;
+        assert!(
+            conflicted
+                .as_ref()
+                .err()
+                .is_some_and(|err| err.to_string().contains("equal-time conflicting")),
+            "{conflicted:?}"
+        );
+
+        // An observation older than the freshness policy is stale, not fresh.
+        let stale_obs = observation("192.0.2.5", now - 600_000_000_000);
+        persist_observation(&store, &stale_obs).await.unwrap();
+        let result = call_tool_with_store_and_routing(
+            &store,
+            None,
+            "get_native_route_lookup",
+            &json!({"target": "10.0.0.9"}),
+            &scoped_context("192.0.2.5"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["freshness"], "stale");
+    }
+}
