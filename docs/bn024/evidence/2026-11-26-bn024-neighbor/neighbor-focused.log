@@ -1,0 +1,32 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline neighbor_
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel-arpnd)
+    Finished `ci` profile [optimized] target(s) in 5m 19s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 21 tests
+test neighbor_facts::tests::availability_states_forbid_values ... ok
+test neighbor_facts::tests::arpnd_valid_payload_accepted ... ok
+test neighbor_facts::tests::mac_validation_rejects_nonnormalized_mac ... ok
+test neighbor_normalizer::tests::duplicate_json_keys_are_rejected ... ok
+test neighbor_normalizer::tests::failed_neighbor_does_not_fabricate_zero_mac ... ok
+test neighbor_normalizer::tests::genuine_cumulus_mac_fixture_preserves_vlan_and_static_permanent_distinction ... ok
+test neighbor_normalizer::tests::genuine_eos_arp_fixture_expected_values ... ok
+test neighbor_normalizer::tests::genuine_cumulus_arp_fixture_preserves_ipv6_router_and_permanent_states ... ok
+test neighbor_normalizer::tests::malformed_input_is_refusal_not_empty_success ... ok
+test neighbor_normalizer::tests::genuine_nxos_arp_fixture_preserves_physical_and_unknown_vrf ... ok
+test neighbor_normalizer::tests::genuine_eos_mac_fixture_expected_values ... ok
+test neighbor_reconciliation::tests::synthetic_cross_table_scaling_100_1000_10000 ... ignored, synthetic scaling evidence; run explicitly for performance measurement
+test lldp_normalizer::tests::eos_distinct_neighbor_on_same_interface_is_not_duplicate ... ok
+test telemetry::tests::xr_lldp_multi_neighbor_blob_preserves_every_entry ... ok
+test neighbor_normalizer::tests::eos_reordered_source_arrays_preserve_semantic_identity_sets ... ok
+test neighbor_normalizer::tests::genuine_nxos_mac_fixture_separates_nve_evidence_without_overinterpretation ... ok
+test neighbor_reconciliation::tests::semantically_invalid_facts_are_rejected_before_matching ... ok
+test neighbor_reconciliation::tests::incomplete_coverage_cannot_establish_absence ... ok
+test neighbor_reconciliation::tests::withdrawn_neighbor_evidence_is_not_current ... ok
+test neighbor_reconciliation::tests::genuine_eos_cross_table_consistency_is_deterministic ... ok
+test graph::tests::syslog_fact_candidate_probe_finds_known_bgp_neighbor_without_joining ... ok
+
+test result: ok. 20 passed; 0 failed; 1 ignored; 0 measured; 770 filtered out; finished in 2.26s
+

@@ -58,7 +58,7 @@ pub struct InterfaceEntityKey {
 }
 
 impl InterfaceEntityKey {
-    fn from_fact(fact: &TypedFact) -> Option<Self> {
+    pub fn from_fact(fact: &TypedFact) -> Option<Self> {
         let canonical_interface = fact.subject.entity.clone()?;
         let identity = &fact.subject.interface_identity;
         Some(Self {

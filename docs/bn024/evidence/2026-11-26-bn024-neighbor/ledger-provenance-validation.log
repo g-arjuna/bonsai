@@ -1,0 +1,7 @@
+upstream manifest sources 123
+neighbor source entries 6
+missing local fixture entries 0
+capability entries 66
+arpnd.acquisition EXISTING_PARTIAL
+macs.acquisition EXISTING_PARTIAL
+OK

@@ -1,0 +1,60 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline neighbor_ -- --nocapture
+    Finished `ci` profile [optimized] target(s) in 0.32s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 48 tests
+test neighbor_facts::tests::arpnd_valid_payload_accepted ... ok
+test neighbor_facts::tests::availability_states_forbid_values ... ok
+test neighbor_facts::tests::mac_validation_rejects_nonnormalized_mac ... ok
+test lldp_normalizer::tests::positive_empty_capture_preserves_scoped_coverage_without_neighbor_facts ... ok
+test neighbor_normalizer::tests::duplicate_json_keys_are_rejected ... ok
+test neighbor_normalizer::tests::cumulus_bridge_master_and_entry_contexts_are_preserved ... ok
+test neighbor_normalizer::tests::failed_neighbor_does_not_fabricate_zero_mac ... ok
+test neighbor_normalizer::tests::eos_empty_vrf_root_is_unknown_scope_not_positive_empty_table ... ok
+test neighbor_normalizer::tests::eos_neighbor_without_hardware_address_is_retained_as_incomplete_unknown ... ok
+test neighbor_normalizer::tests::genuine_nxos_arp_fixture_preserves_physical_and_unknown_vrf ... ok
+test neighbor_normalizer::tests::genuine_eos_arp_fixture_expected_values ... ok
+test neighbor_normalizer::tests::linux_neighbor_states_preserve_probe_delay_noarp_and_unknown ... ok
+test neighbor_normalizer::tests::malformed_input_is_refusal_not_empty_success ... ok
+test neighbor_normalizer::tests::genuine_cumulus_arp_fixture_preserves_ipv6_router_and_permanent_states ... ok
+test neighbor_normalizer::tests::missing_or_malformed_nxos_containers_are_not_confirmed_empty_tables ... ok
+test lldp_normalizer::tests::eos_distinct_neighbor_on_same_interface_is_not_duplicate ... ok
+test neighbor_normalizer::tests::genuine_nxos_mac_fixture_separates_nve_evidence_without_overinterpretation ... ok
+test neighbor_normalizer::tests::malformed_linux_lladdr_is_invalid_evidence_not_protocol_failure ... ok
+test neighbor_normalizer::tests::genuine_eos_mac_fixture_expected_values ... ok
+test neighbor_normalizer::tests::structured_subinterface_subject_uses_canonical_parent_without_losing_native_name ... ok
+test neighbor_reconciliation::tests::arpnd_coverage_cannot_establish_mac_table_absence ... ok
+test neighbor_normalizer::tests::genuine_cumulus_mac_fixture_preserves_vlan_and_static_permanent_distinction ... ok
+test neighbor_reconciliation::tests::capture_time_skew_produces_incompatible_observations_not_consistency ... ok
+test neighbor_normalizer::tests::raw_capture_evidence_digest_is_shared_across_all_emitted_facts ... ok
+test neighbor_reconciliation::tests::complete_exactly_scoped_coverage_can_support_absence ... ok
+test neighbor_normalizer::tests::eos_reordered_source_arrays_preserve_semantic_identity_sets ... ok
+test neighbor_reconciliation::tests::invalid_or_wrong_plane_facts_cannot_contribute_to_matching ... ok
+test neighbor_reconciliation::tests::explicit_forwarding_interface_conflict_requires_comparable_evidence ... ok
+test neighbor_reconciliation::tests::logical_svi_and_physical_port_difference_is_not_false_conflict ... ok
+test neighbor_reconciliation::tests::newer_incomplete_coverage_masks_older_complete_coverage_in_same_source ... ok
+test neighbor_reconciliation::tests::positively_established_lag_member_aggregate_relationship_is_not_conflict ... ok
+test neighbor_reconciliation::tests::missing_or_conflicting_domain_evidence_is_indeterminate_not_guessed ... ok
+test neighbor_reconciliation::tests::replayed_or_context_split_rows_for_one_attachment_are_not_multiple_candidates ... ok
+test neighbor_reconciliation::tests::same_ipv6_link_local_on_different_interfaces_remains_distinct ... ok
+test neighbor_reconciliation::tests::same_vlan_and_mac_do_not_match_across_bridge_domains ... ok
+test neighbor_reconciliation::tests::same_ipv4_address_in_different_vrfs_remains_separately_scoped ... ok
+test neighbor_reconciliation::tests::same_vrf_alone_does_not_establish_bridge_domain_attachment ... ok
+test neighbor_reconciliation::tests::synthetic_cross_table_scaling_100_1000_10000 ... ignored, synthetic scaling evidence; run explicitly
+test neighbor_reconciliation::tests::same_vlan_and_mac_do_not_match_across_device_tenant_or_asic_scope ... ok
+test neighbor_reconciliation::tests::structured_subinterfaces_do_not_collapse_to_parent_identity ... ok
+test neighbor_reconciliation::tests::valid_evidence_matches_only_inside_established_forwarding_domain ... ok
+test telemetry::tests::xr_lldp_multi_neighbor_blob_preserves_every_entry ... ok
+test neighbor_reconciliation::tests::unknown_or_stale_freshness_is_counted_and_excluded ... ok
+test neighbor_reconciliation::tests::genuine_eos_same_device_captures_reconcile_with_explicitly_synthetic_domain_bindings ... ok
+test neighbor_reconciliation::tests::candidate_truncation_is_indeterminate_and_counted_not_false_consistency ... ok
+neighbor_reconciliation_concentrated_key_perf candidates=256 evaluated_max=64 elapsed_ms=17.147
+test neighbor_reconciliation::tests::concentrated_candidate_key_scale_is_bounded_and_reported ... ok
+neighbor_mac_normalization_perf iterations=100 total_ms=183.337 avg_us=1833.4 normalizations_per_sec=545.4
+test neighbor_normalizer::tests::normalization_performance_smoke_reports_once_per_capture_digest_cost ... ok
+test graph::tests::syslog_fact_candidate_probe_finds_known_bgp_neighbor_without_joining ... ok
+
+test result: ok. 47 passed; 0 failed; 1 ignored; 0 measured; 776 filtered out; finished in 2.56s
+

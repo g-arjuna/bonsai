@@ -1,0 +1,9 @@
+52:54:00:61:91:8e dev peerlink vlan 24 sticky master bridge static
+52:54:00:61:91:8e dev peerlink vlan 13 sticky master bridge static
+52:54:00:76:91:c0 dev peerlink master bridge permanent
+52:54:00:52:13:14 dev bond02 vlan 24 master bridge 
+52:54:00:dc:c2:ff dev bond02 master bridge permanent
+52:54:00:d6:66:41 dev bond01 vlan 13 master bridge 
+52:54:00:ff:0f:ce dev bond01 master bridge permanent
+52:54:00:76:91:c0 dev bridge vlan 24 master bridge permanent
+52:54:00:76:91:c0 dev bridge vlan 13 master bridge permanent

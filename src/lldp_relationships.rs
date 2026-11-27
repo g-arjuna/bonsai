@@ -15,7 +15,11 @@ use crate::interface_normalizer::parse_rfc3339;
 use crate::lldp_facts::{
     ChassisIdSubtype, LldpCaptureOutcome, LldpNeighborPayload, PopulationCoverage, PortIdSubtype,
 };
-use crate::typed_facts::{EvidenceRef, InterfaceSubjectIdentity, Lifecycle, TypedFact};
+use crate::semantic_evidence::{
+    CoverageStreamEvidence, ExpectedFactContract, FreshnessPolicy, observation_freshness,
+    select_usable_coverage, semantic_time_key, validate_fact_envelope,
+};
+use crate::typed_facts::{EvidenceRef, InterfaceSubjectIdentity, Lifecycle, TrustClass, TypedFact};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChassisIdentityEvidence {
@@ -52,6 +56,10 @@ pub struct CaptureCoverageEvidence {
     pub device_id: String,
     pub scope: Option<String>,
     pub network_namespace: Option<String>,
+    /// Complete collector/source stream identity. Generations are ordered
+    /// only within one collector+source+acquisition stream, never globally.
+    pub collector_id: Option<String>,
+    pub source_kind: Option<String>,
     pub capture_outcome: LldpCaptureOutcome,
     pub population_coverage: PopulationCoverage,
     pub capture_id: Option<String>,
@@ -61,6 +69,67 @@ pub struct CaptureCoverageEvidence {
     pub valid_until: Option<String>,
     pub covered_interfaces: BTreeSet<String>,
     pub evidence_refs: Vec<EvidenceRef>,
+}
+
+impl CoverageStreamEvidence for CaptureCoverageEvidence {
+    fn stream_key(&self) -> (String, String, String) {
+        (
+            self.collector_id.clone().unwrap_or_default(),
+            self.source_kind.clone().unwrap_or_default(),
+            self.acquisition_scope.clone().unwrap_or_default(),
+        )
+    }
+
+    fn capture_id(&self) -> Option<&str> {
+        self.capture_id.as_deref()
+    }
+
+    fn source_generation(&self) -> Option<u64> {
+        self.source_generation
+    }
+
+    fn observation_time(&self) -> Option<&str> {
+        self.observation_time.as_deref()
+    }
+
+    fn usable_for_absence(
+        &self,
+        as_of: crate::semantic_evidence::Time,
+        policy: FreshnessPolicy,
+    ) -> bool {
+        let Some(observed) = self.observation_time.as_deref() else {
+            return false;
+        };
+        self.capture_outcome == LldpCaptureOutcome::Complete
+            && self.population_coverage == PopulationCoverage::Complete
+            && observation_freshness(
+                Lifecycle::Active,
+                observed,
+                None,
+                self.valid_until.as_deref(),
+                as_of,
+                policy,
+            )
+            .is_current()
+    }
+
+    fn replay_signature(&self) -> String {
+        serde_json::json!({
+            "device_id": self.device_id,
+            "scope": self.scope,
+            "network_namespace": self.network_namespace,
+            "stream": self.stream_key(),
+            "capture_outcome": self.capture_outcome,
+            "population_coverage": self.population_coverage,
+            "capture_id": self.capture_id,
+            "source_generation": self.source_generation,
+            "observation_time": semantic_time_key(self.observation_time.as_deref()),
+            "valid_until": semantic_time_key(self.valid_until.as_deref()),
+            "covered_interfaces": self.covered_interfaces,
+            "evidence_refs": self.evidence_refs,
+        })
+        .to_string()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +160,10 @@ pub struct AdjacencyReconciliationInput<'a> {
     pub capture_coverage: &'a [CaptureCoverageEvidence],
     /// Explicit analysis time (RFC-3339). Required for all freshness results.
     pub as_of: &'a str,
+    /// Explicit consumer freshness policy for capture coverage whose source
+    /// did not establish its own validity boundary. This is a consumer policy,
+    /// not fabricated source evidence; `None` keeps such coverage unknown.
+    pub coverage_freshness: FreshnessPolicy,
     pub limits: Option<ReconciliationLimits>,
 }
 
@@ -889,51 +962,32 @@ fn coverage_absence_evidence<'a>(
     coverage: &'a [CaptureCoverageEvidence],
     coverage_index: &BTreeMap<(String, Scope), Vec<usize>>,
     as_of: chrono::DateTime<chrono::FixedOffset>,
+    coverage_freshness: FreshnessPolicy,
 ) -> (bool, Vec<EvidenceRef>) {
-    let mut usable = Vec::new();
     let key = (remote_device.to_string(), scope.clone());
     let candidates = coverage_index
         .get(&key)
         .into_iter()
         .flat_map(|v| v.iter())
-        .map(|i| &coverage[*i]);
-    for cov in candidates.filter(|c| {
-        network_namespaces.contains(&c.network_namespace)
-            && c.capture_outcome == LldpCaptureOutcome::Complete
-            && c.population_coverage == PopulationCoverage::Complete
-            && !c.covered_interfaces.is_empty()
-            && c.covered_interfaces
-                .intersection(interface_names)
-                .next()
-                .is_some()
-    }) {
-        let (Some(observed), Some(until)) = (
-            cov.observation_time.as_deref().and_then(parse_rfc3339),
-            cov.valid_until.as_deref().and_then(parse_rfc3339),
-        ) else {
-            continue;
-        };
-        if observed <= as_of && until > as_of {
-            usable.push(cov);
-        }
+        .map(|i| &coverage[*i])
+        .filter(|c| {
+            network_namespaces.contains(&c.network_namespace)
+                && !c.covered_interfaces.is_empty()
+                && c.covered_interfaces
+                    .intersection(interface_names)
+                    .next()
+                    .is_some()
+        });
+
+    // Shared stream selection owns exact-replay consolidation, contradictory
+    // same-capture detection, parsed timestamp ordering, future exclusion and
+    // newest-before-completeness selection. LLDP-specific applicability remains
+    // the device/scope/namespace/interface filter above.
+    if let Some(selected) = select_usable_coverage(candidates, as_of, coverage_freshness) {
+        (true, selected.evidence_refs.clone())
+    } else {
+        (false, vec![])
     }
-    if usable.is_empty() {
-        return (false, vec![]);
-    }
-    let max_generation = usable.iter().filter_map(|c| c.source_generation).max();
-    if let Some(generation) = max_generation {
-        usable.retain(|c| c.source_generation == Some(generation));
-    }
-    let first = usable[0];
-    let consistent = usable.iter().all(|c| {
-        c.capture_id == first.capture_id
-            && c.covered_interfaces == first.covered_interfaces
-            && c.observation_time == first.observation_time
-    });
-    if !consistent {
-        return (false, vec![]);
-    }
-    (true, first.evidence_refs.clone())
 }
 
 fn reverse_status(
@@ -951,6 +1005,7 @@ fn reverse_status(
     coverage: &[CaptureCoverageEvidence],
     coverage_index: &BTreeMap<(String, Scope), Vec<usize>>,
     as_of: chrono::DateTime<chrono::FixedOffset>,
+    coverage_freshness: FreshnessPolicy,
     limits: ReconciliationLimits,
 ) -> (
     ReverseEvidenceStatus,
@@ -1028,6 +1083,7 @@ fn reverse_status(
             coverage,
             coverage_index,
             as_of,
+            coverage_freshness,
         );
         return (
             if covered {
@@ -1310,27 +1366,58 @@ fn subtype_text_chassis(v: Option<ChassisIdSubtype>) -> Option<String> {
 /// Build capture coverage from the normalization facts themselves. This is
 /// the supported connection between actual normalization output and
 /// reconciliation input; it prevents independently invented device-wide
-/// completeness claims. Callers must add an explicit validity boundary
-/// (`valid_until`) before coverage can establish current absence.
+/// completeness claims. Source-established validity is propagated conservatively;
+/// when no such boundary exists, coverage remains unable to establish current
+/// absence rather than treating caller-invented freshness as source evidence.
 pub fn capture_coverage_from_lldp_facts(facts: &[TypedFact]) -> Vec<CaptureCoverageEvidence> {
     #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
     struct Key {
         device: String,
         scope: Scope,
         ns: Ns,
+        collector: String,
+        source_kind: String,
         capture: String,
         generation: u64,
         observed: String,
     }
     let mut groups: BTreeMap<Key, CaptureCoverageEvidence> = BTreeMap::new();
     for fact in facts {
+        // Coverage is derived only through the same validated consumer boundary
+        // used by reconciliation. A well-formed digest is necessary but not
+        // sufficient: namespace, plane, trust and subject/payload consistency
+        // must also hold before coverage can be trusted.
+        if validate_fact_envelope(
+            fact,
+            ExpectedFactContract {
+                fact_kind: crate::lldp_facts::FACT_KIND_LLDP_NEIGHBOR,
+                subject_namespace: "interface",
+                operational_plane: "operational",
+                minimum_trust: TrustClass::DeviceAsserted,
+            },
+        )
+        .is_err()
+        {
+            continue;
+        }
         let Some(payload) = payload_of(fact) else {
             continue;
         };
+        // Coverage identity must corroborate the fact's acquisition envelope;
+        // otherwise a sealed but internally inconsistent payload could merge
+        // unrelated capture streams.
+        if payload.coverage.capture_id.as_deref() != Some(fact.source.capture_id.as_str())
+            || payload.coverage.source_generation != Some(fact.source.session_epoch)
+            || payload.coverage.observation_time.as_deref() != Some(fact.observed_at.as_str())
+        {
+            continue;
+        }
         let key = Key {
             device: fact.subject.device_id.clone(),
             scope: fact.subject.scope.clone(),
             ns: fact.subject.network_namespace.clone(),
+            collector: fact.source.collector_id.clone(),
+            source_kind: fact.source.source_kind.clone(),
             capture: fact.source.capture_id.clone(),
             generation: fact.source.session_epoch,
             observed: fact.observed_at.clone(),
@@ -1341,16 +1428,34 @@ pub fn capture_coverage_from_lldp_facts(facts: &[TypedFact]) -> Vec<CaptureCover
                 device_id: key.device.clone(),
                 scope: key.scope.clone(),
                 network_namespace: key.ns.clone(),
+                collector_id: Some(key.collector.clone()),
+                source_kind: Some(key.source_kind.clone()),
                 capture_outcome: payload.coverage.capture_outcome,
                 population_coverage: payload.coverage.population_coverage,
                 capture_id: Some(key.capture.clone()),
                 source_generation: Some(key.generation),
                 acquisition_scope: payload.coverage.acquisition_scope.clone(),
                 observation_time: Some(key.observed.clone()),
-                valid_until: None,
+                valid_until: fact.valid_until.clone(),
                 covered_interfaces: BTreeSet::new(),
                 evidence_refs: vec![],
             });
+        // A multi-fact capture is validity-bound only until the earliest
+        // source-established fact validity boundary. If any contributing fact
+        // has unknown validity, coverage validity remains unknown rather than
+        // being invented by this derivation.
+        entry.valid_until = match (entry.valid_until.clone(), fact.valid_until.clone()) {
+            (Some(left), Some(right)) => {
+                let left_time = parse_rfc3339(&left);
+                let right_time = parse_rfc3339(&right);
+                match (left_time, right_time) {
+                    (Some(left_time), Some(right_time)) if right_time < left_time => Some(right),
+                    (Some(_), Some(_)) => Some(left),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
         if payload.coverage.population_coverage != PopulationCoverage::Complete {
             entry.population_coverage = payload.coverage.population_coverage;
         }
@@ -1529,6 +1634,7 @@ pub fn reconcile_lldp_adjacency(
             input.capture_coverage,
             &coverage_index,
             as_of,
+            input.coverage_freshness,
             limits,
         );
         candidate_omitted += omitted;
@@ -1772,7 +1878,7 @@ mod tests {
                 population_coverage: PopulationCoverage::Complete,
                 empty_local_interfaces: 0,
                 empty_local_interface_names: vec![],
-                capture_id: Some("test-capture".into()),
+                capture_id: Some(format!("capture-{seq}")),
                 source_generation: Some(1),
                 observation_time: Some(OBSERVED.into()),
                 acquisition_scope: None,
@@ -1855,6 +1961,8 @@ mod tests {
             device_id: device.into(),
             scope: ns.map(str::to_string),
             network_namespace: ns.map(str::to_string),
+            collector_id: Some("collector-test".into()),
+            source_kind: Some("test".into()),
             capture_outcome: LldpCaptureOutcome::Complete,
             population_coverage: population,
             capture_id: Some("test-capture".into()),
@@ -1879,6 +1987,7 @@ mod tests {
             device_identities: identities,
             capture_coverage: coverage,
             as_of: AS_OF,
+            coverage_freshness: FreshnessPolicy::default(),
             limits: None,
         }
     }
@@ -2465,16 +2574,97 @@ mod tests {
     }
 
     #[test]
+    fn newer_incomplete_coverage_masks_older_complete_coverage_only_within_source() {
+        let (lldp, interfaces, identities, _cov) = two_device_fixture(Some("default"));
+        let one = vec![lldp[0].clone()];
+        let mut older = coverage("leaf2", Some("default"), PopulationCoverage::Complete);
+        older.capture_id = Some("capture-old".into());
+        older.source_generation = Some(1);
+        let mut newer = coverage("leaf2", Some("default"), PopulationCoverage::Partial);
+        newer.capture_id = Some("capture-new".into());
+        newer.source_generation = Some(2);
+        newer.observation_time = Some("2026-01-01T00:00:30+00:00".into());
+        let out = reconcile_lldp_adjacency(&input(
+            &one,
+            &interfaces,
+            &identities,
+            &[older.clone(), newer.clone()],
+        ));
+        assert_eq!(
+            out.assessments[0].reverse_evidence,
+            ReverseEvidenceStatus::CoverageUnknown,
+            "an older complete capture must not mask newer incomplete evidence from the same source"
+        );
+
+        // A high generation in an unrelated collector stream does not order or
+        // invalidate this collector's complete evidence.
+        let mut unrelated = newer;
+        unrelated.collector_id = Some("other-collector".into());
+        unrelated.source_generation = Some(99);
+        let out =
+            reconcile_lldp_adjacency(&input(&one, &interfaces, &identities, &[older, unrelated]));
+        assert_eq!(
+            out.assessments[0].reverse_evidence,
+            ReverseEvidenceStatus::MissingReverse
+        );
+    }
+
+    #[test]
+    fn coverage_without_source_validity_uses_only_explicit_consumer_age_policy() {
+        let (lldp, interfaces, identities, _cov) = two_device_fixture(Some("default"));
+        let one = vec![lldp[0].clone()];
+        let mut cov = coverage("leaf2", Some("default"), PopulationCoverage::Complete);
+        cov.valid_until = None;
+        let coverage = [cov];
+        let mut request = input(&one, &interfaces, &identities, &coverage);
+        let out = reconcile_lldp_adjacency(&request);
+        assert_eq!(
+            out.assessments[0].reverse_evidence,
+            ReverseEvidenceStatus::CoverageUnknown,
+            "unknown source validity must not silently become current evidence"
+        );
+        request.coverage_freshness = FreshnessPolicy::observation_age(120);
+        let out = reconcile_lldp_adjacency(&request);
+        assert_eq!(
+            out.assessments[0].reverse_evidence,
+            ReverseEvidenceStatus::MissingReverse,
+            "an explicit consumer observation-age policy may use the coverage"
+        );
+    }
+
+    #[test]
+    fn invalid_or_capture_inconsistent_facts_cannot_derive_trusted_coverage() {
+        let (lldp, _interfaces, _identities, _cov) = two_device_fixture(Some("default"));
+        let mut wrong_plane = lldp[1].clone();
+        wrong_plane.subject.plane = Some("configured".into());
+        wrong_plane.seal();
+        assert!(capture_coverage_from_lldp_facts(&[wrong_plane]).is_empty());
+
+        let mut mismatched = lldp[1].clone();
+        if let Some(fields) = mismatched.payload.fields.as_mut() {
+            fields["coverage"]["capture_id"] = serde_json::json!("different-capture");
+        }
+        mismatched.seal();
+        assert!(
+            mismatched.validate().is_ok(),
+            "digest-valid but internally inconsistent fixture"
+        );
+        assert!(capture_coverage_from_lldp_facts(&[mismatched]).is_empty());
+    }
+
+    #[test]
     fn normalization_coverage_output_can_drive_reverse_absence_evidence() {
         let (lldp, interfaces, identities, _cov) = two_device_fixture(Some("default"));
-        let mut coverage = capture_coverage_from_lldp_facts(&[lldp[1].clone()]);
+        let coverage = capture_coverage_from_lldp_facts(&[lldp[1].clone()]);
         assert_eq!(coverage.len(), 1);
         assert_eq!(coverage[0].device_id, "leaf2");
         assert_eq!(coverage[0].capture_id.as_deref(), Some("capture-2"));
         assert!(coverage[0].covered_interfaces.contains("Ethernet1"));
         assert_eq!(coverage[0].observation_time.as_deref(), Some(OBSERVED));
-        assert_eq!(coverage[0].valid_until, None);
-        coverage[0].valid_until = Some("2026-01-01T00:02:00Z".into());
+        assert_eq!(
+            coverage[0].valid_until.as_deref(),
+            Some("2026-01-01T00:02:00Z")
+        );
         let one = vec![lldp[0].clone()];
         let out = reconcile_lldp_adjacency(&input(&one, &interfaces, &identities, &coverage));
         assert_eq!(

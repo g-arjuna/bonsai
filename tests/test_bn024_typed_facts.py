@@ -296,3 +296,135 @@ def test_lldp_neighbor_payload_schema_rejects_missing_identity_and_bad_enums(
 def test_lldp_schema_extension_does_not_change_legacy_fact_compatibility(schema, fixture) -> None:
     assert fixture["fact_kind"] != "lldp.neighbor"
     jsonschema.validate(fixture, schema)
+
+
+def arpnd_neighbor_fields() -> dict:
+    """Minimal schema-level valid arpnd.neighbor typed-fields object."""
+
+    def known(value):
+        return {"state": "known", "value": value}
+
+    def unknown():
+        return {"state": "unknown"}
+
+    return {
+        "ip_address": "172.16.3.202",
+        "address_family": "ipv4",
+        "mac_address": known("d2:74:8c:66:e7:e2"),
+        "resolution_state": unknown(),
+        "age_seconds": unknown(),
+        "outgoing_interface": "Vlan30",
+        "physical_interface": "Vxlan1",
+        "interface_vlan_id": known(30),
+        "remote": known(True),
+        "source_interface_raw": "Vlan30, Vxlan1",
+        "forwarding_domain": unknown(),
+    }
+
+
+def mac_forwarding_fields() -> dict:
+    """Minimal schema-level valid mac.forwarding typed-fields object."""
+
+    def known(value):
+        return {"state": "known", "value": value}
+
+    def unknown():
+        return {"state": "unknown"}
+
+    return {
+        "mac_address": "d2:74:8c:66:e7:e2",
+        "vlan_id": known(30),
+        "outgoing_interface": "Vxlan1",
+        "entry_type": known("dynamic"),
+        "move_count": known(1),
+        "last_move_epoch_seconds": known(1623025097.454588),
+        "bridge_domain": unknown(),
+    }
+
+
+@requires_jsonschema
+def test_arpnd_neighbor_payload_schema_accepts_valid_typed_fields(schema, fixture) -> None:
+    fact = copy.deepcopy(fixture)
+    fact["fact_kind"] = "arpnd.neighbor"
+    fact["subject"]["namespace"] = "interface"
+    fact["subject"]["entity"] = "Vlan30"
+    fact["subject"]["vrf"] = "evpn-vrf"
+    fact["subject"]["plane"] = "operational"
+    fact["payload"]["fields"] = arpnd_neighbor_fields()
+    fact["payload"].pop("state", None)
+    jsonschema.validate(fact, schema)
+
+
+@requires_jsonschema
+def test_arpnd_neighbor_payload_schema_rejects_bad_family_state_and_mac(schema, fixture) -> None:
+    fact = copy.deepcopy(fixture)
+    fact["fact_kind"] = "arpnd.neighbor"
+    fact["subject"]["namespace"] = "interface"
+    fact["subject"]["entity"] = "Vlan30"
+    fact["subject"]["plane"] = "operational"
+    fact["payload"]["fields"] = arpnd_neighbor_fields()
+    fact["payload"].pop("state", None)
+
+    bad = copy.deepcopy(fact)
+    bad["payload"]["fields"]["address_family"] = "ipv4-only"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+    bad = copy.deepcopy(fact)
+    bad["payload"]["fields"]["resolution_state"] = {"state": "mostly"}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+    bad = copy.deepcopy(fact)
+    bad["payload"]["fields"]["mac_address"] = {"state": "known", "value": "d274.8c66.e7e2"}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+    bad = copy.deepcopy(fact)
+    del bad["payload"]["fields"]["outgoing_interface"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+
+@requires_jsonschema
+def test_mac_forwarding_payload_schema_accepts_valid_typed_fields(schema, fixture) -> None:
+    fact = copy.deepcopy(fixture)
+    fact["fact_kind"] = "mac.forwarding"
+    fact["subject"]["namespace"] = "interface"
+    fact["subject"]["entity"] = "Vxlan1"
+    fact["subject"]["plane"] = "operational"
+    fact["payload"]["fields"] = mac_forwarding_fields()
+    fact["payload"].pop("state", None)
+    jsonschema.validate(fact, schema)
+
+
+@requires_jsonschema
+def test_mac_forwarding_payload_schema_rejects_bad_vlan_type_and_extra_fields(schema, fixture) -> None:
+    fact = copy.deepcopy(fixture)
+    fact["fact_kind"] = "mac.forwarding"
+    fact["subject"]["namespace"] = "interface"
+    fact["subject"]["entity"] = "Vxlan1"
+    fact["subject"]["plane"] = "operational"
+    fact["payload"]["fields"] = mac_forwarding_fields()
+    fact["payload"].pop("state", None)
+
+    bad = copy.deepcopy(fact)
+    bad["payload"]["fields"]["vlan_id"] = {"state": "known", "value": 4096}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+    bad = copy.deepcopy(fact)
+    bad["payload"]["fields"]["entry_type"] = {"state": "known", "value": "learned-ish"}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+    bad = copy.deepcopy(fact)
+    bad["payload"]["fields"]["silent_default"] = 0
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+
+@requires_jsonschema
+def test_neighbor_schema_extension_does_not_change_legacy_fact_compatibility(schema, fixture) -> None:
+    assert fixture["fact_kind"] not in {"arpnd.neighbor", "mac.forwarding"}
+    jsonschema.validate(fixture, schema)
