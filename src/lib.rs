@@ -44,6 +44,7 @@ pub mod mcp_client;
 pub mod mcp_server;
 pub mod memory_profile;
 pub mod ml_event_bus;
+pub mod native_routes;
 pub mod neighbor_facts;
 pub mod neighbor_normalizer;
 pub mod neighbor_reconciliation;
