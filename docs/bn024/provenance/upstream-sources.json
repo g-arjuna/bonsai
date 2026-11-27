@@ -1847,6 +1847,51 @@
       "upstream_path": "tests/integration/sqcmds/cumulus-input/dual-bgp/macs.output",
       "content_sha256": "b22ee1afffa93cab5c42092b360d9a2410540eda2f704e6986d3a6e3f77036e5",
       "local_destination": "tests/fixtures/bn024/neighbor/cumulus-leaf01-bridge-fdb-show.txt"
+    },
+    {
+      "upstream_repository": "https://github.com/netenglabs/suzieq",
+      "immutable_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+      "content_kind": "file",
+      "license_identifier": "Apache-2.0",
+      "license_evidence": "LICENSE file at pinned revision 75198b5585ebef91f0659b6b1ec3c964cc2cd1ad (Apache License 2.0); license text redistributed byte-identical beside extracted fixture slices.",
+      "required_notice": "Apache-2.0 section 4: retain upstream copyright/license notice; fixtures are offline regression evidence only and extraction provenance must remain attached.",
+      "usage_classification": "test_fixture_redistribution",
+      "modification_status": "modified",
+      "review_status": "approved_reuse",
+      "source_id": "suzieq-oss:tests/integration/sqcmds/eos-input/vlan.output:leaf02-show-vlan-brief",
+      "upstream_path": "tests/integration/sqcmds/eos-input/vlan.output",
+      "content_sha256": "1779433682c739bef16118c95d85018715997f9f600e9183dda1efc76616a940",
+      "local_destination": "tests/fixtures/bn024/vlan/eos-leaf02-show-vlan-brief.json"
+    },
+    {
+      "upstream_repository": "https://github.com/netenglabs/suzieq",
+      "immutable_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+      "content_kind": "file",
+      "license_identifier": "Apache-2.0",
+      "license_evidence": "LICENSE file at pinned revision 75198b5585ebef91f0659b6b1ec3c964cc2cd1ad (Apache License 2.0); license text redistributed byte-identical beside extracted fixture slices.",
+      "required_notice": "Apache-2.0 section 4: retain upstream copyright/license notice; fixtures are offline regression evidence only and extraction provenance must remain attached.",
+      "usage_classification": "test_fixture_redistribution",
+      "modification_status": "modified",
+      "review_status": "approved_reuse",
+      "source_id": "suzieq-oss:tests/integration/sqcmds/nxos-input/vlan.output:leaf03-show-vlan-brief-pipe-json-native",
+      "upstream_path": "tests/integration/sqcmds/nxos-input/vlan.output",
+      "content_sha256": "f66d034b408deb6ef5cd1e32620dbdbfa3317578c9a2c15c1422f020e4d60e5e",
+      "local_destination": "tests/fixtures/bn024/vlan/nxos-leaf03-show-vlan-brief-json-native.json"
+    },
+    {
+      "upstream_repository": "https://github.com/netenglabs/suzieq",
+      "immutable_revision": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+      "content_kind": "file",
+      "license_identifier": "Apache-2.0",
+      "license_evidence": "LICENSE file at pinned revision 75198b5585ebef91f0659b6b1ec3c964cc2cd1ad (Apache License 2.0); license text redistributed byte-identical beside extracted fixture slices.",
+      "required_notice": "Apache-2.0 section 4: retain upstream copyright/license notice; fixtures are offline regression evidence only and extraction provenance must remain attached.",
+      "usage_classification": "test_fixture_redistribution",
+      "modification_status": "modified",
+      "review_status": "approved_reuse",
+      "source_id": "suzieq-oss:tests/integration/sqcmds/cumulus-input/dual-bgp/vlan.output:leaf01-/sbin/bridge-c-vlan-show",
+      "upstream_path": "tests/integration/sqcmds/cumulus-input/dual-bgp/vlan.output",
+      "content_sha256": "a93a21205eea29480cc994aaf056977434f16f02cd8a865ccc84552fd843d895",
+      "local_destination": "tests/fixtures/bn024/vlan/cumulus-leaf01-bridge-c-vlan-show.txt"
     }
   ]
 }

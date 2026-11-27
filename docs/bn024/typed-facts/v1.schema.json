@@ -1021,6 +1021,503 @@
         }
       },
       "description": "BN-024-07 mac.forwarding typed fields contract. Rust validation is authoritative for normalized MACs, observed-field state/value consistency and subject/payload consistency."
+    },
+    {
+      "if": {
+        "allOf": [
+          {
+            "properties": {
+              "fact_kind": {
+                "const": "vlan.bridge_domain"
+              }
+            },
+            "required": [
+              "fact_kind"
+            ]
+          },
+          {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "fields": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "fields"
+                ]
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "fields": {
+                "type": "object",
+                "required": [
+                  "observation_shape",
+                  "bridge_domain",
+                  "vlan_id",
+                  "vlan_name",
+                  "operational_state",
+                  "admin_state",
+                  "dynamic",
+                  "membership_plane",
+                  "membership_availability",
+                  "routed_interfaces",
+                  "vrf"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "observation_shape": {
+                    "enum": [
+                      "vlan_database_entry",
+                      "port_membership"
+                    ]
+                  },
+                  "bridge_domain": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      },
+                      "detail": {
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "value": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 255
+                      }
+                    }
+                  },
+                  "vlan_id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4095
+                  },
+                  "vlan_name": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      },
+                      "detail": {
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "value": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 255
+                      }
+                    }
+                  },
+                  "operational_state": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      },
+                      "detail": {
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "value": {
+                        "enum": [
+                          "active",
+                          "suspended"
+                        ]
+                      }
+                    }
+                  },
+                  "admin_state": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      },
+                      "detail": {
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "value": {
+                        "enum": [
+                          "shutdown",
+                          "no_shutdown"
+                        ]
+                      }
+                    }
+                  },
+                  "dynamic": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      },
+                      "detail": {
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "value": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "membership_plane": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      },
+                      "detail": {
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "value": {
+                        "enum": [
+                          "operational",
+                          "configured",
+                          "source_reported"
+                        ]
+                      }
+                    }
+                  },
+                  "membership_availability": {
+                    "enum": [
+                      "known_empty",
+                      "known_populated",
+                      "partial",
+                      "missing",
+                      "malformed",
+                      "unsupported",
+                      "unknown"
+                    ]
+                  },
+                  "members": {
+                    "type": "array",
+                    "maxItems": 512,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "interface_name",
+                        "tagged",
+                        "untagged",
+                        "pvid",
+                        "mode",
+                        "attachment_kind"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "interface_name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 255
+                        },
+                        "interface_key": {
+                          "type": "object",
+                          "required": [
+                            "device_id",
+                            "canonical_interface"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "device_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 255
+                            },
+                            "scope": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 255
+                            },
+                            "network_namespace": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 255
+                            },
+                            "canonical_interface": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 255
+                            },
+                            "identity_kind": {
+                              "enum": [
+                                "physical",
+                                "logical",
+                                "subinterface"
+                              ]
+                            },
+                            "subinterface_index": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          }
+                        },
+                        "tagged": {
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "state": {
+                              "enum": [
+                                "known",
+                                "unknown",
+                                "unsupported",
+                                "invalid"
+                              ]
+                            },
+                            "detail": {
+                              "type": "string",
+                              "maxLength": 200
+                            },
+                            "value": {
+                              "type": "boolean"
+                            }
+                          }
+                        },
+                        "untagged": {
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "state": {
+                              "enum": [
+                                "known",
+                                "unknown",
+                                "unsupported",
+                                "invalid"
+                              ]
+                            },
+                            "detail": {
+                              "type": "string",
+                              "maxLength": 200
+                            },
+                            "value": {
+                              "type": "boolean"
+                            }
+                          }
+                        },
+                        "pvid": {
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "state": {
+                              "enum": [
+                                "known",
+                                "unknown",
+                                "unsupported",
+                                "invalid"
+                              ]
+                            },
+                            "detail": {
+                              "type": "string",
+                              "maxLength": 200
+                            },
+                            "value": {
+                              "type": "boolean"
+                            }
+                          }
+                        },
+                        "mode": {
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "state": {
+                              "enum": [
+                                "known",
+                                "unknown",
+                                "unsupported",
+                                "invalid"
+                              ]
+                            },
+                            "detail": {
+                              "type": "string",
+                              "maxLength": 200
+                            },
+                            "value": {
+                              "enum": [
+                                "access",
+                                "trunk",
+                                "routed"
+                              ]
+                            }
+                          }
+                        },
+                        "attachment_kind": {
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "state": {
+                              "enum": [
+                                "known",
+                                "unknown",
+                                "unsupported",
+                                "invalid"
+                              ]
+                            },
+                            "detail": {
+                              "type": "string",
+                              "maxLength": 200
+                            },
+                            "value": {
+                              "enum": [
+                                "physical",
+                                "logical_aggregate",
+                                "svi",
+                                "routed",
+                                "tunnel",
+                                "cpu_special",
+                                "other"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "routed_interfaces": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      },
+                      "detail": {
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "value": {
+                        "type": "array",
+                        "maxItems": 128,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 255
+                        }
+                      }
+                    }
+                  },
+                  "vrf": {
+                    "type": "object",
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "known",
+                          "unknown",
+                          "unsupported",
+                          "invalid"
+                        ]
+                      },
+                      "detail": {
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "value": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 255
+                      }
+                    }
+                  },
+                  "domain_entity_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

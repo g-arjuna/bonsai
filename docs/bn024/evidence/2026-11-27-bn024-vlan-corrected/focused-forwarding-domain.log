@@ -1,0 +1,35 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline forwarding_domain
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel-vlan)
+    Finished `ci` profile [optimized] target(s) in 5m 15s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 24 tests
+test forwarding_domain_derivation::tests::incompatible_capture_time_interface_evidence_is_rejected ... ok
+test forwarding_domain_derivation::tests::different_capture_generations_never_combine_linux_vlan_and_interface_rows ... ok
+test forwarding_domain_derivation::tests::corroborating_interface_observations_remain_deterministic_and_usable ... ok
+test forwarding_domain_derivation::tests::lag_member_aggregate_relationship_added_only_with_positive_evidence ... ok
+test forwarding_domain_derivation::tests::missing_membership_availability_does_not_fabricate_empty_member_population ... ok
+test forwarding_domain_derivation::tests::linux_bridge_master_evidence_derives_grouped_domain_binding ... ok
+test forwarding_domain_derivation::tests::legacy_unrefined_interface_entity_is_not_promoted_to_structured_key ... ok
+test forwarding_domain_derivation::tests::lag_relationship_enrichment_respects_capture_skew_inside_freshness_window ... ok
+test forwarding_domain_derivation::tests::linux_port_membership_without_interface_master_evidence_is_indeterminate ... ok
+test forwarding_domain_derivation::tests::conflicting_interface_observations_are_never_selected_by_input_order ... ok
+test forwarding_domain_derivation::tests::genuine_eos_derived_bindings_integrate_with_neighbor_reconciliation ... ok
+test forwarding_domain_queries::tests::different_scope_never_matches ... ok
+test forwarding_domain_queries::tests::domain_binding_views_preserve_vlan_contexts ... ok
+test forwarding_domain_queries::tests::single_domain_interface_reports_one_membership ... ok
+test forwarding_domain_queries::tests::membership_availability_is_preserved_in_query_evidence ... ok
+test forwarding_domain_derivation::tests::same_vlan_number_in_two_bridges_derives_distinct_domains ... ok
+test forwarding_domain_derivation::tests::non_bridge_master_target_never_produces_bridge_binding ... ok
+test forwarding_domain_queries::tests::input_order_never_changes_query_results ... ok
+test forwarding_domain_derivation::tests::genuine_nxos_derived_bindings_integrate_with_neighbor_reconciliation ... ok
+test neighbor_reconciliation::tests::stale_forwarding_domain_binding_cannot_establish_current_consistency ... ok
+test neighbor_reconciliation::tests::valid_evidence_matches_only_inside_established_forwarding_domain ... ok
+test forwarding_domain_queries::tests::unknown_interface_has_empty_answer_not_positive_absence ... ok
+test forwarding_domain_queries::tests::stale_binding_is_counted_ineligible_not_returned ... ok
+test forwarding_domain_queries::tests::trunk_interface_reports_all_observed_domain_memberships ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 850 filtered out; finished in 0.03s
+

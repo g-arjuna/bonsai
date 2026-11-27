@@ -1,0 +1,31 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline vlan
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-netintel-vlan)
+    Finished `ci` profile [optimized] target(s) in 5m 11s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 20 tests
+test neighbor_reconciliation::tests::contradictory_same_domain_vlan_assignments_are_order_independent ... ok
+test neighbor_reconciliation::tests::direct_mac_bridge_assignment_contradicting_domain_vlan_is_indeterminate ... ok
+test neighbor_reconciliation::tests::same_vlan_and_mac_do_not_match_across_bridge_domains ... ok
+test neighbor_reconciliation::tests::same_vlan_and_mac_do_not_match_across_device_tenant_or_asic_scope ... ok
+test forwarding_domain_derivation::tests::same_vlan_number_in_two_bridges_derives_distinct_domains ... ok
+test vlan_normalizer::tests::cumulus_diagnostic_or_missing_header_is_rejected_without_facts ... ok
+test vlan_normalizer::tests::cumulus_compressed_ranges_and_bad_continuation_are_malformed_not_invented ... ok
+test forwarding_domain_derivation::tests::different_capture_generations_never_combine_linux_vlan_and_interface_rows ... ok
+test vlan_normalizer::tests::cumulus_header_only_is_positive_empty_population ... ok
+test neighbor_reconciliation::tests::unknown_domain_vlan_is_refined_by_known_evidence_in_either_order ... ok
+test neighbor_normalizer::tests::genuine_cumulus_mac_fixture_preserves_vlan_and_static_permanent_distinction ... ok
+test forwarding_domain_queries::tests::domain_binding_views_preserve_vlan_contexts ... ok
+test vlan_normalizer::tests::eos_missing_interfaces_is_explicit_missing_not_empty_membership ... ok
+test vlan_normalizer::tests::nxos_partially_malformed_member_array_preserves_valid_members_as_partial ... ok
+test vlan_normalizer::tests::cumulus_exact_duplicate_rows_dedup_but_conflicting_rows_are_counted ... ok
+test vlan_normalizer::tests::genuine_cumulus_vlan_fixture_preserves_tagging_and_pvid ... ok
+test vlan_normalizer::tests::genuine_eos_vlan_fixture_expected_values ... ok
+test vlan_normalizer::tests::genuine_nxos_vlan_fixture_expected_values ... ok
+test enrichment::netbox::tests::write_to_graph_idempotent_vlan_upsert ... ok
+test enrichment::netbox::tests::write_to_graph_counts_vlan_nodes ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 854 filtered out; finished in 3.38s
+

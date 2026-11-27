@@ -1,0 +1,12 @@
+port	vlan ids
+peerlink	 1 PVID Egress Untagged
+	 13
+	 24
+
+bond02	 24 PVID Egress Untagged
+
+bond01	 13 PVID Egress Untagged
+
+bridge	 13
+	 24
+

@@ -111,6 +111,14 @@ pub struct ForwardingDomainEvidence {
     /// device+scope+network namespace.
     pub domain_id: String,
     pub vlan_id: Option<u32>,
+    /// Availability of the source membership collection used to establish
+    /// forwarding interface population. `None` is used by external/hand-written
+    /// domain evidence that predates the explicit VLAN membership axis.
+    pub membership_availability: Option<crate::vlan_facts::MembershipAvailability>,
+    /// Evidence plane of the source membership collection. This preserves the
+    /// distinction between operational bridge evidence and weaker
+    /// source-reported VLAN output; consumers must not upgrade it silently.
+    pub membership_plane: Option<crate::vlan_facts::MembershipPlane>,
     /// Network instance explicitly associated with this domain, when known.
     pub vrf: Option<String>,
     /// Logical/routed interface aliases/native names attached to the domain.
@@ -690,7 +698,7 @@ fn nonempty(value: Option<&str>) -> bool {
     value.is_some_and(|value| !value.is_empty())
 }
 
-fn domain_batch_established(evidence: &ForwardingDomainEvidence) -> bool {
+pub(crate) fn domain_batch_established(evidence: &ForwardingDomainEvidence) -> bool {
     nonempty(evidence.collector_id.as_deref())
         && nonempty(evidence.source_kind.as_deref())
         && nonempty(evidence.capture_id.as_deref())
@@ -699,7 +707,7 @@ fn domain_batch_established(evidence: &ForwardingDomainEvidence) -> bool {
         && !evidence.evidence_refs.is_empty()
 }
 
-fn domain_evidence_current(
+pub(crate) fn domain_evidence_current(
     evidence: &ForwardingDomainEvidence,
     as_of: crate::semantic_evidence::Time,
     policy: FreshnessPolicy,
@@ -1423,6 +1431,8 @@ mod tests {
             network_namespace: network_namespace.map(str::to_string),
             domain_id: domain.into(),
             vlan_id: Some(vlan),
+            membership_availability: None,
+            membership_plane: None,
             vrf: vrf.map(str::to_string),
             routed_interfaces: routed.iter().map(|s| s.to_string()).collect(),
             forwarding_interfaces: forwarding.iter().map(|s| s.to_string()).collect(),

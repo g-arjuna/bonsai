@@ -1,0 +1,27 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --lib --profile ci --offline interface_relationships
+    Finished `ci` profile [optimized] target(s) in 0.34s
+     Running unittests src/lib.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1)
+
+running 17 tests
+test interface_relationships::tests::incompatible_lag_target_type_remains_explicit ... ok
+test interface_relationships::tests::ambiguous_structured_target_is_explicit_unknown ... ok
+test interface_relationships::tests::conflicting_same_generation_observations_are_explicit_and_order_independent ... ok
+test interface_relationships::tests::different_capture_ids_and_epochs_cannot_produce_merged_pass ... ok
+test interface_relationships::tests::legacy_facts_without_structured_identity_remain_readable ... ok
+test interface_relationships::tests::exact_duplicate_evidence_is_idempotent_and_permutation_deterministic ... ok
+test interface_relationships::tests::forward_membership_distinguishes_empty_partial_and_complete ... ok
+test interface_relationships::tests::identical_names_in_separate_network_namespaces_remain_separate ... ok
+test interface_relationships::tests::reverse_observed_membership_can_pass_only_as_narrow_consistency ... ok
+test interface_relationships::tests::partial_completeness_and_unavailable_forward_membership_are_not_passable ... ok
+test interface_relationships::tests::operational_link_findings_do_not_claim_active_capacity_and_admin_down_is_not_fault ... ok
+test interface_relationships::tests::subinterface_cannot_be_selected_as_lag_aggregate ... ok
+test interface_relationships::tests::unknown_aggregate_state_and_unknown_membership_cannot_pass ... ok
+test interface_relationships::tests::unresolved_evidence_is_unknown_not_not_applicable ... ok
+test interface_relationships::tests::structured_physical_and_subinterfaces_do_not_collapse ... ok
+test interface_relationships::tests::withdrawn_superseded_expired_and_non_operational_facts_are_not_current ... ok
+test interface_relationships::tests::genuine_cumulus_lag_bridge_and_vrf_relationships_are_reported ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 857 filtered out; finished in 0.01s
+
