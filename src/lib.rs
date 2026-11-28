@@ -29,6 +29,7 @@ pub mod graph;
 pub mod ha_coordinator;
 pub mod health_emitter;
 pub mod http_server;
+pub mod igp;
 pub mod ingest;
 pub mod integrations;
 pub mod interface_facts;

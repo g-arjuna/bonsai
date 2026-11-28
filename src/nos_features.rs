@@ -19,6 +19,7 @@ use crate::frr_interface_json::{FRR_JSON_MAPPING_REVISION, FRR_JSON_PARSER_REVIS
 /// Exact immutable FRR artifact for the qualified 10.6.1_git structured-interface lab profile.
 pub const FRR_1061_STRUCTURED_ARTIFACT: &str =
     "quay.io/frrouting/frr@sha256:813497af103e972600f6161012b3bf2a2a1c5ea10d09cd1eacd74f1dc510a57b";
+use crate::igp::IGP_PARSER_REVISION;
 use crate::interface_normalizer::{INTERFACE_CLI_MAPPING_REVISION, INTERFACE_CLI_PARSER_REVISION};
 use crate::neighbor_normalizer::{NEIGHBOR_MAPPING_REVISION, NEIGHBOR_PARSER_REVISION};
 use crate::vlan_normalizer::{VLAN_MAPPING_REVISION, VLAN_PARSER_REVISION};
@@ -1577,6 +1578,96 @@ pub fn builtin_profiles() -> Vec<NosFeatureProfile> {
                         id: "vlan_linux_bridge_vlan_normalizer".into(),
                         revision: VLAN_PARSER_REVISION.into(),
                         mapping_revision: Some(VLAN_MAPPING_REVISION.into()),
+                    }),
+                    promotion: PromotionState::Shadow,
+                },
+            ),
+            (
+                "ospf.frr_json".into(),
+                FeatureFlag {
+                    enabled: true,
+                    parsers: vec!["native_rust_json".into()],
+                    scope_notes: vec![
+                        "OSPFv2 neighbor and LSDB evidence normalized as protocol-specific operational state".into(),
+                        "fixture-qualified synthetic control only; live acquisition and topology authority remain unqualified".into(),
+                        "2-Way, Full and other FRR states are preserved rather than collapsed into generic health".into(),
+                    ],
+                    requires: vec![],
+                    conflicts: vec![],
+                    support: SupportState::Unknown,
+                    evidence: vec![
+                        ApplicabilityEvidence {
+                            kind: "vendor_document".into(),
+                            source: "FRRouting ospfd vtysh JSON neighbor/database implementation contract".into(),
+                            revision: None,
+                            scope: Some("platform=frr namespace=default feature=ospf.frr_json".into()),
+                            claim: SupportState::Unknown,
+                        },
+                        ApplicabilityEvidence {
+                            kind: "internal_test".into(),
+                            source: "tests/fixtures/igp synthetic control corpus".into(),
+                            revision: Some("frr_igp_operational_synthetic_control_v1".into()),
+                            scope: Some("normalization only; not genuine operational evidence".into()),
+                            claim: SupportState::Unknown,
+                        },
+                    ],
+                    acquisition: vec![AcquisitionContract {
+                        kind: AcquisitionKind::CliObservation,
+                        contracts: vec![
+                            "frr_verified_ssh_igp_snapshot_v1".into(),
+                            "frr_vtysh_show_ip_ospf_vrf_all_neighbor_detail_json".into(),
+                            "frr_vtysh_show_ip_ospf_vrf_all_database_detail_json".into(),
+                        ],
+                    }],
+                    normalizer: Some(NormalizerRef {
+                        id: "frr_igp_operational_normalizer".into(),
+                        revision: IGP_PARSER_REVISION.into(),
+                        mapping_revision: None,
+                    }),
+                    promotion: PromotionState::Shadow,
+                },
+            ),
+            (
+                "isis.frr_json".into(),
+                FeatureFlag {
+                    enabled: true,
+                    parsers: vec!["native_rust_json".into()],
+                    scope_notes: vec![
+                        "IS-IS neighbor and LSP evidence normalized as protocol-specific operational state".into(),
+                        "fixture-qualified synthetic control only; live acquisition and topology authority remain unqualified".into(),
+                        "dynamic-hostname adjacency labels are not reclassified as system identifiers".into(),
+                    ],
+                    requires: vec![],
+                    conflicts: vec![],
+                    support: SupportState::Unknown,
+                    evidence: vec![
+                        ApplicabilityEvidence {
+                            kind: "vendor_document".into(),
+                            source: "FRRouting isisd vtysh JSON neighbor/database implementation contract".into(),
+                            revision: None,
+                            scope: Some("platform=frr namespace=default feature=isis.frr_json".into()),
+                            claim: SupportState::Unknown,
+                        },
+                        ApplicabilityEvidence {
+                            kind: "internal_test".into(),
+                            source: "tests/fixtures/igp synthetic control corpus".into(),
+                            revision: Some("frr_igp_operational_synthetic_control_v1".into()),
+                            scope: Some("normalization only; not genuine operational evidence".into()),
+                            claim: SupportState::Unknown,
+                        },
+                    ],
+                    acquisition: vec![AcquisitionContract {
+                        kind: AcquisitionKind::CliObservation,
+                        contracts: vec![
+                            "frr_verified_ssh_igp_snapshot_v1".into(),
+                            "frr_vtysh_show_isis_vrf_all_neighbor_detail_json".into(),
+                            "frr_vtysh_show_isis_vrf_all_database_detail_json".into(),
+                        ],
+                    }],
+                    normalizer: Some(NormalizerRef {
+                        id: "frr_igp_operational_normalizer".into(),
+                        revision: IGP_PARSER_REVISION.into(),
+                        mapping_revision: None,
                     }),
                     promotion: PromotionState::Shadow,
                 },

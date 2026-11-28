@@ -1,0 +1,39 @@
+{
+  "default": {
+    "vrfName": "default",
+    "neighbors": {
+      "192.0.2.2": [
+        {
+          "ifaceAddress": "10.0.0.1",
+          "areaId": "0.0.0.0",
+          "ifaceName": "eth1",
+          "nbrState": "Full/-",
+          "converged": "Full",
+          "role": "DR",
+          "nbrPriority": 1,
+          "deadTimeMsecs": 40000,
+          "helloTimerMsecs": 10000,
+          "upTimeInMsec": 63000,
+          "cost": 10,
+          "networkType": "broadcast"
+        }
+      ],
+      "192.0.2.3": [
+        {
+          "ifaceAddress": "10.0.0.2",
+          "areaId": "0.0.0.0",
+          "ifaceName": "eth1",
+          "nbrState": "2-Way/-",
+          "converged": "2-Way",
+          "role": "DROther",
+          "nbrPriority": 1,
+          "deadTimeMsecs": 40000,
+          "helloTimerMsecs": 10000,
+          "upTimeInMsec": 62000,
+          "cost": 10,
+          "networkType": "broadcast"
+        }
+      ]
+    }
+  }
+}

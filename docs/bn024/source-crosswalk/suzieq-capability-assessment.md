@@ -5,7 +5,7 @@ Pinned upstream: `netenglabs/suzieq` `75198b5585ebef91f0659b6b1ec3c964cc2cd1ad` 
 ## Counting method
 
 - Capability-family denominator: **27 upstream object families** — 19 polled service YAML families plus 8 derived/virtual sqobject families.
-- Individual functional capability denominator: **66 capabilities**. Of these, **64** are implemented upstream and **2** are enterprise/Bonsai-required improvements absent upstream.
+- Individual functional capability denominator: **68 capabilities**. Of these, **64** are implemented upstream and **4** are enterprise/Bonsai-required improvements absent upstream.
 - Capabilities were generated from actual upstream service YAML, Avro schemas, cleaner functions, sqobject methods and pandas engine methods; they are not one-per-file or one-per-schema-field counts.
 - No single overall parity percentage is meaningful across unlike domains. Use the explicit numerators/denominators in this table.
 
@@ -13,30 +13,30 @@ Pinned upstream: `netenglabs/suzieq` `75198b5585ebef91f0659b6b1ec3c964cc2cd1ad` 
 
 | Functional domain | Upstream capabilities | Ledger-required capabilities | Existing equivalent | Native port implemented | Completed improvement | Planned improvement | Partial | Missing | Unassessed |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Neighbor intelligence | 4 | 4 | 0 | 0 | 0 | 0 | 0 | 4 | 0 |
-| Routing | 10 | 10 | 1 | 0 | 0 | 0 | 3 | 6 | 0 |
+| Neighbor intelligence | 4 | 4 | 0 | 0 | 0 | 0 | 1 | 3 | 0 |
+| Routing | 10 | 12 | 1 | 0 | 0 | 2 | 6 | 5 | 0 |
 | Assertions | 4 | 5 | 0 | 0 | 0 | 1 | 1 | 3 | 0 |
 | Configuration | 3 | 4 | 0 | 0 | 0 | 0 | 3 | 1 | 0 |
 | Device intelligence | 10 | 10 | 0 | 0 | 0 | 0 | 2 | 8 | 0 |
 | Overlay | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 3 | 0 |
 | Interface intelligence | 4 | 4 | 0 | 1 | 0 | 0 | 2 | 1 | 0 |
-| Layer 2 | 11 | 11 | 0 | 0 | 0 | 0 | 0 | 11 | 0 |
+| Layer 2 | 11 | 11 | 0 | 0 | 0 | 0 | 4 | 7 | 0 |
 | Network reasoning | 4 | 4 | 0 | 0 | 0 | 0 | 2 | 2 | 0 |
 | Path reasoning | 3 | 3 | 0 | 0 | 0 | 0 | 1 | 2 | 0 |
 | Collection assurance | 4 | 4 | 0 | 0 | 0 | 0 | 4 | 0 | 0 |
 | Historical analysis | 4 | 4 | 0 | 0 | 0 | 0 | 2 | 2 | 0 |
 
-Completed-equivalence credit is deliberately narrow: only `EXISTING_EQUIVALENT` and completed `NATIVE_PORT_IMPLEMENTED` slices count. There are currently **0 completed improvements**. The single `IMPROVE_UPON_UPSTREAM` ledger entry is a **planned, not completed** improvement and receives no completion credit. `EXISTING_PARTIAL` is never counted as complete. These counts do not imply production parity across all NOS releases. `DELIBERATELY_EXCLUDED` count is zero in this ledger.
+Completed-equivalence credit is deliberately narrow: only `EXISTING_EQUIVALENT` and completed `NATIVE_PORT_IMPLEMENTED` slices count. There are currently **0 completed improvements**. All three `IMPROVE_UPON_UPSTREAM` ledger entries remain incomplete and receive no completion credit. `EXISTING_PARTIAL` is never counted as complete. These counts do not imply production parity across all NOS releases. `DELIBERATELY_EXCLUDED` count is zero in this ledger.
 
 ## Disposition counts
 
 | Disposition | Count |
 |---|---:|
 | `EXISTING_EQUIVALENT` | 1 |
-| `EXISTING_PARTIAL` | 20 |
-| `IMPROVE_UPON_UPSTREAM` | 1 |
+| `EXISTING_PARTIAL` | 26 |
+| `IMPROVE_UPON_UPSTREAM` | 3 |
 | `NATIVE_PORT_IMPLEMENTED` | 1 |
-| `PORT_REQUIRED` | 43 |
+| `PORT_REQUIRED` | 37 |
 
 ## High-value missing enterprise capabilities
 
@@ -123,27 +123,28 @@ replaced with a competing subsystem.
 
 ## Artifact structural validation
 
-Focused validation in this validated implementation candidate: both JSON artifacts parse;
+Focused validation in this implementation candidate: both JSON artifacts parse;
 domain/disposition summary counts recompute exactly from the capability
-entries; the capability ledger contains 66 entries with exactly the
-disposition counts shown above (43 `PORT_REQUIRED`, 20 `EXISTING_PARTIAL`, 1
-`NATIVE_PORT_IMPLEMENTED`, 1 `EXISTING_EQUIVALENT`, 1
-`IMPROVE_UPON_UPSTREAM`); implementation completion counts recompute exactly
-as 1 completed existing equivalent, 1 completed narrow native port, 0
-completed improvements, 1 planned-but-incomplete improvement, 20 partial and
-43 not-implemented port-required capabilities; every capability has the
-required mapping fields and non-empty acceptance scenarios. This is
-structural consistency validation, not proof of semantic correctness or
-production qualification.
+entries; the capability ledger contains 68 entries with exactly the
+disposition counts shown above (37 `PORT_REQUIRED`,
+26 `EXISTING_PARTIAL`, 1
+`NATIVE_PORT_IMPLEMENTED`, 1 `EXISTING_EQUIVALENT`,
+3 `IMPROVE_UPON_UPSTREAM`); implementation completion counts
+recompute exactly as 1 completed existing equivalent,
+1 completed narrow native port, 0
+completed improvements, 1 planned-but-incomplete improvement,
+28 partial and 37
+not-implemented port-required capabilities; every capability has the required
+mapping fields and non-empty acceptance scenarios. This is structural
+consistency validation, not proof of semantic correctness or production
+qualification.
 
 ## Verification for this artifact
 
 Focused artifact validation: JSON parse passes for the inventory and delivery
-ledger; 66 entries present; disposition counts recompute exactly as 43
-`PORT_REQUIRED`, 20 `EXISTING_PARTIAL`, 1 `NATIVE_PORT_IMPLEMENTED`, 1
-`EXISTING_EQUIVALENT` and 1 `IMPROVE_UPON_UPSTREAM`; implementation
-completion counts recompute exactly and do not count the planned assertion
-algebra improvement as complete; per-domain summary counts recompute exactly
-from the entries; every capability has required mapping fields and non-empty
-acceptance scenarios; the top-missing list contains exactly 10 entries. This
-validates structural consistency only.
+ledger; 68 entries present; disposition and per-domain summary counts recompute
+exactly from the entries; implementation completion counts recompute exactly
+and do not count partial OSPF/IS-IS/LSDB implementation candidates as complete;
+every capability has required mapping fields and non-empty acceptance
+scenarios; the top-missing list contains exactly 10 entries. This validates
+structural consistency only.
