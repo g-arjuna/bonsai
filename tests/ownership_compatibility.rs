@@ -190,6 +190,7 @@ async fn shared_dispatch_and_persisted_strict_restore() {
                 vrf_rd: Some("65000:100".into()),
                 tenant_id: Some("acme".into()),
             }),
+            inventory_registry: None,
         };
         let result =
             call_tool_with_store_and_routing(&store, None, "query_devices", &json!({}), &combined)
@@ -206,6 +207,7 @@ async fn shared_dispatch_and_persisted_strict_restore() {
                 vrf_rd: None,
                 tenant_id: Some("acme".into()),
             }),
+            inventory_registry: None,
         };
         let broad =
             call_tool_with_store_and_routing(&store, None, "query_devices", &json!({}), &tenant)
