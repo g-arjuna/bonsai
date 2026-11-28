@@ -172,7 +172,7 @@ fn nexthop_extras(object: &Map<String, Value>, path: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_prefix(prefix: &str) -> Option<(IpAddr, u8)> {
+pub(crate) fn parse_prefix(prefix: &str) -> Option<(IpAddr, u8)> {
     let (address, len) = prefix.split_once('/')?;
     let ip = address.parse().ok()?;
     let len = len.parse().ok()?;
@@ -645,6 +645,7 @@ enum LpmLookup<'a> {
     Candidates {
         routes: Vec<&'a NativeRouteEntry>,
         omitted: usize,
+        unknown_competing_selection: bool,
     },
     NoMatch,
     SelectionUnknown,
@@ -691,6 +692,7 @@ fn lookup_selected_lpm<'a>(
             return LpmLookup::Candidates {
                 routes: selected,
                 omitted,
+                unknown_competing_selection: unknown,
             };
         }
         if unknown {
@@ -704,6 +706,7 @@ fn lookup_selected_lpm<'a>(
 enum NextHopCandidate {
     TerminalInterface(String),
     TerminalDiscard(String),
+    TerminalLocalDelivery,
     Recurse(IpAddr, Option<String>),
     Unresolved(&'static str),
 }
@@ -712,6 +715,7 @@ fn candidate_key(candidate: &NextHopCandidate) -> String {
     match candidate {
         NextHopCandidate::TerminalInterface(interface) => format!("interface:{interface}"),
         NextHopCandidate::TerminalDiscard(action) => format!("discard:{action}"),
+        NextHopCandidate::TerminalLocalDelivery => "local-delivery".to_string(),
         NextHopCandidate::Recurse(address, scope) => {
             format!("recurse:{address}:{}", scope.as_deref().unwrap_or(""))
         }
@@ -719,7 +723,7 @@ fn candidate_key(candidate: &NextHopCandidate) -> String {
     }
 }
 
-fn classify_next_hop(nh: &NativeRouteNextHop) -> NextHopCandidate {
+fn classify_next_hop(route: &NativeRouteEntry, nh: &NativeRouteNextHop) -> NextHopCandidate {
     let subtype_count = [nh.reject, nh.admin_prohibited, nh.blackhole]
         .into_iter()
         .filter(|value| *value == Some(true))
@@ -740,7 +744,30 @@ fn classify_next_hop(nh: &NativeRouteNextHop) -> NextHopCandidate {
         return NextHopCandidate::TerminalDiscard("discard_unreachable".into());
     }
 
+    // Active and FIB indications are separate source evidence. Explicitly
+    // inactive or non-installed next hops must never contribute an active
+    // forwarding-candidate branch; unknown state likewise remains unknown.
+    if nh.active == Some(false) {
+        return NextHopCandidate::Unresolved("inactive_next_hop_not_active_candidate");
+    }
+    if nh.fib == Some(false) {
+        return NextHopCandidate::Unresolved("next_hop_not_fib_installed");
+    }
+    if nh.active.is_none() {
+        return NextHopCandidate::Unresolved("next_hop_active_state_unknown");
+    }
+    if nh.fib.is_none() {
+        return NextHopCandidate::Unresolved("next_hop_fib_state_unknown");
+    }
+
     if nh.directly_connected == Some(true) || nh.address.is_none() {
+        if route
+            .protocol
+            .as_deref()
+            .is_some_and(|protocol| protocol.eq_ignore_ascii_case("local"))
+        {
+            return NextHopCandidate::TerminalLocalDelivery;
+        }
         return match nh.interface_name.clone() {
             Some(interface) if !interface.is_empty() => {
                 NextHopCandidate::TerminalInterface(interface)
@@ -819,7 +846,7 @@ fn expand_target(
     target_scope: Option<String>,
     depth: usize,
     branch_path: Vec<String>,
-    visited: BTreeSet<IpAddr>,
+    visited: BTreeSet<(IpAddr, Option<String>)>,
     workspace: &mut ResolutionWorkspace,
 ) -> Vec<NativeNextHopBranchResolution> {
     if depth >= MAX_RECURSION_DEPTH {
@@ -846,31 +873,36 @@ fn expand_target(
     }
     workspace.targets_expanded += 1;
 
-    let (candidates, omitted_routes) = match lookup_selected_lpm(routes, vrf_name, afi, &target) {
-        LpmLookup::Candidates { routes, omitted } => (routes, omitted),
-        LpmLookup::NoMatch => {
-            return vec![terminal_branch(
-                branch_path,
-                Vec::new(),
-                None,
-                None,
-                depth,
-                "unresolved",
-                Some("no_same_vrf_longest_prefix_match"),
-            )];
-        }
-        LpmLookup::SelectionUnknown => {
-            return vec![terminal_branch(
-                branch_path,
-                Vec::new(),
-                None,
-                None,
-                depth,
-                "unresolved",
-                Some("route_selection_unknown"),
-            )];
-        }
-    };
+    let (candidates, omitted_routes, unknown_competing_selection) =
+        match lookup_selected_lpm(routes, vrf_name, afi, &target) {
+            LpmLookup::Candidates {
+                routes,
+                omitted,
+                unknown_competing_selection,
+            } => (routes, omitted, unknown_competing_selection),
+            LpmLookup::NoMatch => {
+                return vec![terminal_branch(
+                    branch_path,
+                    Vec::new(),
+                    None,
+                    None,
+                    depth,
+                    "unresolved",
+                    Some("no_same_vrf_longest_prefix_match"),
+                )];
+            }
+            LpmLookup::SelectionUnknown => {
+                return vec![terminal_branch(
+                    branch_path,
+                    Vec::new(),
+                    None,
+                    None,
+                    depth,
+                    "unresolved",
+                    Some("route_selection_unknown"),
+                )];
+            }
+        };
     workspace.route_candidates_omitted += omitted_routes;
     let chain_prefixes: Vec<String> = candidates
         .iter()
@@ -883,6 +915,13 @@ fn expand_target(
     let mut seen_specs = BTreeSet::new();
     let mut empty_route_evidence = false;
     let omitted_next_hops_before = workspace.candidate_next_hops_omitted;
+    if unknown_competing_selection
+        && seen_specs.insert("unresolved:competing_route_selection_unknown".to_string())
+    {
+        specs.push(NextHopCandidate::Unresolved(
+            "competing_route_selection_unknown",
+        ));
+    }
     if omitted_routes > 0
         && seen_specs.insert("unresolved:resolution_route_budget_exceeded".to_string())
     {
@@ -903,7 +942,7 @@ fn expand_target(
                 continue;
             }
             workspace.candidate_next_hops_considered += 1;
-            let spec = classify_next_hop(nh);
+            let spec = classify_next_hop(route, nh);
             if seen_specs.insert(candidate_key(&spec)) {
                 specs.push(spec);
             }
@@ -965,6 +1004,15 @@ fn expand_target(
                     ));
                 }
             }
+            NextHopCandidate::TerminalLocalDelivery => branches.push(terminal_branch(
+                branch_path.clone(),
+                chain_prefixes.clone(),
+                None,
+                Some("local_delivery".into()),
+                depth,
+                "resolved_local_delivery",
+                None,
+            )),
             NextHopCandidate::TerminalDiscard(action) => branches.push(terminal_branch(
                 branch_path.clone(),
                 chain_prefixes.clone(),
@@ -984,7 +1032,23 @@ fn expand_target(
                 Some(reason),
             )),
             NextHopCandidate::Recurse(address, scope) => {
-                if address == target || visited.contains(&address) {
+                let scoped_identity = (
+                    address,
+                    if is_ipv6_link_local(&address) {
+                        scope.clone()
+                    } else {
+                        None
+                    },
+                );
+                let current_identity = (
+                    target,
+                    if is_ipv6_link_local(&target) {
+                        target_scope.clone()
+                    } else {
+                        None
+                    },
+                );
+                if scoped_identity == current_identity || visited.contains(&scoped_identity) {
                     branches.push(terminal_branch(
                         branch_path.clone(),
                         chain_prefixes.clone(),
@@ -999,7 +1063,7 @@ fn expand_target(
                 let mut child_path = branch_path.clone();
                 child_path.push(address.to_string());
                 let mut child_visited = visited.clone();
-                child_visited.insert(target);
+                child_visited.insert(current_identity);
                 let children = expand_target(
                     routes,
                     vrf_name,
@@ -1097,11 +1161,24 @@ pub fn resolve_native_next_hop(
     let has_terminal = branches.iter().any(|branch| {
         branch.resolution_state == "resolved_interface"
             || branch.resolution_state == "resolved_discard"
+            || branch.resolution_state == "resolved_local_delivery"
     });
     let resolution_state = if unresolved.is_empty() {
         if !terminal_interfaces.is_empty() && terminal_actions.is_empty() {
             "resolved"
-        } else if terminal_interfaces.is_empty() && !terminal_actions.is_empty() {
+        } else if terminal_interfaces.is_empty()
+            && !terminal_actions.is_empty()
+            && terminal_actions
+                .iter()
+                .all(|action| action == "local_delivery")
+        {
+            "resolved_local_delivery"
+        } else if terminal_interfaces.is_empty()
+            && !terminal_actions.is_empty()
+            && terminal_actions
+                .iter()
+                .all(|action| action.starts_with("discard_"))
+        {
             "resolved_discard"
         } else {
             "resolved_mixed_terminal"

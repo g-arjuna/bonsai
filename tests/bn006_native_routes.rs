@@ -576,6 +576,85 @@ fn input_route_and_nexthop_reordering_does_not_change_resolution_outcome() {
     );
 }
 
+#[test]
+fn competing_unknown_selection_at_same_prefix_makes_resolution_partial() {
+    let selected = route(
+        "default",
+        "10.0.0.0/24",
+        "bgp",
+        vec![nh(None, "eth-selected", true)],
+    );
+    let unknown = route_with_selection(
+        "default",
+        "10.0.0.0/24",
+        "static",
+        vec![nh(None, "eth-unknown", true)],
+        None,
+        None,
+    );
+    let out = resolve_native_next_hop(&[selected, unknown], "default", "10.0.0.9");
+    assert_eq!(out.resolution_state, "partially_resolved");
+    assert_eq!(out.terminal_interfaces, vec!["eth-selected"]);
+    assert!(out.branches.iter().any(|branch| {
+        branch.unresolved_reason.as_deref() == Some("competing_route_selection_unknown")
+    }));
+}
+
+#[test]
+fn inactive_noninstalled_and_unknown_nexthop_states_do_not_become_active_candidates() {
+    for (active, fib, reason) in [
+        (
+            Some(false),
+            Some(true),
+            "inactive_next_hop_not_active_candidate",
+        ),
+        (Some(true), Some(false), "next_hop_not_fib_installed"),
+        (None, Some(true), "next_hop_active_state_unknown"),
+        (Some(true), None, "next_hop_fib_state_unknown"),
+    ] {
+        let mut hop = nh(None, "eth0", true);
+        hop.active = active;
+        hop.fib = fib;
+        let routes = vec![route("default", "10.0.0.0/24", "connected", vec![hop])];
+        let out = resolve_native_next_hop(&routes, "default", "10.0.0.9");
+        assert_eq!(out.resolution_state, "unresolved");
+        assert_eq!(out.unresolved_reason.as_deref(), Some(reason));
+        assert!(out.terminal_interfaces.is_empty());
+    }
+}
+
+#[test]
+fn genuine_local_route_is_local_delivery_not_interface_egress() {
+    let parsed = parse_frr_native_route_capture(
+        include_str!("fixtures/bn006_frr_10_6_1/ip-route-vrf-all.json"),
+        "172.100.208.11",
+    )
+    .unwrap();
+    let out = resolve_native_next_hop(&parsed.routes, "default", "172.100.208.11");
+    assert_eq!(out.resolution_state, "resolved_local_delivery");
+    assert!(out.terminal_interfaces.is_empty());
+    assert_eq!(out.terminal_actions, vec!["local_delivery"]);
+}
+
+#[test]
+fn ipv6_link_local_loop_identity_preserves_interface_scope() {
+    let mut scoped_hop = nh(Some("fe80::1%eth1"), "eth1", false);
+    scoped_hop.address_scope_id = Some("eth1".into());
+    let routes = vec![
+        route("default", "fe80::1/128", "bgp", vec![scoped_hop]),
+        route(
+            "default",
+            "fe80::/64",
+            "connected",
+            vec![nh(None, "eth1", true)],
+        ),
+    ];
+    let out = resolve_native_next_hop(&routes, "default", "fe80::1%eth0");
+    assert_eq!(out.resolution_state, "unresolved");
+    assert_eq!(out.unresolved_reason.as_deref(), Some("recursion_loop"));
+    assert_eq!(out.branches[0].depth, 1);
+}
+
 // ---------------------------------------------------------------------------
 // Operational route-query integration: retained shadow evidence is persisted
 // monotonically and consumed through the real MCP tool path with explicit
@@ -586,9 +665,13 @@ fn input_route_and_nexthop_reordering_does_not_change_resolution_outcome() {
 mod mcp_integration {
     use super::*;
     use bonsai::enrichment::native_routes::{StoredNativeRouteObservation, persist_observation};
+    use bonsai::enrichment::native_routing::{
+        NativeRoutingIdentity, PROVENANCE_SYNTHETIC_CONTROL, canonical_device_id,
+    };
     use bonsai::graph::GraphStore;
     use bonsai::http_server::auth::{Role, RoutingAccessScope};
     use bonsai::mcp_server::{ToolExecutionContext, call_tool_with_store_and_routing};
+    use bonsai::registry::ApiRegistry;
     use serde_json::json;
 
     fn capture(
@@ -599,14 +682,41 @@ mod mcp_integration {
             exporter_address: address.into(),
             parser_id: "frr-native-ip-route".into(),
             parser_version: "0.1.0".into(),
-            raw_sample_sha256: "synthetic-control".into(),
+            raw_sample_sha256: "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                .into(),
             routes,
             missing_or_invalid_fields: Vec::new(),
             unparsed_fields: Vec::new(),
         }
     }
 
+    fn target_for(address: &str) -> bonsai::config::TargetConfig {
+        bonsai::config::TargetConfig {
+            address: format!("{address}:57400"),
+            enabled: true,
+            external_id: Some(format!("test-inventory:{address}")),
+            ..Default::default()
+        }
+    }
+
+    fn inventory_registry(
+        dir: &tempfile::TempDir,
+        addresses: &[&str],
+    ) -> std::sync::Arc<ApiRegistry> {
+        std::sync::Arc::new(
+            ApiRegistry::open(
+                dir.path().join("inventory-registry.json"),
+                addresses
+                    .iter()
+                    .map(|address| target_for(address))
+                    .collect(),
+            )
+            .unwrap(),
+        )
+    }
+
     fn observation(address: &str, captured_at_ns: i64) -> StoredNativeRouteObservation {
+        let target = target_for(address);
         StoredNativeRouteObservation {
             captured_at_ns,
             capture_started_at_ns: captured_at_ns,
@@ -614,18 +724,33 @@ mod mcp_integration {
             raw_routes: "{}".into(),
             capture: capture(address, selected_fixture_routes()),
             afi_safi: "ipv4-unicast".into(),
-            inventory_identity: Some(format!("registered-target:{address}")),
+            inventory_identity: Some(canonical_device_id(&target)),
             acquisition_profile: Some("frr.fixed-readonly-native-routes-v1".into()),
+            routing_identity: Some(NativeRoutingIdentity::new(
+                &target,
+                "ipv4-unicast",
+                "frr.fixed-readonly-native-routes-v1",
+                PROVENANCE_SYNTHETIC_CONTROL,
+                captured_at_ns,
+                address,
+            )),
+            source_observed_at_ns: None,
+            ingested_at_ns: None,
+            source_ordering_token: None,
         }
     }
 
-    fn scoped_context(speaker: &str) -> ToolExecutionContext {
+    fn scoped_context(
+        speaker: &str,
+        registry: std::sync::Arc<ApiRegistry>,
+    ) -> ToolExecutionContext {
         ToolExecutionContext {
             role: Role::ApiReadonly,
             scope: Some(RoutingAccessScope {
                 speaker: Some(speaker.into()),
                 ..Default::default()
             }),
+            inventory_registry: Some(registry),
         }
     }
 
@@ -639,6 +764,7 @@ mod mcp_integration {
             )
             .unwrap(),
         );
+        let registry = inventory_registry(&dir, &["192.0.2.1", "192.0.2.5", "192.0.2.9"]);
         let now = bonsai::graph::common::now_ns();
         persist_observation(&store, &observation("192.0.2.1", now))
             .await
@@ -649,12 +775,12 @@ mod mcp_integration {
             None,
             "get_native_route_lookup",
             &json!({"target": "10.0.0.9"}),
-            &scoped_context("192.0.2.1"),
+            &scoped_context("192.0.2.1", registry.clone()),
         )
         .await
         .unwrap();
         assert_eq!(result["freshness"], "fresh");
-        assert_eq!(result["evidence_class"], "retained_shadow_or_replay");
+        assert_eq!(result["evidence_class"], "synthetic_integration_control");
         assert_eq!(result["transport"], "synthetic_fixture_replay");
         assert_eq!(result["total_retained_routes"], 3);
         assert_eq!(result["resolution"]["resolution_state"], "resolved");
@@ -678,6 +804,7 @@ mod mcp_integration {
             )
             .unwrap(),
         );
+        let registry = inventory_registry(&dir, &["192.0.2.1", "192.0.2.5", "192.0.2.9"]);
         let now = bonsai::graph::common::now_ns();
         persist_observation(&store, &observation("192.0.2.1", now))
             .await
@@ -690,7 +817,7 @@ mod mcp_integration {
             None,
             "get_native_route_lookup",
             &json!({"target": "203.0.113.9"}),
-            &scoped_context("192.0.2.1"),
+            &scoped_context("192.0.2.1", registry.clone()),
         )
         .await
         .unwrap();
@@ -713,6 +840,7 @@ mod mcp_integration {
             )
             .unwrap(),
         );
+        let registry = inventory_registry(&dir, &["192.0.2.1", "192.0.2.5", "192.0.2.9"]);
         let now = bonsai::graph::common::now_ns();
         persist_observation(&store, &observation("192.0.2.1", now))
             .await
@@ -723,7 +851,7 @@ mod mcp_integration {
             None,
             "get_native_route_lookup",
             &json!({"device_address": "192.0.2.2", "target": "10.0.0.9"}),
-            &scoped_context("192.0.2.1"),
+            &scoped_context("192.0.2.1", registry.clone()),
         )
         .await
         .unwrap_err();
@@ -734,7 +862,7 @@ mod mcp_integration {
             None,
             "get_native_route_lookup",
             &json!({"target": "10.0.0.9"}),
-            &scoped_context("192.0.2.9"),
+            &scoped_context("192.0.2.9", registry.clone()),
         )
         .await
         .unwrap_err();
@@ -745,7 +873,7 @@ mod mcp_integration {
             None,
             "get_native_route_lookup",
             &json!({"target": "10.0.0.9", "afi_safi": "ipv6-unicast"}),
-            &scoped_context("192.0.2.1"),
+            &scoped_context("192.0.2.1", registry.clone()),
         )
         .await
         .unwrap_err();
@@ -762,6 +890,7 @@ mod mcp_integration {
             )
             .unwrap(),
         );
+        let registry = inventory_registry(&dir, &["192.0.2.1", "192.0.2.5", "192.0.2.9"]);
         let now = bonsai::graph::common::now_ns();
         let obs = observation("192.0.2.1", now);
         persist_observation(&store, &obs).await.unwrap();
@@ -771,24 +900,24 @@ mod mcp_integration {
         // Older observations never overwrite newer evidence.
         let mut older = obs.clone();
         older.captured_at_ns = now - 1_000_000_000;
+        older.capture_started_at_ns = now - 1_000_000_000;
         let stale = persist_observation(&store, &older).await;
         assert!(
-            stale
-                .as_ref()
-                .err()
-                .is_some_and(|err| err.to_string().contains("stale native route observation")),
+            stale.as_ref().err().is_some_and(|err| err
+                .to_string()
+                .contains("older-start native route acquisition")),
             "{stale:?}"
         );
 
         // Equal-time conflicting evidence fails explicitly.
         let mut conflict = obs.clone();
-        conflict.raw_routes = "{\"different\":true}".into();
+        conflict.transport = "synthetic_conflicting_transport".into();
         let conflicted = persist_observation(&store, &conflict).await;
         assert!(
             conflicted
                 .as_ref()
                 .err()
-                .is_some_and(|err| err.to_string().contains("equal-time conflicting")),
+                .is_some_and(|err| err.to_string().contains("equal-position conflicting")),
             "{conflicted:?}"
         );
 
@@ -800,10 +929,142 @@ mod mcp_integration {
             None,
             "get_native_route_lookup",
             &json!({"target": "10.0.0.9"}),
-            &scoped_context("192.0.2.5"),
+            &scoped_context("192.0.2.5", registry.clone()),
         )
         .await
         .unwrap();
         assert_eq!(result["freshness"], "stale");
+        assert_eq!(result["analysis_completed"], false);
+        assert!(result["resolution"].is_null());
+        assert_eq!(result["analysis_outcome"], "unresolved_prerequisites");
+    }
+
+    #[tokio::test]
+    async fn management_address_reassignment_cannot_claim_prior_canonical_route_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            GraphStore::open(
+                dir.path().join("graph").to_str().unwrap(),
+                256 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+        let registry = inventory_registry(&dir, &["192.0.2.1"]);
+        let now = bonsai::graph::common::now_ns();
+        persist_observation(&store, &observation("192.0.2.1", now))
+            .await
+            .unwrap();
+        let first = call_tool_with_store_and_routing(
+            &store,
+            None,
+            "get_native_route_lookup",
+            &json!({"target": "10.0.0.9"}),
+            &scoped_context("192.0.2.1", registry.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first["analysis_outcome"], "current_evidence_analysis");
+
+        registry.remove_device("192.0.2.1:57400").unwrap();
+        let mut replacement = target_for("192.0.2.1");
+        replacement.external_id = Some("test-inventory:replacement-device".into());
+        registry.add_device(replacement).unwrap();
+        let err = call_tool_with_store_and_routing(
+            &store,
+            None,
+            "get_native_route_lookup",
+            &json!({"target": "10.0.0.9"}),
+            &scoped_context("192.0.2.1", registry.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("native_route_evidence_unavailable"),
+            "replacement device must not inherit prior canonical evidence: {err}"
+        );
+
+        registry.remove_device("192.0.2.1:57400").unwrap();
+        let mut moved_original = target_for("192.0.2.2");
+        moved_original.external_id = Some("test-inventory:192.0.2.1".into());
+        registry.add_device(moved_original).unwrap();
+        let moved = call_tool_with_store_and_routing(
+            &store,
+            None,
+            "get_native_route_lookup",
+            &json!({"device_address":"192.0.2.2", "target": "10.0.0.9"}),
+            &ToolExecutionContext::global(Role::Viewer).with_inventory_registry(registry.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            moved["native_identity_status"],
+            "registered_inventory_target"
+        );
+        assert_eq!(moved["analysis_outcome"], "current_evidence_analysis");
+    }
+
+    #[tokio::test]
+    async fn arbitrary_inventory_string_and_legacy_route_rows_are_not_currently_eligible() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            GraphStore::open(
+                dir.path().join("graph").to_str().unwrap(),
+                256 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+        let registry = inventory_registry(&dir, &["192.0.2.1"]);
+        let now = bonsai::graph::common::now_ns();
+        let mut legacy = observation("192.0.2.1", now);
+        legacy.inventory_identity = Some("arbitrary-nonempty-string".into());
+        legacy.routing_identity = None;
+        persist_observation(&store, &legacy).await.unwrap();
+        let result = call_tool_with_store_and_routing(
+            &store,
+            None,
+            "get_native_route_lookup",
+            &json!({"target": "10.0.0.9"}),
+            &scoped_context("192.0.2.1", registry.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result["storage_identity_class"],
+            "legacy_address_keyed_unverified"
+        );
+        assert_eq!(
+            result["native_identity_status"],
+            "unverified_or_stale_inventory_binding"
+        );
+        assert_eq!(result["analysis_completed"], false);
+        assert!(result["resolution"].is_null());
+    }
+
+    #[tokio::test]
+    async fn delayed_older_acquisition_cannot_overwrite_newer_completed_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            GraphStore::open(
+                dir.path().join("graph").to_str().unwrap(),
+                256 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+        let base = 1_769_000_000_000_000_000i64;
+        let mut older_capture_later_completion = observation("192.0.2.1", base + 900);
+        older_capture_later_completion.capture_started_at_ns = base + 100;
+        let mut newer_capture_earlier_completion = observation("192.0.2.1", base + 300);
+        newer_capture_earlier_completion.capture_started_at_ns = base + 200;
+        persist_observation(&store, &newer_capture_earlier_completion)
+            .await
+            .unwrap();
+        let err = persist_observation(&store, &older_capture_later_completion)
+            .await
+            .expect_err("completion time must not outrank acquisition start order");
+        assert!(
+            err.to_string()
+                .contains("older-start native route acquisition"),
+            "{err}"
+        );
     }
 }

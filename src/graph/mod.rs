@@ -5888,6 +5888,116 @@ impl GraphStore {
     /// rows are evidence only; reconciliation callers decide freshness, VRF
     /// compatibility and whether absence is missing visibility rather than a
     /// down session.
+
+    /// Peer-scoped BMP evidence retrieval used by native/BMP reconciliation.
+    /// Unlike the device-wide diagnostic page, completeness is meaningful for
+    /// the exact peer population: omitted rows are known to be relevant rather
+    /// than arbitrary unrelated device rows.
+    pub async fn bmp_bgp_sessions_for_peers(
+        &self,
+        device_address: &str,
+        peer_addresses: Vec<String>,
+    ) -> Result<crate::bgp_reconciliation::BmpPeerEvidencePage> {
+        let db = Arc::clone(&self.db);
+        let device_address = device_address.to_string();
+        let peer_addresses: Vec<String> = peer_addresses
+            .into_iter()
+            .take(500)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            if peer_addresses.is_empty() {
+                return Ok(crate::bgp_reconciliation::BmpPeerEvidencePage {
+                    rows: Vec::new(),
+                    total_matching_rows: 0,
+                    returned_rows: 0,
+                    retrieval_omitted_rows: 0,
+                });
+            }
+            let conn = Connection::new(&db).context("bmp_bgp_sessions_for_peers conn")?;
+            let names: Vec<String> = (0..peer_addresses.len()).map(|i| format!("p{i}")).collect();
+            let peer_filter = names
+                .iter()
+                .map(|name| format!("n.peer_address = ${name}"))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let mut params: Vec<(&str, Value)> = vec![("device", Value::String(device_address))];
+            for (name, peer) in names.iter().zip(peer_addresses.iter()) {
+                params.push((name.as_str(), Value::String(peer.clone())));
+            }
+            let where_clause =
+                format!("n.device_address = $device AND n.source = 'bmp' AND ({peer_filter})");
+            let count_cypher =
+                format!("MATCH (n:BgpNeighbor) WHERE {where_clause} RETURN count(n)");
+            let mut count_stmt = conn
+                .prepare(&count_cypher)
+                .context("prepare bmp_bgp_sessions_for_peers count")?;
+            let total_matching_rows = conn
+                .execute(&mut count_stmt, params.clone())
+                .context("execute bmp_bgp_sessions_for_peers count")?
+                .next()
+                .and_then(|row| match row.get(0) {
+                    Some(Value::Int64(value)) if *value >= 0 => Some(*value as usize),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            let rows_cypher = format!(
+                "MATCH (n:BgpNeighbor) WHERE {where_clause} \
+                 RETURN n.id, n.device_address, n.peer_address, n.peer_as, \
+                        n.session_state, n.network_instance, n.route_distinguisher, \
+                        n.peer_type, n.updated_at, n.evidence_received_at \
+                 ORDER BY n.id LIMIT 1000"
+            );
+            let mut stmt = conn
+                .prepare(&rows_cypher)
+                .context("prepare bmp_bgp_sessions_for_peers")?;
+            let rows: Vec<_> = conn
+                .execute(&mut stmt, params)
+                .context("execute bmp_bgp_sessions_for_peers")?
+                .map(|row| {
+                    let peer_as = match row.get(3) {
+                        Some(Value::Int64(value)) if *value >= 0 && *value <= u32::MAX as i64 => {
+                            Some(*value as u32)
+                        }
+                        _ => None,
+                    };
+                    crate::bgp_reconciliation::BmpPeerEvidence {
+                        session_id: read_str(&row[0]),
+                        device_address: read_str(&row[1]),
+                        peer_address: read_str(&row[2]),
+                        peer_as,
+                        session_state: read_str(&row[4]),
+                        network_instance: read_str(&row[5]),
+                        route_distinguisher: read_str(&row[6]),
+                        peer_type: match row.get(7) {
+                            Some(Value::Int64(value))
+                                if *value >= 0 && *value <= u8::MAX as i64 =>
+                            {
+                                Some(*value as u8)
+                            }
+                            _ => None,
+                        },
+                        updated_at_ns: read_ts_ns(&row[8]),
+                        evidence_received_at_ns: match row.get(9) {
+                            Some(Value::Int64(value)) => *value,
+                            _ => 0,
+                        },
+                    }
+                })
+                .collect();
+            let returned_rows = rows.len();
+            Ok::<_, anyhow::Error>(crate::bgp_reconciliation::BmpPeerEvidencePage {
+                rows,
+                total_matching_rows,
+                returned_rows,
+                retrieval_omitted_rows: total_matching_rows.saturating_sub(returned_rows),
+            })
+        })
+        .await
+        .context("spawn_blocking panicked")?
+    }
+
     pub async fn bmp_bgp_sessions_for_device(
         &self,
         device_address: &str,
@@ -10098,6 +10208,9 @@ struct ExistingLldpLifecycleRow {
     chassis_id: String,
     system_name: String,
     port_id: String,
+    acquisition_stream: String,
+    source_session_id: String,
+    collector_id: String,
 }
 
 impl ExistingLldpLifecycleRow {
@@ -10137,7 +10250,8 @@ fn query_lldp_lifecycle_row(
     let mut stmt = conn
         .prepare(
             "MATCH (n:LldpNeighbor {id: $id}) RETURN n.lifecycle, n.updated_at, \
-             n.lifecycle_changed_at, n.chassis_id, n.system_name, n.port_id",
+             n.lifecycle_changed_at, n.chassis_id, n.system_name, n.port_id, \
+             n.acquisition_stream, n.source_session_id, n.collector_id",
         )
         .context("prepare LLDP lifecycle lookup")?;
     let mut rows = conn
@@ -10156,8 +10270,26 @@ fn query_lldp_lifecycle_row(
             chassis_id: read_str(&row[3]),
             system_name: read_str(&row[4]),
             port_id: read_str(&row[5]),
+            acquisition_stream: read_str(&row[6]),
+            source_session_id: read_str(&row[7]),
+            collector_id: read_str(&row[8]),
         }
     }))
+}
+
+fn lldp_ordering_domain_compatible(row: &ExistingLldpLifecycleRow, u: &TelemetryUpdate) -> bool {
+    if row.acquisition_stream.is_empty()
+        || row.source_session_id.is_empty()
+        || u.source_protocol.is_empty()
+        || u.session_id.is_empty()
+    {
+        return true;
+    }
+    row.acquisition_stream == u.source_protocol
+        && row.source_session_id == u.session_id
+        && (row.collector_id.is_empty()
+            || u.collector_id.is_empty()
+            || row.collector_id == u.collector_id)
 }
 
 fn ordering_decision_for_rows(
@@ -10446,9 +10578,10 @@ fn withdraw_lldp_neighbors(
     neighbor_id: &str,
 ) -> Result<()> {
     let bare = crate::registry::strip_port(&u.target);
+    let (scope, namespace) = lldp_scope_from_path(&u.path);
     let mut rows_stmt = conn
         .prepare(
-            "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr AND n.local_if = $lif AND n.neighbor_id = $nid RETURN n.id",
+            "MATCH (n:LldpNeighbor) WHERE n.device_address = $addr AND n.local_if = $lif AND n.neighbor_id = $nid AND n.identity_scope = $scope AND n.network_namespace = $namespace RETURN n.id",
         )
         .context("prepare LLDP withdrawal rows")?;
     let ids: Vec<String> = conn
@@ -10458,6 +10591,8 @@ fn withdraw_lldp_neighbors(
                 ("addr", Value::String(bare.to_string())),
                 ("lif", Value::String(local_if.to_string())),
                 ("nid", Value::String(neighbor_id.to_string())),
+                ("scope", Value::String(scope.unwrap_or_default())),
+                ("namespace", Value::String(namespace.unwrap_or_default())),
             ],
         )
         .context("execute LLDP withdrawal rows")?
@@ -10473,6 +10608,13 @@ fn withdraw_lldp_neighbors(
         };
         if row.reference_ns() > u.timestamp_ns {
             saw_newer_reference = true;
+        }
+        if !lldp_ordering_domain_compatible(&row, u) {
+            debug!(
+                id,
+                "LLDP withdrawal left unchanged: source session or collector ordering domain is not positively compatible"
+            );
+            continue;
         }
         match ordering_decision_for_rows(
             &[row],
@@ -10569,7 +10711,6 @@ pub(crate) fn write_lldp_neighbor(
     val: &serde_json::Value,
     project_topology: bool,
 ) -> Result<()> {
-    let bare = crate::registry::strip_port(&u.target);
     upsert_device(
         conn,
         &u.target,
@@ -10622,12 +10763,30 @@ pub(crate) fn write_lldp_neighbor(
         .entries
         .iter()
         .any(|entry| entry.multi_entry_envelope);
-    if multi_entry_envelope {
-        let legacy_id = legacy_lldp_row_id(bare, local_if, neighbor_id);
-        if query_lldp_lifecycle_row(conn, &legacy_id)?.is_some() {
-            supersede_legacy_collapsed_lldp_record(conn, &legacy_id, ts(u.timestamp_ns))?;
+    let collapsed_legacy_id = multi_entry_envelope.then(|| {
+        legacy_lldp_row_id(
+            crate::registry::strip_port(&u.target),
+            local_if,
+            neighbor_id,
+        )
+    });
+    let collapsed_legacy_replacement_eligible = if let Some(legacy_id) = &collapsed_legacy_id {
+        match query_lldp_lifecycle_row(conn, legacy_id)? {
+            Some(row) if row.lifecycle != "superseded" => matches!(
+                ordering_decision_for_rows(
+                    &[row],
+                    u.timestamp_ns,
+                    crate::lldp_operational::LifecycleEventKind::Observation,
+                    population.entries.first().map(|entry| entry.value),
+                ),
+                crate::lldp_operational::LifecycleOrderDecision::Apply
+                    | crate::lldp_operational::LifecycleOrderDecision::CompatibleReplay
+            ),
+            _ => false,
         }
-    }
+    } else {
+        false
+    };
     for entry in population.entries {
         write_one_lldp_neighbor(
             conn,
@@ -10638,6 +10797,9 @@ pub(crate) fn write_lldp_neighbor(
             &population.accounting,
             project_topology,
         )?;
+    }
+    if collapsed_legacy_replacement_eligible && let Some(legacy_id) = collapsed_legacy_id {
+        supersede_legacy_collapsed_lldp_record(conn, &legacy_id, ts(u.timestamp_ns))?;
     }
     Ok(())
 }
@@ -10651,6 +10813,7 @@ fn upsert_accepted_lldp_evidence(
     accounting: &crate::lldp_operational::OperationalLldpPopulationAccounting,
     id: &str,
     fallback: Option<&ExistingLldpLifecycleRow>,
+    uncertain_ordering: bool,
 ) -> Result<()> {
     let bare = crate::registry::strip_port(&u.target);
     let now = ts(u.timestamp_ns);
@@ -10710,7 +10873,7 @@ fn upsert_accepted_lldp_evidence(
                n.population_conflicting_entries = $pop_conflicting, \
                n.population_malformed_entries = $pop_malformed, \
                n.population_entries_omitted = $pop_omitted, \
-               n.ordering_contract = $contract, n.ordering_state = 'ordered', n.ordering_detail = '' \
+               n.ordering_contract = $contract, n.ordering_state = $ordering_state, n.ordering_detail = $ordering_detail \
              ON MATCH SET \
                n.neighbor_key = $record_key, n.lifecycle = 'active', \
                n.chassis_id  = CASE WHEN $chassis  <> '' THEN $chassis  ELSE n.chassis_id  END, \
@@ -10729,7 +10892,7 @@ fn upsert_accepted_lldp_evidence(
                n.population_conflicting_entries = $pop_conflicting, \
                n.population_malformed_entries = $pop_malformed, \
                n.population_entries_omitted = $pop_omitted, \
-               n.ordering_contract = $contract, n.ordering_state = 'ordered', n.ordering_detail = ''",
+               n.ordering_contract = $contract, n.ordering_state = $ordering_state, n.ordering_detail = $ordering_detail",
         )
         .context("prepare LldpNeighbor fenced upsert")?;
 
@@ -10786,6 +10949,25 @@ fn upsert_accepted_lldp_evidence(
                 Value::Int64(accounting.entries_omitted as i64),
             ),
             ("contract", Value::String(contract.to_string())),
+            (
+                "ordering_state",
+                Value::String(
+                    if uncertain_ordering {
+                        "uncertain_cross_stream"
+                    } else {
+                        "ordered"
+                    }
+                    .to_string(),
+                ),
+            ),
+            (
+                "ordering_detail",
+                Value::String(if uncertain_ordering {
+                    "source session or collector ordering domain changed; retained as evidence without definitive topology projection".to_string()
+                } else {
+                    String::new()
+                }),
+            ),
         ],
     )
     .context("execute LldpNeighbor fenced upsert")?;
@@ -10885,8 +11067,18 @@ fn write_one_lldp_neighbor(
         rows.push(row);
     }
 
+    let incompatible_ordering_rows = rows
+        .iter()
+        .filter(|row| row.lifecycle == "active" && !lldp_ordering_domain_compatible(row, u))
+        .count();
+    let ordering_rows = rows
+        .iter()
+        .filter(|row| row.lifecycle != "active" || lldp_ordering_domain_compatible(row, u))
+        .cloned()
+        .collect::<Vec<_>>();
+    let uncertain_ordering = incompatible_ordering_rows > 0;
     let decision = ordering_decision_for_rows(
-        &rows,
+        &ordering_rows,
         u.timestamp_ns,
         crate::lldp_operational::LifecycleEventKind::Observation,
         Some(entry.value),
@@ -10923,6 +11115,7 @@ fn write_one_lldp_neighbor(
                     accounting,
                     &id,
                     legacy.as_ref(),
+                    uncertain_ordering,
                 )?;
             }
         }
@@ -10936,6 +11129,7 @@ fn write_one_lldp_neighbor(
                 accounting,
                 &id,
                 legacy.as_ref().or(existing.as_ref()),
+                uncertain_ordering,
             )?;
         }
     }
@@ -10954,6 +11148,7 @@ fn write_one_lldp_neighbor(
     let port_id = json_str(entry.value, "port-id").to_string();
     let chassis_id = json_str(entry.value, "chassis-id").to_string();
     if project_topology
+        && !uncertain_ordering
         && !system_name.is_empty()
         && !port_id.is_empty()
         && let Err(e) = try_connect_interfaces(
@@ -10970,7 +11165,7 @@ fn write_one_lldp_neighbor(
         debug!(error = %e, local_if, system_name, port_id, "interface link skipped");
     }
 
-    if project_topology && !chassis_id.is_empty() {
+    if project_topology && !uncertain_ordering && !chassis_id.is_empty() {
         if let Err(error) = crate::graph::common::upsert_device_address(
             conn,
             &chassis_id,

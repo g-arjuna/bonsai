@@ -60,6 +60,9 @@ pub enum NativeBmpAgreement {
     IncompleteNativeEvidence,
     UnknownSessionState,
     HistoricalBmpTransitionEvidence,
+    /// Retrieval or candidate indexing was truncated, so neither uniqueness nor
+    /// absence can be established for this peer-scoped evidence population.
+    IncompleteBmpEvidence,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -101,6 +104,8 @@ pub struct NativeBmpReconciliation {
     pub bmp_rows_indexed: usize,
     pub bmp_exact_replays: usize,
     pub bmp_candidates_omitted: usize,
+    pub bmp_rows_retrieval_omitted: usize,
+    pub bmp_population_complete: bool,
     pub corroboration_level: String,
 }
 
@@ -226,12 +231,31 @@ pub fn reconcile_native_bgp_with_bmp(
     as_of_ns: i64,
     policy: NativeBmpReconciliationPolicy,
 ) -> NativeBmpReconciliation {
+    reconcile_native_bgp_with_bmp_completeness(
+        capture,
+        native_captured_at_ns,
+        bmp_rows,
+        0,
+        as_of_ns,
+        policy,
+    )
+}
+
+pub fn reconcile_native_bgp_with_bmp_completeness(
+    capture: &NativeNosBgpCapture,
+    native_captured_at_ns: i64,
+    bmp_rows: &[BmpPeerEvidence],
+    bmp_rows_retrieval_omitted: usize,
+    as_of_ns: i64,
+    policy: NativeBmpReconciliationPolicy,
+) -> NativeBmpReconciliation {
     let native_freshness = freshness(native_captured_at_ns, as_of_ns, policy);
     let mut peer_index: std::collections::BTreeMap<String, Vec<&BmpPeerEvidence>> =
         std::collections::BTreeMap::new();
     let mut bmp_rows_indexed = 0usize;
     let mut bmp_exact_replays = 0usize;
     let mut bmp_candidates_omitted = 0usize;
+    let mut candidate_omission_keys = std::collections::BTreeSet::new();
     let mut seen_exact = std::collections::BTreeSet::new();
     let bmp_rows_input_limit_omitted = bmp_rows.len().saturating_sub(MAX_BMP_ROWS_INPUT_SCAN);
     let mut matching_rows_seen = 0usize;
@@ -261,12 +285,13 @@ pub fn reconcile_native_bgp_with_bmp(
             continue;
         }
         let key = canonical_ip(&row.peer_address).unwrap_or_else(|| row.peer_address.clone());
-        let candidates = peer_index.entry(key).or_default();
+        let candidates = peer_index.entry(key.clone()).or_default();
         if candidates.len() < MAX_CANDIDATES_PER_PEER {
             candidates.push(row);
             bmp_rows_indexed += 1;
         } else {
             bmp_candidates_omitted += 1;
+            candidate_omission_keys.insert(key.clone());
         }
     }
     for candidates in peer_index.values_mut() {
@@ -291,6 +316,8 @@ pub fn reconcile_native_bgp_with_bmp(
         bmp_rows_indexed,
         bmp_exact_replays,
         bmp_candidates_omitted,
+        bmp_rows_retrieval_omitted,
+        bmp_population_complete: bmp_rows_retrieval_omitted == 0,
         corroboration_level: "transport_session_only_not_afi_safi".into(),
     };
 
@@ -339,8 +366,13 @@ pub fn reconcile_native_bgp_with_bmp(
             })
             .unwrap_or_default();
         if peer_rows.is_empty() {
-            assessment.agreement = NativeBmpAgreement::MissingBmpVisibility;
-            out.missing_bmp_visibility += 1;
+            if bmp_rows_retrieval_omitted > 0 || bmp_rows_input_limit_omitted > 0 {
+                assessment.agreement = NativeBmpAgreement::IncompleteBmpEvidence;
+                out.unknown_or_stale += 1;
+            } else {
+                assessment.agreement = NativeBmpAgreement::MissingBmpVisibility;
+                out.missing_bmp_visibility += 1;
+            }
             out.assessments.push(assessment);
             continue;
         }
@@ -370,6 +402,15 @@ pub fn reconcile_native_bgp_with_bmp(
             out.assessments.push(assessment);
             continue;
         }
+        let population_incomplete = bmp_rows_retrieval_omitted > 0
+            || bmp_rows_input_limit_omitted > 0
+            || candidate_omission_keys.contains(&key);
+        if population_incomplete {
+            assessment.agreement = NativeBmpAgreement::IncompleteBmpEvidence;
+            out.unknown_or_stale += 1;
+            out.assessments.push(assessment);
+            continue;
+        }
         if candidates.len() != 1 {
             assessment.agreement = NativeBmpAgreement::AmbiguousBmpEvidence;
             out.ambiguous += 1;
@@ -387,7 +428,12 @@ pub fn reconcile_native_bgp_with_bmp(
         assessment.bmp_peer_as = bmp.peer_as;
         assessment.bmp_peer_type = bmp.peer_type;
         assessment.bmp_freshness = Some(freshness_label(bmp_freshness).to_string());
-        if !bmp_freshness.is_current() {
+        let bmp_transition_freshness = if bmp.updated_at_ns > 0 {
+            freshness(bmp.updated_at_ns, as_of_ns, policy)
+        } else {
+            EvidenceFreshness::UnknownFreshness
+        };
+        if !bmp_freshness.is_current() || !bmp_transition_freshness.is_current() {
             // BMP updated_at is commonly the last Peer Up/Down transition, not
             // a refreshed liveness sample. Age makes the transition historical;
             // it neither proves the session down nor refreshes the old state.
@@ -649,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn old_transition_with_fresh_receipt_is_not_misread_as_stale_or_down() {
+    fn old_transition_with_fresh_receipt_does_not_establish_current_corroboration() {
         let mut row = bmp(
             "established",
             65002,
@@ -660,9 +706,9 @@ mod tests {
             reconcile_native_bgp_with_bmp(&capture(), NOW - 4_000_000_000, &[row], NOW, policy());
         assert_eq!(
             out.assessments[0].agreement,
-            NativeBmpAgreement::CorroboratedEstablished
+            NativeBmpAgreement::HistoricalBmpTransitionEvidence
         );
-        assert_eq!(out.corroborated_established, 1);
+        assert_eq!(out.corroborated_established, 0);
     }
 
     #[test]
@@ -767,7 +813,28 @@ mod tests {
         assert_eq!(out.bmp_candidates_omitted, 48);
         assert_eq!(
             out.assessments[0].agreement,
-            NativeBmpAgreement::AmbiguousBmpEvidence
+            NativeBmpAgreement::IncompleteBmpEvidence
+        );
+    }
+
+    #[test]
+    fn truncated_peer_scoped_population_cannot_establish_uniqueness_or_absence() {
+        let rows = vec![bmp("established", 65002, NOW)];
+        let out =
+            reconcile_native_bgp_with_bmp_completeness(&capture(), NOW, &rows, 1, NOW, policy());
+        assert_eq!(out.bmp_population_complete, false);
+        assert_eq!(out.corroborated_established, 0);
+        assert_eq!(
+            out.assessments[0].agreement,
+            NativeBmpAgreement::IncompleteBmpEvidence
+        );
+
+        let absent =
+            reconcile_native_bgp_with_bmp_completeness(&capture(), NOW, &[], 1, NOW, policy());
+        assert_eq!(absent.missing_bmp_visibility, 0);
+        assert_eq!(
+            absent.assessments[0].agreement,
+            NativeBmpAgreement::IncompleteBmpEvidence
         );
     }
 }
