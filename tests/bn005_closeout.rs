@@ -715,6 +715,7 @@ fn advertised_tools_have_an_explicit_role_and_scope_support_matrix() {
     let device = [
         "query_devices",
         "get_native_bgp_neighbors",
+        "get_native_route_lookup",
         "get_changes",
         "get_device_blast_radius",
         "list_active_detections",
