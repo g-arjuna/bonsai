@@ -242,6 +242,7 @@ async fn native_tool_reads_persisted_evidence_with_scope_and_truthful_freshness(
     );
     observation.captured_at_ns = bonsai::graph::common::now_ns() + 120_000_000_000;
     observation.capture_started_at_ns = observation.captured_at_ns;
+    observation.ingested_at_ns = Some(observation.captured_at_ns);
     observation.routing_identity =
         Some(identity_for("192.0.2.1", observation.capture_started_at_ns).1);
     persist_observation(&store, &observation).await.unwrap();
