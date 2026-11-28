@@ -449,6 +449,16 @@ pub fn tool_schemas() -> JsonValue {
                 }}
             },
             {
+                "name": "get_native_route_lookup",
+                "description": "Read retained native route-table shadow evidence for one exporter and resolve a target address through VRF-scoped longest-prefix lookup and bounded recursive next-hop resolution. This is historical retained evidence, never live acquisition or verified forwarding; unresolved branches remain explicit.",
+                "inputSchema": {"type":"object", "properties": {
+                    "device_address":{"type":"string","description":"Registered exporter IP; defaults to caller speaker scope."},
+                    "target":{"type":"string","description":"IPv4 or IPv6 address to resolve, optionally interface-scoped (fe80::1%eth0)."},
+                    "vrf":{"type":"string","description":"Network instance/VRF name (default 'default').","default":"default"},
+                    "afi_safi":{"type":"string","enum":["ipv4-unicast","ipv6-unicast"],"description":"Capture family; derived from the target address when omitted."}
+                }, "required": ["target"]}
+            },
+            {
                 "name": "query_devices",
                 "description": "Return devices matching an optional hostname or address filter. Returns address, hostname, vendor, health, and current BGP session states.",
                 "inputSchema": {
@@ -1153,6 +1163,68 @@ async fn dispatch_authorized_tool(
                 "bmp_reconciliation":reconciliation}),
             ))
         }
+        "get_native_route_lookup" => {
+            let address = args["device_address"]
+                .as_str()
+                .or_else(|| args["_scoped_speaker"].as_str())
+                .ok_or("missing device_address")?;
+            let target = args["target"].as_str().ok_or("missing target")?;
+            let vrf = args["vrf"].as_str().unwrap_or("default");
+            if vrf.is_empty() || vrf.len() > 128 {
+                return Err("invalid vrf".into());
+            }
+            let target_ip = target
+                .split_once('%')
+                .map(|(address, _)| address)
+                .unwrap_or(target)
+                .parse::<std::net::IpAddr>()
+                .map_err(|_| "invalid target address".to_string())?;
+            let derived_afi = match target_ip {
+                std::net::IpAddr::V4(_) => "ipv4-unicast",
+                std::net::IpAddr::V6(_) => "ipv6-unicast",
+            };
+            let afi = args["afi_safi"].as_str().unwrap_or(derived_afi);
+            if afi != derived_afi {
+                return Err("afi_safi does not match target address family".into());
+            }
+            let observation =
+                crate::enrichment::native_routes::latest_observation(store, address, afi)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            let now = crate::graph::common::now_ns();
+            let age = now.saturating_sub(observation.captured_at_ns);
+            let freshness = if observation.captured_at_ns > now {
+                "unknown"
+            } else if age > NATIVE_BGP_MAX_OBSERVATION_AGE_NS {
+                "stale"
+            } else {
+                "fresh"
+            };
+            let identity_verified = observation.inventory_identity.is_some();
+            // Resolution is internally depth/expansion/candidate bounded and
+            // never mutates authoritative forwarding state. Retained shadow
+            // evidence is never presented as live acquisition or verified
+            // end-to-end forwarding.
+            let resolution = crate::native_routes::resolve_native_next_hop(
+                &observation.capture.routes,
+                vrf,
+                target,
+            );
+            let total_routes = observation.capture.routes.len();
+            Ok(enforce_tool_output_bounds(
+                json!({"observation_id":crate::enrichment::native_routes::observation_id(address,afi),
+                "captured_at_ns":observation.captured_at_ns,"freshness":freshness,"age_ms":age/1_000_000,
+                "transport":observation.transport,
+                "evidence_class":if observation.transport == "verified_ssh_read_only_cli" {"live_acquisition"} else {"retained_shadow_or_replay"},
+                "native_identity_status":if identity_verified {"registered_inventory_target"} else {"legacy_address_keyed_unverified"},
+                "device_address":address,"vrf":vrf,"afi_safi":afi,"target":target,
+                "total_retained_routes":total_routes,
+                "capture_missing_or_invalid_fields":observation.capture.missing_or_invalid_fields.len(),
+                "capture_unparsed_fields":observation.capture.unparsed_fields.len(),
+                "parser_id":observation.capture.parser_id,"parser_version":observation.capture.parser_version,
+                "resolution":resolution}),
+            ))
+        }
         "get_incident" => tool_get_incident(store, args)
             .await
             .map(enforce_tool_output_bounds),
@@ -1361,6 +1433,7 @@ pub fn authorize_and_scope_tool_with_mode(
                 name,
                 "query_devices"
                     | "get_native_bgp_neighbors"
+                    | "get_native_route_lookup"
                     | "get_changes"
                     | "get_device_blast_radius"
                     | "list_active_detections"
@@ -1399,6 +1472,7 @@ pub fn authorize_and_scope_tool_with_mode(
                 name,
                 "query_devices"
                     | "get_native_bgp_neighbors"
+                    | "get_native_route_lookup"
                     | "get_changes"
                     | "get_device_blast_radius"
                     | "list_active_detections"
@@ -1545,7 +1619,10 @@ pub fn authorize_and_scope_tool_with_mode(
                         obj.insert("_scoped_speaker".to_string(), json!(spk));
                     }
                 }
-                "query_devices" | "get_incident" | "get_native_bgp_neighbors" => {
+                "query_devices"
+                | "get_incident"
+                | "get_native_bgp_neighbors"
+                | "get_native_route_lookup" => {
                     if let Some(obj) = args.as_object_mut() {
                         obj.insert("_scoped_speaker".to_string(), json!(spk));
                     }
