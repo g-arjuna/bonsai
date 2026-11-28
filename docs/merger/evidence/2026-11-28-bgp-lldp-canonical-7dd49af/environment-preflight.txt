@@ -1,0 +1,33 @@
+Canonical integration preflight
+utc=2026-11-28T09:01:03Z
+candidate_sha=7dd49afe5076648b5eb4fcf587ad17638b35a460
+integration_base=76c780115b468e6f0fbc56548c72716d1335a33d
+merge_base=76c780115b468e6f0fbc56548c72716d1335a33d
+branch=integration/bgp-lldp-corrected
+rustc 1.95.0 (59807616e 2026-04-14)
+binary: rustc
+commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860
+commit-date: 2026-04-14
+sccache=/home/arjuna/.cargo/bin/sccache
+Compile requests                     246
+Compile requests executed             12
+Cache hits                             0
+Cache misses                          11
+Cache misses (Rust)                   11
+Cache hits rate                     0.00 %
+Cache hits rate (Rust)              0.00 %
+Cache timeouts                         0
+Cache read errors                      0
+Forced recaches                        0
+lbug_native=/home/arjuna/.cache/bonsai-ci/lbug-native
+lbug_native_library=present
+python=Python 3.12.3
+node=v20.20.2
+chrome=/usr/bin/google-chrome
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  468G  284G  161G  64% /
+               total        used        free      shared  buff/cache   available
+Mem:              46          15           3           1          27          31
+Swap:              7           0           7
+heavyweight_cargo_owner=shared build lane flock; no concurrent cargo owner started intentionally
+unrelated_modified_evidence_files_preserved_unstaged=yes

@@ -1,0 +1,22 @@
+canonical_preflight_utc=2026-11-28T08:11:48Z
+tested_sha=c3d72178be1196cf4f47c6cc6c7914985017dd55
+integration_base=76c780115b468e6f0fbc56548c72716d1335a33d
+worktree_status=0 dirty lines
+rustc 1.95.0 (59807616e 2026-04-14)
+binary: rustc
+commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860
+commit-date: 2026-04-14
+host: x86_64-unknown-linux-gnu
+release: 1.95.0
+sccache=sccache 0.15.0
+lbug_bundle=fingerprint-file-unavailable
+liblbug-present
+python=bash: line 9: /home/arjuna/Desktop/bonsai-canonical-c3d7217/.venv/bin/python: No such file or directory
+Python 3.12.3
+playwright=chromium-1254 chromium_headless_shell-1254 ffmpeg-1013 
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  468G  284G  161G  64% /
+/dev/nvme0n1p2  468G  284G  161G  64% /
+               total        used        free      shared  buff/cache   available
+Mem:              46          10           8           0          27          35
+cargo_owner_check=none

@@ -1,0 +1,236 @@
+=== bgp_reconciliation::tests ===
+
+running 15 tests
+test bgp_reconciliation::tests::established_native_and_bmp_peer_are_corroborated_not_fabricated ... ok
+test bgp_reconciliation::tests::concentrated_bmp_candidates_are_capped_and_truthfully_counted ... ok
+test bgp_reconciliation::tests::legacy_bmp_row_without_receipt_time_has_unknown_freshness ... ok
+test bgp_reconciliation::tests::exact_bmp_replay_dedupes_but_conflicting_context_remains_ambiguous ... ok
+test bgp_reconciliation::tests::missing_or_conflicting_bmp_never_means_session_down ... ok
+test bgp_reconciliation::tests::named_vrf_rd_is_not_guessed_and_asn_conflict_is_explicit ... ok
+test bgp_reconciliation::tests::non_global_bmp_peer_type_does_not_match_default_native_vrf ... ok
+test bgp_reconciliation::tests::interface_scoped_peer_is_not_matched_to_unscoped_bmp_identity ... ok
+test bgp_reconciliation::tests::old_transition_with_fresh_receipt_does_not_establish_current_corroboration ... ok
+test bgp_reconciliation::tests::unknown_session_state_never_becomes_corroborated_not_established ... ok
+test bgp_reconciliation::tests::truncated_peer_scoped_population_cannot_establish_uniqueness_or_absence ... ok
+test bgp_reconciliation::tests::recognized_non_established_states_can_corroborate_only_as_non_established ... ok
+test bgp_reconciliation::tests::unscoped_link_local_peer_is_not_globally_unique_identity ... ok
+test bgp_reconciliation::tests::native_population_is_bounded_with_truthful_denominator ... ok
+test bgp_reconciliation::tests::distributed_hundred_thousand_ten_thousand_session_workloads_stay_bounded ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 888 filtered out; finished in 0.16s
+
+	Command being timed: "/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1 bgp_reconciliation::tests --nocapture"
+	User time (seconds): 0.13
+	System time (seconds): 0.04
+	Percent of CPU this job got: 109%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.16
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 78484
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 16901
+	Voluntary context switches: 60
+	Involuntary context switches: 53
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+filter_rc=0
+=== lldp_operational::tests ===
+
+running 8 tests
+test lldp_operational::tests::leaf_delete_is_not_neighbor_occurrence_delete ... ok
+test lldp_operational::tests::exact_replay_dedupes_and_conflicting_entries_are_not_overwritten ... ok
+test lldp_operational::tests::legacy_single_neighbor_paths_keep_existing_record_key ... ok
+test lldp_operational::tests::missing_mandatory_identity_is_counted_not_positionally_persisted ... ok
+test lldp_operational::tests::multi_neighbor_entries_use_protocol_identity_not_array_index ... ok
+test lldp_operational::tests::node_identity_is_domain_separated_and_delimiter_safe ... ok
+test lldp_operational::tests::stale_equal_and_replay_ordering_is_explicit ... ok
+test lldp_operational::tests::concentrated_input_is_bounded_and_counted ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 895 filtered out; finished in 0.00s
+
+	Command being timed: "/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1 lldp_operational::tests --nocapture"
+	User time (seconds): 0.00
+	System time (seconds): 0.00
+	Percent of CPU this job got: 116%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.00
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 15264
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 960
+	Voluntary context switches: 23
+	Involuntary context switches: 7
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+filter_rc=0
+=== enrichment::frr_interfaces::tests ===
+
+running 12 tests
+test enrichment::frr_interfaces::tests::capture_envelope_missing_a_family_output_is_not_positive_empty_evidence ... ok
+test enrichment::frr_interfaces::tests::capture_envelope_rejects_contradictory_or_nonsequential_timing ... ok
+test enrichment::frr_interfaces::tests::fixed_commands_match_the_approved_contract ... ok
+test enrichment::frr_interfaces::tests::capture_envelope_rejects_unapproved_executed_family_and_version_contradiction ... ok
+test enrichment::frr_interfaces::tests::capture_envelope_requires_the_exact_multifamily_fixed_command_contract ... ok
+test enrichment::frr_interfaces::tests::live_frr_ssh_capture_dispatches_validated_shadow_facts ... ignored, requires authorized live FRR lab and pinned SSH host key
+test enrichment::frr_interfaces::tests::sequential_device_admission_does_not_retain_inventory_churn_keys ... ok
+test enrichment::frr_interfaces::tests::unqualified_software_build_is_refused_before_network_contact ... ok
+test enrichment::frr_interfaces::tests::helper_stderr_overflow_is_an_explicit_bounded_refusal ... ok
+test enrichment::frr_interfaces::tests::helper_output_limit_is_an_explicit_refusal ... ok
+test enrichment::frr_interfaces::tests::helper_deadline_terminates_and_reaps_a_hung_child ... ok
+test enrichment::frr_interfaces::tests::helper_deadline_covers_exit_with_inherited_output_pipe_open ... ok
+
+test result: ok. 11 passed; 0 failed; 1 ignored; 0 measured; 891 filtered out; finished in 0.10s
+
+	Command being timed: "/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1 enrichment::frr_interfaces::tests --nocapture"
+	User time (seconds): 0.08
+	System time (seconds): 0.06
+	Percent of CPU this job got: 143%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.10
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 50248
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 2
+	Minor (reclaiming a frame) page faults: 13399
+	Voluntary context switches: 2846
+	Involuntary context switches: 36
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+filter_rc=0
+=== mcp_server::tests ===
+
+running 6 tests
+test mcp_server::tests::every_rule_has_three_recurrence_indicators ... ok
+test mcp_server::tests::match_score_exact_prefix_substring ... ok
+test mcp_server::tests::readonly_cypher_allows_reads ... ok
+test mcp_server::tests::readonly_cypher_rejects_mutations ... ok
+test mcp_server::tests::rule_meta_lookup_hit_and_miss ... ok
+test mcp_server::tests::rule_catalogue_no_duplicates ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 897 filtered out; finished in 0.00s
+
+	Command being timed: "/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1 mcp_server::tests --nocapture"
+	User time (seconds): 0.00
+	System time (seconds): 0.00
+	Percent of CPU this job got: 125%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.00
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 13256
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 875
+	Voluntary context switches: 10
+	Involuntary context switches: 1
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+filter_rc=0
+=== typed_facts::tests ===
+
+running 44 tests
+test typed_facts::tests::authority_eligibility_boundary ... ok
+test typed_facts::tests::authoritative_trust_rejects_unstructured_payload ... ok
+test typed_facts::tests::committed_state_fixtures_cover_every_payload_state ... ok
+test typed_facts::tests::emit_fixture_artifact ... ignored, artifact generator; run explicitly to regenerate fixture
+test typed_facts::tests::emit_state_fixtures ... ignored, artifact generator; run explicitly to regenerate state fixtures
+test typed_facts::tests::degraded_payload_cannot_be_authority_eligible ... ok
+test typed_facts::tests::degraded_state_cannot_claim_complete_coverage ... ok
+test typed_facts::tests::committed_fixture_is_valid ... ok
+test typed_facts::tests::fact_id_changes_with_payload ... ok
+test typed_facts::tests::consistent_grant_and_fact_mutation_still_fails ... ok
+test typed_facts::tests::deserialized_grant_loses_attestation ... ok
+test typed_facts::tests::fact_id_binds_schema_version_and_producer ... ok
+test typed_facts::tests::grant_rejects_resolution_from_unrelated_source ... ok
+test typed_facts::tests::forged_trust_claim_is_not_authority ... ok
+test typed_facts::tests::grant_requires_resolver_attested_resolution ... ok
+test typed_facts::tests::lifecycle_transitions_are_terminal ... ok
+test typed_facts::tests::lifecycle_and_temporal_fields_do_not_change_fact_id ... ok
+test typed_facts::tests::identical_interface_names_across_asic_namespaces_differ ... ok
+test typed_facts::tests::interface_state_payload_is_typed ... ok
+test typed_facts::tests::identity_dimensions_are_independent ... ok
+test typed_facts::tests::payload_state_required_when_fields_absent ... ok
+test typed_facts::tests::malformed_timestamps_and_windows_rejected ... ok
+test typed_facts::tests::payload_or_evidence_mutation_breaks_grant ... ok
+test typed_facts::tests::post_seal_mutation_is_detected ... ok
+test typed_facts::tests::mutated_resolution_cannot_mint_grant ... ok
+test typed_facts::tests::public_mutation_after_grant_breaks_eligibility ... ok
+test typed_facts::tests::reordered_json_keys_do_not_change_identity ... ok
+test typed_facts::tests::payload_states_without_fields_have_distinct_identities ... ok
+test typed_facts::tests::roundtrip_preserves_all_fields ... ok
+test typed_facts::tests::scalar_payload_rejected ... ok
+test typed_facts::tests::schema_version_gate_rejects_future_versions ... ok
+test typed_facts::tests::replayed_state_confers_no_authority ... ok
+test typed_facts::tests::grant_does_not_transfer_across_subjects ... ok
+test typed_facts::tests::seal_produces_stable_fact_id ... ok
+test typed_facts::tests::state_and_fields_are_mutually_exclusive ... ok
+test typed_facts::tests::unknown_completeness_is_explicit ... ok
+test typed_facts::tests::supersede_requires_target_and_timestamp ... ok
+test typed_facts::tests::serialized_structured_identity_roundtrips_but_authority_does_not_reattest ... ok
+test typed_facts::tests::withdraw_requires_reason_timestamp_and_active_lifecycle ... ok
+test typed_facts::tests::seal_roundtrip_stable_across_payload_shapes ... ok
+test typed_facts::tests::withdrawn_without_reason_fails_validation ... ok
+test typed_facts::tests::structured_interface_identity_is_additive_and_collision_safe ... ok
+test typed_facts::tests::structured_interface_identity_is_bound_into_authority ... ok
+test typed_facts::tests::structured_interface_identity_validation_rejects_inconsistent_axes ... ok
+
+test result: ok. 42 passed; 0 failed; 2 ignored; 0 measured; 859 filtered out; finished in 0.01s
+
+	Command being timed: "/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bonsai-439270f5c18a5ce1 typed_facts::tests --nocapture"
+	User time (seconds): 0.01
+	System time (seconds): 0.00
+	Percent of CPU this job got: 236%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.01
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 17968
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 1110
+	Voluntary context switches: 43
+	Involuntary context switches: 26
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 8
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+filter_rc=0
+rc=0

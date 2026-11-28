@@ -1,0 +1,36 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: env CARGO_BUILD_JOBS=2 cargo test -p bonsai --profile ci --test bn005_closeout advertised_tools_have_an_explicit_role_and_scope_support_matrix --offline
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-bgp-lldp-integration)
+    Finished `ci` profile [optimized] target(s) in 7m 43s
+     Running tests/bn005_closeout.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bn005_closeout-1ca16ff392b4ba39)
+
+running 1 test
+test advertised_tools_have_an_explicit_role_and_scope_support_matrix ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+	Command being timed: "scripts/ci/build-lane.sh --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native -- env CARGO_BUILD_JOBS=2 cargo test -p bonsai --profile ci --test bn005_closeout advertised_tools_have_an_explicit_role_and_scope_support_matrix --offline"
+	User time (seconds): 272.24
+	System time (seconds): 20.95
+	Percent of CPU this job got: 62%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 7:51.98
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 2971392
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 1382662
+	Voluntary context switches: 3771
+	Involuntary context switches: 136433
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 29309088
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+rc=0
