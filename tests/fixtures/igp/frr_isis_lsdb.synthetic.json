@@ -1,0 +1,51 @@
+{
+  "areas": [
+    {
+      "area": { "name": "core" },
+      "levels": [
+        {
+          "id": 2,
+          "lsps": [
+            {
+              "lsp": { "id": "0000.0000.0002.00-00", "ownLSP": true },
+              "pduLen": 150,
+              "seqNumber": "0x00000004",
+              "chksum": "0xaaaa",
+              "holdtime": 1100,
+              "attPOl": "0/0/0",
+              "areaAddr": "49.0001",
+              "teRouterId": "192.0.2.2",
+              "extReach": [
+                {
+                  "mtId": "Extended",
+                  "id": "0000.0000.0001.00",
+                  "metric": 10,
+                  "localIfaceIp": "10.0.0.2",
+                  "remoteIfaceIp": "10.0.0.1",
+                  "adjSid": [ { "sid": 24001, "weight": 0 } ]
+                }
+              ],
+              "extIpReach": [
+                {
+                  "mtId": "Extended",
+                  "ipReach": "192.0.2.2/32",
+                  "ipReachMetric": 10,
+                  "subtlvs": { "sr": [ { "index": 2, "alg": 0 } ] }
+                }
+              ],
+              "ipv6Reach": [
+                {
+                  "mtId": "",
+                  "prefix": "2001:db8:2::/64",
+                  "metric": 10,
+                  "down": false,
+                  "external": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "areas": [
+    {
+      "area": {
+        "name": "core"
+      },
+      "circuits": [
+        {
+          "adj": "leaf-1",
+          "interface": {
+            "name": "eth1",
+            "state": "Up",
+            "adj-flaps": 1,
+            "last-ago": "00:10:00",
+            "circuit-type": "level-2-only",
+            "speaks": "IPv4,IPv6",
+            "snpa": "2020.2020.2020.03",
+            "topologies": {
+              "topo-0": "ipv4-unicast"
+            }
+          },
+          "level": 2,
+          "expires-in": "00:00:09"
+        }
+      ]
+    }
+  ]
+}
