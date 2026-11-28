@@ -24,8 +24,13 @@ use lbug::{Connection, Value};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 
+use crate::bgp_reconciliation::NativeBmpReconciliationPolicy;
 use crate::graph::common::read_str;
 use crate::http_server::AppState;
+
+const NATIVE_BGP_MAX_OBSERVATION_AGE_SECONDS: u64 = 300;
+const NATIVE_BGP_MAX_OBSERVATION_AGE_NS: i64 =
+    NATIVE_BGP_MAX_OBSERVATION_AGE_SECONDS as i64 * 1_000_000_000;
 
 // ── Rule catalogue ────────────────────────────────────────────────────────────
 
@@ -444,6 +449,16 @@ pub fn tool_schemas() -> JsonValue {
                 }}
             },
             {
+                "name": "get_native_route_lookup",
+                "description": "Read retained native route-table shadow evidence for one exporter and resolve a target address through VRF-scoped longest-prefix lookup and bounded recursive next-hop resolution. This is historical retained evidence, never live acquisition or verified forwarding; unresolved branches remain explicit.",
+                "inputSchema": {"type":"object", "properties": {
+                    "device_address":{"type":"string","description":"Registered exporter IP; defaults to caller speaker scope."},
+                    "target":{"type":"string","description":"IPv4 or IPv6 address to resolve, optionally interface-scoped (fe80::1%eth0)."},
+                    "vrf":{"type":"string","description":"Network instance/VRF name (default 'default').","default":"default"},
+                    "afi_safi":{"type":"string","enum":["ipv4-unicast","ipv6-unicast"],"description":"Capture family; derived from the target address when omitted."}
+                }, "required": ["target"]}
+            },
+            {
                 "name": "query_devices",
                 "description": "Return devices matching an optional hostname or address filter. Returns address, hostname, vendor, health, and current BGP session states.",
                 "inputSchema": {
@@ -852,13 +867,13 @@ pub fn enforce_tool_output_bounds(mut payload: JsonValue) -> JsonValue {
 async fn tool_query_graph_with_store(
     store: &std::sync::Arc<crate::graph::GraphStore>,
     args: &JsonValue,
-    role: crate::http_server::auth::Role,
+    context: &ToolExecutionContext,
 ) -> Result<JsonValue, String> {
     let cypher = args["cypher"].as_str().ok_or("missing argument: cypher")?;
 
     // BN-022: non-admin principals may only reference allowlisted node
     // labels; ConfigItem and other credential-bearing tables fail closed.
-    let access = if role == crate::http_server::auth::Role::Admin {
+    let access = if context.role == crate::http_server::auth::Role::Admin {
         crate::graph::explorer::GraphReadAccess::Admin
     } else {
         crate::graph::explorer::GraphReadAccess::Standard
@@ -1013,10 +1028,26 @@ async fn fetch_remote_routing_tool_json(
 /// Dispatch a single MCP tool call using `GraphStore` and either an in-process `RoutingServiceState`
 /// or the private `bonsai-routing` HTTP service (`R05`, `A04`).
 /// Trusted server-side identity. Never deserialized from tool JSON.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ToolExecutionContext {
     pub role: crate::http_server::auth::Role,
     pub scope: Option<crate::http_server::auth::RoutingAccessScope>,
+    /// Trusted inventory registry used to establish positive canonical device
+    /// identity for operational native-routing evidence. Never client supplied.
+    pub inventory_registry: Option<std::sync::Arc<crate::registry::ApiRegistry>>,
+}
+
+impl std::fmt::Debug for ToolExecutionContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolExecutionContext")
+            .field("role", &self.role)
+            .field("scope", &self.scope)
+            .field(
+                "inventory_registry",
+                &self.inventory_registry.as_ref().map(|_| "present"),
+            )
+            .finish()
+    }
 }
 
 impl ToolExecutionContext {
@@ -1027,12 +1058,71 @@ impl ToolExecutionContext {
                 speaker: Some(device.to_string()),
                 ..Default::default()
             }),
+            inventory_registry: None,
         }
     }
     /// Explicit privileged service/global identity for trusted internal callers.
     pub fn global(role: crate::http_server::auth::Role) -> Self {
-        Self { role, scope: None }
+        Self {
+            role,
+            scope: None,
+            inventory_registry: None,
+        }
     }
+
+    pub fn with_inventory_registry(
+        mut self,
+        registry: std::sync::Arc<crate::registry::ApiRegistry>,
+    ) -> Self {
+        self.inventory_registry = Some(registry);
+        self
+    }
+}
+
+fn resolve_registered_native_target(
+    context: &ToolExecutionContext,
+    address: &str,
+) -> Result<(crate::config::TargetConfig, bool), String> {
+    let registry = context
+        .inventory_registry
+        .as_ref()
+        .ok_or_else(|| "native_identity_unavailable: inventory registry is required".to_string())?;
+    let target = registry
+        .find_by_canonical_address(address)
+        .map_err(|e| format!("native_identity_unavailable: {e:#}"))?
+        .ok_or_else(|| {
+            "native_identity_unavailable: target is not currently registered".to_string()
+        })?;
+    if !target.enabled || target.inventory_only {
+        return Err(
+            "native_identity_unavailable: target is not an active collection target".into(),
+        );
+    }
+    let stable_identity = crate::enrichment::native_routing::has_stable_external_identity(&target);
+    Ok((target, stable_identity))
+}
+
+fn native_identity_matches(
+    identity: Option<&crate::enrichment::native_routing::NativeRoutingIdentity>,
+    inventory_identity: Option<&str>,
+    acquisition_profile: Option<&str>,
+    target: &crate::config::TargetConfig,
+    afi_safi: &str,
+    approved_profile: &str,
+) -> bool {
+    let Some(identity) = identity else {
+        return false;
+    };
+    let expected = crate::enrichment::native_routing::canonical_device_id(target);
+    identity.canonical_device_id == expected
+        && inventory_identity == Some(expected.as_str())
+        && acquisition_profile == Some(approved_profile)
+        && identity.identity_scope
+            == crate::enrichment::native_routing::NATIVE_ROUTING_IDENTITY_SCOPE
+        && identity.network_namespace
+            == crate::enrichment::native_routing::NATIVE_ROUTING_DEFAULT_NAMESPACE
+        && identity.afi_safi == afi_safi
+        && identity.acquisition_profile == approved_profile
 }
 
 /// The shared execution boundary for MCP, prefetched context and agent tool calls.
@@ -1052,8 +1142,7 @@ pub async fn call_tool_with_store_and_routing(
         Some(&context.role),
         mode,
     )?;
-    let mut result =
-        dispatch_authorized_tool(store, routing, name, &scoped_args, context.role).await?;
+    let mut result = dispatch_authorized_tool(store, routing, name, &scoped_args, context).await?;
     if mode == crate::graph::ownership::OwnershipAccessMode::AuditOnly
         && context
             .scope
@@ -1078,8 +1167,9 @@ async fn dispatch_authorized_tool(
     routing: Option<&std::sync::Arc<crate::routing_service::RoutingServiceState>>,
     name: &str,
     args: &JsonValue,
-    role: crate::http_server::auth::Role,
+    context: &ToolExecutionContext,
 ) -> Result<JsonValue, String> {
+    use crate::bgp_reconciliation::reconcile_native_bgp_with_bmp_completeness;
     use crate::routing_service::{
         CompareSnapshotsQuery, EvidenceCoverageQuery, ExplainPrefixQuery, PeerTimelineQuery,
         PrefixJourneyQuery, build_compare_snapshots_json, build_evidence_coverage_json,
@@ -1093,25 +1183,237 @@ async fn dispatch_authorized_tool(
                 .or_else(|| args["_scoped_speaker"].as_str())
                 .ok_or("missing device_address")?;
             let family = args["afi_safi"].as_str().unwrap_or("ipv4-unicast");
-            let mut observation =
-                crate::enrichment::native_bgp::latest_observation(store, address, family)
-                    .await
-                    .map_err(|e| e.to_string())?;
+            let (target, stable_registry_identity) =
+                resolve_registered_native_target(context, address)?;
+            let query_identity = crate::enrichment::native_routing::query_identity(
+                &target,
+                family,
+                crate::enrichment::native_routing::NATIVE_BGP_NOKIA_PROFILE,
+            );
+            let (mut observation, storage_class) = crate::enrichment::native_bgp::read_observation(
+                store,
+                Some(&query_identity),
+                address,
+                family,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
             let now = crate::graph::common::now_ns();
             let age = now.saturating_sub(observation.captured_at_ns);
             let freshness = if observation.captured_at_ns > now {
-                "unknown"
-            } else if age > 60_000_000_000 {
+                "future_dated"
+            } else if age > NATIVE_BGP_MAX_OBSERVATION_AGE_NS {
                 "stale"
             } else {
                 "fresh"
             };
             let total = observation.capture.neighbors.len();
+            let peer_addresses: Vec<String> = observation
+                .capture
+                .neighbors
+                .iter()
+                .take(500)
+                .filter_map(|neighbor| neighbor.neighbor_address.clone())
+                .collect();
+            let bmp_page = store
+                .bmp_bgp_sessions_for_peers(&observation.capture.exporter_address, peer_addresses)
+                .await
+                .map_err(|e| e.to_string())?;
+            let bmp_rows = &bmp_page.rows;
+            let policy = NativeBmpReconciliationPolicy {
+                max_observation_age_seconds: NATIVE_BGP_MAX_OBSERVATION_AGE_SECONDS,
+                max_capture_skew_seconds: 60,
+            };
+            let canonical_identity_matches = native_identity_matches(
+                observation.routing_identity.as_ref(),
+                observation.inventory_identity.as_deref(),
+                observation.acquisition_profile.as_deref(),
+                &target,
+                family,
+                crate::enrichment::native_routing::NATIVE_BGP_NOKIA_PROFILE,
+            );
+            let identity_verified = stable_registry_identity
+                && storage_class == "canonical_identity"
+                && canonical_identity_matches;
+            let current_evidence_eligible = identity_verified && freshness == "fresh";
+            let reconciliation_capture = observation.capture.clone();
+            let reconciliation = if current_evidence_eligible {
+                serde_json::to_value(reconcile_native_bgp_with_bmp_completeness(
+                    &reconciliation_capture,
+                    observation.captured_at_ns,
+                    bmp_rows,
+                    bmp_page.retrieval_omitted_rows,
+                    now,
+                    policy,
+                ))
+                .map_err(|e| e.to_string())?
+            } else {
+                serde_json::Value::Null
+            };
+            let reconciliation_status = if current_evidence_eligible {
+                "transport_session_only"
+            } else if !identity_verified {
+                "not_run_identity_not_positively_verified"
+            } else {
+                "not_run_evidence_not_current"
+            };
+            let observation_id = observation
+                .routing_identity
+                .as_ref()
+                .map(crate::enrichment::native_bgp::observation_identity_key)
+                .unwrap_or_else(|| crate::enrichment::native_bgp::observation_id(address, family));
             observation.capture.neighbors.truncate(100);
             Ok(enforce_tool_output_bounds(
-                json!({"observation_id":crate::enrichment::native_bgp::observation_id(address,family),
-                "captured_at_ns":observation.captured_at_ns,"freshness":freshness,"age_ms":age/1_000_000,
-                "transport":observation.transport,"total_neighbors":total,"truncated":total>100,"capture":observation.capture}),
+                json!({"observation_id":observation_id,
+                "captured_at_ns":observation.captured_at_ns,
+                "capture_started_at_ns":observation.capture_started_at_ns,
+                "source_observed_at_ns":observation.source_observed_at_ns,
+                "freshness":freshness,"age_ms":age/1_000_000,
+                "transport":observation.transport,
+                "evidence_class":observation.routing_identity.as_ref().map(|i| i.source_provenance.clone()).unwrap_or("legacy_unverified".into()),
+                "storage_identity_class":storage_class,
+                "canonical_device_id":crate::enrichment::native_routing::canonical_device_id(&target),
+                "total_neighbors":total,"truncated":total>100,"capture":observation.capture,
+                "native_identity_status":if identity_verified {"registered_inventory_target"} else {"unverified_or_stale_inventory_binding"},
+                "current_evidence_eligible":current_evidence_eligible,
+                "analysis_outcome":if current_evidence_eligible {"current_evidence_analysis"} else {"historical_or_unverified_evidence_inspection"},
+                "reconciliation_status":reconciliation_status,
+                "bmp_rows_considered":bmp_rows.len(),
+                "bmp_rows_total_matching":bmp_page.total_matching_rows,
+                "bmp_rows_returned":bmp_page.returned_rows,
+                "bmp_rows_retrieval_omitted":bmp_page.retrieval_omitted_rows,
+                "bmp_reconciliation":reconciliation}),
+            ))
+        }
+        "get_native_route_lookup" => {
+            let address = args["device_address"]
+                .as_str()
+                .or_else(|| args["_scoped_speaker"].as_str())
+                .ok_or("missing device_address")?;
+            let target = args["target"].as_str().ok_or("missing target")?;
+            let vrf = args["vrf"].as_str().unwrap_or("default");
+            if vrf.is_empty() || vrf.len() > 128 || vrf.chars().any(char::is_control) {
+                return Err("invalid vrf".into());
+            }
+            let analysis_scope = args["analysis_scope"].as_str().unwrap_or("current");
+            if !matches!(analysis_scope, "current" | "historical") {
+                return Err("invalid analysis_scope: expected current or historical".into());
+            }
+            let target_ip = target
+                .split_once('%')
+                .map(|(address, _)| address)
+                .unwrap_or(target)
+                .parse::<std::net::IpAddr>()
+                .map_err(|_| "invalid target address".to_string())?;
+            let derived_afi = match target_ip {
+                std::net::IpAddr::V4(_) => "ipv4-unicast",
+                std::net::IpAddr::V6(_) => "ipv6-unicast",
+            };
+            let afi = args["afi_safi"].as_str().unwrap_or(derived_afi);
+            if afi != derived_afi {
+                return Err("afi_safi does not match target address family".into());
+            }
+            let (inventory_target, stable_registry_identity) =
+                resolve_registered_native_target(context, address)?;
+            let query_identity = crate::enrichment::native_routing::query_identity(
+                &inventory_target,
+                afi,
+                crate::enrichment::native_routing::NATIVE_ROUTE_FRR_PROFILE,
+            );
+            let (observation, storage_class) = crate::enrichment::native_routes::read_observation(
+                store,
+                Some(&query_identity),
+                address,
+                afi,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let now = crate::graph::common::now_ns();
+            let age = now.saturating_sub(observation.captured_at_ns);
+            let freshness = if observation.captured_at_ns > now {
+                "future_dated"
+            } else if age > NATIVE_BGP_MAX_OBSERVATION_AGE_NS {
+                "stale"
+            } else {
+                "fresh"
+            };
+            let canonical_identity_matches = native_identity_matches(
+                observation.routing_identity.as_ref(),
+                observation.inventory_identity.as_deref(),
+                observation.acquisition_profile.as_deref(),
+                &inventory_target,
+                afi,
+                crate::enrichment::native_routing::NATIVE_ROUTE_FRR_PROFILE,
+            );
+            let identity_verified = stable_registry_identity
+                && storage_class == "canonical_identity"
+                && canonical_identity_matches;
+            let evidence_complete_enough = observation.capture.missing_or_invalid_fields.is_empty();
+            let current_evidence_eligible =
+                identity_verified && freshness == "fresh" && evidence_complete_enough;
+            let historical_requested = analysis_scope == "historical";
+            let analysis_completed = if historical_requested {
+                true
+            } else {
+                current_evidence_eligible
+            };
+            let resolution = if analysis_completed {
+                serde_json::to_value(crate::native_routes::resolve_native_next_hop(
+                    &observation.capture.routes,
+                    vrf,
+                    target,
+                ))
+                .map_err(|e| e.to_string())?
+            } else {
+                serde_json::Value::Null
+            };
+            let unresolved_prerequisites: Vec<&str> = [
+                (!identity_verified).then_some("canonical_inventory_identity_not_verified"),
+                (freshness != "fresh").then_some("evidence_not_current"),
+                (!evidence_complete_enough).then_some("capture_evidence_incomplete"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let total_routes = observation.capture.routes.len();
+            let route_absence_semantics =
+                if resolution.get("unresolved_reason").and_then(|v| v.as_str())
+                    == Some("no_same_vrf_longest_prefix_match")
+                {
+                    "no_match_in_retained_shadow_evidence_not_complete_device_route_table"
+                } else {
+                    "not_applicable"
+                };
+            let observation_id = observation
+                .routing_identity
+                .as_ref()
+                .map(crate::enrichment::native_routes::observation_identity_key)
+                .unwrap_or_else(|| crate::enrichment::native_routes::observation_id(address, afi));
+            Ok(enforce_tool_output_bounds(
+                json!({"observation_id":observation_id,
+                "captured_at_ns":observation.captured_at_ns,
+                "capture_started_at_ns":observation.capture_started_at_ns,
+                "source_observed_at_ns":observation.source_observed_at_ns,
+                "freshness":freshness,"age_ms":age/1_000_000,
+                "transport":observation.transport,
+                "evidence_class":observation.routing_identity.as_ref().map(|i| i.source_provenance.clone()).unwrap_or("legacy_unverified".into()),
+                "storage_identity_class":storage_class,
+                "canonical_device_id":crate::enrichment::native_routing::canonical_device_id(&inventory_target),
+                "native_identity_status":if identity_verified {"registered_inventory_target"} else {"unverified_or_stale_inventory_binding"},
+                "device_address":address,"vrf":vrf,"afi_safi":afi,"target":target,
+                "analysis_scope":analysis_scope,
+                "analysis_completed":analysis_completed,
+                "analysis_outcome":if analysis_completed && current_evidence_eligible {"current_evidence_analysis"} else if analysis_completed {"historical_only_analysis"} else {"unresolved_prerequisites"},
+                "current_evidence_eligible":current_evidence_eligible,
+                "unresolved_prerequisites":unresolved_prerequisites,
+                "verified_forwarding":"not_established_by_native_route_evidence",
+                "route_absence_semantics":route_absence_semantics,
+                "total_retained_routes":total_routes,
+                "capture_missing_or_invalid_fields":observation.capture.missing_or_invalid_fields.len(),
+                "capture_unparsed_fields":observation.capture.unparsed_fields.len(),
+                "retained_population_limit":100_000,
+                "parser_id":observation.capture.parser_id,"parser_version":observation.capture.parser_version,
+                "resolution":resolution}),
             ))
         }
         "get_incident" => tool_get_incident(store, args)
@@ -1126,7 +1428,7 @@ async fn dispatch_authorized_tool(
         "list_active_detections" => tool_list_active_detections(store, args)
             .await
             .map(enforce_tool_output_bounds),
-        "query_graph" => tool_query_graph_with_store(store, args, role).await,
+        "query_graph" => tool_query_graph_with_store(store, args, context).await,
         "get_changes" => tool_get_changes_with_store(store, args).await,
         "get_prefix_journey" => {
             let prefix = args["prefix"]
@@ -1322,6 +1624,7 @@ pub fn authorize_and_scope_tool_with_mode(
                 name,
                 "query_devices"
                     | "get_native_bgp_neighbors"
+                    | "get_native_route_lookup"
                     | "get_changes"
                     | "get_device_blast_radius"
                     | "list_active_detections"
@@ -1360,6 +1663,7 @@ pub fn authorize_and_scope_tool_with_mode(
                 name,
                 "query_devices"
                     | "get_native_bgp_neighbors"
+                    | "get_native_route_lookup"
                     | "get_changes"
                     | "get_device_blast_radius"
                     | "list_active_detections"
@@ -1506,7 +1810,10 @@ pub fn authorize_and_scope_tool_with_mode(
                         obj.insert("_scoped_speaker".to_string(), json!(spk));
                     }
                 }
-                "query_devices" | "get_incident" | "get_native_bgp_neighbors" => {
+                "query_devices"
+                | "get_incident"
+                | "get_native_bgp_neighbors"
+                | "get_native_route_lookup" => {
                     if let Some(obj) = args.as_object_mut() {
                         obj.insert("_scoped_speaker".to_string(), json!(spk));
                     }
@@ -1631,6 +1938,7 @@ pub async fn mcp_handler(
                 scope: extensions
                     .get::<crate::http_server::auth::RoutingAccessScope>()
                     .cloned(),
+                inventory_registry: Some(state.registry.clone()),
             };
             let result =
                 call_tool_with_store_and_routing(&state.store, None, &name, &args, &context).await;
@@ -1654,7 +1962,11 @@ pub async fn call_tool(
     args: &JsonValue,
     context: &ToolExecutionContext,
 ) -> Result<JsonValue, String> {
-    call_tool_with_store_and_routing(&state.store, None, name, args, context).await
+    let mut trusted_context = context.clone();
+    if trusted_context.inventory_registry.is_none() {
+        trusted_context.inventory_registry = Some(state.registry.clone());
+    }
+    call_tool_with_store_and_routing(&state.store, None, name, args, &trusted_context).await
 }
 
 /// Return tool definitions in the `AiToolDef` format expected by the AI provider.

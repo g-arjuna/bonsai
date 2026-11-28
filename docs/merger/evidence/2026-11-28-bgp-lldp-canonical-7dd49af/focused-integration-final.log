@@ -1,0 +1,280 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: cargo test -p bonsai --profile ci --test bn006_native_nos_adapter --test bn006_collection_wiring --test bn006_native_routes --test bn024_lldp_operational --test bn02404_native_interface_api --offline --no-fail-fast
+    Finished `ci` profile [optimized] target(s) in 0.49s
+     Running tests/bn006_collection_wiring.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bn006_collection_wiring-0afb5e707d56c5ce)
+
+running 4 tests
+test live_native_collection_enters_operator_api_and_mcp ... ignored, explicit dedicated Containerlab SR Linux and pinned host-key file required
+test native_persistence_exact_replay_and_equal_time_conflict_are_explicit ... ok
+test legacy_address_keyed_identity_is_not_definitively_reconciled ... ok
+test native_tool_reads_persisted_evidence_with_scope_and_truthful_freshness ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 6.51s
+
+     Running tests/bn006_native_nos_adapter.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bn006_native_nos_adapter-ca99c6b6cb15f650)
+
+running 15 tests
+test bn006_absent_version_is_unknown_not_assumed_24_7 ... ok
+test bn006_frr_native_sessions_use_shared_bmp_reconciliation_contract ... ok
+test bn006_genuine_frr_vrf_all_summary_is_multi_vrf_session_evidence ... ok
+test bn006_frr_summary_missing_state_and_counter_remain_unknown ... ok
+test bn006_incomplete_flat_records_are_not_reported_complete ... ok
+test bn006_duplicate_json_keys_and_duplicate_requested_family_are_rejected_or_marked ... ok
+test bn006_absent_empty_and_malformed_lists_remain_distinguishable ... ok
+test bn006_missing_native_metrics_and_overflow_remain_unknown ... ok
+test bn006_interface_scoped_ipv6_peer_identity_is_preserved ... ok
+test bn006_live_native_capture_preserves_source_vrf_family_and_state ... ok
+test bn006_peer_as_overflow_is_not_wrapped_to_zero ... ok
+test bn006_optional_family_metrics_are_unknown_not_fabricated_zero ... ok
+test bn006_native_identity_policy_and_family_projection_do_not_collapse_context ... ok
+test bn006_native_empty_schema_mismatch_and_input_bounds_are_distinct ... ok
+test bn006_graph_bmp_rows_feed_bounded_native_reconciliation ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.89s
+
+     Running tests/bn006_native_routes.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bn006_native_routes-4b5285ee5e6e55b4)
+
+running 24 tests
+test explicit_blackhole_is_a_discard_terminal_not_interface_or_forwarding_verification ... ok
+test competing_unknown_selection_at_same_prefix_makes_resolution_partial ... ok
+test ecmp_branches_resolve_independently_and_partial_failure_is_explicit ... ok
+test inactive_noninstalled_and_unknown_nexthop_states_do_not_become_active_candidates ... ok
+test genuine_frr_route_capture_preserves_selection_installation_and_fib_distinctions ... ok
+test genuine_local_route_is_local_delivery_not_interface_egress ... ok
+test input_route_and_nexthop_reordering_does_not_change_resolution_outcome ... ok
+test ipv6_link_local_loop_identity_preserves_interface_scope ... ok
+test invalid_and_noncanonical_prefixes_are_not_canonical_resolution_evidence ... ok
+test longest_prefix_matching_covers_ipv4_ipv6_more_specific_and_default_fallback ... ok
+test missing_interface_only_and_link_local_scope_evidence_remain_explicit ... ok
+test multiple_selected_observations_of_one_prefix_are_retained_deterministically ... ok
+test recursive_next_hop_resolves_directly_connected_and_multiple_levels_same_vrf ... ok
+test self_recursion_multi_route_cycles_and_depth_bound_terminate_explicitly ... ok
+test total_candidate_budget_is_bounded_deterministic_and_truthfully_reported ... ok
+test unselected_or_unknown_longest_prefix_never_becomes_forwarding_candidate ... ok
+test vrf_is_scoped_and_cross_vrf_recursion_is_not_invented ... ok
+test mcp_integration::delayed_older_acquisition_cannot_overwrite_newer_completed_capture ... ok
+test mcp_integration::management_address_reassignment_cannot_claim_prior_canonical_route_evidence ... ok
+test mcp_integration::arbitrary_inventory_string_and_legacy_route_rows_are_not_currently_eligible ... ok
+test mcp_integration::mcp_route_lookup_preserves_unresolved_branches_explicitly ... ok
+test mcp_integration::mcp_route_lookup_enforces_speaker_scope_and_identity ... ok
+test mcp_integration::mcp_route_lookup_resolves_through_persisted_shadow_evidence ... ok
+test mcp_integration::native_route_persistence_is_monotonic_and_truthful_about_freshness ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.54s
+
+     Running tests/bn02404_native_interface_api.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bn02404_native_interface_api-d7a8b2289ee56e73)
+
+running 23 tests
+test canonical_identity_prevents_address_reuse_or_fact_transfer ... ok
+test interface_failure_does_not_discard_independently_valid_l2_families ... ok
+test concurrent_persistence_admits_newer_epoch_regardless_of_completion_order ... ok
+test degraded_interpretation_preserves_last_usable_evidence ... ok
+test operator_collects_live_frr_shadow_evidence_through_production_api ... ignored, requires authorized live FRR lab, credential env and pinned SSH host key
+test failed_family_preserves_unrelated_last_good_and_positive_empty_can_replace_populated_vlan ... ok
+test authorized_api_produces_positive_operational_neighbor_analysis ... ok
+test invalid_stored_observation_is_not_presented_as_missing_evidence ... ok
+test nonempty_vlan_facts_survive_production_construction_and_persistence ... ok
+test production_constructor_rejects_contradictory_mandatory_version_evidence ... ok
+test per_family_retention_truncation_is_explicit_and_does_not_starve_l2_families ... ok
+test positive_empty_interface_population_is_coverage_not_a_fabricated_fact ... ok
+test pr89_interface_only_observation_remains_readable_replaceable_and_restart_safe ... ok
+test observation_older_than_operational_freshness_window_is_not_current_analysis ... ok
+test newer_interface_evidence_does_not_refresh_older_retained_vlan_evidence ... ok
+test operator_surface_exposes_multifamily_coverage_and_bounded_l2_evidence ... ok
+test authorized_device_surface_exposes_bounded_shadow_evidence_and_staleness ... ok
+test removal_invalidates_evidence_without_permanently_poisoning_identity ... ok
+test shadow_observation_and_acquisition_state_survive_store_restart ... ok
+test stale_failure_success_and_exact_replay_are_fenced_at_persistence_boundary ... ok
+test tampered_family_coverage_and_raw_output_are_rejected ... ok
+test scoped_authorization_and_failed_attempt_visibility_are_enforced ... ok
+test transport_failure_excludes_stale_last_good_from_current_operational_analysis ... ok
+
+test result: ok. 22 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 30.97s
+
+     Running tests/bn024_lldp_operational.rs (/home/arjuna/.cache/bonsai-ci/build-lane/ci/deps/bn024_lldp_operational-8dcf46280dcc08c9)
+
+running 10 tests
+test collector_uses_same_evidence_lifecycle_without_core_topology_projection ... ok
+test equal_time_conflicting_observation_is_marked_uncertain_not_overwritten ... ok
+[2m2026-11-28T08:08:51.558636Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LLDP neighbor written [3mtarget[0m[2m=[0m172.20.0.21:6030 [3mlocal_if[0m[2m=[0mEthernet1 [3mchassis_id[0m[2m=[0maa:leaf:01 [3msystem_name[0m[2m=[0mleaf1
+[2m2026-11-28T08:08:51.562404Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"/tmp/.tmp9pEfLC/graph.db" [3mbuffer_pool_mib[0m[2m=[0m128
+[2m2026-11-28T08:08:51.585953Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m HostEndpoint created from LLDP [3mchassis_id[0m[2m=[0m"aa:01" [3msystem_name[0m[2m=[0m"spine1"
+[2m2026-11-28T08:08:51.596311Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LLDP neighbor written [3mtarget[0m[2m=[0m172.20.0.21:6030 [3mlocal_if[0m[2m=[0mEthernet1 [3mchassis_id[0m[2m=[0maa:01 [3msystem_name[0m[2m=[0mspine1
+[2m2026-11-28T08:08:51.605143Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m interface written [3mtarget[0m[2m=[0m172.20.0.22:6030 [3minterface[0m[2m=[0mEthernet1
+[2m2026-11-28T08:08:51.607386Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m HostEndpoint created from LLDP [3mchassis_id[0m[2m=[0m"aa:aa:aa:aa:aa:01" [3msystem_name[0m[2m=[0m"leaf1"
+[2m2026-11-28T08:08:51.618214Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LLDP neighbor written [3mtarget[0m[2m=[0m172.20.0.11:57400 [3mlocal_if[0m[2m=[0mGigabitEthernet0/0/0/0 [3mchassis_id[0m[2m=[0maa:aa:aa:aa:aa:01 [3msystem_name[0m[2m=[0mleaf1
+[2m2026-11-28T08:08:51.672302Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m LLDP delete is not exact neighbor-occurrence withdrawal; evidence left unchanged [3mtarget[0m[2m=[0m172.20.0.21:6030 [3mpath[0m[2m=[0mlldp/interfaces/interface[name=Ethernet1]/neighbors/neighbor[id=1]/state [3mscope[0m[2m=[0mUnknown
+[2m2026-11-28T08:08:51.852544Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m HostEndpoint created from LLDP [3mchassis_id[0m[2m=[0m"aa:01" [3msystem_name[0m[2m=[0m"spine1"
+test delayed_older_withdrawal_does_not_withdraw_newer_observation ... ok
+[2m2026-11-28T08:08:51.875730Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LLDP neighbor written [3mtarget[0m[2m=[0m172.20.0.21:6030 [3mlocal_if[0m[2m=[0mEthernet1 [3mchassis_id[0m[2m=[0maa:01 [3msystem_name[0m[2m=[0mspine1
+[2m2026-11-28T08:08:51.876155Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m LLDP_NEIGHBOR D2D resolved [3msrc[0m[2m=[0m172.20.0.21 [3mdst[0m[2m=[0m172.20.0.22 [3mlocal_if[0m[2m=[0m"Ethernet1"
+[2m2026-11-28T08:08:51.890890Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LLDP neighbor written [3mtarget[0m[2m=[0m172.20.0.21:6030 [3mlocal_if[0m[2m=[0mEthernet1 [3mchassis_id[0m[2m=[0maa:leaf:01 [3msystem_name[0m[2m=[0mleaf1
+test state_container_delete_is_not_positive_neighbor_occurrence_withdrawal ... ok
+[2m2026-11-28T08:08:52.150846Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"source"
+[2m2026-11-28T08:08:52.151566Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"resolved_device"
+[2m2026-11-28T08:08:52.151604Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m LLDP_NEIGHBOR D2D resolved [3msrc[0m[2m=[0m172.20.0.21 [3mdst[0m[2m=[0m172.20.0.22 [3mlocal_if[0m[2m=[0m"Ethernet1"
+[2m2026-11-28T08:08:52.152082Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"resolution_status"
+[2m2026-11-28T08:08:52.154005Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"resolution_reason"
+[2m2026-11-28T08:08:52.165084Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LLDP neighbor written [3mtarget[0m[2m=[0m172.20.0.21:6030 [3mlocal_if[0m[2m=[0mEthernet1 [3mchassis_id[0m[2m=[0maa:leaf:01 [3msystem_name[0m[2m=[0mleaf1
+[2m2026-11-28T08:08:52.239928Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BGP_SESSION_WITH" [3mcolumn[0m[2m=[0m"peer_address"
+[2m2026-11-28T08:08:52.386187Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"neighbor_key"
+[2m2026-11-28T08:08:52.386672Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"lifecycle"
+[2m2026-11-28T08:08:52.390173Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"withdrawn_at"
+test newer_observation_rejects_delayed_older_observation_and_exact_replay ... ok
+test restart_replay_does_not_duplicate_or_resurrect_evidence ... ok
+test delayed_older_observation_does_not_resurrect_withdrawn_xrd_entries ... ok
+[2m2026-11-28T08:08:52.882199Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-11-28T08:08:52.882224Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m4490
+[2m2026-11-28T08:08:52.894911Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"bgp_edge_migration" [3melapsed_ms[0m[2m=[0m12
+[2m2026-11-28T08:08:52.896747Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m1
+[2m2026-11-28T08:08:52.896785Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"/tmp/.tmpn1JkWB/graph.db"
+[2m2026-11-28T08:08:52.950832Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m HostEndpoint created from LLDP [3mchassis_id[0m[2m=[0m"aa:aa:aa:aa:aa:02" [3msystem_name[0m[2m=[0m"leaf2"
+[2m2026-11-28T08:08:52.957501Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LLDP neighbor written [3mtarget[0m[2m=[0m172.20.0.11:57400 [3mlocal_if[0m[2m=[0mGigabitEthernet0/0/0/0 [3mchassis_id[0m[2m=[0maa:aa:aa:aa:aa:02 [3msystem_name[0m[2m=[0mleaf2
+[2m2026-11-28T08:08:52.987158Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m HostEndpoint created from LLDP [3mchassis_id[0m[2m=[0m"aa:aa:aa:aa:aa:01" [3msystem_name[0m[2m=[0m"leaf1"
+[2m2026-11-28T08:08:52.993528Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LLDP neighbor written [3mtarget[0m[2m=[0m172.20.0.11:57400 [3mlocal_if[0m[2m=[0mGigabitEthernet0/0/0/0 [3mchassis_id[0m[2m=[0maa:aa:aa:aa:aa:01 [3msystem_name[0m[2m=[0mleaf1
+[2m2026-11-28T08:08:53.229307Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"/tmp/.tmpdwxyUn/graph.db" [3mbuffer_pool_mib[0m[2m=[0m128
+test xrd_delete_withdraws_path_evidence_without_erasing_history ... ok
+[2m2026-11-28T08:08:53.400508Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"source"
+[2m2026-11-28T08:08:53.400822Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"resolved_device"
+[2m2026-11-28T08:08:53.401097Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"resolution_status"
+[2m2026-11-28T08:08:53.401407Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"resolution_reason"
+[2m2026-11-28T08:08:53.401761Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"network_instance"
+[2m2026-11-28T08:08:53.402004Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"peer_type"
+[2m2026-11-28T08:08:53.402246Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"last_transition_at"
+[2m2026-11-28T08:08:53.402462Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"evidence_received_at"
+[2m2026-11-28T08:08:53.402687Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"route_distinguisher"
+[2m2026-11-28T08:08:53.402886Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BGP_SESSION_WITH" [3mcolumn[0m[2m=[0m"peer_address"
+[2m2026-11-28T08:08:53.403062Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BGP_SESSION_WITH" [3mcolumn[0m[2m=[0m"session_id"
+[2m2026-11-28T08:08:53.403390Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BGP_SESSION_WITH" [3mcolumn[0m[2m=[0m"peer_type"
+[2m2026-11-28T08:08:53.403593Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BGP_SESSION_WITH" [3mcolumn[0m[2m=[0m"route_distinguisher"
+[2m2026-11-28T08:08:53.403760Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BGP_SESSION_WITH" [3mcolumn[0m[2m=[0m"network_instance"
+[2m2026-11-28T08:08:53.495701Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"neighbor_key"
+[2m2026-11-28T08:08:53.495917Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"lifecycle"
+[2m2026-11-28T08:08:53.496079Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"withdrawn_at"
+[2m2026-11-28T08:08:53.496287Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"identity_scope"
+[2m2026-11-28T08:08:53.496501Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"network_namespace"
+[2m2026-11-28T08:08:53.496735Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"source_occurrence_id"
+[2m2026-11-28T08:08:53.496907Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"acquisition_stream"
+[2m2026-11-28T08:08:53.497056Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"chassis_id_subtype"
+[2m2026-11-28T08:08:53.497241Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"port_id_subtype"
+[2m2026-11-28T08:08:53.497399Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"protocol_identity"
+[2m2026-11-28T08:08:53.497544Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"identity_uncertainty"
+[2m2026-11-28T08:08:53.497675Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"source_session_id"
+[2m2026-11-28T08:08:53.497842Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"source_plan_id"
+[2m2026-11-28T08:08:53.498005Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"collector_id"
+[2m2026-11-28T08:08:53.498206Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"ordering_contract"
+[2m2026-11-28T08:08:53.498404Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"ordering_state"
+[2m2026-11-28T08:08:53.498549Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"ordering_detail"
+[2m2026-11-28T08:08:53.498697Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_entries_encountered"
+[2m2026-11-28T08:08:53.498831Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_entries_accepted"
+[2m2026-11-28T08:08:53.498985Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_exact_duplicates"
+[2m2026-11-28T08:08:53.499151Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_conflicting_entries"
+[2m2026-11-28T08:08:53.499308Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_malformed_entries"
+[2m2026-11-28T08:08:53.499490Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_entries_omitted"
+[2m2026-11-28T08:08:53.499704Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"observed_at"
+[2m2026-11-28T08:08:53.499887Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"lifecycle_changed_at"
+[2m2026-11-28T08:08:53.500095Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LLDP_NEIGHBOR" [3mcolumn[0m[2m=[0m"neighbor_id"
+[2m2026-11-28T08:08:53.500248Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LLDP_NEIGHBOR" [3mcolumn[0m[2m=[0m"neighbor_key"
+[2m2026-11-28T08:08:53.500384Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LLDP_NEIGHBOR" [3mcolumn[0m[2m=[0m"evidence_id"
+[2m2026-11-28T08:08:53.500517Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LLDP_NEIGHBOR" [3mcolumn[0m[2m=[0m"lifecycle"
+[2m2026-11-28T08:08:53.592940Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"CONNECTED_TO" [3mcolumn[0m[2m=[0m"projection_owner"
+[2m2026-11-28T08:08:53.593211Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"CONNECTED_TO" [3mcolumn[0m[2m=[0m"lldp_supporting_ids"
+[2m2026-11-28T08:08:53.593575Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"MGMT_LINK" [3mcolumn[0m[2m=[0m"projection_owner"
+[2m2026-11-28T08:08:53.593899Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"MGMT_LINK" [3mcolumn[0m[2m=[0m"lldp_supporting_ids"
+[2m2026-11-28T08:08:55.456117Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-11-28T08:08:55.456168Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m2196
+[2m2026-11-28T08:08:55.463783Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-11-28T08:08:55.463991Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m3833
+[2m2026-11-28T08:08:55.470171Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"bgp_edge_migration" [3melapsed_ms[0m[2m=[0m13
+[2m2026-11-28T08:08:55.472286Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m2
+[2m2026-11-28T08:08:55.472303Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"/tmp/.tmpdwxyUn/graph.db"
+[2m2026-11-28T08:08:55.475833Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"bgp_edge_migration" [3melapsed_ms[0m[2m=[0m11
+[2m2026-11-28T08:08:55.478128Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m2
+[2m2026-11-28T08:08:55.478181Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"/tmp/.tmp9pEfLC/graph.db"
+[2m2026-11-28T08:08:55.529512Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m HostEndpoint created from LLDP [3mchassis_id[0m[2m=[0m"aa:aa:aa:aa:aa:02" [3msystem_name[0m[2m=[0m"leaf2"
+[2m2026-11-28T08:08:55.536015Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LLDP neighbor written [3mtarget[0m[2m=[0m172.20.0.11:57400 [3mlocal_if[0m[2m=[0mGigabitEthernet0/0/0/0 [3mchassis_id[0m[2m=[0maa:aa:aa:aa:aa:02 [3msystem_name[0m[2m=[0mleaf2
+[2m2026-11-28T08:08:55.569420Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m HostEndpoint created from LLDP [3mchassis_id[0m[2m=[0m"aa:aa:aa:aa:aa:01" [3msystem_name[0m[2m=[0m"leaf1"
+[2m2026-11-28T08:08:55.576613Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LLDP neighbor written [3mtarget[0m[2m=[0m172.20.0.11:57400 [3mlocal_if[0m[2m=[0mGigabitEthernet0/0/0/0 [3mchassis_id[0m[2m=[0maa:aa:aa:aa:aa:01 [3msystem_name[0m[2m=[0mleaf1
+test xrd_multi_neighbor_event_persists_every_identity_keyed_entry ... ok
+[2m2026-11-28T08:08:56.097267Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m LadybugDB opened [3mpath[0m[2m=[0m"/tmp/.tmpdwxyUn/graph.db" [3mbuffer_pool_mib[0m[2m=[0m128
+[2m2026-11-28T08:08:56.204956Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"source"
+[2m2026-11-28T08:08:56.205292Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"resolved_device"
+[2m2026-11-28T08:08:56.205570Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"resolution_status"
+[2m2026-11-28T08:08:56.205842Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"resolution_reason"
+[2m2026-11-28T08:08:56.206039Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"network_instance"
+[2m2026-11-28T08:08:56.206503Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"peer_type"
+[2m2026-11-28T08:08:56.206960Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"last_transition_at"
+[2m2026-11-28T08:08:56.207304Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"evidence_received_at"
+[2m2026-11-28T08:08:56.207611Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BgpNeighbor" [3mcolumn[0m[2m=[0m"route_distinguisher"
+[2m2026-11-28T08:08:56.207774Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BGP_SESSION_WITH" [3mcolumn[0m[2m=[0m"peer_address"
+[2m2026-11-28T08:08:56.207946Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BGP_SESSION_WITH" [3mcolumn[0m[2m=[0m"session_id"
+[2m2026-11-28T08:08:56.208140Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BGP_SESSION_WITH" [3mcolumn[0m[2m=[0m"peer_type"
+[2m2026-11-28T08:08:56.208330Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BGP_SESSION_WITH" [3mcolumn[0m[2m=[0m"route_distinguisher"
+[2m2026-11-28T08:08:56.208483Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"BGP_SESSION_WITH" [3mcolumn[0m[2m=[0m"network_instance"
+[2m2026-11-28T08:08:56.262379Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"neighbor_key"
+[2m2026-11-28T08:08:56.262585Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"lifecycle"
+[2m2026-11-28T08:08:56.262759Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"withdrawn_at"
+[2m2026-11-28T08:08:56.263024Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"identity_scope"
+[2m2026-11-28T08:08:56.263315Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"network_namespace"
+[2m2026-11-28T08:08:56.263524Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"source_occurrence_id"
+[2m2026-11-28T08:08:56.263773Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"acquisition_stream"
+[2m2026-11-28T08:08:56.263967Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"chassis_id_subtype"
+[2m2026-11-28T08:08:56.264142Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"port_id_subtype"
+[2m2026-11-28T08:08:56.264290Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"protocol_identity"
+[2m2026-11-28T08:08:56.264400Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"identity_uncertainty"
+[2m2026-11-28T08:08:56.264545Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"source_session_id"
+[2m2026-11-28T08:08:56.264682Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"source_plan_id"
+[2m2026-11-28T08:08:56.264805Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"collector_id"
+[2m2026-11-28T08:08:56.265058Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"ordering_contract"
+[2m2026-11-28T08:08:56.265240Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"ordering_state"
+[2m2026-11-28T08:08:56.265372Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"ordering_detail"
+[2m2026-11-28T08:08:56.265564Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_entries_encountered"
+[2m2026-11-28T08:08:56.265808Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_entries_accepted"
+[2m2026-11-28T08:08:56.266035Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_exact_duplicates"
+[2m2026-11-28T08:08:56.266314Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_conflicting_entries"
+[2m2026-11-28T08:08:56.266723Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_malformed_entries"
+[2m2026-11-28T08:08:56.267073Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"population_entries_omitted"
+[2m2026-11-28T08:08:56.267348Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"observed_at"
+[2m2026-11-28T08:08:56.267616Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LldpNeighbor" [3mcolumn[0m[2m=[0m"lifecycle_changed_at"
+[2m2026-11-28T08:08:56.267886Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LLDP_NEIGHBOR" [3mcolumn[0m[2m=[0m"neighbor_id"
+[2m2026-11-28T08:08:56.268132Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LLDP_NEIGHBOR" [3mcolumn[0m[2m=[0m"neighbor_key"
+[2m2026-11-28T08:08:56.268373Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LLDP_NEIGHBOR" [3mcolumn[0m[2m=[0m"evidence_id"
+[2m2026-11-28T08:08:56.268559Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"LLDP_NEIGHBOR" [3mcolumn[0m[2m=[0m"lifecycle"
+[2m2026-11-28T08:08:56.322348Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"CONNECTED_TO" [3mcolumn[0m[2m=[0m"projection_owner"
+[2m2026-11-28T08:08:56.322625Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"CONNECTED_TO" [3mcolumn[0m[2m=[0m"lldp_supporting_ids"
+[2m2026-11-28T08:08:56.322868Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"MGMT_LINK" [3mcolumn[0m[2m=[0m"projection_owner"
+[2m2026-11-28T08:08:56.322995Z[0m [34mDEBUG[0m [2mbonsai::graph[0m[2m:[0m schema column already present [3mtable[0m[2m=[0m"MGMT_LINK" [3mcolumn[0m[2m=[0m"lldp_supporting_ids"
+[2m2026-11-28T08:08:57.411972Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph schema initialised
+[2m2026-11-28T08:08:57.411994Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"schema_init" [3melapsed_ms[0m[2m=[0m1287
+[2m2026-11-28T08:08:57.421453Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"bgp_edge_migration" [3melapsed_ms[0m[2m=[0m9
+[2m2026-11-28T08:08:57.422917Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m startup [3mphase[0m[2m=[0m"backfill" [3melapsed_ms[0m[2m=[0m1
+[2m2026-11-28T08:08:57.422936Z[0m [32m INFO[0m [2mbonsai::graph[0m[2m:[0m graph store opened [3mpath[0m[2m=[0m"/tmp/.tmpdwxyUn/graph.db"
+test withdrawal_revokes_only_the_withdrawn_evidence_support ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.64s
+
+	Command being timed: "scripts/ci/build-lane.sh --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native -- cargo test -p bonsai --profile ci --test bn006_native_nos_adapter --test bn006_collection_wiring --test bn006_native_routes --test bn024_lldp_operational --test bn02404_native_interface_api --offline --no-fail-fast"
+	User time (seconds): 48.12
+	System time (seconds): 27.09
+	Percent of CPU this job got: 110%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:07.81
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 5436628
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 6427709
+	Voluntary context switches: 152925
+	Involuntary context switches: 24381
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 572848
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+rc=0

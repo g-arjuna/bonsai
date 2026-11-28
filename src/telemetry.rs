@@ -320,7 +320,7 @@ impl TelemetryUpdate {
         if self.path.contains("lldp/interface[name=")
             && self.path.contains("/neighbor[id=")
             && self.path.ends_with(']')
-            && self.value.get("chassis-id").is_some()
+            && (self.is_delete || self.value.get("chassis-id").is_some())
             && let (Some(local_if), Some(neighbor_id)) = (
                 extract_bracketed(&self.path, "lldp/interface[name="),
                 extract_bracketed(&self.path, "neighbor[id="),
@@ -339,7 +339,8 @@ impl TelemetryUpdate {
         if self.path.contains("lldp/interfaces/interface[name=")
             && self.path.contains("/neighbors/neighbor[id=")
             && (self.path.ends_with("/state") || self.path.ends_with(']'))
-            && (json_find(&self.value, "chassis-id").is_some()
+            && (self.is_delete
+                || json_find(&self.value, "chassis-id").is_some()
                 || json_find(&self.value, "system-name").is_some()
                 || json_find(&self.value, "port-id").is_some())
             && let (Some(local_if), Some(neighbor_id)) = (
@@ -456,7 +457,7 @@ impl TelemetryUpdate {
         if self.path.contains("lldp/nodes/node[node-name=")
             && self.path.contains("[interface-name=")
             && self.path.contains("[device-id=")
-            && self.value.get("lldp-neighbor").is_some()
+            && (self.is_delete || self.value.get("lldp-neighbor").is_some())
             && let (Some(local_if), Some(neighbor_id)) = (
                 extract_bracketed(&self.path, "interface-name="),
                 extract_bracketed(&self.path, "device-id="),

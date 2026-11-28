@@ -216,6 +216,8 @@ L2_INTEGRATION_TESTS="
   m3_syslog_tcp_availability
   gnmi_selective_acquisition
   gnmi_security_connectivity
+  bn006_native_routes
+  bn024_lldp_operational
   gnmi_assignment_lifecycle
   wp65a_embedding_lifecycle
   yang_catalogue
@@ -258,6 +260,7 @@ L3_INTEGRATION_TESTS="
   b11_b12_b13_routing_workflow
   b16_b17_b18_b19_m3_release_gates
   bn005_deployment_and_scope_hardening
+  bn006_collection_wiring
   bn006_native_nos_adapter
   bn006_reconnect_projection
   bn015_u1_inventory_browser

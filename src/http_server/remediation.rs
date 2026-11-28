@@ -1022,7 +1022,7 @@ pub(super) async fn create_investigation_handler(
                 Some(detection_id)
             },
             store_arc,
-            state,
+            state.clone(),
             ai_cfg,
             api_key,
             crate::mcp_server::ToolExecutionContext {
@@ -1038,6 +1038,7 @@ pub(super) async fn create_investigation_handler(
                             .get::<crate::http_server::auth::RoutingAccessScope>()
                             .cloned()
                     }),
+                inventory_registry: Some(state.registry.clone()),
             },
         );
     } else {

@@ -1,0 +1,100 @@
+build-lane: waiting for lock on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: lock acquired on /home/arjuna/.cache/bonsai-ci/build-lane
+build-lane: CARGO_TARGET_DIR=/home/arjuna/.cache/bonsai-ci/build-lane lbug=prebuilt bundle=2b38794b29bd cmd: env CARGO_BUILD_JOBS=2 GATE_BASE=origin/main scripts/ci/gates.sh l0 l1 l2 l3
+
+=== [gate] L0 source checks ===
+L0: rustfmt --check on changed files (base: origin/main)
+L0: python compile check
+L0: OK
+
+=== [gate] L1 compile/static validation ===
+    Checking rbmp-core v0.2.0 (/home/arjuna/Desktop/bonsai-canonical-c3d7217/crates/rbmp-core)
+   Compiling bonsai v0.2.0 (/home/arjuna/Desktop/bonsai-canonical-c3d7217)
+    Checking rbmp-rib v0.2.0 (/home/arjuna/Desktop/bonsai-canonical-c3d7217/crates/rbmp-rib)
+    Checking rbmp-store v0.2.0 (/home/arjuna/Desktop/bonsai-canonical-c3d7217/crates/rbmp-store)
+warning: variable `evA` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1154:9
+     |
+1154 |     let evA = fetch_unembedded(&rig).await;
+     |         ^^^ help: convert the identifier to snake case: `ev_a`
+     |
+     = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: variable `tokA` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1155:9
+     |
+1155 |     let tokA = event_field(&evA, "ev-s1", "claim_token").expect("token");
+     |         ^^^^ help: convert the identifier to snake case: `tok_a`
+
+warning: variable `evB` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1169:9
+     |
+1169 |     let evB = fetch_unembedded(&rig).await;
+     |         ^^^ help: convert the identifier to snake case: `ev_b`
+
+warning: variable `tokB` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1170:9
+     |
+1170 |     let tokB = event_field(&evB, "ev-s1", "claim_token").expect("token");
+     |         ^^^^ help: convert the identifier to snake case: `tok_b`
+
+warning: variable `itemA` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1177:13
+     |
+1177 |     let mut itemA = embedding_item("ev-s1", vec![0.5, 0.5, 0.5, 0.5]);
+     |             ^^^^^ help: convert the identifier to snake case: `item_a`
+
+warning: variable `itemB` should have a snake case name
+    --> tests/wp65a_embedding_lifecycle.rs:1191:13
+     |
+1191 |     let mut itemB = embedding_item("ev-s1", vec![0.5, 0.5, 0.5, 0.5]);
+     |             ^^^^^ help: convert the identifier to snake case: `item_b`
+
+warning: `bonsai` (test "wp65a_embedding_lifecycle") generated 6 warnings
+error[E0063]: missing field `inventory_registry` in initializer of `ToolExecutionContext`
+   --> tests/ownership_compatibility.rs:186:24
+    |
+186 |         let combined = ToolExecutionContext {
+    |                        ^^^^^^^^^^^^^^^^^^^^ missing `inventory_registry`
+
+error[E0063]: missing field `inventory_registry` in initializer of `ToolExecutionContext`
+   --> tests/ownership_compatibility.rs:202:22
+    |
+202 |         let tenant = ToolExecutionContext {
+    |                      ^^^^^^^^^^^^^^^^^^^^ missing `inventory_registry`
+
+For more information about this error, try `rustc --explain E0063`.
+error: could not compile `bonsai` (test "ownership_compatibility") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+
+=== Gate outcomes ===
+  l0   PASS
+  l1   FAIL
+  l2   NOT_EXECUTED
+  l3   NOT_EXECUTED
+GATES INCOMPLETE: see per-tier outcomes above (NOT_EXECUTED is not a pass)
+Command exited with non-zero status 1
+	Command being timed: "scripts/ci/build-lane.sh --lbug-native /home/arjuna/.cache/bonsai-ci/lbug-native -- env CARGO_BUILD_JOBS=2 GATE_BASE=origin/main scripts/ci/gates.sh l0 l1 l2 l3"
+	User time (seconds): 123.28
+	System time (seconds): 8.11
+	Percent of CPU this job got: 100%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 2:10.93
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 3100340
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 1937509
+	Voluntary context switches: 5096
+	Involuntary context switches: 32222
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 8368
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1
+rc=1

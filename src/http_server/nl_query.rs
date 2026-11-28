@@ -79,7 +79,7 @@ pub const GRAPH_SCHEMA: &str = "\
 - BgpNeighbor(id PK, device_address, peer_address, session_state, peer_as, updated_at)
 - BfdSession(id PK, device_address, if_name, remote_address, session_state, updated_at)
 - IsisAdjacency(id PK, device_address, system_id, adjacency_state, source_type, updated_at)
-- LldpNeighbor(id PK, device_address, local_if, chassis_id, port_id, system_name, updated_at)
+- LldpNeighbor(id PK, device_address, local_if, neighbor_id, neighbor_key, lifecycle, chassis_id, port_id, system_name, updated_at)
 - BmpSession(id PK, device_address, router_address, peer_address, peer_as, session_state, adj_rib_in_routes, loc_rib_routes, updated_at)
 - StateChangeEvent(id PK, device_address, event_type, detail, source_type, occurred_at)
 - DetectionEvent(id PK, device_address, rule_id, severity, features_json, source_types, latency_ns, fired_at)
